@@ -768,7 +768,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   mcpServer.tool(
     'get_session_status',
-    'Get the status of a specific session, including worker activity states.',
+    'Get the status of a specific session, including worker activity states. ' +
+      'It describes workers, not processes: a running run_process is not visible here, ' +
+      'and its output/exit always arrive as new turns.',
     {
       sessionId: z.string().describe('The session ID to check'),
     },

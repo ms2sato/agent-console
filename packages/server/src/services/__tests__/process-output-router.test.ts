@@ -6,6 +6,7 @@ import {
   deliveryTails,
   splitContentIntoChunks,
   MESSAGE_CHUNK_TARGET_BYTES,
+  PROCESS_STILL_RUNNING_NOTICE,
   type ProcessOutputRouterDeps,
 } from '../process-output-router.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
@@ -166,10 +167,53 @@ describe('routeProcessContent (pty mode)', () => {
       fields: {
         processId: 'proc-1',
         command: 'node script.js',
-        message: 'full stdout content',
+        message: `full stdout content\n\n${PROCESS_STILL_RUNNING_NOTICE}`,
       },
       intent: 'triage',
     });
+  });
+
+  it('appends the still-running notice to a stdout notice only while the process is running', async () => {
+    const { deps, deliverNotification } = makeDeps();
+
+    await routeProcessContent(deps, {
+      process: makeProcess({ outputMode: 'pty', status: 'running' }),
+      content: 'out',
+      direction: 'stdout',
+    });
+    await routeProcessContent(deps, {
+      process: makeProcess({ outputMode: 'pty', status: 'exited', exitCode: 0 }),
+      content: 'out',
+      direction: 'stdout',
+    });
+    await routeProcessContent(deps, {
+      process: makeProcess({ outputMode: 'pty', status: 'running' }),
+      content: 'reply',
+      direction: 'response',
+    });
+
+    const messages = deliverNotification.mock.calls.map(
+      ([, , params]) => (params.fields as { message: string }).message,
+    );
+    expect(messages[0]).toContain(
+      'This process is still running; its remaining output and its exit notice arrive as further turns. Do not poll get_session_status -- end your turn.',
+    );
+    expect(messages[1]).toBe('out');
+    expect(messages[2]).toBe('reply');
+  });
+
+  it('appends the still-running notice to a message-mode stdout notice of a running process', async () => {
+    const { deps, deliverNotification } = makeDeps();
+
+    await routeProcessContent(deps, {
+      process: makeProcess({ outputMode: 'message', status: 'running' }),
+      content: 'out',
+      direction: 'stdout',
+    });
+
+    const message = (deliverNotification.mock.calls[0][2].fields as { message: string }).message;
+    expect(message).toContain('stdout via message');
+    expect(message).toContain(PROCESS_STILL_RUNNING_NOTICE);
   });
 
   it('does nothing for empty content', async () => {

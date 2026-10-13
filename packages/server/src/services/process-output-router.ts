@@ -53,6 +53,25 @@ export interface ProcessOutputRouterDeps {
   }) => Promise<{ messageId: string; path: string }>;
 }
 
+/**
+ * Appended to a stdout notice while the process is still running. The model
+ * otherwise tends to poll `get_session_status` for a process that reports back
+ * on its own.
+ */
+export const PROCESS_STILL_RUNNING_NOTICE =
+  'This process is still running; its remaining output and its exit notice arrive as further turns. ' +
+  'Do not poll get_session_status -- end your turn.';
+
+function withStillRunningNotice(
+  text: string,
+  process: InteractiveProcessInfo,
+  direction: ProcessOutputDirection,
+): string {
+  return direction === 'stdout' && process.status === 'running'
+    ? `${text}\n\n${PROCESS_STILL_RUNNING_NOTICE}`
+    : text;
+}
+
 export interface RouteProcessContentParams {
   process: InteractiveProcessInfo;
   content: string;
@@ -222,7 +241,7 @@ async function deliverProcessContent(
         fields: {
           processId: process.id,
           command: process.command,
-          message: content,
+          message: withStillRunningNotice(content, process, direction),
         },
         intent: direction === 'stdout' ? 'triage' : 'inform',
       });
@@ -277,7 +296,7 @@ async function deliverProcessContent(
         fields: {
           processId: process.id,
           command: process.command,
-          message: summary,
+          message: withStillRunningNotice(summary, process, direction),
         },
         intent: direction === 'stdout' ? 'triage' : 'inform',
       });

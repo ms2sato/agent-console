@@ -1288,6 +1288,26 @@ describe('MCP Server Tools', () => {
   // ===========================================================================
 
   describe('get_session_status', () => {
+    it('states that it describes workers, not processes, and that process output arrives as new turns', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      const listBody = (await listRes.json()) as {
+        result?: { tools?: Array<{ name: string; description?: string }> };
+      };
+      const tool = listBody.result?.tools?.find((t) => t.name === 'get_session_status');
+
+      expect(tool?.description).toContain(
+        'It describes workers, not processes: a running run_process is not visible here, and its output/exit always arrive as new turns.',
+      );
+    });
+
     it('should return session info for an existing session', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
