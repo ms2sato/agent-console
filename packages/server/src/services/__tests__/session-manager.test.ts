@@ -3458,6 +3458,28 @@ describe('SessionManager', () => {
     });
   });
 
+  /** A fully typed UserRepository whose only live method is `findById`; every other method fails loudly if reached. */
+  function createStubUserRepository(findById: (id: string) => Promise<AuthUser | null>): UserRepository {
+    return {
+      async upsertByOsUid(): Promise<AuthUser> {
+        throw new Error('upsertByOsUid not used by this test');
+      },
+      findById,
+      async getOsUidById(): Promise<number | null | undefined> {
+        throw new Error('getOsUidById not used by this test');
+      },
+      async refreshOsIdentity(): Promise<AuthUser> {
+        throw new Error('refreshOsIdentity not used by this test');
+      },
+      async getPreferences(): Promise<null> {
+        return null;
+      },
+      async setPreferences(): Promise<boolean> {
+        return true;
+      },
+    };
+  }
+
   describe('createdByUsername wiring (usernameLookup option)', () => {
     // Verifies the SessionManager → UsernameLookupService → UserRepository wiring
     // for the createdByUsername derived field. The converter's own derivation
@@ -3470,30 +3492,10 @@ describe('SessionManager', () => {
       // specific UUID. Wrapped in the real UsernameLookupService so we
       // exercise the production prime path end-to-end.
       const findByIdCalls: string[] = [];
-      const stubUserRepo: UserRepository = {
-        async upsertByOsUid(): Promise<AuthUser> {
-          throw new Error('upsertByOsUid not used by this test');
-        },
-        async findById(id: string): Promise<AuthUser | null> {
-          findByIdCalls.push(id);
-          if (id === 'user-alice-uuid') {
-            return { id, username: 'alice', homeDir: '/home/alice' };
-          }
-          return null;
-        },
-        async getOsUidById(): Promise<number | null | undefined> {
-          throw new Error('getOsUidById not used by this test');
-        },
-        async refreshOsIdentity(): Promise<AuthUser> {
-          throw new Error('refreshOsIdentity not used by this test');
-        },
-        async getPreferences(): Promise<null> {
-          return null;
-        },
-        async setPreferences(): Promise<boolean> {
-          return true;
-        },
-      };
+      const stubUserRepo = createStubUserRepository(async (id) => {
+        findByIdCalls.push(id);
+        return id === 'user-alice-uuid' ? { id, username: 'alice', homeDir: '/home/alice' } : null;
+      });
       const usernameLookup = new UsernameLookupService(stubUserRepo);
 
       const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
@@ -3524,11 +3526,7 @@ describe('SessionManager', () => {
     });
 
     it('primeActiveSessionUsernames primes the createdBy of every in-memory session, and is a no-op without a real lookup', async () => {
-      const stubUserRepo = {
-        async findById(id: string): Promise<AuthUser | null> {
-          return { id, username: `name-of-${id}`, homeDir: '/home/x' };
-        },
-      } as unknown as UserRepository;
+      const stubUserRepo = createStubUserRepository(async (id) => ({ id, username: `name-of-${id}`, homeDir: '/home/x' }));
       const usernameLookup = new UsernameLookupService(stubUserRepo);
       const primeMany = spyOn(usernameLookup, 'primeMany');
 
