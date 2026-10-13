@@ -445,6 +445,7 @@ export async function createAppContext(
   const repositoryManager = await RepositoryManagerClass.create({
     repository: repositoryRepository,
     jobQueue,
+    db,
   });
 
   // Sync username cache that backs Session.createdByUsername.
@@ -925,6 +926,7 @@ export async function createTestContext(
   const repositoryManager = await RepositoryManagerClass.create({
     repository: repositoryRepository,
     jobQueue,
+    db,
   });
 
   // Sync username cache that backs Session.createdByUsername.
