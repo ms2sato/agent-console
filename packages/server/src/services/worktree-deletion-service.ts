@@ -61,6 +61,7 @@ async function validateWorktreePath(
     return 'Worktree path is outside managed directory';
   }
 
+  // "canonical" here means path.resolve'd, NOT realpath'd -- unlike lib/canonical-path.ts; the DB stores resolved paths.
   if (!await worktreeService.isWorktreeOf(repoPath, canonicalPath, repoId)) {
     return 'Invalid worktree path for this repository';
   }

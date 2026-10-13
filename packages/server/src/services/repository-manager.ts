@@ -5,6 +5,7 @@ import type { Repository } from '@agent-console/shared';
 import { getConfigDir, getRepositoryDir, getSourceReposDir } from '../lib/config.js';
 import { isUnderSourceReposDir } from '../lib/repository-remote.js';
 import { deriveRepositorySlug } from '../lib/git.js';
+import { canonicalPath } from '../lib/canonical-path.js';
 import { createLogger } from '../lib/logger.js';
 import { RepositoryNotFoundError } from '../lib/errors.js';
 import { initializeDatabase } from '../database/connection.js';
@@ -337,9 +338,13 @@ export class RepositoryManager {
       throw new Error(`Not a git repository: ${absolutePath}`);
     }
 
-    // Check if already registered
+    // Check if already registered. Compared canonically so a symlink alias of
+    // an already-registered repository is refused too. The STORED path stays
+    // `path.resolve`d: `clonedSourceRepoPath` and the source-repo cleanup guard
+    // are string-prefix checks against the (never realpath'd) source-repos dir.
+    const canonicalAbsolutePath = await canonicalPath(absolutePath);
     for (const repo of this.repositories.values()) {
-      if (repo.path === absolutePath) {
+      if (await canonicalPath(repo.path) === canonicalAbsolutePath) {
         throw new Error(`Repository already registered: ${absolutePath}`);
       }
     }

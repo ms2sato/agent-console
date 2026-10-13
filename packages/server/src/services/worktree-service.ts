@@ -21,6 +21,7 @@ import {
 // multi-user mode runs git as the worktree-owning user (picking up that
 // user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
 import { augmentWorktreeAddPermissionError } from '../lib/git-error-hints.js';
+import { canonicalPath } from '../lib/canonical-path.js';
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { isErrnoException } from '../lib/type-guards.js';
@@ -346,12 +347,15 @@ export class WorktreeService {
       const dbRecords = await this.worktreeRepository.findByRepositoryId(repositoryId);
 
       // Parse git output, matching with DB records for index info
-      const gitWorktrees = this.parsePorcelainOutput(output, repositoryId, repoPath, dbRecords);
+      const gitWorktrees = await this.parsePorcelainOutput(output, repositoryId, dbRecords);
 
-      // Find orphaned worktrees: exist in DB but not in git output
-      const gitPaths = new Set(gitWorktrees.map(wt => wt.path));
+      // Find orphaned worktrees: exist in DB but not in git output. Compared
+      // canonically: git prints realpaths while a stored path may keep a
+      // symlinked segment, and a string compare would list the same worktree
+      // twice (once from git, once as an orphan).
+      const gitPaths = new Set(await Promise.all(gitWorktrees.map(wt => canonicalPath(wt.path))));
       for (const record of dbRecords) {
-        if (!gitPaths.has(record.path)) {
+        if (!gitPaths.has(await canonicalPath(record.path))) {
           gitWorktrees.push({
             path: record.path,
             branch: '(orphaned)',
@@ -364,26 +368,50 @@ export class WorktreeService {
 
       return gitWorktrees;
     } catch (error) {
-      logger.error({ err: error, repoPath }, 'Failed to list worktrees');
+      if (await this.pathIsMissing(repoPath)) {
+        // The directory was renamed, moved or deleted. The listing is empty
+        // by design, but say why instead of logging a generic git failure.
+        logger.warn({ err: error, repoPath, reason: 'repository path missing' }, 'Failed to list worktrees: repository path missing');
+      } else {
+        logger.error({ err: error, repoPath }, 'Failed to list worktrees');
+      }
       return [];
+    }
+  }
+
+  private async pathIsMissing(target: string): Promise<boolean> {
+    try {
+      await fsPromises.access(target);
+      return false;
+    } catch {
+      return true;
     }
   }
 
   /**
    * Parse git worktree list --porcelain output.
    * Returns only git-tracked worktrees; the caller handles adding orphaned ones.
+   *
+   * The main worktree is the FIRST entry: `git worktree list` documents that
+   * it is listed first, so no comparison with the stored repository path is
+   * needed (that comparison drops the main worktree when the stored path and
+   * git's realpath differ by a symlink or a rename).
    */
-  private parsePorcelainOutput(
+  private async parsePorcelainOutput(
     output: string,
     repositoryId: string,
-    mainRepoPath: string,
     dbRecords: WorktreeRecord[]
-  ): Worktree[] {
+  ): Promise<Worktree[]> {
     const worktrees: Worktree[] = [];
     const entries = output.trim().split('\n\n');
 
-    // Build a lookup map from DB records for efficient index retrieval
-    const recordByPath = new Map(dbRecords.map(r => [r.path, r]));
+    // Build a lookup map from DB records for efficient index retrieval, keyed
+    // canonically so a record stored under a symlinked path still matches the
+    // realpath git prints.
+    const recordByPath = new Map<string, WorktreeRecord>(
+      await Promise.all(dbRecords.map(async (r): Promise<[string, WorktreeRecord]> => [await canonicalPath(r.path), r])),
+    );
+    let sawFirstEntry = false;
 
     for (const entry of entries) {
       if (!entry.trim()) continue;
@@ -407,8 +435,9 @@ export class WorktreeService {
       }
 
       if (worktreePath) {
-        const isMain = worktreePath === mainRepoPath;
-        const record = recordByPath.get(worktreePath);
+        const isMain = !sawFirstEntry;
+        sawFirstEntry = true;
+        const record = recordByPath.get(await canonicalPath(worktreePath));
 
         // Only include worktrees that are registered in the DB (created by this app)
         // Main worktree is always included
@@ -1009,8 +1038,10 @@ export class WorktreeService {
    * Uses direct DB lookup instead of listing all worktrees.
    */
   async isWorktreeOf(repoPath: string, worktreePath: string, repositoryId: string): Promise<boolean> {
-    // Main worktree is always valid
-    if (worktreePath === repoPath) return true;
+    // Main worktree is always valid. Compared canonically: `repoPath` is the
+    // stored (resolved, symlink-preserving) path, `worktreePath` may be what
+    // git printed.
+    if (await canonicalPath(worktreePath) === await canonicalPath(repoPath)) return true;
 
     // Check DB for registered worktree
     const record = await this.worktreeRepository.findByPath(worktreePath);
