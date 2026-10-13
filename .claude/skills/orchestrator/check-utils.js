@@ -9,6 +9,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 
 // --- Utility functions ---
 
@@ -375,6 +376,99 @@ function scanBlockCommentLineStarts(content, ext) {
   return startsInBlock; // startsInBlock[i] === true means line (i+1) starts inside an open block
 }
 
+// --- Type-only declaration detection ---
+
+// `typescript` is resolved lazily, inside the scan, never via a top-level
+// import: `check-mirror-drift.yml` runs this module under `setup-bun` with no
+// `bun install`, so a static import would crash that workflow at load time.
+// `undefined` = not tried yet, `null` = tried and unresolvable.
+let typescriptModule;
+
+function loadTypescript() {
+  if (typescriptModule !== undefined) return typescriptModule;
+  try {
+    typescriptModule = createRequire(import.meta.url)('typescript');
+  } catch {
+    typescriptModule = null;
+    console.warn(
+      'Warning: the `typescript` package is not resolvable; type-only import/export rewiring will not be exempted from the sibling-test requirement (run `bun install`).',
+    );
+  }
+  return typescriptModule;
+}
+
+const SCRIPT_KIND_NAME_BY_EXT = {
+  '.ts': 'TS',
+  '.tsx': 'TSX',
+  '.js': 'JS',
+  '.jsx': 'JSX',
+  '.mjs': 'JS',
+  '.cjs': 'JS',
+};
+
+/**
+ * Return the 1-based inclusive `[startLine, endLine]` ranges of every
+ * top-level whole-declaration type-only import or export in `content`:
+ * `import type X`, `import type { A, B }`, `import type * as ns`, and
+ * `export type { A } from`. TypeScript erases these at emit, so a changed
+ * line inside one has no runtime effect and no test can observe it.
+ *
+ * Deliberately NOT included (each fails closed, i.e. still needs coverage):
+ * inline specifiers (`import { type A }` -- whether the import itself is
+ * elided is a compiler decision under `isolatedModules`), value imports,
+ * side-effect imports, `declare`, type aliases and interfaces (a type body
+ * change stays in scope), and any declaration sharing a line with other code.
+ *
+ * Returns `[]` for unsupported extensions, an unresolvable `typescript`, or
+ * any parse failure.
+ *
+ * @param {string} content
+ * @param {string} filePath
+ * @returns {Array<[number, number]>}
+ */
+export function scanTypeOnlyDeclarationLineRanges(content, filePath) {
+  const scriptKindName = SCRIPT_KIND_NAME_BY_EXT[fileExtension(filePath)];
+  if (!scriptKindName || typeof content !== 'string') return [];
+  const ts = loadTypescript();
+  if (!ts) return [];
+
+  try {
+    const sf = ts.createSourceFile(
+      filePath,
+      content,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind[scriptKindName],
+    );
+    const lines = content.split('\n');
+    const ranges = [];
+    for (const node of sf.statements) {
+      const typeOnly =
+        (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly === true) ||
+        (ts.isExportDeclaration(node) && node.isTypeOnly === true);
+      if (!typeOnly) continue;
+
+      const start = sf.getLineAndCharacterOfPosition(node.getStart(sf));
+      const end = sf.getLineAndCharacterOfPosition(node.getEnd());
+      // The statement must own its first and last line: no code before it on
+      // its first line, and nothing but whitespace or a `//` comment after it
+      // on its last line.
+      const before = (lines[start.line] ?? '').slice(0, start.character);
+      const after = (lines[end.line] ?? '').slice(end.character).trim();
+      if (before.trim() !== '') continue;
+      if (after !== '' && !after.startsWith('//')) continue;
+      ranges.push([start.line + 1, end.line + 1]);
+    }
+    return ranges;
+  } catch {
+    return [];
+  }
+}
+
+function lineInRanges(lineNo, ranges) {
+  return Array.isArray(ranges) && ranges.some(([from, to]) => lineNo >= from && lineNo <= to);
+}
+
 /**
  * Determine whether a unified diff (as produced by `git diff --unified=0`)
  * for a single file consists entirely of comment and/or blank line changes,
@@ -434,14 +528,22 @@ function scanBlockCommentLineStarts(content, ext) {
  *
  * @param {string} diffText
  * @param {string} filePath
- * @param {{ baseContent?: string | null, headContent?: string | null }} [opts]
+ * A changed line that falls inside a whole-declaration type-only import /
+ * export (see `scanTypeOnlyDeclarationLineRanges`) on its own side is exempt
+ * exactly like a comment line: added lines are checked against
+ * `opts.headTypeOnlyRanges` by head line number, removed lines against
+ * `opts.baseTypeOnlyRanges` by base line number. Without a parsable hunk
+ * header the line number is unknown and the line is not exempt.
+ *
+ * @param {{ baseContent?: string | null, headContent?: string | null, baseTypeOnlyRanges?: Array<[number, number]>, headTypeOnlyRanges?: Array<[number, number]> }} [opts]
  *   Full file content on each side of the diff (base = pre-image, head =
  *   post-image), used only to seed block-comment state at each hunk's
  *   start. Omit (or pass null) when unavailable — the function still
- *   works, just without the outside-the-hunk-opener recognition.
+ *   works, just without the outside-the-hunk-opener recognition. The
+ *   type-only ranges default to none.
  */
 export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
-  const { baseContent = null, headContent = null } = opts;
+  const { baseContent = null, headContent = null, baseTypeOnlyRanges = [], headTypeOnlyRanges = [] } = opts;
   const ext = fileExtension(filePath);
   const lineCommentPrefix = LINE_COMMENT_PREFIX_BY_EXT[ext];
   if (!lineCommentPrefix) return false;
@@ -462,6 +564,10 @@ export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
   let addedBlockConfirmed = false;
   let removedBlockConfirmed = false;
   let sawChangedLine = false;
+  // Current 1-based line number on each side within the hunk; null when the
+  // hunk header could not be parsed (type-only exemption then fails closed).
+  let oldLineNo = null;
+  let newLineNo = null;
 
   for (const rawLine of diffText.split('\n')) {
     if (rawLine.startsWith('@@')) {
@@ -469,6 +575,8 @@ export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
       const headerMatch = rawLine.match(HUNK_HEADER_RE);
       const oldStart = headerMatch ? parseInt(headerMatch[1], 10) : null;
       const newStart = headerMatch ? parseInt(headerMatch[2], 10) : null;
+      oldLineNo = oldStart;
+      newLineNo = newStart;
       inBlockAdded = !!(addedBlockStarts && newStart !== null && addedBlockStarts[newStart - 1]);
       inBlockRemoved = !!(removedBlockStarts && oldStart !== null && removedBlockStarts[oldStart - 1]);
       // A hunk boundary is always seed-or-nothing — an in-hunk-confirmed
@@ -495,8 +603,22 @@ export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
     }
 
     sawChangedLine = true;
+    // `--unified=0` hunks hold only changed lines, so each side's counter
+    // advances exactly once per line of that side.
+    let lineNo = null;
+    if (sign === '+') {
+      lineNo = newLineNo;
+      if (newLineNo !== null) newLineNo += 1;
+    } else {
+      lineNo = oldLineNo;
+      if (oldLineNo !== null) oldLineNo += 1;
+    }
     const trimmed = content.trim();
     if (trimmed.length === 0) continue;
+
+    // A line inside a whole-declaration type-only import/export is real code
+    // by construction (never inside a block comment), erased at emit.
+    if (lineNo !== null && lineInRanges(lineNo, sign === '+' ? headTypeOnlyRanges : baseTypeOnlyRanges)) continue;
 
     if (ext === '.sh' && trimmed.startsWith('#!')) return false;
 
@@ -631,7 +753,12 @@ export function isCommentOnlyFileDiff(
   const baseContent = mergeBase ? readGitFileContent(mergeBase, filePath, cwd) : null;
   const headContent = readGitFileContent(headRef, filePath, cwd);
 
-  return isCommentOnlyDiff(result.stdout || '', filePath, { baseContent, headContent });
+  return isCommentOnlyDiff(result.stdout || '', filePath, {
+    baseContent,
+    headContent,
+    baseTypeOnlyRanges: baseContent === null ? [] : scanTypeOnlyDeclarationLineRanges(baseContent, filePath),
+    headTypeOnlyRanges: headContent === null ? [] : scanTypeOnlyDeclarationLineRanges(headContent, filePath),
+  });
 }
 
 /**

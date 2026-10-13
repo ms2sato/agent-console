@@ -73,7 +73,7 @@ describe('formatCoverageVerdict (Issue #1189)', () => {
       hasIntegrationGap: false,
       hasCommentOnlyExemptions: true,
     });
-    expect(result).toBe('**All test coverage requirements are satisfied (comment-only changes exempted).** ✅');
+    expect(result).toBe('**All test coverage requirements are satisfied (no-runtime-effect diff (comment-only or type-only import rewiring) exempted).** ✅');
     expect(result).not.toContain('have corresponding tests');
   });
 
@@ -129,6 +129,30 @@ describe('printCoverageCheck -- excluded-by-rule naming (Issue #1767 follow-up)'
     });
     expect(output).toContain('No production files matching coverage patterns were changed.');
     expect(output).not.toContain('Exempted -- excluded by rule');
+  });
+});
+
+describe('printCoverageCheck -- no-runtime-effect exemption wording', () => {
+  it('names both exempt classes in the heading and in each exempted file line', () => {
+    const output = captureConsoleLog(() => {
+      printCoverageCheck(
+        [
+          {
+            file: 'packages/server/src/services/foo.ts',
+            hasTest: true,
+            needsCoverage: false,
+            isCommentOnly: true,
+            isExcluded: false,
+          },
+        ],
+        null,
+      );
+    });
+    expect(output).toContain('### Exempted — no-runtime-effect diff (comment-only or type-only import rewiring) (1)');
+    expect(output).toContain(
+      '`packages/server/src/services/foo.ts` — all changed lines are comments, blank, or whole-declaration type-only import/export rewiring',
+    );
+    expect(output).not.toContain('all changed lines are comments/blank');
   });
 });
 
