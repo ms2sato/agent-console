@@ -1,11 +1,13 @@
 import { describe, it, expect, mock } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   formatCoverageVerdict,
   printEmbeddedAgentStdoutWritersCheck,
   printCoverageCheck,
   printWorkspaceLinkCheck,
+  printProtocolDispatchCheck,
 } from '../preflight-check.js';
-import { findTestFiles } from '../check-utils.js';
+import { findTestFiles, PROTOCOL_DISPATCH_TRIGGERS } from '../check-utils.js';
 
 /**
  * Captures every console.log call made during `fn()` and returns the
@@ -241,5 +243,75 @@ describe('printWorkspaceLinkCheck (Issue #1504)', () => {
     });
     expect(output).toContain('Stale install: client is missing workspace link(s) server');
     expect(output).toContain('Stale install: integration is missing workspace link(s) embedded-agent');
+  });
+});
+
+// printProtocolDispatchCheck (Issue #975 Tier 2 / #2044). The returned
+// boolean is what `run()` folds into its exit-code OR-chain -- same
+// contract as `printCoverageCheck`'s `hasUnitGaps` above, tested the same
+// way (literal, synthesized gap-result objects, no process.exit side
+// effect; `run()` itself is not driven here because it also spawns the
+// duplication/language/blame-shift/embedded-agent-stdout checks against
+// the real repo, same boundary as every other test in this file).
+//
+// The first test's name says "exit 1" / "exit 0" because that is the
+// production consequence of this function's return value once wired into
+// `run()`'s OR-chain below -- not because this test drives `process.exit`
+// itself.
+describe('printProtocolDispatchCheck (Issue #975 Tier 2)', () => {
+  const TRIGGER_FILE = 'packages/shared/src/types/session.ts';
+  const FIXTURE_FILE = PROTOCOL_DISPATCH_TRIGGERS.fixtures[0];
+
+  it('returns true (exit 1) on a synthesized trigger-only diff and names the BLOCKING sentence', () => {
+    const output = captureConsoleLog(() => {
+      expect(
+        printProtocolDispatchCheck({ triggered: [TRIGGER_FILE], fixturesChanged: [], gap: true }),
+      ).toBe(true);
+    });
+    expect(output).toContain('❌ Dispatch-union input(s) changed with NO wire-consumption fixture change');
+    expect(output).toContain(TRIGGER_FILE);
+    expect(output).toContain('this is BLOCKING');
+    expect(output).toContain('Issue #975 Tier 2');
+    for (const fixture of PROTOCOL_DISPATCH_TRIGGERS.fixtures) {
+      expect(output).toContain(fixture);
+    }
+  });
+
+  it('returns false (exit 0) when a fixture change lands alongside the trigger', () => {
+    const output = captureConsoleLog(() => {
+      expect(
+        printProtocolDispatchCheck({ triggered: [TRIGGER_FILE], fixturesChanged: [FIXTURE_FILE], gap: false }),
+      ).toBe(false);
+    });
+    expect(output).toContain('✅ Dispatch-union input(s) changed, with a wire-consumption fixture change alongside');
+    expect(output).not.toContain('BLOCKING');
+  });
+
+  it('returns false (exit 0) when nothing triggers', () => {
+    const output = captureConsoleLog(() => {
+      expect(printProtocolDispatchCheck({ triggered: [], fixturesChanged: [], gap: false })).toBe(false);
+    });
+    expect(output).toContain('No protocol dispatch-union inputs changed.');
+    expect(output).not.toContain('BLOCKING');
+  });
+
+  // Polarity for the wiring itself (not just this function's own verdict):
+  // removing `hasProtocolDispatchGap` from `run()`'s exit-code OR-chain
+  // makes this test fail, because the source text it pins against would no
+  // longer contain the identifier in that `if`. The three tests above
+  // cannot catch that regression on their own -- they never call `run()`
+  // -- which is exactly why this source-level pin exists alongside them.
+  it('is actually wired into run()\'s exit-code OR-chain, not just computed and discarded', () => {
+    const sourceCode = readFileSync('.claude/skills/orchestrator/preflight-check.js', 'utf-8');
+    const startIdx = sourceCode.indexOf('function run(changedFiles');
+    const endIdx = sourceCode.indexOf('\n// --- Exports for testing ---');
+    const runSource = sourceCode.slice(startIdx, endIdx);
+
+    expect(runSource).toContain('printProtocolDispatchCheck(protocolDispatchGap)');
+
+    const ifStartIdx = runSource.indexOf('if (\n    hasUnitGaps');
+    const ifEndIdx = runSource.indexOf('process.exit(1);', ifStartIdx);
+    const exitDecision = runSource.slice(ifStartIdx, ifEndIdx);
+    expect(exitDecision).toContain('hasProtocolDispatchGap');
   });
 });

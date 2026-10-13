@@ -6,6 +6,7 @@
  * Runs automated checks that don't require human judgment:
  * - Test file coverage for production code changes
  * - Integration test gap detection
+ * - Protocol-dispatch fixture gap detection (dispatch-union Tier 2, BLOCKING)
  *
  * This is the CI-facing script. For full acceptance checks requiring
  * human judgment (Q1-Q9), use acceptance-check.js via run_process.
@@ -29,6 +30,8 @@ import {
   PrDiffRefResolutionError,
   isTestFile,
   detectIntegrationTestNeeds,
+  detectProtocolDispatchGaps,
+  PROTOCOL_DISPATCH_TRIGGERS,
   runCommentBlameShiftCheck,
   runLanguageCheck,
   runEmbeddedAgentStdoutWritersCheck,
@@ -200,6 +203,56 @@ function printIntegrationTestCoverage(integrationTestNeeds) {
 }
 
 /**
+ * Render the "## Protocol-dispatch fixtures" section (dispatch-union Tier 2).
+ * Unlike `printIntegrationTestCoverage` above, this gap is BLOCKING: a
+ * dispatch-union change that lands without a wire-consumption fixture
+ * change fails the run, mirroring `printIntegrationTestCoverage`'s L186-188
+ * advisory phrasing in the opposite direction -- this one says so is not
+ * optional.
+ *
+ * Extracted and exported, same pattern as `printCoverageCheck`, so the
+ * gap-vs-no-gap decision is directly unit-testable without driving
+ * `run()`'s `process.exit()` side effect.
+ *
+ * @param {{ triggered: string[], fixturesChanged: string[], gap: boolean }} protocolDispatchGap
+ * @returns {boolean} hasGap
+ */
+export function printProtocolDispatchCheck(protocolDispatchGap) {
+  console.log('## Protocol-dispatch fixtures\n');
+
+  if (protocolDispatchGap.triggered.length === 0) {
+    console.log('No protocol dispatch-union inputs changed.\n');
+    return false;
+  }
+
+  if (!protocolDispatchGap.gap) {
+    console.log('✅ Dispatch-union input(s) changed, with a wire-consumption fixture change alongside:\n');
+    for (const file of protocolDispatchGap.triggered) {
+      console.log(`- \`${file}\``);
+    }
+    console.log();
+    return false;
+  }
+
+  console.log('❌ Dispatch-union input(s) changed with NO wire-consumption fixture change:\n');
+  for (const file of protocolDispatchGap.triggered) {
+    console.log(`- \`${file}\``);
+  }
+  console.log('\nExpected one of the following fixture files to also change in this PR:\n');
+  for (const file of PROTOCOL_DISPATCH_TRIGGERS.fixtures) {
+    console.log(`- \`${file}\``);
+  }
+  console.log(
+    '\na dispatch-union change must land with a fixture-test change in the same PR (Issue #975 Tier 2) -- this is BLOCKING.',
+  );
+  console.log(
+    '  Unlike the integration-test gap above, this is not advisory: it fails the run, not just the reader\'s judgment.',
+  );
+  console.log();
+  return true;
+}
+
+/**
  * Select the coverage-check verdict line. Pure function so the
  * comment-only-exemption wording can be unit tested without driving
  * `run()`'s `process.exit()` side effect.
@@ -314,8 +367,12 @@ function run(changedFiles, diffRef = {}, repoRoot = DEFAULT_REPO_ROOT) {
   const { testCoverage } = findTestFiles(changedFiles, diffRef);
   const categories = categorizeFiles(changedFiles);
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories, diffRef);
+  const protocolDispatchGap = detectProtocolDispatchGaps(changedFiles, diffRef);
 
   const hasUnitGaps = printCoverageCheck(testCoverage, integrationTestNeeds);
+
+  console.log('\n---\n');
+  const hasProtocolDispatchGap = printProtocolDispatchCheck(protocolDispatchGap);
 
   // Rule/Skill duplication invariant — runs on every preflight because drift
   // can be introduced by edits anywhere, not just the current PR's diff.
@@ -336,6 +393,7 @@ function run(changedFiles, diffRef = {}, repoRoot = DEFAULT_REPO_ROOT) {
 
   if (
     hasUnitGaps ||
+    hasProtocolDispatchGap ||
     duplicationExit !== 0 ||
     languageExit !== 0 ||
     blameShiftExit !== 0 ||
