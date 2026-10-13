@@ -44,7 +44,7 @@ Both terms are added to `docs/glossary.md` in the same PR as this document.
 
 What already exists and is reused:
 
-- **MCP tool surface**: 23 tools registered in `packages/server/src/mcp/mcp-server.ts` (enumerated in Command Set below). Their handlers already validate input, resolve identity via `checkCallerOwnsSession`, and return JSON.
+- **MCP tool surface**: 23 tools mapped (of the 32 `mcpServer.tool` registrations in `packages/server/src/mcp/mcp-server.ts`; enumerated in Command Set below). Their handlers already validate input, resolve identity via `checkCallerOwnsSession`, and return JSON.
 - **Environment injection**: PTY spawn already injects `AGENT_CONSOLE_BASE_URL`, `AGENT_CONSOLE_SESSION_ID`, `AGENT_CONSOLE_WORKER_ID`, `AGENT_CONSOLE_REPOSITORY_ID`, and `AGENT_CONSOLE_PARENT_SESSION_ID` / `AGENT_CONSOLE_PARENT_WORKER_ID` for delegated sessions.
 - **Token machinery**: `McpTokenRegistry` (`packages/server/src/mcp/mcp-auth.ts`) mints per-worker bearer tokens with `{ sessionId, workerId, userId }`, and multi-user mode already writes the token to a user-owned `0600` file and injects only the file path via env (`worker-manager.ts`, "MCP caller identity"), keeping the raw secret out of the elevated spawn's argv-visible command string.
 - **Surface parity enforcement**: `AGENT_OPERATIONS` (`packages/shared/src/types/agent-operations.ts`) with per-surface exposure tables typed `satisfies Record<AgentOperation, SurfaceExposure>` (UI / MCP / embedded-visible), per `docs/design/agent-surface.md` Mechanism 3.

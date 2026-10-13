@@ -602,13 +602,21 @@ describe('TimerManager', () => {
       expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(120);
     });
 
+    // Measured reach: removing the clearTimeout from resetTimer makes this fail
+    // (the old 20 s wait still fires at t=30, a third tick); the previous shape
+    // (reset right after a fire, then advance a full base interval) passed without it.
     it('does not leave the old pending wait running', () => {
-      const timer = manager.createTimer({ ...base, intervalSeconds: 60, backoffFactor: 2 });
-      jest.advanceTimersByTime(60000);
+      const timer = manager.createTimer({ ...base, intervalSeconds: 10, backoffFactor: 2 });
+      jest.advanceTimersByTime(10000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+      expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(20);
 
+      // Pending wait would fire at t=30 s; reset at t=15 s moves the next fire to t=25 s.
+      jest.advanceTimersByTime(5000);
       manager.resetTimer(timer.id);
-      jest.advanceTimersByTime(60000);
+      jest.advanceTimersByTime(20000);
 
+      // t=35 s: the new base fire at t=25 s only. The old wait (t=30 s) must not have fired.
       expect(onTick).toHaveBeenCalledTimes(2);
     });
 
