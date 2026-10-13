@@ -651,6 +651,10 @@ describe('delivery retry (bounded, transient failures only)', () => {
     const warnSpy = spyOn(rootLogger, 'warn');
     // Another test file may have left calls on a shared, unrestored spy.
     warnSpy.mockClear();
+    // The no-warn cases below are anchored by their positive sibling ("three
+    // transient failures: ONE warn with attempts 3"), which uses the same
+    // 'Failed to deliver' filter and would fail on a renamed message -- so a
+    // rename cannot make the no-warn cases pass vacuously.
     try {
       if (kind === 'exit') {
         await routeProcessExit(deps, makeProcess({ id: `retry-${Math.random()}`, status: 'exited', exitCode: 0 }));
