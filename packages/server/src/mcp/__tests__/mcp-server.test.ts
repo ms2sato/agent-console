@@ -6838,4 +6838,183 @@ describe('MCP Server Tools', () => {
       },
     );
   });
+
+  // ===========================================================================
+  // write_memo ownership
+  // ===========================================================================
+  //
+  // `write_memo` overwrites a session's memo from a caller-supplied
+  // `sessionId`; before the gate any caller could overwrite another session's
+  // memo. The registry test (`session-claiming-tools.test.ts`) pins that the
+  // gate is present and registered; these cases pin what it DOES.
+  describe('write_memo ownership', () => {
+    async function createOwnedSession(createdBy: string): Promise<{ sessionId: string; workerId: string }> {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy },
+      );
+      return { sessionId: session.id, workerId: session.workers[0].id };
+    }
+
+    it('enforce mode rejects a verified caller whose identity belongs to a DIFFERENT session, and nothing is written', async () => {
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+      const { sessionId: sessionAId, workerId: workerAId } = await createOwnedSession('memo-owner-a');
+      const { sessionId: sessionBId } = await createOwnedSession('memo-owner-b');
+      const token = registry.mint({ sessionId: sessionAId, workerId: workerAId, userId: 'memo-owner-a' });
+      const writeMemoSpy = jest.spyOn(sessionManager, 'writeMemo');
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'write_memo',
+          { sessionId: sessionBId, content: 'overwritten by a stranger' },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('identity mismatch');
+        expect(writeMemoSpy).not.toHaveBeenCalled();
+      } finally {
+        writeMemoSpy.mockRestore();
+      }
+    });
+
+    it('enforce mode lets the owning caller write its own memo', async () => {
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+      const { sessionId, workerId } = await createOwnedSession('memo-owner-c');
+      const token = registry.mint({ sessionId, workerId, userId: 'memo-owner-c' });
+      const writeMemoSpy = jest.spyOn(sessionManager, 'writeMemo');
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'write_memo',
+          { sessionId, content: 'my own memo' },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(writeMemoSpy).toHaveBeenCalledTimes(1);
+        expect(writeMemoSpy).toHaveBeenCalledWith(sessionId, 'my own memo');
+      } finally {
+        writeMemoSpy.mockRestore();
+      }
+    });
+
+    it('off mode with no token proceeds as before (the gate adds nothing to a tokenless call)', async () => {
+      await remountMcpApp({ mcpAuthMode: 'off' });
+      const { sessionId } = await createOwnedSession('memo-owner-d');
+      const writeMemoSpy = jest.spyOn(sessionManager, 'writeMemo');
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'write_memo',
+          { sessionId, content: 'tokenless write' },
+          nextId++,
+        );
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(writeMemoSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        writeMemoSpy.mockRestore();
+      }
+    });
+
+    it('a session that does not exist is reported as not found, with the gate not consulted for it', async () => {
+      await remountMcpApp({ mcpAuthMode: 'off' });
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'write_memo',
+        { sessionId: 'no-such-session', content: 'x' },
+        nextId++,
+      );
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('Session not found');
+    });
+  });
+
+  // ===========================================================================
+  // close_session ownership
+  // ===========================================================================
+  //
+  // An agent closes only its own sessions (the UI's End Session is not gated).
+  // The registry test pins that the gate is present; these cases pin what it
+  // DOES. The transport-level "enforce + no token" rejection for this tool is
+  // covered elsewhere in this file (401 before the tool runs).
+  describe('close_session ownership', () => {
+    async function createOwnedSession(createdBy: string): Promise<{ sessionId: string; workerId: string }> {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy },
+      );
+      return { sessionId: session.id, workerId: session.workers[0].id };
+    }
+
+    it('enforce mode rejects a verified caller closing a DIFFERENT owner\'s session; deleteSession is not called and the session survives', async () => {
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+      const { sessionId: sessionAId, workerId: workerAId } = await createOwnedSession('close-owner-a');
+      const { sessionId: sessionBId } = await createOwnedSession('close-owner-b');
+      const token = registry.mint({ sessionId: sessionAId, workerId: workerAId, userId: 'close-owner-a' });
+      const deleteSpy = jest.spyOn(sessionManager, 'deleteSession');
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'close_session',
+          { sessionId: sessionBId },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('identity mismatch');
+        expect(deleteSpy).not.toHaveBeenCalled();
+        expect(sessionManager.getSession(sessionBId)).toBeDefined();
+      } finally {
+        deleteSpy.mockRestore();
+      }
+    });
+
+    it('enforce mode lets the owning caller close its own session', async () => {
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+      const { sessionId, workerId } = await createOwnedSession('close-owner-c');
+      const token = registry.mint({ sessionId, workerId, userId: 'close-owner-c' });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'close_session',
+        { sessionId },
+        nextId++,
+        { Authorization: `Bearer ${token}` },
+      );
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string; deleted: boolean };
+      expect(data).toEqual({ sessionId, deleted: true });
+      expect(sessionManager.getSession(sessionId)).toBeUndefined();
+    });
+
+    it('off mode with no token proceeds as before (the gate adds nothing to a tokenless call)', async () => {
+      await remountMcpApp({ mcpAuthMode: 'off' });
+      const { sessionId } = await createOwnedSession('close-owner-d');
+
+      const response = await callTool(app, mcpSessionId, 'close_session', { sessionId }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(sessionManager.getSession(sessionId)).toBeUndefined();
+    });
+  });
 });

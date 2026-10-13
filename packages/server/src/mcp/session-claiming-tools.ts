@@ -24,6 +24,24 @@ export const SESSION_CLAIMING_TOOLS = [
   'delete_bookmark',
   'set_agent_parameters',
   'set_mcp_server_permission',
+  'write_memo',
+  'close_session',
 ] as const;
 
 export type SessionClaimingTool = (typeof SESSION_CLAIMING_TOOLS)[number];
+
+/**
+ * MCP tools that take a caller-supplied `sessionId` and neither gate it through
+ * `checkCallerOwnsSession` nor resolve it from the caller's own identity. Every
+ * entry carries the reason it is exempt, and `__tests__/session-claiming-tools.test.ts`
+ * fails when an entry is stale (the block now gates, or no longer takes the
+ * param) as well as when a tool takes `sessionId` and is on neither list, so
+ * the next ungated tool fails CI instead of being found by a sweep.
+ *
+ * An entry leaves this list when its question is decided: gate it (and add it
+ * to `SESSION_CLAIMING_TOOLS`) or keep it ungated with a stated reason.
+ */
+export const SESSION_ID_TAKING_UNGATED_TOOLS: ReadonlyArray<{ tool: string; reason: string }> = [
+  { tool: 'get_session_status', reason: 'read; whether to gate it is decided separately' },
+  { tool: 'list_timers', reason: 'read; whether to gate it is decided separately' },
+];
