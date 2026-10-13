@@ -1,4 +1,6 @@
+import type { Kysely } from 'kysely';
 import type { InternalSession } from './internal-types.js';
+import type { Database } from '../database/schema.js';
 import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { WorkerManager } from './worker-manager.js';
@@ -23,6 +25,11 @@ export interface SessionDeletionDeps {
   sessionRepository: SessionRepository;
   workerManager: WorkerManager;
   jobQueue: JobQueue | null;
+  /**
+   * Handle the cleanup-job enqueue and the session row delete share a
+   * transaction on. Absent: the two writes run separately, as before.
+   */
+  db?: Kysely<Database> | null;
   notificationManager: NotificationManager | null;
   messageService: MessageService;
   interSessionMessageService: InterSessionMessageService;
@@ -79,6 +86,44 @@ export class SessionDeletionService {
       }
     }
     await Promise.all(killPromises);
+  }
+
+  /**
+   * Delete the session row and schedule its output cleanup in ONE transaction,
+   * so a failed row delete cannot leave a live session whose output files are
+   * already scheduled for deletion. With no job queue or no scope there is
+   * nothing to schedule and the row delete runs alone. The transaction body is
+   * exactly the two statements: process and filesystem work stays outside it.
+   * The queue is woken after commit because an enqueue on a transaction does
+   * not emit by itself.
+   *
+   * Without an injected `db` the two writes run separately (enqueue first, as
+   * before) and a warning says so.
+   */
+  private async deleteRowWithCleanupJob(
+    id: string,
+    scopeInfo: { scope: 'quick' | 'repository'; slug: string | null } | null,
+  ): Promise<void> {
+    const { jobQueue, db, sessionRepository } = this.deps;
+    if (!jobQueue || !scopeInfo) {
+      await sessionRepository.delete(id);
+      return;
+    }
+    const payload = { sessionId: id, scope: scopeInfo.scope, slug: scopeInfo.slug };
+    if (!db) {
+      logger.warn(
+        { sessionId: id },
+        'No database handle injected; session-outputs cleanup enqueue and session row delete are not atomic',
+      );
+      await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload);
+      await sessionRepository.delete(id);
+      return;
+    }
+    await db.transaction().execute(async (trx) => {
+      await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload, { executor: trx });
+      await sessionRepository.delete(id, trx);
+    });
+    jobQueue.wake();
   }
 
   /**
@@ -146,18 +191,6 @@ export class SessionDeletionService {
     // Perform all deletion operations atomically
     // If any fail, restore in-memory state to maintain consistency
     try {
-      // 1. Enqueue cleanup job (async but fire-and-forget, failure is non-critical).
-      // Skip if scope is missing — never fall back to _quick/.
-      if (scopeInfo) {
-        await this.deps.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, {
-          sessionId: id,
-          scope: scopeInfo.scope,
-          slug: scopeInfo.slug,
-        });
-      } else {
-        logger.warn({ sessionId: id }, 'Session has no valid scope; skipping session-outputs cleanup');
-      }
-
       // 2. Clean up notification state (throttle timers, debounce timers)
       this.deps.notificationManager?.cleanupSession(id);
 
@@ -198,8 +231,14 @@ export class SessionDeletionService {
       // 3. Remove from in-memory map
       this.deps.deleteSessionFromMemory(id);
 
-      // 4. Delete from persistence (this is the critical operation)
-      await this.deps.sessionRepository.delete(id);
+      // 4. Delete from persistence (this is the critical operation), together
+      // with the cleanup-job enqueue so the output files are only scheduled for
+      // deletion if the row delete commits. Skipped when the scope is missing --
+      // never fall back to _quick/.
+      if (!scopeInfo) {
+        logger.warn({ sessionId: id }, 'Session has no valid scope; skipping session-outputs cleanup');
+      }
+      await this.deleteRowWithCleanupJob(id, scopeInfo);
 
       logger.info({ sessionId: id }, 'Session deleted');
 
@@ -239,14 +278,9 @@ export class SessionDeletionService {
       }
       const scopeInfo = this.deps.getPersistedSessionScope(persisted);
 
-      // Enqueue cleanup of worker output files (same as deleteSession)
-      if (this.deps.jobQueue && scopeInfo) {
-        await this.deps.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, {
-          sessionId: id,
-          scope: scopeInfo.scope,
-          slug: scopeInfo.slug,
-        });
-      } else {
+      // Cleanup of worker output files (same job as deleteSession), committed
+      // together with the row delete.
+      if (!this.deps.jobQueue || !scopeInfo) {
         logger.warn(
           {
             sessionId: id,
@@ -258,7 +292,7 @@ export class SessionDeletionService {
           'Skipping session-outputs cleanup for orphaned session'
         );
       }
-      await this.deps.sessionRepository.delete(id);
+      await this.deleteRowWithCleanupJob(id, scopeInfo);
       // Clean up memo file
       if (resolver) {
         try {

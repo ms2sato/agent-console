@@ -35,6 +35,8 @@ import type {
 import { isInternalPtyWorker, isStreamWorker } from './worker-types.js';
 import type { InternalSession } from './internal-types.js';
 import type { WorkerManager } from './worker-manager.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../database/schema.js';
 import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
@@ -61,6 +63,14 @@ import { createLogger } from '../lib/logger.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 
 const logger = createLogger('worker-lifecycle-manager');
+
+/** Payload of the `CLEANUP_WORKER_OUTPUT` job scheduled when a worker is deleted. */
+interface WorkerOutputCleanupPayload {
+  sessionId: string;
+  workerId: string;
+  scope: 'quick' | 'repository';
+  slug: string | null;
+}
 
 /**
  * Dependencies injected by SessionManager.
@@ -117,10 +127,16 @@ export interface WorkerLifecycleDeps {
   notificationManager: NotificationManager | null;
   pathExists: (path: string) => Promise<boolean>;
   getSession: (sessionId: string) => InternalSession | undefined;
-  persistSession: (session: InternalSession) => Promise<void>;
+  persistSession: (session: InternalSession, executor?: Kysely<Database>) => Promise<void>;
   getRepositoryEnvVars: (sessionId: string) => Promise<Record<string, string>>;
   toPublicSession: (session: InternalSession) => Session;
   getJobQueue: () => JobQueue | null;
+  /**
+   * Handle the worker-output cleanup enqueue and the session write that drops
+   * the worker share a transaction on. Absent: the two writes run separately,
+   * as before.
+   */
+  db?: Kysely<Database> | null;
   getSessionLifecycleCallbacks: () => SessionLifecycleCallbacks | undefined;
   /**
    * Resolve the OS username for PTY spawning from a session's createdBy field.
@@ -534,10 +550,15 @@ export class WorkerLifecycleManager {
 
     const resolver = this.deps.getPathResolver(session);
 
+    // The output-cleanup job to schedule with the session write below; stays
+    // null for a worker with no output stream (git-diff) or when nothing can
+    // be scheduled.
+    let cleanupPayload: WorkerOutputCleanupPayload | null = null;
+
     // Clean up based on worker type
     if (worker.type === 'agent' || worker.type === 'terminal') {
       await this.deps.workerManager.killWorker(worker, sessionId);
-      await this.cleanupWorkerOutput(sessionId, workerId, session);
+      cleanupPayload = this.resolveWorkerOutputCleanup(sessionId, workerId, session);
     } else if (worker.type === 'git-diff') {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
@@ -553,7 +574,7 @@ export class WorkerLifecycleManager {
           'Failed to deactivate embedded-agent worker during delete',
         );
       }
-      await this.cleanupWorkerOutput(sessionId, workerId, session);
+      cleanupPayload = this.resolveWorkerOutputCleanup(sessionId, workerId, session);
     }
 
     // Clean up notification state (debounce timers, previous state)
@@ -572,8 +593,7 @@ export class WorkerLifecycleManager {
       );
     }
 
-    session.workers.delete(workerId);
-    await this.deps.persistSession(session);
+    await this.removeWorkerAndPersist(session, workerId, cleanupPayload);
 
     // Broadcast session update so all clients learn the worker was removed
     this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(session));
@@ -1970,27 +1990,70 @@ export class WorkerLifecycleManager {
   }
 
   /**
-   * Clean up worker output file via job queue.
-   * Uses the session's persisted `(scope, slug)` pair for the payload.
-   * If jobQueue is not available, or scope cannot be resolved, logs a warning
-   * and skips cleanup — never falls back to `_quick/`.
+   * Resolve the payload of the worker-output cleanup job, using the session's
+   * persisted `(scope, slug)` pair. Returns `null` (and logs a warning) when the
+   * job queue is unavailable or the scope cannot be resolved -- never falls back
+   * to `_quick/`.
    */
-  private async cleanupWorkerOutput(sessionId: string, workerId: string, session: InternalSession): Promise<void> {
-    const jobQueue = this.deps.getJobQueue();
-    if (!jobQueue) {
+  private resolveWorkerOutputCleanup(
+    sessionId: string,
+    workerId: string,
+    session: InternalSession,
+  ): WorkerOutputCleanupPayload | null {
+    if (!this.deps.getJobQueue()) {
       logger.warn({ sessionId, workerId }, 'JobQueue not available, skipping async output cleanup');
-      return;
+      return null;
     }
     const scopeInfo = this.deps.getSessionScope(session);
     if (!scopeInfo) {
       logger.warn({ sessionId, workerId }, 'Session has no valid scope; skipping worker-output cleanup enqueue');
+      return null;
+    }
+    return { sessionId, workerId, scope: scopeInfo.scope, slug: scopeInfo.slug };
+  }
+
+  /**
+   * Drop a worker from its session: persist the session without the worker and,
+   * when there is output to clean up, schedule that job in the SAME transaction
+   * so a failed write cannot leave a listed worker whose output file is already
+   * scheduled for deletion. The in-memory removal follows the commit, so a
+   * rolled-back write leaves the worker in `session.workers`; the persisted
+   * shape is therefore computed from a copy of the session without the worker.
+   * The transaction body is exactly the enqueue and the write. The queue is
+   * woken after commit because an enqueue on a transaction does not emit by
+   * itself.
+   *
+   * With nothing to schedule, or without an injected `db`, the writes run as
+   * before (memory first, then persist; enqueue first when there is a job) and
+   * the missing handle is logged.
+   */
+  private async removeWorkerAndPersist(
+    session: InternalSession,
+    workerId: string,
+    cleanupPayload: WorkerOutputCleanupPayload | null,
+  ): Promise<void> {
+    const jobQueue = this.deps.getJobQueue();
+    const db = this.deps.db;
+    if (cleanupPayload && jobQueue && db) {
+      const remainingWorkers = new Map(session.workers);
+      remainingWorkers.delete(workerId);
+      const sessionWithoutWorker: InternalSession = { ...session, workers: remainingWorkers };
+      await db.transaction().execute(async (trx) => {
+        await jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, cleanupPayload, { executor: trx });
+        await this.deps.persistSession(sessionWithoutWorker, trx);
+      });
+      jobQueue.wake();
+      session.workers.delete(workerId);
       return;
     }
-    await jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, {
-      sessionId,
-      workerId,
-      scope: scopeInfo.scope,
-      slug: scopeInfo.slug,
-    });
+    if (cleanupPayload && jobQueue) {
+      logger.warn(
+        { sessionId: session.id, workerId },
+        'No database handle injected; worker-output cleanup enqueue and session write are not atomic',
+      );
+      await jobQueue.enqueue(JOB_TYPES.CLEANUP_WORKER_OUTPUT, cleanupPayload);
+    }
+    session.workers.delete(workerId);
+    await this.deps.persistSession(session);
   }
 }
