@@ -293,6 +293,7 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 |------|-------------|
 | `create_timer` | Create a periodic timer that sends notifications to a worker at specified intervals |
 | `delete_timer` | Delete a periodic timer |
+| `reset_timer` | Reset a timer to its base interval (restarts exponential backoff) |
 | `list_timers` | List active timers, optionally filtered by session |
 
 #### Interactive Process

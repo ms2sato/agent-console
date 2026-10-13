@@ -9,6 +9,8 @@ export interface TimerRecord {
   intervalSeconds: number;
   action: string;
   createdAt: string;
+  backoffFactor: number;
+  maxIntervalSeconds: number;
 }
 
 /**

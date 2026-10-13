@@ -2695,6 +2695,8 @@ describe('SessionManager', () => {
         timerId: 't1',
         action: 'check the build',
         fireCount: '1',
+        nextIntervalSeconds: '60',
+        nextFireAt: '2026-01-01T00:01:00.000Z',
       },
       intent: 'inform',
     };

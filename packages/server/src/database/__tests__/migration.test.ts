@@ -1770,6 +1770,8 @@ describe('migration', () => {
           interval_seconds: 60,
           action: 'check status',
           created_at: '2024-01-01T00:00:00.000Z',
+          backoff_factor: 1,
+          max_interval_seconds: 86400,
         })
         .execute();
 

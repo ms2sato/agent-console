@@ -76,6 +76,7 @@ Grouped noun–verb subcommands, mapped 1:1 from the MCP tools. All 22 ship in t
 | `remove_worktree` | `agent-console worktrees remove` |
 | `create_timer` | `agent-console timers create` |
 | `delete_timer` | `agent-console timers delete` |
+| `reset_timer` | `agent-console timers reset` |
 | `list_timers` | `agent-console timers list` |
 | `create_conditional_wakeup` | `agent-console wakeups create` |
 | `delete_conditional_wakeup` | `agent-console wakeups delete` |

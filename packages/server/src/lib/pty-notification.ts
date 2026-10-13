@@ -79,6 +79,8 @@ export interface InternalTimerPtyNotification extends BasePtyNotificationParams 
     timerId: string;
     action: string;
     fireCount: string;
+    nextIntervalSeconds: string;
+    nextFireAt: string;
   };
   intent: PtyNotificationIntent;
 }

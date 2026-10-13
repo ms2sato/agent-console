@@ -26,11 +26,22 @@ describe('SqliteTimerRepository', () => {
       intervalSeconds: 60,
       action: 'check status',
       createdAt: new Date().toISOString(),
+      backoffFactor: 1,
+      maxIntervalSeconds: 86400,
       ...overrides,
     };
   }
 
   describe('save and findAll', () => {
+    it('should round-trip backoffFactor and maxIntervalSeconds', async () => {
+      const record = createRecord({ backoffFactor: 2.5, maxIntervalSeconds: 600 });
+
+      await repository.save(record);
+
+      const results = await repository.findAll();
+      expect(results).toEqual([record]);
+    });
+
     it('should save a record and retrieve it with findAll', async () => {
       const record = createRecord();
 

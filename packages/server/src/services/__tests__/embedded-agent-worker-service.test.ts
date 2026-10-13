@@ -2504,6 +2504,8 @@ describe('EmbeddedAgentWorkerService.sendSystemNotification (Issue #1351)', () =
       timerId: 't1',
       action: 'wake up and check the build',
       fireCount: '1',
+      nextIntervalSeconds: '60',
+      nextFireAt: '2026-01-01T00:01:00.000Z',
     },
     intent: 'inform',
   };
@@ -2644,6 +2646,8 @@ describe('EmbeddedAgentWorkerService — mid-turn notification queue (R3, Issue 
       timerId: 't1',
       action: 'check the build',
       fireCount: '1',
+      nextIntervalSeconds: '60',
+      nextFireAt: '2026-01-01T00:01:00.000Z',
     },
     intent: 'inform',
   };

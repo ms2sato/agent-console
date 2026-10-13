@@ -16,6 +16,8 @@ function toTimerRecord(row: TimerRow): TimerRecord {
     intervalSeconds: row.interval_seconds,
     action: row.action,
     createdAt: row.created_at,
+    backoffFactor: row.backoff_factor,
+    maxIntervalSeconds: row.max_interval_seconds,
   };
 }
 
@@ -32,6 +34,8 @@ export class SqliteTimerRepository implements TimerRepository {
         interval_seconds: record.intervalSeconds,
         action: record.action,
         created_at: record.createdAt,
+        backoff_factor: record.backoffFactor,
+        max_interval_seconds: record.maxIntervalSeconds,
       })
       .execute();
 

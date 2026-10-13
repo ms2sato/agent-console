@@ -649,8 +649,9 @@ The top-level event format representing meaningful occurrences in the system.
 - **See:** [Event format in system-events.md](design/system-events.md#event-format)
 
 ### Timer
-A periodic, fixed-interval notification mechanism for sessions. Fires on every interval regardless of state. The target worker can be an `agent`, `terminal`, or (since Issue #1574 PR A) `embedded-agent` worker — see [PTY-backed Worker](#pty-backed-worker)'s `canReceiveNotifications` predicate. Delivery to an embedded-agent target routes through `SessionManager.deliverWorkerNotification` rather than a PTY write, and (per the [Mid-turn notification queue](#mid-turn-notification-queue)) queues instead of failing when the target is mid-turn.
-- **See:** MCP tools `create_timer` / `delete_timer`
+A periodic notification mechanism for sessions, fixed or exponentially stretching (`backoffFactor`, capped by `maxIntervalSeconds`; `reset_timer` returns it to the base interval; restart resets the backoff and `fireCount`). Fires on every interval regardless of state. The target worker can be an `agent`, `terminal`, or (since Issue #1574 PR A) `embedded-agent` worker — see [PTY-backed Worker](#pty-backed-worker)'s `canReceiveNotifications` predicate. Delivery to an embedded-agent target routes through `SessionManager.deliverWorkerNotification` rather than a PTY write, and (per the [Mid-turn notification queue](#mid-turn-notification-queue)) queues instead of failing when the target is mid-turn.
+- **Aliases:** `backoffFactor`, `maxIntervalSeconds` (the `create_timer` parameters that select the stretching mode)
+- **See:** MCP tools `create_timer` / `delete_timer` / `reset_timer`
 - **Contrast:** [ConditionalWakeup](#conditionalwakeup) (silent until condition true)
 
 ### WebSocket Connection

@@ -4933,7 +4933,7 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
-  // Timer tools (create_timer, list_timers, delete_timer)
+  // Timer tools (create_timer, list_timers, delete_timer, reset_timer)
   // ===========================================================================
 
   describe('timer tools', () => {
@@ -5072,6 +5072,72 @@ describe('MCP Server Tools', () => {
         const data = parseToolResult(response) as { timerId: string };
         expect(data.timerId).toBeDefined();
       });
+
+      it('should accept backoffFactor and maxIntervalSeconds and report them with nextFireAt', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'wait for a human',
+          backoffFactor: 2, maxIntervalSeconds: 600,
+        }, nextId++);
+        const data = parseToolResult(response) as {
+          backoffFactor: number;
+          maxIntervalSeconds: number;
+          nextFireAt: string;
+        };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.backoffFactor).toBe(2);
+        expect(data.maxIntervalSeconds).toBe(600);
+        expect(Number.isNaN(Date.parse(data.nextFireAt))).toBe(false);
+      });
+
+      it('should default to a fixed interval when no backoff is given', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x',
+        }, nextId++);
+        const data = parseToolResult(response) as { backoffFactor: number; maxIntervalSeconds: number };
+
+        expect(data.backoffFactor).toBe(1);
+        expect(data.maxIntervalSeconds).toBe(86400);
+      });
+
+      it('should reject backoffFactor below 1 at the input schema', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x', backoffFactor: 0.5,
+        }, nextId++);
+
+        expect(response.result?.isError).toBe(true);
+        expect(timerManager.listTimers(sessionId)).toHaveLength(0);
+      });
+
+      it('should reject maxIntervalSeconds without backoffFactor', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x', maxIntervalSeconds: 600,
+        }, nextId++);
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('maxIntervalSeconds has no effect without backoffFactor > 1');
+      });
+
+      it('should reject maxIntervalSeconds below intervalSeconds', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x', backoffFactor: 2, maxIntervalSeconds: 30,
+        }, nextId++);
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('below intervalSeconds');
+      });
     });
 
     describe('list_timers', () => {
@@ -5127,6 +5193,23 @@ describe('MCP Server Tools', () => {
         expect(data.timers[0].sessionId).toBe(s1.sessionId);
         expect(data.timers[0].action).toBe('Session 1 timer');
       });
+
+      it('should report the effective interval and next fire time', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x', backoffFactor: 2,
+        }, nextId++);
+
+        const response = await callTool(app, mcpSessionId, 'list_timers', {}, nextId++);
+        const data = parseToolResult(response) as {
+          timers: Array<{ currentIntervalSeconds: number; nextFireAt: string; backoffFactor: number }>;
+        };
+
+        expect(data.timers).toHaveLength(1);
+        expect(data.timers[0].currentIntervalSeconds).toBe(60);
+        expect(data.timers[0].backoffFactor).toBe(2);
+        expect(Number.isNaN(Date.parse(data.timers[0].nextFireAt))).toBe(false);
+      });
     });
 
     describe('delete_timer', () => {
@@ -5159,6 +5242,38 @@ describe('MCP Server Tools', () => {
           timerId: 'non-existent-timer-id',
         }, nextId++);
 
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('Timer not found');
+      });
+    });
+
+    describe('reset_timer', () => {
+      it('should reset an existing timer', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const createResponse = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x', backoffFactor: 2,
+        }, nextId++);
+        const created = parseToolResult(createResponse) as { timerId: string };
+
+        const response = await callTool(app, mcpSessionId, 'reset_timer', { timerId: created.timerId }, nextId++);
+        const data = parseToolResult(response) as {
+          reset: boolean;
+          nextFireAt: string;
+          currentIntervalSeconds: number;
+        };
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(data.reset).toBe(true);
+        expect(data.currentIntervalSeconds).toBe(60);
+        expect(Number.isNaN(Date.parse(data.nextFireAt))).toBe(false);
+      });
+
+      it('should return error for non-existent timer', async () => {
+        const response = await callTool(app, mcpSessionId, 'reset_timer', {
+          timerId: 'non-existent-timer-id',
+        }, nextId++);
         const data = parseToolResult(response) as { error: string };
 
         expect(response.result?.isError).toBe(true);
