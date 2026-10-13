@@ -10,6 +10,7 @@ import {
   _setAppSubscribe,
   _inspect,
 } from '../terminal-store';
+import { joinSelectedRows } from '../copy-text';
 
 /**
  * Capturable app-WS subscribe seam: records every listener the store registers
@@ -1120,6 +1121,48 @@ describe('terminal-store', () => {
   // The row cache is keyed by buffer index. A cols change makes xterm reflow the
   // scrollback (wrapped lines re-split), so cached rows built at the old width
   // describe different lines than the same indices hold afterwards.
+  describe('copy text across a soft-wrap point (end to end through the snapshot)', () => {
+    const COLS = 20;
+    // A wrap that falls exactly on a space: the first row ends in "... " and the
+    // continuation starts at "b". Joined by the copy rule, the text must equal
+    // the original; with the trailing space trimmed it reads "...aab" instead.
+    const LINE = 'a'.repeat(COLS - 1) + ' ' + 'b';
+
+    function snapshotRows(instance: ReturnType<typeof getOrCreateTerminal>) {
+      return instance
+        .getSnapshot()
+        // Drop blank rows, including the cursor's own row (a lone cursor-block blank).
+        .rows.filter((r) => r.segments.map((s) => s.text).join('').trim() !== '')
+        .map((r) => ({ text: r.segments.map((s) => s.text).join(''), isWrapped: r.isWrapped }));
+    }
+
+    function loadHistory(sessionId: string, data: string) {
+      const instance = getOrCreateTerminal(sessionId, 'w');
+      instance.resize(COLS, 10);
+      const ws = MockWebSocket.getLastInstance()!;
+      ws.simulateOpen();
+      ws.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      return instance;
+    }
+
+    it('joins the two rows of a wrapped line back to the original string, space included', async () => {
+      const instance = loadHistory('copywrap1', LINE + '\r\n');
+      await flush();
+
+      const rows = snapshotRows(instance);
+      expect(rows).toHaveLength(2);
+      expect(rows[1].isWrapped).toBe(true);
+      expect(joinSelectedRows(rows)).toBe(LINE);
+    });
+
+    it('control: a short line that merely ends in a space keeps today\'s trim (it ends a logical line)', async () => {
+      const instance = loadHistory('copywrap2', 'short \r\nnext\r\n');
+      await flush();
+
+      expect(snapshotRows(instance).map((r) => r.text)).toEqual(['short', 'next']);
+    });
+  });
+
   describe('row cache across a cols change (reflow)', () => {
     /** 300 lines of 100 chars: hard-newline lines that re-wrap when the width drops below 100. */
     const REFLOW_DATA = Array.from({ length: 300 }, (_, i) => `L${String(i).padStart(3, '0')} ${'x'.repeat(94)}`).join('\r\n') + '\r\n';

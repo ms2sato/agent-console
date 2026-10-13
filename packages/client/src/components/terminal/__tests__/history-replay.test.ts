@@ -12,6 +12,25 @@ function textOf(rows: { segments: { text: string }[] }[]): string[] {
   return rows.map((r) => r.segments.map((s) => s.text).join(''));
 }
 
+describe('replayHistoryChunk: trailing blank at a soft-wrap point', () => {
+  const COLS = 20;
+  const LINE = 'a'.repeat(COLS - 1) + ' ' + 'b';
+
+  it('keeps the space that ends a full row when its continuation is in the same chunk', async () => {
+    const { rows } = await replayHistoryChunk(LINE + '\r\n', COLS, 24, identity);
+    expect(textOf(rows)).toEqual(['a'.repeat(COLS - 1) + ' ', 'b']);
+    expect(rows[1].isWrapped).toBe(true);
+  });
+
+  // Measured limit: a chunk is replayed on its own, so the row that ends the
+  // chunk has no successor in the throwaway buffer even if the live line
+  // continues in the next chunk. That row keeps today's trim.
+  it('limit: a full row at the very end of a chunk (continuation in the next chunk) is still trimmed', async () => {
+    const { rows } = await replayHistoryChunk('a'.repeat(COLS - 1) + ' ', COLS, 24, identity);
+    expect(textOf(rows)).toEqual(['a'.repeat(COLS - 1)]);
+  });
+});
+
 describe('replayHistoryChunk', () => {
   it('extracts settled line-flow rows, trailing blanks trimmed', async () => {
     const { rows, overflow } = await replayHistoryChunk(

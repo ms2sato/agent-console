@@ -13,7 +13,7 @@ import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnec
 import { subscribe as subscribeApp } from '../../lib/app-websocket.js';
 import { stripSystemMessages, stripScrollbackClear as applyScrollbackFilter } from '../../lib/terminal-utils.js';
 import { logger } from '../../lib/logger';
-import { extractRow, extractRowWithCursor, type TerminalRow } from './buffer-to-rows';
+import { extractRow, extractRowWithCursor, wrapContinuationOptions, type TerminalRow } from './buffer-to-rows';
 import { detectRowLinks } from './link-detection';
 import { replayHistoryChunk, replayHistoryPair, replayHistoryJoint } from './history-replay';
 import { rowText } from './row-pipeline';
@@ -1580,8 +1580,8 @@ class TerminalController implements TerminalInstance {
       const line = buffer.getLine(y);
       const row: TerminalRow = line
         ? isCursorRow
-          ? extractRowWithCursor(line, cols, nullCell, y, cursorX)
-          : extractRow(line, cols, nullCell, y)
+          ? extractRowWithCursor(line, cols, nullCell, y, cursorX, wrapContinuationOptions(buffer, y))
+          : extractRow(line, cols, nullCell, y, wrapContinuationOptions(buffer, y))
         : { key: y, segments: [{ text: '', style: null }], isWrapped: false, links: [] };
 
       rows.push(row);

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Terminal } from '@xterm/headless';
-import { extractRow, extractRowWithCursor } from '../buffer-to-rows';
+import { extractRow, extractRowWithCursor, wrapContinuationOptions } from '../buffer-to-rows';
+import { joinSelectedRows } from '../copy-text';
 
 function write(term: Terminal, data: string): Promise<void> {
   return new Promise((resolve) => term.write(data, () => resolve()));
@@ -165,5 +166,63 @@ describe('extractRowWithCursor', () => {
     // The 'b' cell carries cursor styling in the cursor row but not the plain row.
     expect(withCursor.segments.find((s) => s.text === 'b')?.style?.bg).toBe('#eeeeee');
     expect(plain.segments.find((s) => s.style?.bg === '#eeeeee')).toBeUndefined();
+  });
+});
+
+describe('trailing blanks at a soft-wrap point', () => {
+  const COLS = 10;
+  let term: Terminal;
+
+  beforeEach(() => {
+    term = new Terminal({ cols: COLS, rows: 24, allowProposedApi: true });
+  });
+
+  afterEach(() => {
+    term.dispose();
+  });
+
+  /** "abcdefghi" + a space fills row 0 through its last column; "XYZ" wraps onto row 1. */
+  const WRAPPED = 'abcdefghi XYZ';
+  const text = (row: { segments: { text: string }[] }) => row.segments.map((s) => s.text).join('');
+
+  it('keepTrailingWhitespace: true keeps the default-style space that ends a full row', async () => {
+    await write(term, WRAPPED);
+    const buffer = term.buffer.active;
+    const row = extractRow(buffer.getLine(0)!, term.cols, buffer.getNullCell(), 0, { keepTrailingWhitespace: true });
+    expect(text(row)).toBe('abcdefghi ');
+  });
+
+  it('the same row without the option (or with it false) is trimmed: today\'s behaviour, pinned', async () => {
+    await write(term, WRAPPED);
+    const buffer = term.buffer.active;
+    const line = buffer.getLine(0)!;
+    expect(text(extractRow(line, term.cols, buffer.getNullCell(), 0))).toBe('abcdefghi');
+    expect(text(extractRow(line, term.cols, buffer.getNullCell(), 0, { keepTrailingWhitespace: false }))).toBe('abcdefghi');
+  });
+
+  it('the cursor-row variant keeps the space AND the cursor segment', async () => {
+    await write(term, WRAPPED);
+    const buffer = term.buffer.active;
+    const row = extractRowWithCursor(buffer.getLine(0)!, term.cols, buffer.getNullCell(), 0, 2, { keepTrailingWhitespace: true });
+    expect(text(row)).toBe('abcdefghi ');
+    expect(row.segments.find((s) => s.style?.bg === '#eeeeee')?.text).toBe('c');
+  });
+
+  it('wrapContinuationOptions asks the buffer: true only when the NEXT line is a soft-wrap continuation', async () => {
+    await write(term, WRAPPED + '\r\nnext');
+    const buffer = term.buffer.active;
+    expect(wrapContinuationOptions(buffer, 0)).toEqual({ keepTrailingWhitespace: true }); // row 1 is a continuation
+    expect(wrapContinuationOptions(buffer, 1)).toEqual({ keepTrailingWhitespace: false }); // row 2 is a hard line
+    expect(wrapContinuationOptions(buffer, buffer.length - 1)).toEqual({ keepTrailingWhitespace: false }); // no successor
+  });
+
+  it('end to end through the join: the copied line equals the original, space included', async () => {
+    await write(term, WRAPPED);
+    const buffer = term.buffer.active;
+    const rows = [0, 1].map((y) =>
+      extractRow(buffer.getLine(y)!, term.cols, buffer.getNullCell(), y, wrapContinuationOptions(buffer, y)),
+    );
+    expect(rows[1].isWrapped).toBe(true);
+    expect(joinSelectedRows(rows.map((r) => ({ text: text(r), isWrapped: r.isWrapped })))).toBe(WRAPPED);
   });
 });
