@@ -10,6 +10,7 @@ import {
   SessionSchema,
   WorkerActivityInfoSchema,
   RepositorySchema,
+  WorktreeSchema,
   type AppServerMessage,
 } from '../app-server-message';
 
@@ -1131,6 +1132,14 @@ describe('exported entity schemas (shared with the REST response schemas)', () =
   it('RepositorySchema parses the repository fixture and rejects an unknown field', () => {
     expect(v.safeParse(RepositorySchema, repository).success).toBe(true);
     expect(v.safeParse(RepositorySchema, { ...repository, extra: 1 }).success).toBe(false);
+  });
+
+  it('WorktreeSchema accepts a worktree with and without an index and rejects an unknown field', () => {
+    const worktree = { path: '/wt', branch: 'main', isMain: true, repositoryId: 'r1' };
+    expect(v.safeParse(WorktreeSchema, worktree).success).toBe(true);
+    expect(v.safeParse(WorktreeSchema, { ...worktree, index: 2 }).success).toBe(true);
+    expect(v.safeParse(WorktreeSchema, { ...worktree, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(WorktreeSchema, { path: '/wt' }).success).toBe(false);
   });
 
   it('WorkerActivityInfoSchema requires all three fields and a known activity state', () => {

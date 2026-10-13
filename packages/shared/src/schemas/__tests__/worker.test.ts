@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
 import {
+  WorkersResponseSchema,
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
   UpdateEmbeddedAgentWorkerRequestSchema,
@@ -731,5 +732,20 @@ describe('SetMcpServerPermissionsRequestSchema (epic #1636 Phase 5 PR-2)', () =>
   it('rejects an empty body', () => {
     const result = v.safeParse(SetMcpServerPermissionsRequestSchema, {});
     expect(result.success).toBe(false);
+  });
+});
+
+describe('WorkersResponseSchema', () => {
+  const terminal = { id: 'w1', name: 'T', createdAt: '2026-01-01T00:00:00.000Z', type: 'terminal', activated: true };
+
+  it('accepts an empty list (the vacuous case) and a list of worker variants', () => {
+    expect(v.safeParse(WorkersResponseSchema, { workers: [] }).success).toBe(true);
+    expect(v.safeParse(WorkersResponseSchema, { workers: [terminal] }).success).toBe(true);
+  });
+
+  it('rejects an unknown worker type, an extra worker field and an extra top-level key', () => {
+    expect(v.safeParse(WorkersResponseSchema, { workers: [{ ...terminal, type: 'bogus' }] }).success).toBe(false);
+    expect(v.safeParse(WorkersResponseSchema, { workers: [{ ...terminal, extra: 1 }] }).success).toBe(false);
+    expect(v.safeParse(WorkersResponseSchema, { workers: [], extra: 1 }).success).toBe(false);
   });
 });

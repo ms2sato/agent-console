@@ -48,12 +48,6 @@ export interface UserPreferences {
   disableClaudeAiConnectors: boolean;
 }
 
-export interface CurrentUserResponse {
-  user: AuthUser | null;
-  /** Present iff `user` is non-null (omitted for an unauthenticated caller). */
-  preferences?: UserPreferences;
-}
-
 /** `PATCH /api/auth/me/preferences`'s response body. */
 export interface UpdateUserPreferencesResponse {
   user: AuthUser;

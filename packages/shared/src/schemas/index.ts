@@ -57,6 +57,9 @@ export {
   type ConfigResponse,
   MePreferencesSchema,
   type MePreferencesRequest,
+  AuthUserSchema,
+  CurrentUserResponseSchema,
+  type CurrentUserResponse,
 } from './auth.js';
 
 // Agent schemas
@@ -80,6 +83,8 @@ export {
   type AgentActivityPatterns,
   type AgentCapabilities,
   type AgentDefinition,
+  AgentResponseSchema,
+  type AgentResponse,
 } from './agent.js';
 
 // Worker schemas
@@ -99,6 +104,8 @@ export {
   type RestartWorkerRequest,
   type UpdateEmbeddedAgentWorkerRequest,
   type SetMcpServerPermissionsRequest,
+  WorkersResponseSchema,
+  type WorkersResponse,
 } from './worker.js';
 
 // Embedded agent schemas
@@ -178,6 +185,14 @@ export {
   type RefreshDefaultBranchResponse,
   type RemoteBranchStatus,
   type GenerateRepositoryDescriptionResponse,
+  RepositoryResponseSchema,
+  RepositoryPathStatusSchema,
+  WorktreesResponseSchema,
+  BranchesResponseSchema,
+  type RepositoryResponse,
+  type RepositoryPathStatus,
+  type WorktreesResponse,
+  type BranchesResponse,
 } from './repository.js';
 
 // Shared-account schemas
@@ -202,6 +217,7 @@ export {
   SessionSchema,
   WorkerActivityInfoSchema,
   RepositorySchema,
+  WorktreeSchema,
   type AppServerMessage,
 } from './app-server-message.js';
 
@@ -233,7 +249,17 @@ export {
   type CreateMessageTemplateRequest,
   type UpdateMessageTemplateRequest,
   type ReorderMessageTemplatesRequest,
+  MessageTemplateSchema,
+  MessageTemplatesResponseSchema,
+  type MessageTemplatesResponse,
 } from './message-template.js';
+
+// Skill schemas
+export {
+  SkillDefinitionSchema,
+  SkillsResponseSchema,
+  type SkillsResponse,
+} from './skill.js';
 
 // Artifact schemas
 export {

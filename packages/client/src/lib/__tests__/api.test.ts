@@ -14,8 +14,14 @@ import {
   fetchRepositories,
   registerRepository,
   unregisterRepository,
+  fetchRepository,
+  fetchWorkers,
   fetchWorktrees,
   fetchBranches,
+  fetchAgent,
+  fetchMessageTemplates,
+  fetchSkills,
+  fetchCurrentUser,
   generateRepositoryDescription,
   resumeSession,
   openInVSCode,
@@ -615,7 +621,10 @@ describe('API Client', () => {
 
   describe('fetchWorktrees', () => {
     it('should fetch worktrees successfully', async () => {
-      const mockWorktrees = { worktrees: [{ path: '/path', branch: 'main' }], pathStatus: 'ok' };
+      const mockWorktrees = {
+        worktrees: [{ path: '/path', branch: 'main', isMain: true, repositoryId: 'repo-id' }],
+        pathStatus: 'ok',
+      };
       mockFetch.mockResolvedValue(createMockResponse(mockWorktrees));
 
       const result = await fetchWorktrees('repo-id');
@@ -831,7 +840,14 @@ describe('API Client', () => {
     it('should fetch agent by id', async () => {
       const { fetchAgent } = await import('../api');
       const mockAgent = {
-        agent: { id: 'claude-code', name: 'Claude Code', command: 'claude', isBuiltIn: true },
+        agent: {
+          id: 'claude-code',
+          name: 'Claude Code',
+          commandTemplate: 'claude {{prompt}}',
+          isBuiltIn: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+        },
       };
       mockFetch.mockResolvedValue(createMockResponse(mockAgent));
 
@@ -1542,6 +1558,79 @@ describe('API Client', () => {
       );
 
       await expect(refreshDefaultBranch('repo-1')).rejects.toThrow('no remote');
+    });
+  });
+
+  // #1367 pass 1: these eight GET fetchers parse their response through a strict wire schema
+  // (the same table is run against the REAL routes in packages/integration's
+  // api-response-schemas-boundary.test.ts). A body with an unknown field or a missing
+  // top-level key must throw, not be cast through.
+  describe('strict response parsing (pass 1)', () => {
+    const repository = {
+      id: 'repo-1',
+      name: 'repo',
+      path: '/repo',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      orchestratorSessionIds: [],
+      clonedSourceRepoPath: null,
+    };
+    const agent = {
+      id: 'a1',
+      name: 'Agent',
+      isBuiltIn: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      commandTemplate: 'run {{prompt}}',
+      capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+    };
+    const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>, string]> = [
+      ['fetchRepository', () => fetchRepository('repo-1'), { repository }, 'repository'],
+      [
+        'fetchWorkers',
+        () => fetchWorkers('s1'),
+        { workers: [{ id: 'w1', name: 'T', createdAt: '2026-01-01T00:00:00.000Z', type: 'terminal', activated: true }] },
+        'workers',
+      ],
+      ['fetchWorktrees', () => fetchWorktrees('repo-1'), { worktrees: [], pathStatus: 'ok' }, 'pathStatus'],
+      ['fetchBranches', () => fetchBranches('repo-1'), { local: [], remote: [], defaultBranch: null }, 'local'],
+      ['fetchAgent', () => fetchAgent('a1'), { agent }, 'agent'],
+      [
+        'fetchMessageTemplates',
+        () => fetchMessageTemplates(),
+        {
+          templates: [
+            { id: 't1', title: 'T', content: 'c', sortOrder: 0, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+          ],
+        },
+        'templates',
+      ],
+      ['fetchSkills', () => fetchSkills(), { skills: [{ name: 'review', description: 'Review code' }] }, 'skills'],
+      [
+        'fetchCurrentUser',
+        () => fetchCurrentUser(),
+        { user: { id: 'u1', username: 'alice', homeDir: '/home/alice' }, preferences: { disableClaudeAiConnectors: false } },
+        'user',
+      ],
+    ];
+
+    it.each(cases)('%s resolves with a valid body', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse(valid));
+      expect(await call()).toEqual(valid);
+    });
+
+    it.each(cases)('%s throws on a body with an unknown extra field', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse({ ...valid, extra: true }));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it.each(cases)('%s throws when a required key is missing', async (_name, call, valid, requiredKey) => {
+      const { [requiredKey]: _dropped, ...rest } = valid;
+      mockFetch.mockResolvedValue(createMockResponse(rest));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it('fetchCurrentUser accepts the unauthenticated body { user: null } (no preferences)', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ user: null }));
+      expect(await fetchCurrentUser()).toEqual({ user: null });
     });
   });
 });

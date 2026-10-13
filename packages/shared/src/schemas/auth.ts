@@ -97,3 +97,21 @@ export const MePreferencesSchema = v.strictObject({
 });
 
 export type MePreferencesRequest = v.InferOutput<typeof MePreferencesSchema>;
+
+/** The authenticated user identity as it crosses the wire. */
+export const AuthUserSchema = v.strictObject({
+  id: v.string(),
+  username: v.string(),
+  homeDir: v.string(),
+});
+
+/**
+ * Schema for `GET /api/auth/me`'s response. `preferences` is present iff
+ * `user` is non-null (omitted for an unauthenticated caller).
+ */
+export const CurrentUserResponseSchema = v.strictObject({
+  user: v.nullable(AuthUserSchema),
+  preferences: v.optional(MePreferencesSchema),
+});
+
+export type CurrentUserResponse = v.InferOutput<typeof CurrentUserResponseSchema>;

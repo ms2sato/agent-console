@@ -37,7 +37,6 @@ import type {
   UpdateUserPreferencesResponse,
   ReviewQueueGroup,
   ReviewComment,
-  SkillDefinition,
   MessageTemplate,
   Artifact,
   Bookmark,
@@ -48,14 +47,33 @@ import {
   ArtifactsListResponseSchema,
   ConfigResponseSchema,
   RefreshDefaultBranchResponseSchema,
+  WorkersResponseSchema,
+  RepositoryResponseSchema,
+  WorktreesResponseSchema,
+  BranchesResponseSchema,
+  AgentResponseSchema,
+  MessageTemplatesResponseSchema,
+  SkillsResponseSchema,
+  CurrentUserResponseSchema,
   NotificationsResponseSchema,
   NotificationsSeenResponseSchema,
   BookmarksListResponseSchema,
   BookmarkSchema,
   ListSharedAccountsResponseSchema,
 } from '@agent-console/shared';
+import type {
+  WorkersResponse,
+  RepositoryResponse,
+  BranchesResponse,
+  AgentResponse,
+  SkillsResponse,
+  MessageTemplatesResponse,
+} from '@agent-console/shared';
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
+
+// Kept importable from here: the repository edit form types its optimistic cache update with it.
+export type { RepositoryResponse } from '@agent-console/shared';
 
 export type { ConfigResponse } from '@agent-console/shared';
 export type { SharedAccountSummary } from '@agent-console/shared';
@@ -153,16 +171,12 @@ export class ServerUnavailableError extends Error {
   }
 }
 
-export interface WorkersResponse {
-  workers: Worker[];
-}
-
 export async function fetchWorkers(sessionId: string): Promise<WorkersResponse> {
   const res = await api.sessions[':sessionId'].workers.$get({ param: { sessionId } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch workers');
   }
-  return res.json() as Promise<WorkersResponse>;
+  return v.parse(WorkersResponseSchema, await res.json());
 }
 
 export async function createWorker(
@@ -424,10 +438,6 @@ export interface RepositoriesResponse {
   repositories: Repository[];
 }
 
-export interface RepositoryResponse {
-  repository: Repository;
-}
-
 export interface CreateRepositoryResponse {
   repository: Repository;
 }
@@ -445,7 +455,7 @@ export async function fetchRepository(repositoryId: string): Promise<RepositoryR
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch repository');
   }
-  return res.json() as Promise<RepositoryResponse>;
+  return v.parse(RepositoryResponseSchema, await res.json());
 }
 
 export async function registerRepository(request: CreateRepositoryRequest): Promise<CreateRepositoryResponse> {
@@ -535,12 +545,6 @@ export async function updateRepository(
   return res.json() as Promise<UpdateRepositoryResponse>;
 }
 
-export interface BranchesResponse {
-  local: string[];
-  remote: string[];
-  defaultBranch: string | null;
-}
-
 /**
  * Response for async worktree creation.
  */
@@ -553,7 +557,7 @@ export async function fetchWorktrees(repositoryId: string): Promise<WorktreesRes
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch worktrees');
   }
-  return res.json() as Promise<WorktreesResponse>;
+  return v.parse(WorktreesResponseSchema, await res.json());
 }
 
 export async function fetchBranches(repositoryId: string): Promise<BranchesResponse> {
@@ -561,7 +565,7 @@ export async function fetchBranches(repositoryId: string): Promise<BranchesRespo
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch branches');
   }
-  return res.json() as Promise<BranchesResponse>;
+  return v.parse(BranchesResponseSchema, await res.json());
 }
 
 export async function fetchSessionBranches(sessionId: string): Promise<BranchesResponse> {
@@ -703,10 +707,6 @@ export interface AgentsResponse {
   agents: AgentDefinition[];
 }
 
-export interface AgentResponse {
-  agent: AgentDefinition;
-}
-
 export async function fetchAgents(): Promise<AgentsResponse> {
   const res = await api.agents.$get();
   if (!res.ok) {
@@ -720,7 +720,7 @@ export async function fetchAgent(agentId: string): Promise<AgentResponse> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch agent');
   }
-  return res.json() as Promise<AgentResponse>;
+  return v.parse(AgentResponseSchema, await res.json());
 }
 
 export async function registerAgent(request: CreateAgentRequest): Promise<AgentResponse> {
@@ -807,10 +807,6 @@ export async function deleteEmbeddedAgent(embeddedAgentId: string): Promise<void
 // Skills API
 // ===========================================================================
 
-export interface SkillsResponse {
-  skills: SkillDefinition[];
-}
-
 /**
  * Fetch available slash command skills.
  * Uses raw fetch because the server route may not be in the Hono RPC client types yet.
@@ -820,7 +816,7 @@ export async function fetchSkills(): Promise<SkillsResponse> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch skills');
   }
-  return res.json() as Promise<SkillsResponse>;
+  return v.parse(SkillsResponseSchema, await res.json());
 }
 
 export async function openPath(path: string): Promise<void> {
@@ -1197,7 +1193,7 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch current user');
   }
-  return res.json() as Promise<CurrentUserResponse>;
+  return v.parse(CurrentUserResponseSchema, await res.json());
 }
 
 export async function updateAuthPreferences(
@@ -1254,12 +1250,12 @@ export async function updateReviewStatus(
 // Message Templates
 // ===========================================================================
 
-export async function fetchMessageTemplates(): Promise<{ templates: MessageTemplate[] }> {
+export async function fetchMessageTemplates(): Promise<MessageTemplatesResponse> {
   const res = await fetch(`${API_BASE}/message-templates`);
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch message templates');
   }
-  return res.json() as Promise<{ templates: MessageTemplate[] }>;
+  return v.parse(MessageTemplatesResponseSchema, await res.json());
 }
 
 export async function createMessageTemplate(title: string, content: string): Promise<{ template: MessageTemplate }> {

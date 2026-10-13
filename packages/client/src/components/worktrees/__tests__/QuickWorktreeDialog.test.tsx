@@ -63,6 +63,9 @@ const mockRepositoryResponse = {
     id: 'repo-1',
     name: 'Test Repository',
     path: '/test/repo',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    orchestratorSessionIds: [],
+    clonedSourceRepoPath: null,
     defaultAgentId: 'claude-code',
   },
 };
@@ -75,7 +78,8 @@ const mockRepositoryResponseWithSharedAccount = {
 };
 
 const mockBranchesResponse = {
-  branches: ['main', 'develop'],
+  local: ['main', 'develop'],
+  remote: [],
   defaultBranch: 'main',
 };
 

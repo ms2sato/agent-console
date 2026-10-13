@@ -254,3 +254,10 @@ export type AgentCapabilities = v.InferOutput<typeof AgentCapabilitiesSchema>;
  *   clients use it to enable/disable UI features.
  */
 export type AgentDefinition = v.InferOutput<typeof AgentDefinitionSchema>;
+
+/** Schema for the `{ agent }` response of `GET /api/agents/:id` (and the agent create/update responses). */
+export const AgentResponseSchema = v.strictObject({
+  agent: AgentDefinitionSchema,
+});
+
+export type AgentResponse = v.InferOutput<typeof AgentResponseSchema>;

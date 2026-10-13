@@ -7,6 +7,7 @@ import {
   AgentCapabilitiesSchema,
   AgentDefinitionSchema,
   type AgentDefinition,
+  AgentResponseSchema,
   isSafeRegex,
   isValidRegex,
   hasMalformedPlaceholder,
@@ -967,5 +968,26 @@ describe('AgentDefinition (derived from AgentDefinitionSchema)', () => {
       capabilities: { supportsContinue: true, supportsHeadlessMode: true, supportsActivityDetection: true },
     };
     expect(v.parse(AgentDefinitionSchema, full)).toEqual(full);
+  });
+});
+
+describe('AgentResponseSchema', () => {
+  const agent: AgentDefinition = {
+    id: 'a1',
+    name: 'Agent',
+    isBuiltIn: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    commandTemplate: 'run {{prompt}}',
+    capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+  };
+
+  it('composes AgentDefinitionSchema and round-trips a definition', () => {
+    expect(v.parse(AgentResponseSchema, { agent })).toEqual({ agent });
+  });
+
+  it('rejects a missing agent key, an unknown agent field and an extra top-level key', () => {
+    expect(v.safeParse(AgentResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(AgentResponseSchema, { agent: { ...agent, extra: 1 } }).success).toBe(false);
+    expect(v.safeParse(AgentResponseSchema, { agent, extra: 1 }).success).toBe(false);
   });
 });

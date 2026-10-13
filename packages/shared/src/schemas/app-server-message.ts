@@ -189,7 +189,7 @@ const HookCommandResultSchema = v.strictObject({
   error: v.optional(v.string()),
 });
 
-const WorktreeSchema = v.strictObject({
+export const WorktreeSchema = v.strictObject({
   path: v.string(),
   branch: v.string(),
   isMain: v.boolean(),

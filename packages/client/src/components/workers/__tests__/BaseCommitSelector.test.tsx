@@ -3,7 +3,7 @@ import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BaseCommitSelector } from '../BaseCommitSelector';
-import type { BranchesResponse } from '../../../lib/api';
+import type { BranchesResponse } from '@agent-console/shared';
 
 // Mock fetch at the lowest level; fetchSessionBranches goes through the hono
 // client which ultimately calls globalThis.fetch.
