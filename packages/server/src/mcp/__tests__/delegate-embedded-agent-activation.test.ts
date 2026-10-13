@@ -429,7 +429,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
     expect(fake.captured.length).toBe(0); // never reached the spawn step
 
     expect(sessionManager.getAllSessions().length).toBe(0);
-    const worktrees = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
+    const { worktrees } = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
     expect(worktrees.length).toBe(0);
   });
 

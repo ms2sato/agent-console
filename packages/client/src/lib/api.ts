@@ -2,7 +2,7 @@ import type {
   Session,
   Worker,
   Repository,
-  Worktree,
+  WorktreesResponse,
   CreateWorktreeRequest,
   CreateWorkerRequest,
   CreateWorkerResponse,
@@ -532,10 +532,6 @@ export async function updateRepository(
     await handleApiError(res, 'Failed to update repository');
   }
   return res.json() as Promise<UpdateRepositoryResponse>;
-}
-
-export interface WorktreesResponse {
-  worktrees: Worktree[];
 }
 
 export interface BranchesResponse {

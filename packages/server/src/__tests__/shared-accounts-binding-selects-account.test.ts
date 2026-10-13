@@ -176,7 +176,7 @@ describe('Shared-accounts Release 2: worktree creation uses the repository\'s bo
 
       function buildWorktreeServiceFor(worktreePath: string) {
         return asWorktreeService({
-          listWorktrees: mock(() => Promise.resolve([])),
+          listWorktrees: mock(() => Promise.resolve({ worktrees: [], pathStatus: 'ok' as const })),
           verifyRepoAccessible: mock(() => Promise.resolve()),
           ensureRepoHasCommits: mock(() => Promise.resolve()),
           isWorktreeOf: mock(() => Promise.resolve(true)),

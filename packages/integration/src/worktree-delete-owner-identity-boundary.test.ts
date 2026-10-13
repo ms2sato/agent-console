@@ -88,14 +88,19 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
       ensureRepoHasCommits: async () => undefined,
       isWorktreeOf: async (_repoPath: string, worktreePath: string) =>
         worktreeRegistry.has(worktreePath),
-      listWorktrees: async (_repoPath: string, repositoryId: string): Promise<Worktree[]> =>
-        Array.from(worktreeRegistry.entries()).map(([p, info]) => ({
+      listWorktrees: async (
+        _repoPath: string,
+        repositoryId: string,
+      ): Promise<{ worktrees: Worktree[]; pathStatus: 'ok' }> => ({
+        worktrees: Array.from(worktreeRegistry.entries()).map(([p, info]) => ({
           path: p,
           branch: info.branch,
           isMain: false,
           repositoryId,
           index: info.index,
         })),
+        pathStatus: 'ok',
+      }),
       createWorktree: async (
         _repoPath: string,
         branch: string,

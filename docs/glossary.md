@@ -84,7 +84,7 @@ The stored configuration for an AI agent, including command templates and activi
 - **See:** [Mid-run model and effort in embedded-agent-worker.md](design/embedded-agent-worker.md#mid-run-model-and-effort); [Model & Reasoning-Effort Parameters in agent-surface.md](design/agent-surface.md#model--reasoning-effort-parameters-issue-1521-phase-0--design-rulings)
 
 ### Repository
-A registered Git repository available for session creation. Code reference: `repositoryId` (UUID).
+A registered Git repository available for session creation. Code reference: `repositoryId` (UUID). The worktree listing (`GET /api/repositories/:id/worktrees`) also carries a `pathStatus` describing what the server observed about the repository's directory while listing: `ok` (readable, or the listing failed for a reason other than the path), `missing` (ENOENT / ENOTDIR: moved, renamed or deleted), or `inaccessible` (any other failure to read it, e.g. permissions). It is computed per listing and never persisted.
 - **See:** [Core concepts in session-worker-design.md](design/session-worker-design.md#key-concepts)
 
 ### RepositoryInUseError

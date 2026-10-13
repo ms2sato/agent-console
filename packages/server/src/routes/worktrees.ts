@@ -44,8 +44,8 @@ const worktrees = new Hono<AppBindings>()
       throw new NotFoundError('Repository');
     }
 
-    const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
-    return c.json({ worktrees });
+    const { worktrees, pathStatus } = await worktreeService.listWorktrees(repo.path, repoId);
+    return c.json({ worktrees, pathStatus });
   })
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
   .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {

@@ -82,7 +82,7 @@ async function executeCleanupCommandIfConfigured(
 ): Promise<HookCommandResult | undefined> {
   if (!repo.cleanupCommand) return undefined;
 
-  const worktrees = await worktreeService.listWorktrees(repo.path, repoId);
+  const { worktrees } = await worktreeService.listWorktrees(repo.path, repoId);
   const targetWorktree = worktrees.find(wt => wt.path === worktreePath);
   if (!targetWorktree || targetWorktree.index === undefined) {
     return { success: false, error: 'Cleanup command skipped: worktree not found in git listing' };

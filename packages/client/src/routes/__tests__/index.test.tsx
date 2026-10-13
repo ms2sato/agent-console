@@ -54,6 +54,8 @@ interface FetchResponses {
   repositories: Repository[];
   /** Map of repositoryId -> worktrees array */
   worktreesByRepoId: Record<string, unknown[]>;
+  /** Map of repositoryId -> pathStatus carried by the worktree listing; absent means 'ok'. */
+  pathStatusByRepoId?: Record<string, 'ok' | 'missing' | 'inaccessible'>;
   /**
    * Optional override for DELETE /api/repositories/:id responses.
    * Keyed by repositoryId. When absent, the DELETE handler returns 204 No Content
@@ -106,7 +108,8 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
     const match = url.match(/\/api\/repositories\/([^/]+)\/worktrees/);
     const repoId = match?.[1] ?? '';
     const worktrees = fetchResponses.worktreesByRepoId[repoId] ?? [];
-    return new Response(JSON.stringify({ worktrees }), {
+    const pathStatus = fetchResponses.pathStatusByRepoId?.[repoId] ?? 'ok';
+    return new Response(JSON.stringify({ worktrees, pathStatus }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -248,11 +251,13 @@ async function renderDashboard(
     sessions?: Session[];
     deleteSessionCalls?: string[];
     deleteSessionError?: string;
+    pathStatusByRepoId?: Record<string, 'ok' | 'missing' | 'inaccessible'>;
   }
 ) {
   fetchResponses = {
     repositories: [...repositories],
     worktreesByRepoId: Object.fromEntries(repositories.map((r) => [r.id, []])),
+    pathStatusByRepoId: options?.pathStatusByRepoId,
     deleteRepositoryResponses: options?.deleteRepositoryResponses,
     deleteRepositoryCalls: options?.deleteRepositoryCalls,
     deleteRepositoryBodies: options?.deleteRepositoryBodies,
@@ -407,6 +412,57 @@ describe('DashboardPage / Add Repository trigger', () => {
  * through a dedicated ErrorDialog. These tests pin both the success refetch
  * behavior and the error-surfacing behavior.
  */
+describe('DashboardPage / repository path status notice', () => {
+  let useAppWsEventSpy: ReturnType<typeof spyOn>;
+  let useAppWsStateSpy: ReturnType<typeof spyOn>;
+  let hasVSCodeSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation(() => {});
+    useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(<T,>() => false as T);
+    hasVSCodeSpy = spyOn(capabilitiesModule, 'hasVSCode').mockImplementation(() => false);
+  });
+
+  afterEach(() => {
+    cleanup();
+    useAppWsEventSpy.mockRestore();
+    useAppWsStateSpy.mockRestore();
+    hasVSCodeSpy.mockRestore();
+  });
+
+  it('shows the "path not found" notice naming the path instead of "No worktrees" when the listing says missing', async () => {
+    await renderDashboard([createTestRepository()], { pathStatusByRepoId: { 'repo-1': 'missing' } });
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toBe(
+        'Repository path not found: /test/repos/my-repo. The directory was moved or deleted; remove this entry and register it again at the new location.',
+      );
+    });
+    expect(screen.queryByText('No worktrees')).toBeNull();
+  });
+
+  it('shows the "cannot be read" notice naming the path when the listing says inaccessible', async () => {
+    await renderDashboard([createTestRepository()], { pathStatusByRepoId: { 'repo-1': 'inaccessible' } });
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toBe(
+        "Repository path cannot be read by the server: /test/repos/my-repo. Check the directory's permissions for the server's OS user; worktrees cannot be listed until then.",
+      );
+    });
+    expect(screen.queryByText('No worktrees')).toBeNull();
+  });
+
+  it('keeps "No worktrees" and no notice for a healthy repository with zero worktrees', async () => {
+    await renderDashboard([createTestRepository()]);
+
+    await waitFor(() => {
+      expect(screen.getByText('No worktrees')).toBeTruthy();
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
 describe('DashboardPage / Unregister Repository', () => {
   beforeEach(() => {
     mockFetch.mockClear();
