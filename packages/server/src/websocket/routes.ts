@@ -12,6 +12,8 @@ import type { UpgradeWebSocket } from 'hono/ws';
 import type { AppContext } from '../app-context.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleHistoryRangeRequest } from './history-range-handler.js';
+import { HistoryInFlightLimiter, reportHistoryOverCap } from './history-in-flight-limiter.js';
+import { raceWithTimeout } from '../lib/race-with-timeout.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit, initializeGitDiffHandlers } from './git-diff-handler.js';
 import { getCookie } from 'hono/cookie';
 import type { Context } from 'hono';
@@ -631,6 +633,11 @@ export async function setupWebSocketRoutes(
       // Flag to prevent setupStreamWorkerHandlers from running after WebSocket is already closed
       let connectionClosed = false;
 
+      // One in-flight counter for both history message types on this connection
+      // (request-history and request-history-range contend for the same
+      // per-worker output lock).
+      const historyLimiter = new HistoryInFlightLimiter(serverConfig.WORKER_WS_HISTORY_MAX_IN_FLIGHT);
+
       // Helper function to set up stream-worker (PTY or embedded-agent) handlers
       // after async activation/restore. Shared by both worker shapes because
       // the byte-offset/epoch/connectionCallbacks framing is content-agnostic
@@ -996,24 +1003,32 @@ export async function setupWebSocketRoutes(
             // manifest. Successful reads carry the manifest epoch instead.
             const fallbackEpoch = sessionManager.getWorkerEpoch(sessionId, workerId) ?? 0;
 
-            const timeoutPromise = new Promise<null>((_, reject) => {
-              setTimeout(() => reject(new Error('History request timeout')), HISTORY_REQUEST_TIMEOUT_MS);
-            });
+            if (!historyLimiter.tryAcquire()) {
+              const message = reportHistoryOverCap(historyLimiter, { sessionId, workerId, type: 'request-history' });
+              try {
+                const errorMsg: WorkerServerMessage = { type: 'error', message, code: 'HISTORY_LOAD_FAILED' };
+                ws.send(JSON.stringify(errorMsg));
+              } catch {
+                // Connection may be closed
+              }
+              return;
+            }
 
             // Line cap: the initial-load limit for fromOffset 0, and the
             // recent-window fallback cap for the archived-out / stale branches
             // of an incremental read (§3.1).
             const maxLines = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES;
 
-            Promise.race([
+            raceWithTimeout(
               sessionManager.getWorkerOutputHistory(
                 sessionId,
                 workerId,
                 fromOffset,
                 maxLines
               ),
-              timeoutPromise
-            ])
+              HISTORY_REQUEST_TIMEOUT_MS,
+              'History request timeout',
+            )
               .then((historyResult) => {
                 if (historyResult) {
                   const historyMsg: WorkerServerMessage = {
@@ -1101,6 +1116,9 @@ export async function setupWebSocketRoutes(
                     // Connection may be closed
                   }
                 }
+              })
+              .finally(() => {
+                historyLimiter.release();
               });
             return;
           }
@@ -1115,6 +1133,7 @@ export async function setupWebSocketRoutes(
               workerId,
               parsedObj,
               sessionManager,
+              { limiter: historyLimiter },
             );
             return;
           }

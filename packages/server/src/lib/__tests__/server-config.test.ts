@@ -535,6 +535,7 @@ describe('worker output env vars (positive-int contract)', () => {
     { name: 'WORKER_OUTPUT_BUFFER_SIZE', default: 100000 },
     { name: 'WORKER_OUTPUT_FILE_MAX_SIZE', default: 10 * 1024 * 1024 },
     { name: 'WORKER_OUTPUT_RANGE_MAX_BYTES', default: 256 * 1024 },
+    { name: 'WORKER_WS_HISTORY_MAX_IN_FLIGHT', default: 4 },
     { name: 'WORKER_OUTPUT_FLUSH_INTERVAL', default: 100 },
     { name: 'WORKER_OUTPUT_FLUSH_THRESHOLD', default: 64 * 1024 },
     { name: 'WORKER_OUTPUT_INITIAL_HISTORY_LINES', default: 5000 },

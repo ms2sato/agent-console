@@ -67,6 +67,19 @@ export const serverConfig = {
     process.env.WORKER_OUTPUT_RANGE_MAX_BYTES,
     256 * 1024,
   ),
+  /**
+   * Maximum number of unresolved history requests (`request-history` and
+   * `request-history-range` share one counter) per worker WebSocket connection.
+   * A request over the cap is answered immediately with `HISTORY_LOAD_FAILED`.
+   * A legitimate client is single-flight per channel (at most 2 outstanding),
+   * so the default leaves headroom for a reconnect/resync overlap
+   * (terminal-history-paging.md §5.1).
+   * Default: 4
+   */
+  WORKER_WS_HISTORY_MAX_IN_FLIGHT: parsePositiveIntWithDefault(
+    process.env.WORKER_WS_HISTORY_MAX_IN_FLIGHT,
+    4,
+  ),
 
   /**
    * Ceiling on how far restore walks BACK through archived segments looking

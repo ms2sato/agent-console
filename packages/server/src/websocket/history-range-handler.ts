@@ -2,6 +2,8 @@ import type { WSContext } from 'hono/ws';
 import type { WorkerServerMessage } from '@agent-console/shared';
 import type { HistoryRangeResult } from '../lib/worker-output-file.js';
 import { createLogger } from '../lib/logger.js';
+import { raceWithTimeout } from '../lib/race-with-timeout.js';
+import { type HistoryInFlightLimiter, reportHistoryOverCap } from './history-in-flight-limiter.js';
 
 const logger = createLogger('history-range-handler');
 
@@ -39,6 +41,12 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
  *   from a pruned range to the client, never an errored socket.
  * - A 5s timeout or an unexpected read error is answered with the
  *   `HISTORY_LOAD_FAILED` error carrying the same `requestId`.
+ * - With a `limiter`, a request arriving while the connection's in-flight cap
+ *   is reached is answered immediately with `HISTORY_LOAD_FAILED` carrying the
+ *   same `requestId` — never the unavailable shape, which would tell a paging
+ *   client that history ends there. The slot is claimed after `requestId`
+ *   validation (an uncorrelatable message is dropped without consuming one)
+ *   and released on every exit path.
  */
 export async function handleHistoryRangeRequest(
   ws: WSContext,
@@ -47,7 +55,7 @@ export async function handleHistoryRangeRequest(
   parsed: Record<string, unknown>,
   sessionManager: HistoryRangeSessionManager,
   /** @internal Timeout override for tests; production uses the 5s default. */
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; limiter?: HistoryInFlightLimiter } = {},
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? RANGE_REQUEST_TIMEOUT_MS;
   const { requestId } = parsed;
@@ -65,63 +73,68 @@ export async function handleHistoryRangeRequest(
     }
   };
 
-  const beforeOffset = parsed.beforeOffset;
-  const maxBytes = parsed.maxBytes;
-  const validBefore = isNonNegativeSafeInteger(beforeOffset);
-  const validMax = maxBytes === undefined || isNonNegativeSafeInteger(maxBytes);
-
-  // Epoch for the invalid-input / no-scope fallbacks that do not read the
-  // manifest. Successful reads carry the manifest epoch instead.
-  const fallbackEpoch = sessionManager.getWorkerEpoch(sessionId, workerId) ?? 0;
-
-  if (!validBefore || !validMax) {
-    // Invalid numeric input → unavailable shape. Server-emitted offsets must be
-    // non-negative safe integers by construction, so anchor at 0.
-    send({ type: 'history-range', requestId, data: '', startOffset: 0, endOffset: 0, hasMore: false, epoch: fallbackEpoch });
+  const limiter = options.limiter;
+  if (limiter && !limiter.tryAcquire()) {
+    const message = reportHistoryOverCap(limiter, { sessionId, workerId, type: 'request-history-range' });
+    send({ type: 'error', code: 'HISTORY_LOAD_FAILED', message, requestId });
     return;
   }
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('History range request timeout')), timeoutMs);
-  });
-
   try {
-    const result = await Promise.race([
-      sessionManager.getWorkerHistoryRange(sessionId, workerId, beforeOffset, maxBytes),
-      timeout,
-    ]);
+    const beforeOffset = parsed.beforeOffset;
+    const maxBytes = parsed.maxBytes;
+    const validBefore = isNonNegativeSafeInteger(beforeOffset);
+    const validMax = maxBytes === undefined || isNonNegativeSafeInteger(maxBytes);
 
-    if (result === null) {
-      // Worker missing, wrong type (e.g. git-diff), or no output scope
-      // available — treat as an unavailable range.
-      send({ type: 'history-range', requestId, data: '', startOffset: beforeOffset, endOffset: beforeOffset, hasMore: false, epoch: fallbackEpoch });
+    // Epoch for the invalid-input / no-scope fallbacks that do not read the
+    // manifest. Successful reads carry the manifest epoch instead.
+    const fallbackEpoch = sessionManager.getWorkerEpoch(sessionId, workerId) ?? 0;
+
+    if (!validBefore || !validMax) {
+      // Invalid numeric input → unavailable shape. Server-emitted offsets must be
+      // non-negative safe integers by construction, so anchor at 0.
+      send({ type: 'history-range', requestId, data: '', startOffset: 0, endOffset: 0, hasMore: false, epoch: fallbackEpoch });
       return;
     }
 
-    send({
-      type: 'history-range',
-      requestId,
-      data: result.data,
-      startOffset: result.startOffset,
-      endOffset: result.endOffset,
-      hasMore: result.hasMore,
-      epoch: result.epoch,
-    });
-  } catch (err) {
-    const isTimeout = err instanceof Error && err.message === 'History range request timeout';
-    if (isTimeout) {
-      logger.warn({ sessionId, workerId, requestId }, 'History range request timed out');
-    } else {
-      logger.error({ sessionId, workerId, requestId, err }, 'Failed to serve history range');
+    try {
+      const result = await raceWithTimeout(
+        sessionManager.getWorkerHistoryRange(sessionId, workerId, beforeOffset, maxBytes),
+        timeoutMs,
+        'History range request timeout',
+      );
+
+      if (result === null) {
+        // Worker missing, wrong type (e.g. git-diff), or no output scope
+        // available — treat as an unavailable range.
+        send({ type: 'history-range', requestId, data: '', startOffset: beforeOffset, endOffset: beforeOffset, hasMore: false, epoch: fallbackEpoch });
+        return;
+      }
+
+      send({
+        type: 'history-range',
+        requestId,
+        data: result.data,
+        startOffset: result.startOffset,
+        endOffset: result.endOffset,
+        hasMore: result.hasMore,
+        epoch: result.epoch,
+      });
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.message === 'History range request timeout';
+      if (isTimeout) {
+        logger.warn({ sessionId, workerId, requestId }, 'History range request timed out');
+      } else {
+        logger.error({ sessionId, workerId, requestId, err }, 'Failed to serve history range');
+      }
+      send({
+        type: 'error',
+        code: 'HISTORY_LOAD_FAILED',
+        message: 'Failed to load terminal history. Try switching workers or refreshing.',
+        requestId,
+      });
     }
-    send({
-      type: 'error',
-      code: 'HISTORY_LOAD_FAILED',
-      message: 'Failed to load terminal history. Try switching workers or refreshing.',
-      requestId,
-    });
   } finally {
-    if (timer) clearTimeout(timer);
+    limiter?.release();
   }
 }
