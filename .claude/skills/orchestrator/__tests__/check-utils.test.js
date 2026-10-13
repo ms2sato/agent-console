@@ -12,6 +12,7 @@ import {
   findTestFiles,
   isCommentOnlyDiff,
   isCommentOnlyFileDiff,
+  scanTypeOnlyDeclarationLineRanges,
   resolvePrDiffRef,
   getChangedFiles,
   getLocalChangedFiles,
@@ -1135,6 +1136,173 @@ describe('isCommentOnlyFileDiff (git integration)', () => {
 // third category): it guards against a plausible wrong headRef
 // implementation that reports comment-only regardless of the actual diff
 // content, not against this specific regression.
+// Whole-declaration type-only import/export rewiring is runtime-erased, so
+// `isCommentOnlyDiff` exempts it like a comment line. The exemption is built
+// from a TypeScript AST scan of each side's full content.
+//
+// Measured reach (revert-the-fix polarity): removing the type-only-range
+// branch from `isCommentOnlyDiff` fails the three exempt pins (single-line,
+// multi-line, `export type`); the four negatives and the `.sh` pin stay green
+// as the control, and each negative fails against a wrong implementation that
+// exempts inline specifiers, value imports, mixed diffs or the wrong side.
+describe('scanTypeOnlyDeclarationLineRanges', () => {
+  it('returns the statement range for each whole-declaration type-only shape', () => {
+    const content = [
+      "import type { A } from './a.js';", // 1
+      "import type * as ns from './b.js';", // 2
+      "import type Default from './c.js';", // 3
+      'import type {', // 4
+      '  B,', // 5
+      "} from './d.js';", // 6
+      "export type { C } from './e.js';", // 7
+      '',
+    ].join('\n');
+    expect(scanTypeOnlyDeclarationLineRanges(content, 'a.ts')).toEqual([[1, 1], [2, 2], [3, 3], [4, 6], [7, 7]]);
+  });
+
+  it('excludes inline specifiers, value imports, side-effect imports, declare, aliases and interfaces', () => {
+    const content = [
+      "import { type A } from './a.js';",
+      "import { type A2, B } from './a2.js';",
+      "import { C } from './c.js';",
+      "import './side.js';",
+      "import D from './d.js';",
+      "export { E } from './e.js';",
+      "export * from './f.js';",
+      "declare module 'x' { import type { Z } from 'z'; }",
+      'type T = { a: number };',
+      'interface I { a: number }',
+      '',
+    ].join('\n');
+    expect(scanTypeOnlyDeclarationLineRanges(content, 'a.ts')).toEqual([]);
+  });
+
+  it('excludes a declaration that shares a line with other code, keeps a trailing line comment', () => {
+    const content = [
+      "import type { A } from './a.js'; const x = 1;",
+      "const y = 2; import type { B } from './b.js';",
+      "import type { C } from './c.js'; // why",
+      '',
+    ].join('\n');
+    expect(scanTypeOnlyDeclarationLineRanges(content, 'a.ts')).toEqual([[3, 3]]);
+  });
+
+  it('returns [] for an unsupported extension, empty content, and unparsable content', () => {
+    expect(scanTypeOnlyDeclarationLineRanges("import type { A } from './a.js';\n", 'run.sh')).toEqual([]);
+    expect(scanTypeOnlyDeclarationLineRanges('', 'a.ts')).toEqual([]);
+    expect(scanTypeOnlyDeclarationLineRanges('import type {{{ from ;;; ((\n', 'a.ts')).toEqual([]);
+  });
+
+  it('check-utils.js has no top-level import of typescript (check-mirror-drift runs without bun install)', () => {
+    const source = readFileSync('.claude/skills/orchestrator/check-utils.js', 'utf-8');
+    expect(source).not.toMatch(/^import[^;]*from\s+['"]typescript['"]/m);
+    expect(source).not.toMatch(/^import\s+['"]typescript['"]/m);
+    expect(source).toContain("createRequire(import.meta.url)('typescript')");
+  });
+});
+
+describe('type-only import rewiring is exempt like a comment-only diff (git integration)', () => {
+  const PROD = 'packages/server/src/services/foo.ts';
+  const TEST = 'packages/server/src/services/__tests__/foo.test.ts';
+
+  // `before` on main, `after` on feature; the sibling test exists on both
+  // sides and does NOT change, so only the production diff decides coverage.
+  function coverageFor(ext, before, after, { direct = false } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'type-only-repo-'));
+    const git = (cmd) => execSync(cmd, { cwd: root });
+    try {
+      git('git init -q -b main');
+      git('git config user.email test@example.com');
+      git('git config user.name Test');
+      const prod = PROD.replace(/\.ts$/, ext);
+      mkdirSync(join(root, 'packages/server/src/services/__tests__'), { recursive: true });
+      writeFileSync(join(root, TEST), 'export {};\n');
+      writeFileSync(join(root, prod), before);
+      git('git add -A');
+      git('git commit -q -m initial');
+      git('git checkout -q -b feature');
+      writeFileSync(join(root, prod), after);
+      git('git add -A');
+      git('git commit -q -m change');
+      if (direct) return isCommentOnlyFileDiff(prod, 'main', root, 'feature');
+      const { testCoverage } = findTestFiles([prod], { baseRef: 'main', headRef: 'feature', cwd: root });
+      return testCoverage[0];
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('(1) exempts a single-line `import type` module-specifier swap', () => {
+    const c = coverageFor('.ts',
+      "import type { A } from './x.js';\nexport const v = 1;\n",
+      "import type { A } from './y.js';\nexport const v = 1;\n");
+    expect(c.isCommentOnly).toBe(true);
+    expect(c.needsCoverage).toBe(false);
+  });
+
+  it('(2) exempts a multi-line `import type` where only the `} from` line changes', () => {
+    const c = coverageFor('.ts',
+      "import type {\n  A,\n  B,\n} from './x.js';\nexport const v = 1;\n",
+      "import type {\n  A,\n  B,\n} from './y.js';\nexport const v = 1;\n");
+    expect(c.isCommentOnly).toBe(true);
+    expect(c.needsCoverage).toBe(false);
+  });
+
+  it('(3) exempts an `export type { A } from` swap', () => {
+    const c = coverageFor('.ts',
+      "export type { A } from './x.js';\nexport const v = 1;\n",
+      "export type { A } from './y.js';\nexport const v = 1;\n");
+    expect(c.isCommentOnly).toBe(true);
+    expect(c.needsCoverage).toBe(false);
+  });
+
+  it('(4) NEGATIVE: an `import { type A }` swap is not exempt (inline specifier, fail closed)', () => {
+    const c = coverageFor('.ts',
+      "import { type A } from './x.js';\nexport const v = 1;\n",
+      "import { type A } from './y.js';\nexport const v = 1;\n");
+    expect(c.isCommentOnly).toBe(false);
+    expect(c.needsCoverage).toBe(true);
+  });
+
+  it('(5) NEGATIVE: a value `import { A }` swap is not exempt', () => {
+    const c = coverageFor('.ts',
+      "import { A } from './x.js';\nexport const v = A;\n",
+      "import { A } from './y.js';\nexport const v = A;\n");
+    expect(c.isCommentOnly).toBe(false);
+    expect(c.needsCoverage).toBe(true);
+  });
+
+  it('(6) NEGATIVE: the type-only swap plus one changed code line is not exempt', () => {
+    const c = coverageFor('.ts',
+      "import type { A } from './x.js';\nexport const v = 1;\n",
+      "import type { A } from './y.js';\nexport const v = 2;\n");
+    expect(c.isCommentOnly).toBe(false);
+    expect(c.needsCoverage).toBe(true);
+  });
+
+  it('(7) a `.sh` file keeps its behaviour: a comment edit is exempt, a code edit is not', () => {
+    // `.sh` is not a findTestFiles source extension, so ask the diff check directly.
+    expect(coverageFor('.sh', '#!/bin/sh\n# old\necho hi\n', '#!/bin/sh\n# new\necho hi\n', { direct: true })).toBe(true);
+    expect(coverageFor('.sh', '#!/bin/sh\necho hi\n', '#!/bin/sh\necho bye\n', { direct: true })).toBe(false);
+  });
+
+  it('NEGATIVE: changing `import type` to a value import is not exempt (the head side is no longer type-only)', () => {
+    const c = coverageFor('.ts',
+      "import type { A } from './x.js';\nexport const v = 1;\n",
+      "import { A } from './x.js';\nexport const v = 1;\n");
+    expect(c.isCommentOnly).toBe(false);
+    expect(c.needsCoverage).toBe(true);
+  });
+
+  it('fails closed when the diff text has no parsable hunk header', () => {
+    const diff = "--- a/foo.ts\n+++ b/foo.ts\n@@ garbled @@\n-import type { A } from './x.js';\n+import type { A } from './y.js';\n";
+    expect(isCommentOnlyDiff(diff, 'foo.ts', {
+      baseTypeOnlyRanges: [[1, 1]],
+      headTypeOnlyRanges: [[1, 1]],
+    })).toBe(false);
+  });
+});
+
 describe('isCommentOnlyFileDiff with an explicit headRef', () => {
   function makeTempGitRepo() {
     const root = mkdtempSync(join(tmpdir(), 'comment-only-headref-repo-'));
