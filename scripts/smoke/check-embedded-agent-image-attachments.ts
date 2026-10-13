@@ -57,6 +57,24 @@
  *      control needed for this engine -- the capability gate is
  *      `openai-api`-only, and case 2 already covers it.
  *
+ * THE CONTROL'S SECOND ROUTE IS PINNED, NOT CLOSED. The nonce PNG stays on
+ * disk under the worker's attachment root because the server owns that
+ * file, and the CONTROL worker's tool set includes Bash/Read, so the file is
+ * reachable by a model that goes looking for it. It cannot be closed from
+ * here: the embedded-agent definition has no tool allowlist, and adding one
+ * only for a smoke would be a new product concept. What the smoke does
+ * instead is the pin half of `test-trigger.md`'s "second route" paragraph
+ * (the section that says to check first whether the fact has a second route
+ * to the model): the CONTROL turn must emit ZERO `tool-call` events. A future
+ * `tool-call` on CONTROL is therefore a route-taken failure -- the model went
+ * for the file -- and not flakiness to retry past.
+ *
+ * ORACLE CHOICES, UPSTREAM OF THE CHAIN. The 4-uppercase-letter nonce suffix
+ * and the 96px render change only how the model arrives at the fact (how
+ * legible the pixels are); they do not change what the product does with the
+ * attachment. The oracle itself stays an exact substring match on the full
+ * nonce -- it is not loosened.
+ *
  * Each case also confirms the persisted `user-message` server event actually
  * carries `attachments: [{ path, mimeType }]` for the request that used the
  * image, so a passing recall cannot be credited to the model imagining an
@@ -107,6 +125,11 @@ const PROVIDER_KEY_FILE =
   process.env.PROVIDER_KEY_FILE ?? path.join(os.homedir(), '.agent-console-dev', 'provider-keys.json');
 const CHROMIUM_BIN = process.env.CHROMIUM_BIN ?? '/snap/bin/chromium';
 
+// The nonce suffix is four letters with no I, O or Q (easily misread as 1, 0 and
+// each other): letters survived vision OCR better than digits in a bold
+// monospace render, where a numeric suffix was dropped once across two runs.
+const NONCE_LETTERS = 'ABCDEFGHJKLMNPRSTUVWXYZ';
+
 const QUESTION = 'What word is shown in the attached image? Answer with just the word.';
 
 const failures: string[] = [];
@@ -146,7 +169,7 @@ export async function generateNonceImage(
 <head>
 <style>
   body { margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; background: #ffffff; }
-  div { font-family: 'DejaVu Sans Mono', monospace; font-size: 64px; font-weight: bold; color: #000000; }
+  div { font-family: 'DejaVu Sans Mono', monospace; font-size: 96px; font-weight: bold; color: #000000; }
 </style>
 </head>
 <body><div>${nonce}</div></body>
@@ -187,7 +210,7 @@ interface StreamEvent {
 }
 
 async function main(): Promise<void> {
-  const nonce = `IMAGEWORD-${Math.floor(Math.random() * 9000 + 1000)}`;
+  const nonce = `IMAGEWORD-${Array.from({ length: 4 }, () => NONCE_LETTERS[Math.floor(Math.random() * NONCE_LETTERS.length)]).join('')}`;
   const runId = `${Date.now()}-${process.pid}`;
   const captureDir = path.join(
     os.homedir(),
