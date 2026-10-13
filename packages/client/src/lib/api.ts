@@ -72,6 +72,9 @@ import type {
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
 
+// Kept importable from here: the repository edit form types its optimistic cache update with it.
+export type { RepositoryResponse } from '@agent-console/shared';
+
 export type { ConfigResponse } from '@agent-console/shared';
 export type { SharedAccountSummary } from '@agent-console/shared';
 /** Alias kept local to this file's `fetchX -> XResponse` naming convention. */
