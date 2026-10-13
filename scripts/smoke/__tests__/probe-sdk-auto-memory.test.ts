@@ -29,7 +29,9 @@ import {
   classifyArmA,
   classifyArmC,
   classifyArmD,
-  classifyArmBPersonal,
+  classifyArmB1,
+  classifyArmB2,
+  armBPositive,
   classifyArmEConfig,
   summarizeArmE,
   formatMemoryFilesForNote,
@@ -53,7 +55,7 @@ import {
   EXTENDED_TIMEOUT_CAP_MS,
   WRITE_POLL_TIMEOUT_MS,
   type ArmAInput,
-  type ArmBPersonalInput,
+  type ArmBObservation,
   type ArmCInput,
   type ArmDInput,
   type ArmEConfigInput,
@@ -1061,65 +1063,112 @@ describe('parseArgs -- --auto-memory-off', () => {
 // #1663: Arm B's personal-scope sub-run -- classifier and flag parsing
 // ---------------------------------------------------------------------------
 
-describe('classifyArmBPersonal', () => {
-  const positive: ArmBPersonalInput = {
-    settled: true,
-    expectNoPersonal: false,
-    projectNameHonoured: true,
-    seededPersonalHit: true,
-    seededAnyRecall: true,
-    controlAnySignal: false,
-  };
+const hit: ArmBObservation = { settled: true, nonceInAnswer: true, answerLength: 40, toolUseCount: 0, recallMessage: false };
+const silent: ArmBObservation = { settled: true, nonceInAnswer: false, answerLength: 7, toolUseCount: 0, recallMessage: false };
 
-  it('is a conclusive PERSONAL REACHABLE positive only with a seeded personal hit, the name honoured, and a silent control', () => {
-    expect(classifyArmBPersonal(positive)).toMatchObject({ conclusive: true });
-    expect(classifyArmBPersonal(positive).note).toStartWith('PERSONAL REACHABLE');
+describe('armBPositive', () => {
+  it('requires a settled turn, the nonce in the answer, and ZERO tool calls', () => {
+    expect(armBPositive(hit)).toBe(true);
+    expect(armBPositive({ ...hit, settled: false })).toBe(false);
+    expect(armBPositive({ ...hit, nonceInAnswer: false })).toBe(false);
+    expect(armBPositive({ ...hit, toolUseCount: 1 })).toBe(false);
   });
 
-  it('is inconclusive when a turn did not settle', () => {
-    expect(classifyArmBPersonal({ ...positive, settled: false }).conclusive).toBe(false);
-  });
-
-  it('is inconclusive when the control surfaced anything (a failed control gates the reading)', () => {
-    const r = classifyArmBPersonal({ ...positive, controlAnySignal: true });
-    expect(r.conclusive).toBe(false);
-    expect(r.note).toContain('control');
-  });
-
-  it('is inconclusive, never a negative, when the seeded arm is silent (recall inactive headless)', () => {
-    const r = classifyArmBPersonal({ ...positive, seededPersonalHit: false, seededAnyRecall: false });
-    expect(r.conclusive).toBe(false);
-    expect(r.note).toContain('recall inactive headless');
-    expect(r.note).toContain('does NOT show that no personal-scope leak exists');
-  });
-
-  it('is inconclusive when a recall surfaced but not for the seeded personal entry (mixed: neither positive nor negative)', () => {
-    const r = classifyArmBPersonal({ ...positive, seededPersonalHit: false, seededAnyRecall: true });
-    expect(r.conclusive).toBe(false);
-  });
-
-  it('is inconclusive when the fixed project name was not honoured, even with a hit (the seed location is not shown to be the keyed directory)', () => {
-    expect(classifyArmBPersonal({ ...positive, projectNameHonoured: false }).conclusive).toBe(false);
-  });
-
-  it('--expect-no-personal: confirms absence when nothing surfaced, and refuses a detector that reports a hit with nothing seeded', () => {
-    const quiet = { ...positive, expectNoPersonal: true, seededPersonalHit: false, seededAnyRecall: false };
-    expect(classifyArmBPersonal(quiet)).toMatchObject({ conclusive: true, premise: null });
-    expect(classifyArmBPersonal(quiet).note).toContain('CONFIRMED ABSENCE');
-    expect(classifyArmBPersonal({ ...quiet, seededAnyRecall: true }).conclusive).toBe(false);
+  it('does not count the recall-message channel as the detector (route-agnostic oracle)', () => {
+    expect(armBPositive({ ...silent, recallMessage: true })).toBe(false);
+    expect(armBPositive({ ...hit, recallMessage: false })).toBe(true);
   });
 });
 
-describe('parseArgs -- --b-personal (#1663)', () => {
-  it('is its own arm, never part of the bare default, and does not pull the default arms in', () => {
+describe('classifyArmB1 (mechanism, not a production route)', () => {
+  it('is a conclusive MECHANISM REACHABLE only with an attributable measured hit and a silent variable-less negative', () => {
+    const r = classifyArmB1({ expectNoPersonal: false, measured: hit, negative: silent });
+    expect(r.conclusive).toBe(true);
+    expect(r.note).toStartWith('MECHANISM REACHABLE');
+    expect(r.note).toContain('not a production route');
+    expect(r.note).toContain('did NOT fire');
+  });
+
+  it('records the recall-message channel separately when it does fire', () => {
+    expect(classifyArmB1({ expectNoPersonal: false, measured: { ...hit, recallMessage: true }, negative: silent }).note).toContain('fired');
+  });
+
+  it('is inconclusive, never a negative, when the measured turn is silent (no positive control constructed for this arm)', () => {
+    const r = classifyArmB1({ expectNoPersonal: false, measured: silent, negative: null });
+    expect(r.conclusive).toBe(false);
+    expect(r.note).toContain('not a negative');
+  });
+
+  it('is inconclusive when the measured hit made tool calls (the model may have read the file itself)', () => {
+    expect(classifyArmB1({ expectNoPersonal: false, measured: { ...hit, toolUseCount: 2 }, negative: silent }).conclusive).toBe(false);
+  });
+
+  it('is inconclusive when the variable-less negative also carried the nonce (the variable is not shown to matter)', () => {
+    expect(classifyArmB1({ expectNoPersonal: false, measured: hit, negative: hit }).conclusive).toBe(false);
+  });
+
+  it('is inconclusive when a turn did not settle or the negative was not run', () => {
+    expect(classifyArmB1({ expectNoPersonal: false, measured: { ...hit, settled: false }, negative: silent }).conclusive).toBe(false);
+    expect(classifyArmB1({ expectNoPersonal: false, measured: hit, negative: null }).conclusive).toBe(false);
+  });
+
+  it('--expect-no-personal: confirms absence on a silent measured turn and refuses a detector that fires with nothing seeded', () => {
+    expect(classifyArmB1({ expectNoPersonal: true, measured: silent, negative: null })).toMatchObject({ conclusive: true });
+    expect(classifyArmB1({ expectNoPersonal: true, measured: hit, negative: null }).conclusive).toBe(false);
+    expect(classifyArmB1({ expectNoPersonal: true, measured: { ...silent, recallMessage: true }, negative: null }).conclusive).toBe(false);
+  });
+});
+
+describe('classifyArmB2 (production route: our explicit false vs a user-level autoMemoryDirectory)', () => {
+  it('reads CONTAINMENT HOLDS only when the control carried the nonce and the explicit-false turn is silent on every channel with zero tool calls', () => {
+    const r = classifyArmB2({ control: hit, withFalse: silent, explicitTrue: null });
+    expect(r).toMatchObject({ conclusive: true, premise: 'holds' });
+    expect(r.note).toStartWith('CONTAINMENT HOLDS');
+  });
+
+  it('emits the STOP line (premise refuted) when the nonce is still in the answer under our explicit false', () => {
+    const r = classifyArmB2({ control: hit, withFalse: hit, explicitTrue: null });
+    expect(r).toMatchObject({ conclusive: true, premise: 'refuted' });
+    expect(r.note).toStartWith('STOP');
+    expect(r.note).toContain('buildOptions');
+  });
+
+  it('also emits STOP on a recall message under our explicit false, even with no nonce in the answer', () => {
+    expect(classifyArmB2({ control: hit, withFalse: { ...silent, recallMessage: true }, explicitTrue: null }).note).toStartWith('STOP');
+  });
+
+  it('is inconclusive when the positive control is silent, and says what the explicit-true turn showed', () => {
+    const r = classifyArmB2({ control: silent, withFalse: null, explicitTrue: hit });
+    expect(r.conclusive).toBe(false);
+    expect(r.note).toContain('not honoured without the explicit setting');
+    expect(classifyArmB2({ control: silent, withFalse: null, explicitTrue: silent }).note).toContain('not shown to be read at all');
+  });
+
+  it('is inconclusive when the control made tool calls (not attributable), never a negative', () => {
+    expect(classifyArmB2({ control: { ...hit, toolUseCount: 1 }, withFalse: null, explicitTrue: null }).conclusive).toBe(false);
+  });
+
+  it('is inconclusive when the explicit-false turn was silent but made tool calls (containment requires zero)', () => {
+    expect(classifyArmB2({ control: hit, withFalse: { ...silent, toolUseCount: 1 }, explicitTrue: null }).conclusive).toBe(false);
+  });
+
+  it('is inconclusive when a turn did not settle or the measured turn is absent', () => {
+    expect(classifyArmB2({ control: { ...hit, settled: false }, withFalse: null, explicitTrue: null }).conclusive).toBe(false);
+    expect(classifyArmB2({ control: hit, withFalse: { ...silent, settled: false }, explicitTrue: null }).conclusive).toBe(false);
+    expect(classifyArmB2({ control: hit, withFalse: null, explicitTrue: null }).conclusive).toBe(false);
+  });
+});
+
+describe('parseArgs -- --b1 / --b2 (#1663)', () => {
+  it('are their own arms, never part of the bare default, and do not pull the default arms in', () => {
     expect([...parseArgs([]).arms].sort()).toEqual(['--a', '--b', '--c', '--d']);
-    const parsed = parseArgs(['--b-personal']);
-    expect([...parsed.arms]).toEqual(['--b-personal']);
-    expect(parsed.expectNoPersonal).toBe(false);
+    expect([...parseArgs(['--b1']).arms]).toEqual(['--b1']);
+    expect([...parseArgs(['--b2', '--b1']).arms].sort()).toEqual(['--b1', '--b2']);
+    expect(parseArgs(['--b1']).expectNoPersonal).toBe(false);
   });
 
   it('tracks --expect-no-personal as a separate modifier', () => {
-    expect(parseArgs(['--b-personal', '--expect-no-personal']).expectNoPersonal).toBe(true);
+    expect(parseArgs(['--b1', '--expect-no-personal']).expectNoPersonal).toBe(true);
   });
 });
 
