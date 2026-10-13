@@ -29,6 +29,7 @@ import {
   classifyArmA,
   classifyArmC,
   classifyArmD,
+  classifyArmBPersonal,
   classifyArmEConfig,
   summarizeArmE,
   formatMemoryFilesForNote,
@@ -52,6 +53,7 @@ import {
   EXTENDED_TIMEOUT_CAP_MS,
   WRITE_POLL_TIMEOUT_MS,
   type ArmAInput,
+  type ArmBPersonalInput,
   type ArmCInput,
   type ArmDInput,
   type ArmEConfigInput,
@@ -1052,6 +1054,72 @@ describe('parseArgs -- --auto-memory-off', () => {
     const parsed = parseArgs(['--auto-memory-off', '--a']);
     expect(parsed.autoMemoryOff).toBe(true);
     expect([...parsed.arms]).toEqual(['--a']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1663: Arm B's personal-scope sub-run -- classifier and flag parsing
+// ---------------------------------------------------------------------------
+
+describe('classifyArmBPersonal', () => {
+  const positive: ArmBPersonalInput = {
+    settled: true,
+    expectNoPersonal: false,
+    projectNameHonoured: true,
+    seededPersonalHit: true,
+    seededAnyRecall: true,
+    controlAnySignal: false,
+  };
+
+  it('is a conclusive PERSONAL REACHABLE positive only with a seeded personal hit, the name honoured, and a silent control', () => {
+    expect(classifyArmBPersonal(positive)).toMatchObject({ conclusive: true });
+    expect(classifyArmBPersonal(positive).note).toStartWith('PERSONAL REACHABLE');
+  });
+
+  it('is inconclusive when a turn did not settle', () => {
+    expect(classifyArmBPersonal({ ...positive, settled: false }).conclusive).toBe(false);
+  });
+
+  it('is inconclusive when the control surfaced anything (a failed control gates the reading)', () => {
+    const r = classifyArmBPersonal({ ...positive, controlAnySignal: true });
+    expect(r.conclusive).toBe(false);
+    expect(r.note).toContain('control');
+  });
+
+  it('is inconclusive, never a negative, when the seeded arm is silent (recall inactive headless)', () => {
+    const r = classifyArmBPersonal({ ...positive, seededPersonalHit: false, seededAnyRecall: false });
+    expect(r.conclusive).toBe(false);
+    expect(r.note).toContain('recall inactive headless');
+    expect(r.note).toContain('does NOT show that no personal-scope leak exists');
+  });
+
+  it('is inconclusive when a recall surfaced but not for the seeded personal entry (mixed: neither positive nor negative)', () => {
+    const r = classifyArmBPersonal({ ...positive, seededPersonalHit: false, seededAnyRecall: true });
+    expect(r.conclusive).toBe(false);
+  });
+
+  it('is inconclusive when the fixed project name was not honoured, even with a hit (the seed location is not shown to be the keyed directory)', () => {
+    expect(classifyArmBPersonal({ ...positive, projectNameHonoured: false }).conclusive).toBe(false);
+  });
+
+  it('--expect-no-personal: confirms absence when nothing surfaced, and refuses a detector that reports a hit with nothing seeded', () => {
+    const quiet = { ...positive, expectNoPersonal: true, seededPersonalHit: false, seededAnyRecall: false };
+    expect(classifyArmBPersonal(quiet)).toMatchObject({ conclusive: true, premise: null });
+    expect(classifyArmBPersonal(quiet).note).toContain('CONFIRMED ABSENCE');
+    expect(classifyArmBPersonal({ ...quiet, seededAnyRecall: true }).conclusive).toBe(false);
+  });
+});
+
+describe('parseArgs -- --b-personal (#1663)', () => {
+  it('is its own arm, never part of the bare default, and does not pull the default arms in', () => {
+    expect([...parseArgs([]).arms].sort()).toEqual(['--a', '--b', '--c', '--d']);
+    const parsed = parseArgs(['--b-personal']);
+    expect([...parsed.arms]).toEqual(['--b-personal']);
+    expect(parsed.expectNoPersonal).toBe(false);
+  });
+
+  it('tracks --expect-no-personal as a separate modifier', () => {
+    expect(parseArgs(['--b-personal', '--expect-no-personal']).expectNoPersonal).toBe(true);
   });
 });
 

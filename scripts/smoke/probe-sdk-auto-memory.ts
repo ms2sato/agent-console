@@ -469,7 +469,7 @@ export interface Verdict {
 }
 
 export interface ArmVerdict extends Verdict {
-  arm: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'auto-memory-off';
+  arm: 'A' | 'B' | 'B-personal' | 'C' | 'D' | 'E' | 'F' | 'G' | 'auto-memory-off';
 }
 
 function inconclusive(note: string): Verdict {
@@ -659,6 +659,66 @@ export function classifyArmD(input: ArmDInput): Verdict {
     premise: 'refuted',
     note: `REDIRECT DOES NOT FULLY WORK -- ${parts.join('; ')}.`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Arm B personal sub-run (Issue #1663) classification
+// ---------------------------------------------------------------------------
+
+export interface ArmBPersonalInput {
+  /** Both turns settled. */
+  settled: boolean;
+  /** Seeding was deliberately skipped (`--expect-no-personal`): the detector must report absence. */
+  expectNoPersonal: boolean;
+  /** The seeded run's transcript landed under the fixed project name, i.e. the CLI honoured `CLAUDE_CODE_PROJECT_DIR_NAME` and the seeded directory is the one it keys memory on. */
+  projectNameHonoured: boolean;
+  /** Seeded run: a recall with `scope: 'personal'` for the seeded file (path match) or carrying the nonce (content match). */
+  seededPersonalHit: boolean;
+  /** Seeded run: any recall at all (of any file or scope). */
+  seededAnyRecall: boolean;
+  /** Control run (unseeded isolated dir): any recall at all, or the nonce in the model's answer. */
+  controlAnySignal: boolean;
+}
+
+/**
+ * Whether a seeded SYNTHETIC entry in the isolated config dir's shared
+ * project directory surfaces with `scope: 'personal'` at an unrelated cwd.
+ * A `no personal leak` claim is only ever made with a present positive
+ * control; a silent seeded arm is INCONCLUSIVE, never a negative.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function classifyArmBPersonal(input: ArmBPersonalInput): Verdict {
+  if (!input.settled) return inconclusive('a turn did not settle.');
+  if (input.controlAnySignal) {
+    return inconclusive(
+      'the control (unseeded isolated dir) surfaced a recall or the nonce -- the control failed, so the seeded reading cannot be trusted.',
+    );
+  }
+  if (input.expectNoPersonal) {
+    if (input.seededPersonalHit || input.seededAnyRecall) {
+      return inconclusive('--expect-no-personal: a recall surfaced although seeding was skipped -- the detector reports a hit with nothing seeded.');
+    }
+    return { conclusive: true, premise: null, note: 'CONFIRMED ABSENCE (polarity) -- no personal-scope recall when seeding was deliberately skipped.' };
+  }
+  if (!input.projectNameHonoured) {
+    return inconclusive(
+      'the run\'s transcript did not land under the fixed CLAUDE_CODE_PROJECT_DIR_NAME directory, so the seeded directory is not shown to be the one the CLI keys memory on.',
+    );
+  }
+  if (input.seededPersonalHit) {
+    return {
+      conclusive: true,
+      premise: null,
+      note: "PERSONAL REACHABLE: a synthetic entry seeded in the isolated config dir's shared project directory surfaced with scope 'personal' at an unrelated cwd, and the unseeded control stayed silent.",
+    };
+  }
+  if (input.seededAnyRecall) {
+    return inconclusive("a recall surfaced in the seeded run but not for the seeded entry with scope 'personal' -- not a positive, not a negative.");
+  }
+  return inconclusive(
+    'recall inactive headless: the seeded arm was silent, so the positive control is absent; consistent with Arm A. This does NOT show that no personal-scope leak exists.',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,7 +1250,9 @@ const ARM_FLAGS = ['--a', '--b', '--c', '--d'] as const;
 const DEFAULT_ARM_FLAGS = ARM_FLAGS;
 /** Task 0b's arms -- billable additions, deliberately NEVER part of the bare no-flags default (see this file's header). */
 const TASK_0B_ARM_FLAGS = ['--e', '--f', '--g'] as const;
-const ALL_ARM_FLAGS = [...ARM_FLAGS, ...TASK_0B_ARM_FLAGS] as const;
+/** Arm B's personal-scope sub-run (#1663) -- billable, never part of the bare no-flags default. */
+const ARM_B_PERSONAL_FLAGS = ['--b-personal'] as const;
+const ALL_ARM_FLAGS = [...ARM_FLAGS, ...TASK_0B_ARM_FLAGS, ...ARM_B_PERSONAL_FLAGS] as const;
 type ArmFlag = (typeof ALL_ARM_FLAGS)[number];
 /** Owner directive, 2026-09-13, binding: `--extended-timeout` never exceeds 5 minutes. */
 export const EXTENDED_TIMEOUT_CAP_MS = 300_000;
@@ -1201,8 +1263,9 @@ export const EXTENDED_TIMEOUT_CAP_MS = 300_000;
  */
 const AUTO_MEMORY_OFF_FLAG = '--auto-memory-off';
 const USAGE_TEXT =
-  'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write] [--auto-memory-off]\n' +
+  'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--b-personal] [--expect-no-recall] [--expect-no-write] [--expect-no-personal] [--auto-memory-off]\n' +
   '  Default (no --a/--b/--c/--d/--e/--f/--g) = arms A/B/C/D only, in order. Arms E/F/G are NEVER part of the bare default -- select them explicitly.\n' +
+  '  --b-personal runs Arm B\'s personal-scope sub-run (#1663; 2 billed turns); --expect-no-personal modifies it (skip seeding). Never part of the bare default.\n' +
   '  --expect-no-recall modifies arm A (skip seeding); --expect-no-write modifies arm C, F, and G (skip the remember-this prompt).\n' +
   '  Arm F/G halt by default when Arm E shows no configuration carries awareness (an unclean (iii) control does NOT halt) --\n' +
   '  --force-f overrides that halt for a deliberate operator run anyway (owner ruling, 2026-09-13).\n' +
@@ -1217,6 +1280,7 @@ interface ParsedArgs {
   arms: Set<ArmFlag>;
   expectNoRecall: boolean;
   expectNoWrite: boolean;
+  expectNoPersonal: boolean;
   fConfigOverride?: 'omitted' | 'preset';
   extendedTimeoutMs?: number;
   forceF: boolean;
@@ -1228,6 +1292,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const arms = new Set<ArmFlag>();
   let expectNoRecall = false;
   let expectNoWrite = false;
+  let expectNoPersonal = false;
   let fConfigOverride: 'omitted' | 'preset' | undefined;
   let extendedTimeoutMs: number | undefined;
   let forceF = false;
@@ -1248,6 +1313,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
     if (a === '--expect-no-write') {
       expectNoWrite = true;
+      continue;
+    }
+    if (a === '--expect-no-personal') {
+      expectNoPersonal = true;
       continue;
     }
     if (a === '--force-f') {
@@ -1283,7 +1352,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     arms.add('--e');
     arms.add('--f');
   }
-  return { arms, expectNoRecall, expectNoWrite, fConfigOverride, extendedTimeoutMs, forceF, autoMemoryOff };
+  return { arms, expectNoRecall, expectNoWrite, expectNoPersonal, fConfigOverride, extendedTimeoutMs, forceF, autoMemoryOff };
 }
 
 // ---------------------------------------------------------------------------
@@ -1843,6 +1912,123 @@ async function runArmB(): Promise<ArmVerdict> {
       rmSync(cwdB, { recursive: true, force: true });
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Arm B personal sub-run (Issue #1663) -- a SYNTHETIC personal-scope seed
+// ---------------------------------------------------------------------------
+
+/**
+ * The fixed `CLAUDE_CODE_PROJECT_DIR_NAME` this sub-run sets beside the
+ * isolated `CLAUDE_CONFIG_DIR`. Per the public memory doc, that name replaces
+ * the repo-derived `<project>` directory, so every cwd launched under this
+ * config dir shares one auto-memory directory -- the only documented way
+ * `scope: 'personal'` content becomes independent of the cwd.
+ */
+export const ARM_B_PERSONAL_PROJECT_NAME = 'probe-shared-personal';
+
+const ARM_B_PERSONAL_PROMPT =
+  'Before we begin: do you already know anything about me, my preferences, or my projects from previous ' +
+  'sessions or from your own memory? If so, tell me everything you recall, as specifically as you can, ' +
+  'including any codename. If not, say exactly: UNKNOWN.';
+
+/**
+ * Runs one turn at an unrelated scratch cwd with the fixed project name set,
+ * restoring the env var afterwards. Content is never logged
+ * (`redactRecallLogging`); the only booleans derived from it are the
+ * nonce-match checks below.
+ */
+async function runArmBPersonalTurn(
+  label: string,
+  seedNonce: string | null,
+): Promise<{ settled: boolean; transcriptUnderFixedName: boolean; personalHit: boolean; anyRecall: boolean; textHasNonce: boolean }> {
+  const previous = process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
+  process.env.CLAUDE_CODE_PROJECT_DIR_NAME = ARM_B_PERSONAL_PROJECT_NAME;
+  try {
+    return await withArmConfigDir(`automem-${label}`, async (configDir) => {
+      const memoryDir = join(configDir, 'projects', ARM_B_PERSONAL_PROJECT_NAME, 'memory');
+      let topicPath = join(memoryDir, 'automem-probe-personal-fact.md');
+      if (seedNonce !== null) {
+        ({ topicPath } = seedMemoryTopic({
+          memoryDir,
+          topicFilename: 'automem-probe-personal-fact.md',
+          frontmatterName: 'automem-probe-personal-fact',
+          description: 'Auto-memory probe synthetic personal-scope entry (Issue #1663)',
+          codenameSubject: 'The secret personal codename',
+          codenameValue: seedNonce,
+          indexTitle: 'Automem probe personal fact',
+          indexHook: 'the secret personal codename is recorded here.',
+        }));
+        console.log(`${label}: seeded a SYNTHETIC entry at ${topicPath} (inside this run's isolated config dir; nothing real is read or copied)`);
+      } else {
+        console.log(`${label}: nothing seeded (control, or --expect-no-personal).`);
+      }
+      const cwd = buildScratchCwd(label);
+      try {
+        const { outcome, recallsForTurn } = await runMemorySession(configDir, cwd, { autoMemoryEnabled: true }, ARM_B_PERSONAL_PROMPT, label, {
+          redactRecallLogging: true,
+        });
+        const summaries = summarizeRecalls(recallsForTurn, configDir);
+        console.log(`${label}: ${summaries.length} memori(es) surfaced: ${JSON.stringify(summaries)}`);
+        const personalHit =
+          seedNonce !== null &&
+          recallsForTurn.some((r) =>
+            r.memories.some(
+              (m) =>
+                m.scope === 'personal' &&
+                (recallPathMatches([{ memories: [m] }], topicPath) || (m.content?.includes(seedNonce) ?? false)),
+            ),
+          );
+        const transcriptUnderFixedName = readdirSyncSafe(join(configDir, 'projects', ARM_B_PERSONAL_PROJECT_NAME)).some((f) => f.endsWith('.jsonl'));
+        return {
+          settled: turnSettled(outcome),
+          transcriptUnderFixedName,
+          personalHit,
+          anyRecall: summaries.length > 0,
+          textHasNonce: seedNonce !== null && outcome.text.includes(seedNonce),
+        };
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
+    else process.env.CLAUDE_CODE_PROJECT_DIR_NAME = previous;
+  }
+}
+
+function readdirSyncSafe(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Seeded run + unseeded control run: exactly two billed turns. Both under
+ * their own throwaway isolated config dir; the operator's real memory tree is
+ * never read, copied, or written (the real-tree cross-check in `main` still
+ * wraps this arm like every other).
+ */
+async function runArmBPersonal(expectNoPersonal: boolean): Promise<ArmVerdict> {
+  h(`Arm B (personal sub-run, #1663) -- synthetic seed in the shared project directory, unrelated cwd${expectNoPersonal ? '  [--expect-no-personal]' : ''}`);
+  const nonce = trackedNonce('AUTOMEM-BP');
+  const seeded = await runArmBPersonalTurn('Bp-seeded', expectNoPersonal ? null : nonce);
+  const control = await runArmBPersonalTurn('Bp-control', null);
+  console.log(
+    `Bp: seeded personalHit=${seeded.personalHit} anyRecall=${seeded.anyRecall} textHasNonce=${seeded.textHasNonce} projectNameHonoured=${seeded.transcriptUnderFixedName}; ` +
+      `control anyRecall=${control.anyRecall}`,
+  );
+  const verdict = classifyArmBPersonal({
+    settled: seeded.settled && control.settled,
+    expectNoPersonal,
+    projectNameHonoured: seeded.transcriptUnderFixedName,
+    seededPersonalHit: seeded.personalHit,
+    seededAnyRecall: seeded.anyRecall,
+    controlAnySignal: control.anyRecall,
+  });
+  return { arm: 'B-personal', ...verdict };
 }
 
 // ---------------------------------------------------------------------------
@@ -2452,7 +2638,7 @@ async function main(): Promise<number> {
 
   console.log(`probe-sdk-auto-memory  started ${stamp()}`);
   console.log(
-    `arms: ${[...selected.arms].join(' ')}${selected.expectNoRecall ? ' --expect-no-recall' : ''}${selected.expectNoWrite ? ' --expect-no-write' : ''}${selected.forceF ? ' --force-f' : ''}` +
+    `arms: ${[...selected.arms].join(' ')}${selected.expectNoRecall ? ' --expect-no-recall' : ''}${selected.expectNoWrite ? ' --expect-no-write' : ''}${selected.expectNoPersonal ? ' --expect-no-personal' : ''}${selected.forceF ? ' --force-f' : ''}` +
       `${selected.fConfigOverride ? ` --f-config ${selected.fConfigOverride}` : ''}${selected.extendedTimeoutMs !== undefined ? ` --extended-timeout ${selected.extendedTimeoutMs}` : ''}` +
       `${selected.autoMemoryOff ? ' --auto-memory-off' : ''}`,
   );
@@ -2511,6 +2697,7 @@ async function main(): Promise<number> {
   try {
     if (selected.arms.has('--a')) results.push(await runArmA(selected.expectNoRecall));
     if (selected.arms.has('--b')) results.push(await runArmB());
+    if (selected.arms.has('--b-personal')) results.push(await runArmBPersonal(selected.expectNoPersonal));
     if (selected.arms.has('--c')) results.push(await runArmC(selected.expectNoWrite));
     if (selected.arms.has('--d')) results.push(await runArmD());
 
@@ -2598,6 +2785,7 @@ async function main(): Promise<number> {
   const holds = (arm: ArmVerdict['arm']) => byArm.get(arm)?.premise === 'holds';
   console.log(`recall works (A):        ${byArm.has('A') ? holds('A') : '(not run)'}`);
   console.log(`leak scope identified (B): ${byArm.has('B') ? (byArm.get('B')!.note.startsWith('LEAK') ? 'yes -- see scopes above' : 'no leak observed') : '(not run)'}`);
+  console.log(`personal-scope reachable (B-personal): ${byArm.has('B-personal') ? (byArm.get('B-personal')!.note.startsWith('PERSONAL REACHABLE') ? 'yes' : 'no positive -- see note above (never a negative unless a positive control was present)') : '(not run)'}`);
   console.log(`write works (C):         ${byArm.has('C') ? holds('C') : '(not run)'}`);
   console.log(`redirect works (D):      ${byArm.has('D') ? holds('D') : '(not run)'}`);
   console.log(`awareness (E):           ${byArm.has('E') ? 'see Arm E note above' : '(not run)'}`);
