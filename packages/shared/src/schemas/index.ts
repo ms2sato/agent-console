@@ -193,6 +193,14 @@ export {
 export {
   AppServerMessageSchema,
   SchemaVersionMessageSchema,
+  AgentWorkerSchema,
+  TerminalWorkerSchema,
+  GitDiffWorkerSchema,
+  EmbeddedAgentWorkerSchema,
+  WorkerSchema,
+  SessionSchema,
+  WorkerActivityInfoSchema,
+  RepositorySchema,
   type AppServerMessage,
 } from './app-server-message.js';
 

@@ -28,6 +28,7 @@ export * from './types/message-contracts.js';
 export * from './types/artifact.js';
 export * from './types/bookmark.js';
 export * from './utils/ndjson-lines.js';
+export * from './utils/agent-capabilities.js';
 export * from './schemas/index.js';
 export * from './constants/index.js';
 export * from './schema-version.gen.js';

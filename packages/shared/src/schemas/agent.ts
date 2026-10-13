@@ -239,3 +239,4 @@ export type CreateAgentRequest = v.InferOutput<typeof CreateAgentRequestSchema>;
 export type UpdateAgentRequest = v.InferOutput<typeof UpdateAgentRequestSchema>;
 export type AgentActivityPatterns = v.InferOutput<typeof AgentActivityPatternsSchema>;
 export type AgentCapabilities = v.InferOutput<typeof AgentCapabilitiesSchema>;
+export type AgentDefinition = v.InferOutput<typeof AgentDefinitionSchema>;
