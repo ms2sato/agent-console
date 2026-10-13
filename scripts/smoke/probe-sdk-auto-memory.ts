@@ -1702,7 +1702,11 @@ async function runMemorySession(
         : recallsForTurn.map((r) => ({ mode: r.mode, memories: r.memories.map((m) => ({ scope: m.scope, path: m.path })) }));
       console.log(`${label}: ${recallsForTurn.length} SDKMemoryRecallMessage(s) observed: ${JSON.stringify(shown)}`);
     }
-    return { outcome, recallsForTurn, toolUseCount: s.toolUses.length - toolsBefore };
+    const turnTools = s.toolUses.slice(toolsBefore);
+    // Names only (never inputs): which tool a model reached for is the
+    // attribution evidence for an answer that carries a synthetic nonce.
+    if (turnTools.length > 0) console.log(`${label}: tool calls this turn (names only): ${JSON.stringify(turnTools.map((t) => t.name))}`);
+    return { outcome, recallsForTurn, toolUseCount: turnTools.length };
   } finally {
     s.close();
     await s.waitForStreamEnd();
