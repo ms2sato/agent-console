@@ -23,7 +23,7 @@ The precedent is `gh`: a CLI on `PATH` with a token in the environment has prove
 - PTY agent workers can operate agent-console with **zero client-side configuration**: no MCP registration, no per-project setup, no per-agent support matrix.
 - **Session-scoped ephemeral credentials**: each worker gets a token bound to its session identity, revoked when the session ends. No long-lived or account-scoped keys are handed to agents.
 - **Agent-agnostic**: works identically for Claude Code, Codex, Gemini CLI, and any custom terminal agent.
-- **Full operation parity with the MCP tool surface** from the first release (all 22 tools, see Command Set).
+- **Full operation parity with the MCP tool surface** from the first release (all 23 tools, see Command Set).
 - **Coexistence**: MCP keeps working unchanged. Nothing breaks for existing setups.
 
 ## Non-goals
@@ -44,7 +44,7 @@ Both terms are added to `docs/glossary.md` in the same PR as this document.
 
 What already exists and is reused:
 
-- **MCP tool surface**: 22 tools registered in `packages/server/src/mcp/mcp-server.ts` (enumerated in Command Set below). Their handlers already validate input, resolve identity via `checkCallerOwnsSession`, and return JSON.
+- **MCP tool surface**: 23 tools registered in `packages/server/src/mcp/mcp-server.ts` (enumerated in Command Set below). Their handlers already validate input, resolve identity via `checkCallerOwnsSession`, and return JSON.
 - **Environment injection**: PTY spawn already injects `AGENT_CONSOLE_BASE_URL`, `AGENT_CONSOLE_SESSION_ID`, `AGENT_CONSOLE_WORKER_ID`, `AGENT_CONSOLE_REPOSITORY_ID`, and `AGENT_CONSOLE_PARENT_SESSION_ID` / `AGENT_CONSOLE_PARENT_WORKER_ID` for delegated sessions.
 - **Token machinery**: `McpTokenRegistry` (`packages/server/src/mcp/mcp-auth.ts`) mints per-worker bearer tokens with `{ sessionId, workerId, userId }`, and multi-user mode already writes the token to a user-owned `0600` file and injects only the file path via env (`worker-manager.ts`, "MCP caller identity"), keeping the raw secret out of the elevated spawn's argv-visible command string.
 - **Surface parity enforcement**: `AGENT_OPERATIONS` (`packages/shared/src/types/agent-operations.ts`) with per-surface exposure tables typed `satisfies Record<AgentOperation, SurfaceExposure>` (UI / MCP / embedded-visible), per `docs/design/agent-surface.md` Mechanism 3.
@@ -59,7 +59,7 @@ What already exists and is reused:
 
 ### Command set
 
-Grouped noun–verb subcommands, mapped 1:1 from the MCP tools. All 22 ship in the first release.
+Grouped noun–verb subcommands, mapped 1:1 from the MCP tools. All 23 ship in the first release.
 
 | MCP tool | CLI command |
 |---|---|
@@ -145,7 +145,7 @@ Multi-user mode spawns PTY workers as other OS users through an elevated, non-in
 
 Single release, full surface, MCP untouched:
 
-1. Ship the CLI with all 22 commands, PATH/env injection, token minting, the skill, and the exposure table in one coordinated change set (multiple PRs, one umbrella issue).
+1. Ship the CLI with all 23 commands, PATH/env injection, token minting, the skill, and the exposure table in one coordinated change set (multiple PRs, one umbrella issue).
 2. Switch delegate callback instructions to the CLI form in the same rollout.
 3. MCP remains registered and functional. After the CLI has been the instructed path for a while, observed MCP usage informs a separate deprecation decision (out of scope here).
 
