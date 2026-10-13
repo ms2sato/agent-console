@@ -1289,6 +1289,11 @@ describe('type-only import rewiring is exempt like a comment-only diff (git inte
   it('(8) checks each side against its own line numbers when the declaration moves between base and head', () => {
     // Base line 1 is the import; head line 2 is the import (a comment was
     // inserted above). A check that reads the wrong side's ranges misses it.
+    //
+    // Measured reach: swapping the sides in `isCommentOnlyDiff` (added lines
+    // against the base ranges, removed lines against the head ranges) fails
+    // ONLY this test. Pins (1)-(7) keep the declaration on the same line
+    // number on both sides, so none of them can see a side swap.
     const c = coverageFor('.ts',
       "import type { A } from './x.js';\nexport const v = 1;\n",
       "// note\nimport type { A } from './y.js';\nexport const v = 1;\n");

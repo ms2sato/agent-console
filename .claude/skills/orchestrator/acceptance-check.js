@@ -413,7 +413,7 @@ function printAutoDetection(autoDetection) {
       } else if (needsCoverage) {
         console.log(`  ❌ ${file} -> NO TEST (expected: ${expectedTestPath})`);
       } else if (isCommentOnly) {
-        console.log(`  ➖ ${file} -> exempted (comment-only diff)`);
+        console.log(`  ➖ ${file} -> exempted (no-runtime-effect diff (comment-only or type-only import rewiring))`);
       } else if (isExcluded) {
         // In scope (matched a COVERAGE_PATTERN) but removed by a
         // COVERAGE_EXCLUSIONS regex or the re-export-only content check.

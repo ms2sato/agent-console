@@ -73,7 +73,7 @@ describe('formatCoverageVerdict (Issue #1189)', () => {
       hasIntegrationGap: false,
       hasCommentOnlyExemptions: true,
     });
-    expect(result).toBe('**All test coverage requirements are satisfied (comment-only changes exempted).** ✅');
+    expect(result).toBe('**All test coverage requirements are satisfied (no-runtime-effect diff (comment-only or type-only import rewiring) exempted).** ✅');
     expect(result).not.toContain('have corresponding tests');
   });
 
