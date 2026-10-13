@@ -1,26 +1,5 @@
 import type { Worker, AgentActivityState, ExitReason } from './worker.js';
 
-// Re-export schema-derived types
-export type {
-  CreateWorktreeSessionRequest,
-  CreateQuickSessionRequest,
-  CreateSessionRequest,
-  UpdateSessionRequest,
-  UpdateSessionMemoRequest,
-  DeleteSessionRequest,
-} from '../schemas/session.js';
-
-export type {
-  // Internal types for server-side worker creation
-  CreateAgentWorkerParams,
-  CreateTerminalWorkerParams,
-  CreateGitDiffWorkerParams,
-  CreateWorkerParams,
-  // API types (client can only create terminal workers)
-  CreateWorkerRequest,
-  RestartWorkerRequest,
-} from '../schemas/worker.js';
-
 export type SessionStatus = 'active' | 'inactive';
 
 /** Whether a session has active PTY processes running */

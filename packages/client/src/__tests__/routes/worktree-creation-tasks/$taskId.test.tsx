@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import type { WorktreeCreationTask, CreateWorktreeRequest } from '@agent-console/shared';
+import type { CreateWorktreeRequest } from '@agent-console/shared';
+import type { WorktreeCreationTask } from '../../../lib/worktree-creation-task';
 
 /**
  * Tests for worktree creation task page business logic.

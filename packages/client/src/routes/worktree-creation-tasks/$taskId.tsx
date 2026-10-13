@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
-import type { WorktreeCreationTask, CreateWorktreeRequest } from '@agent-console/shared';
+import type { CreateWorktreeRequest } from '@agent-console/shared';
+import type { WorktreeCreationTask } from '../../lib/worktree-creation-task';
 import { AlertCircleIcon } from '../../components/Icons';
 import { Spinner } from '../../components/ui/Spinner';
 import { useWorktreeCreationTasksContext } from '../__root';

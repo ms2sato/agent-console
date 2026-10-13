@@ -1,7 +1,8 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
+import type { AgentActivityState, WorktreeDeletionTask, Session } from '@agent-console/shared';
+import type { WorktreeCreationTask } from '../../lib/worktree-creation-task';
 import type { SessionFilterMode } from '../../types/session-filter';
 import {
   restartAllAgentWorkers,
