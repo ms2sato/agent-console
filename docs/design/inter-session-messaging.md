@@ -64,8 +64,8 @@ A session can have multiple agent workers. Messages are delivered to a specific 
 ~/.agent-console/messages/
   └── {sessionId}/
       └── {workerId}/
-          ├── {timestamp}-{senderSessionId}-{randomHex}.json
-          └── {timestamp}-{senderSessionId}-{randomHex}.json
+          ├── {timestamp}-{senderSessionId}-{randomHex}.md
+          └── {timestamp}-{senderSessionId}-{randomHex}.md
 ```
 
 - `toWorkerId` is optional in the MCP tool. If omitted, the server resolves the target automatically (see [Worker resolution](#worker-resolution-when-toworkerid-is-omitted)).
@@ -76,10 +76,13 @@ A session can have multiple agent workers. Messages are delivered to a specific 
 
 Each message is an individual file. This avoids concurrent write corruption when multiple sessions send messages to the same recipient simultaneously.
 
-- File naming: `{timestamp}-{senderSessionId}-{randomHex}.json`
+- File naming: `{timestamp}-{senderSessionId}-{randomHex}.md`
 - Atomic writes: write to temp file, then rename
 - Concurrent safety: different files, no collision
 - Ordering: timestamp prefix ensures chronological ordering within a directory
+- Extension: `.md`. The content is free-form text (see Decision 7), never JSON, so a JSON extension would mislead JSON tooling. The extension is defined once, as `MESSAGE_FILE_EXTENSION` in `inter-session-message-service.ts`.
+
+**Migration (Issue #712).** Files written before the extension changed carry the legacy JSON extension. At startup, before the server accepts any request, `renameLegacyMessageFiles` (`lib/message-file-migration.ts`) walks every `messages/<sessionId>/<workerId>/` directory under `_quick`, `repositories/<a>` and `repositories/<a>/<b>` and renames files matching the writer's own name grammar (`{timestamp}-{senderSessionId}-{8 hex}` plus the legacy extension) to `.md`. It is idempotent (a converted file no longer matches), never follows or renames a symlink, leaves `.tmp-*` files and any other name alone, and does not overwrite an existing `.md` (counted as skipped, with a warning). It logs the renamed and skipped counts, and a failure only warns: startup continues. Readers never discover message files by extension; they receive the absolute path in the delivery notification and read that path, so a legacy-extension file the sweep skipped or missed stays readable and no reader has a dual-extension branch.
 
 ### Decision 5: MCP tool for sending
 
@@ -94,7 +97,7 @@ Sending is exposed as an MCP tool (`send_session_message`) rather than relying o
 When a message is sent, the server immediately sends a minimal notification to the targeted worker's PTY. The notification contains only metadata, not the message content.
 
 ```text
-[inbound:message] source=session from={senderSessionId} summary="Message from session {senderTitle}" path=/absolute/path/to/message.json intent=triage
+[inbound:message] source=session from={senderSessionId} summary="Message from session {senderTitle}" path=/absolute/path/to/message.md intent=triage
 ```
 
 This reuses the `[inbound:TYPE]` format established by the GitHub webhook integration (see [integration-inbound.md](./integration-inbound.md)):
@@ -172,7 +175,7 @@ When `send_session_message` is called:
 3. Validate message content size (max 64 KB)
 4. Ensure directory exists: `~/.agent-console/messages/{sessionId}/{workerId}/`
 5. Write message to temp file in the same directory
-6. Atomic rename to final path: `{timestamp}-{senderSessionId}-{randomHex}.json`
+6. Atomic rename to final path: `{timestamp}-{senderSessionId}-{randomHex}.md`
 7. Deliver PTY notification to the target worker (synchronous, within the same MCP tool handler)
 8. Optionally broadcast via app WebSocket for UI notification
 9. Return message ID and path
@@ -222,10 +225,10 @@ Parent Agent (Session P, Worker W):
   3. Parent continues other work or waits.
      When children complete, PTY notifications arrive:
 
-  4. PTY ← [inbound:message] source=session from=A summary="Message from Fix-backend" path=/.../P/W/...-A.json intent=triage
+  4. PTY ← [inbound:message] source=session from=A summary="Message from Fix-backend" path=/.../P/W/...-A.md intent=triage
      → Parent reads file → { "status": "completed", "summary": "Backend auth refactored, 3 files changed" }
 
-  5. PTY ← [inbound:message] source=session from=B summary="Message from Fix-frontend" path=/.../P/W/...-B.json intent=triage
+  5. PTY ← [inbound:message] source=session from=B summary="Message from Fix-frontend" path=/.../P/W/...-B.md intent=triage
      → Parent reads file → { "status": "completed", "summary": "Frontend auth refactored, 5 files changed" }
 
   6. git merge fix/auth-backend && git merge fix/auth-frontend

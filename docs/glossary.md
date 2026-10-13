@@ -602,8 +602,8 @@ A registered shell-condition + interval that the server polls silently and notif
 - **Contrast:** [Timer](#timer) (fires on interval regardless of state)
 
 ### Inter-Session Messaging
-File-based message delivery channel between sessions. Used by the `send_session_message` MCP tool for explicit cross-session consultations and by `outputMode: "message"` of `run_process` to route long-form script stdout and `write_process_response` content to the receiving session/worker without flooding its PTY.
-- **Aliases:** inter-session messaging, inter-session message files, inter-session message service, InterSessionMessageService, inter-session-message-service
+File-based message delivery channel between sessions. Used by the `send_session_message` MCP tool for explicit cross-session consultations and by `outputMode: "message"` of `run_process` to route long-form script stdout and `write_process_response` content to the receiving session/worker without flooding its PTY. Each message is one file named `{timestamp}-{senderSessionId}-{randomHex}.md` under `messages/{sessionId}/{workerId}/`; the content is free-form markdown/text, never JSON. Files written before Issue [#712](https://github.com/ms2sato/agent-console/issues/712) carried a JSON extension and are renamed to `.md` by a startup sweep.
+- **Aliases:** inter-session messaging, message file, inter-session message files, inter-session message service, InterSessionMessageService, inter-session-message-service
 - **See:** [Inter-Session Messaging design](design/inter-session-messaging.md), implementation [`packages/server/src/services/inter-session-message-service.ts`](../packages/server/src/services/inter-session-message-service.ts), MCP tool `send_session_message`, [outputMode](#outputmode)
 
 ### Mid-turn notification queue

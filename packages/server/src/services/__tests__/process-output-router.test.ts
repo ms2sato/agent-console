@@ -39,8 +39,8 @@ function makeDeps(
       ({ ok: true }) as { ok: true } | { ok: false; error: string },
   );
   const sendMessage = mock<ProcessOutputRouterDeps['sendMessage']>(async (params) => ({
-    messageId: `msg-${Math.random().toString(16).slice(2, 10)}.json`,
-    path: `/tmp/messages/${params.content.slice(0, 4)}.json`,
+    messageId: `msg-${Math.random().toString(16).slice(2, 10)}.md`,
+    path: `/tmp/messages/${params.content.slice(0, 4)}.md`,
   }));
   const resolver = new SessionDataPathResolver('/tmp/test-base', '/tmp');
   const getResolver = mock((_sessionId: string) => resolver as SessionDataPathResolver | null);
@@ -422,7 +422,7 @@ describe('routeProcessExit ordering (Issue #1591)', () => {
     for (let i = 0; i < 5; i++) await Promise.resolve();
     expect(order).toEqual([]);
 
-    gate.resolve({ messageId: 'msg-1', path: '/tmp/messages/1.json' });
+    gate.resolve({ messageId: 'msg-1', path: '/tmp/messages/1.md' });
     await Promise.all([stdoutPromise, exitPromise]);
 
     expect(order).toEqual(['stdout-brief', 'exit']);
@@ -437,7 +437,7 @@ describe('routeProcessExit ordering (Issue #1591)', () => {
       if (sendMessageCalls === 1) {
         return responseGate.promise; // response step: held open
       }
-      return { messageId: `msg-${sendMessageCalls}`, path: `/tmp/messages/${sendMessageCalls}.json` }; // stdout step: fast
+      return { messageId: `msg-${sendMessageCalls}`, path: `/tmp/messages/${sendMessageCalls}.md` }; // stdout step: fast
     });
     const deliverNotification = mock(async (_s: string, _w: string, params: PtyNotificationParams) => {
       const message = (params.fields as { message: string }).message;
@@ -459,7 +459,7 @@ describe('routeProcessExit ordering (Issue #1591)', () => {
     for (let i = 0; i < 5; i++) await Promise.resolve();
     expect(order).toEqual([]);
 
-    responseGate.resolve({ messageId: 'msg-response', path: '/tmp/messages/response.json' });
+    responseGate.resolve({ messageId: 'msg-response', path: '/tmp/messages/response.md' });
     await Promise.all([responsePromise, stdoutPromise, exitPromise]);
 
     expect(order).toEqual(['response-brief', 'stdout-brief', 'exit']);

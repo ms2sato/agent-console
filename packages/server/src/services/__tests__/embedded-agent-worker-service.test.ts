@@ -2492,7 +2492,7 @@ describe('EmbeddedAgentWorkerService.sendSystemNotification (Issue #1351)', () =
       source: 'session',
       from: 'sender-session-id',
       summary: 'Message from session sender-title',
-      path: '/data/messages/m1.json',
+      path: '/data/messages/m1.md',
     },
     intent: 'triage',
   };

@@ -6,7 +6,7 @@
  * to ensure concurrent safety.
  *
  * Directory structure:
- *   ~/.agent-console/messages/{sessionId}/{workerId}/{timestamp}-{fromSessionId}-{randomHex}.json
+ *   ~/.agent-console/messages/{sessionId}/{workerId}/{timestamp}-{fromSessionId}-{randomHex}.md
  */
 
 import { randomBytes } from 'crypto';
@@ -17,6 +17,9 @@ import { createLogger } from '../lib/logger.js';
 import { ensureTrustedDirChain, resolveAncestorContract } from '../lib/trusted-dir.js';
 
 const logger = createLogger('inter-session-message');
+
+/** Extension of a delivered message file. The content is free-form text, never JSON. */
+export const MESSAGE_FILE_EXTENSION = '.md';
 
 /** Maximum message content size: 64 KB */
 export const MAX_MESSAGE_CONTENT_BYTES = 64 * 1024;
@@ -52,7 +55,7 @@ export interface SendMessageParams {
 }
 
 export interface SendMessageResult {
-  /** Filename: {timestamp}-{senderSessionId}-{randomHex}.json */
+  /** Filename: {timestamp}-{senderSessionId}-{randomHex}.md */
   messageId: string;
   /** Absolute path to the message file */
   path: string;
@@ -66,7 +69,7 @@ export class InterSessionMessageService {
    *    missing ancestor up to the trusted root, through the trusted-dir
    *    walker
    * 2. Write to temp file `.tmp-{messageId}` in the same directory
-   * 3. Atomic rename to `{timestamp}-{fromSessionId}-{randomHex}.json`
+   * 3. Atomic rename to `{timestamp}-{fromSessionId}-{randomHex}.md`
    * 4. Return { messageId, path }
    */
   async sendMessage(params: SendMessageParams): Promise<SendMessageResult> {
@@ -91,7 +94,7 @@ export class InterSessionMessageService {
 
     const timestamp = Date.now();
     const suffix = randomBytes(4).toString('hex');
-    const messageId = `${timestamp}-${fromSessionId}-${suffix}.json`;
+    const messageId = `${timestamp}-${fromSessionId}-${suffix}${MESSAGE_FILE_EXTENSION}`;
     const finalPath = path.join(dir, messageId);
     const tmpPath = path.join(dir, `.tmp-${messageId}`);
 

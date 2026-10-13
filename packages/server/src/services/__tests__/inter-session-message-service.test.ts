@@ -6,6 +6,7 @@ import {
   InterSessionMessageService,
   validateId,
   MAX_MESSAGE_CONTENT_BYTES,
+  MESSAGE_FILE_EXTENSION,
 } from '../inter-session-message-service.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { TrustedDirVerificationError } from '../../lib/trusted-dir.js';
@@ -67,7 +68,7 @@ describe('InterSessionMessageService', () => {
       expect(dirExists).toBe(true);
     });
 
-    it('should create file with correct name pattern: {timestamp}-{fromSessionId}-{randomHex}.json', async () => {
+    it('should create file with correct name pattern: {timestamp}-{fromSessionId}-{randomHex}.md', async () => {
       const result = await service.sendMessage({
         toSessionId: 'session-target',
         toWorkerId: 'worker-1',
@@ -76,8 +77,10 @@ describe('InterSessionMessageService', () => {
         resolver: quickResolver,
       });
 
-      // messageId should match the pattern {timestamp}-{fromSessionId}-{randomHex}.json
-      expect(result.messageId).toMatch(/^\d+-session-sender-[a-f0-9]{8}\.json$/);
+      // messageId should match the pattern {timestamp}-{fromSessionId}-{randomHex}.md
+      expect(result.messageId).toMatch(/^\d+-session-sender-[a-f0-9]{8}\.md$/);
+      expect(result.messageId.endsWith('.json')).toBe(false);
+      expect(result.path.endsWith(MESSAGE_FILE_EXTENSION)).toBe(true);
     });
 
     it('should write correct file content', async () => {

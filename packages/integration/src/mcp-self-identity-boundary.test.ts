@@ -307,7 +307,7 @@ describe(
 
     it(
       "(1) send_session_message with content and NO fromSessionId, bearer = the worker's own token -> " +
-        'succeeds, and the on-disk message file is named `<ts>-<embeddedWorkerSessionId>-<hex>.json` with the ' +
+        'succeeds, and the on-disk message file is named `<ts>-<embeddedWorkerSessionId>-<hex>.md` with the ' +
         'sent text as its content',
       async () => {
         const owner = await userRepository.upsertByOsUid(11001, 'boundary-owner', '/home/boundary-owner');
@@ -330,6 +330,7 @@ describe(
         const files = await listMessageFiles(target.sessionId, target.workerId);
         const written = files.find((f) => f.includes(`-${embeddedSessionId}-`));
         expect(written).toBeDefined();
+        expect(written!.endsWith('.md')).toBe(true);
 
         const content = await fsp.readFile(path.join(messagesDirFor(target.sessionId, target.workerId), written!), 'utf-8');
         expect(content).toBe('boundary-test message body');
