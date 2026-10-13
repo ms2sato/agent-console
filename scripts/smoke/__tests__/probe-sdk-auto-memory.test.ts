@@ -1121,41 +1121,40 @@ describe('classifyArmB1 (mechanism, not a production route)', () => {
 
 describe('classifyArmB2 (production route: our explicit false vs a user-level autoMemoryDirectory)', () => {
   it('reads CONTAINMENT HOLDS only when the control carried the nonce and the explicit-false turn is silent on every channel with zero tool calls', () => {
-    const r = classifyArmB2({ control: hit, withFalse: silent, explicitTrue: null });
+    const r = classifyArmB2({ control: hit, withFalse: silent });
     expect(r).toMatchObject({ conclusive: true, premise: 'holds' });
     expect(r.note).toStartWith('CONTAINMENT HOLDS');
   });
 
   it('emits the STOP line (premise refuted) when the nonce is still in the answer under our explicit false', () => {
-    const r = classifyArmB2({ control: hit, withFalse: hit, explicitTrue: null });
+    const r = classifyArmB2({ control: hit, withFalse: hit });
     expect(r).toMatchObject({ conclusive: true, premise: 'refuted' });
     expect(r.note).toStartWith('STOP');
     expect(r.note).toContain('buildOptions');
   });
 
   it('also emits STOP on a recall message under our explicit false, even with no nonce in the answer', () => {
-    expect(classifyArmB2({ control: hit, withFalse: { ...silent, recallMessage: true }, explicitTrue: null }).note).toStartWith('STOP');
+    expect(classifyArmB2({ control: hit, withFalse: { ...silent, recallMessage: true } }).note).toStartWith('STOP');
   });
 
-  it('is inconclusive when the positive control is silent, and says what the explicit-true turn showed', () => {
-    const r = classifyArmB2({ control: silent, withFalse: null, explicitTrue: hit });
+  it('is inconclusive when the positive control is silent (the measured turn is never run)', () => {
+    const r = classifyArmB2({ control: silent, withFalse: null });
     expect(r.conclusive).toBe(false);
-    expect(r.note).toContain('not honoured without the explicit setting');
-    expect(classifyArmB2({ control: silent, withFalse: null, explicitTrue: silent }).note).toContain('not shown to be read at all');
+    expect(r.note).toContain('containment is not shown');
   });
 
   it('is inconclusive when the control made tool calls (not attributable), never a negative', () => {
-    expect(classifyArmB2({ control: { ...hit, toolUseCount: 1 }, withFalse: null, explicitTrue: null }).conclusive).toBe(false);
+    expect(classifyArmB2({ control: { ...hit, toolUseCount: 1 }, withFalse: null }).conclusive).toBe(false);
   });
 
   it('is inconclusive when the explicit-false turn was silent but made tool calls (containment requires zero)', () => {
-    expect(classifyArmB2({ control: hit, withFalse: { ...silent, toolUseCount: 1 }, explicitTrue: null }).conclusive).toBe(false);
+    expect(classifyArmB2({ control: hit, withFalse: { ...silent, toolUseCount: 1 } }).conclusive).toBe(false);
   });
 
   it('is inconclusive when a turn did not settle or the measured turn is absent', () => {
-    expect(classifyArmB2({ control: { ...hit, settled: false }, withFalse: null, explicitTrue: null }).conclusive).toBe(false);
-    expect(classifyArmB2({ control: hit, withFalse: { ...silent, settled: false }, explicitTrue: null }).conclusive).toBe(false);
-    expect(classifyArmB2({ control: hit, withFalse: null, explicitTrue: null }).conclusive).toBe(false);
+    expect(classifyArmB2({ control: { ...hit, settled: false }, withFalse: null }).conclusive).toBe(false);
+    expect(classifyArmB2({ control: hit, withFalse: { ...silent, settled: false } }).conclusive).toBe(false);
+    expect(classifyArmB2({ control: hit, withFalse: null }).conclusive).toBe(false);
   });
 });
 

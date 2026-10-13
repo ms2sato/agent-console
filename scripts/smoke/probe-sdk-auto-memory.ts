@@ -742,8 +742,6 @@ export interface ArmB2Input {
   control: ArmBObservation | null;
   /** Production's exact battery: `settingSources: ['user','local']`, `settings.autoMemoryEnabled: false`, unrelated cwd. `null` when the control failed and it was skipped. */
   withFalse: ArmBObservation | null;
-  /** Conditional 7th turn (explicit `autoMemoryEnabled: true`), run only when the control was silent, to tell "control broken" from "file ignored". */
-  explicitTrue: ArmBObservation | null;
 }
 
 /**
@@ -758,14 +756,8 @@ export function classifyArmB2(input: ArmB2Input): Verdict {
   const c = input.control;
   if (!c || !c.settled) return inconclusive('the positive control turn (user settings.json alone) did not settle.');
   if (!armBPositive(c)) {
-    const t = input.explicitTrue;
-    const extra = t && t.settled
-      ? armBPositive(t)
-        ? ' An explicit autoMemoryEnabled: true turn DID carry the nonce, so the user file alone is not honoured without the explicit setting.'
-        : ' An explicit autoMemoryEnabled: true turn did not carry it either: the seed location is not shown to be read at all.'
-      : '';
     return inconclusive(
-      `the positive control (user settings.json alone) did not show an attributable nonce (nonceInAnswer=${c.nonceInAnswer}, toolUseCount=${c.toolUseCount}); the measured turn was skipped and containment is not shown.${extra}`,
+      `the positive control (user settings.json alone, tools off) did not show an attributable nonce (nonceInAnswer=${c.nonceInAnswer}, toolUseCount=${c.toolUseCount}); the measured turn was skipped and containment is not shown.`,
     );
   }
   const f = input.withFalse;
@@ -1485,7 +1477,13 @@ function h(title: string): void {
  * between "the key is absent" and "the key is present with an empty value",
  * so this function must not collapse that distinction itself.
  */
-function buildOptions(cwd: string, settings: Partial<Settings>, systemPrompt?: Options['systemPrompt'], settingSources: NonNullable<Options['settingSources']> = []): Options {
+function buildOptions(
+  cwd: string,
+  settings: Partial<Settings>,
+  systemPrompt?: Options['systemPrompt'],
+  settingSources: NonNullable<Options['settingSources']> = [],
+  tools?: Options['tools'],
+): Options {
   const base: Options = {
     executable: 'bun',
     cwd,
@@ -1496,7 +1494,8 @@ function buildOptions(cwd: string, settings: Partial<Settings>, systemPrompt?: O
     settingSources,
     settings: { autoCompactEnabled: false, ...settings },
   };
-  return systemPrompt === undefined ? base : { ...base, systemPrompt };
+  const withTools = tools === undefined ? base : { ...base, tools };
+  return systemPrompt === undefined ? withTools : { ...withTools, systemPrompt };
 }
 
 /** `Options.systemPrompt` for one of arm E's three configurations, or `undefined` for (i) omitted entirely. */
@@ -1682,9 +1681,9 @@ async function runMemorySession(
   settings: Partial<Settings>,
   prompt: string,
   label: string,
-  opts: { redactRecallLogging?: boolean; systemPrompt?: Options['systemPrompt']; pollUsage?: boolean; settingSources?: NonNullable<Options['settingSources']> } = {},
+  opts: { redactRecallLogging?: boolean; systemPrompt?: Options['systemPrompt']; pollUsage?: boolean; settingSources?: NonNullable<Options['settingSources']>; tools?: Options['tools'] } = {},
 ): Promise<{ outcome: TurnOutcome; recallsForTurn: MemoryRecallMessage[]; toolUseCount: number }> {
-  const options = buildOptions(cwd, settings, opts.systemPrompt, opts.settingSources);
+  const options = buildOptions(cwd, settings, opts.systemPrompt, opts.settingSources, opts.tools);
   const s = new ProbeSession({ label, options, pollUsage: opts.pollUsage ?? false });
   try {
     console.log(`${label} ready: ${await s.waitForReady()}`);
@@ -2050,6 +2049,10 @@ async function runArmBTurn(
   const { outcome, recallsForTurn, toolUseCount } = await runMemorySession(configDir, cwd, settings, armBOraclePrompt(), label, {
     redactRecallLogging: true,
     settingSources,
+    // All built-in tools off (Architect ruling, #1663): with tools on, "nonce + tool calls" is ambiguous between
+    // an injected index that the model then read and a model that browsed CLAUDE_CONFIG_DIR itself. Off makes
+    // zero tool calls true by construction; toolUseCount stays as an assert.
+    tools: [],
   });
   const obs: ArmBObservation = {
     settled: turnSettled(outcome),
@@ -2103,8 +2106,8 @@ async function runArmB1(expectNoPersonal: boolean): Promise<ArmVerdict> {
  * (`autoMemoryEnabled: true`, `autoMemoryDirectory`), production's
  * `settingSources: ['user','local']`. Positive control first (our settings
  * carry NO explicit autoMemoryEnabled), then the measured turn with
- * production's explicit false; the explicit-true turn runs only if the
- * control was silent. 2 billed turns (3 only when the control was silent).
+ * production's explicit false. A silent control stops the arm (INCONCLUSIVE).
+ * 2 billed turns.
  */
 async function runArmB2(): Promise<ArmVerdict> {
   h("Arm B2 -- PRODUCTION route: user-level autoMemoryDirectory vs our explicit autoMemoryEnabled: false");
@@ -2119,15 +2122,11 @@ async function runArmB2(): Promise<ArmVerdict> {
       seedArmBEntry(userMemoryDir, nonce);
       const control = await runArmBTurn('B2-control-user-file-alone', configDir, cwdOther, {}, production, nonce);
       let withFalse: ArmBObservation | null = null;
-      let explicitTrue: ArmBObservation | null = null;
       if (armBPositive(control)) {
         seedArmBEntry(userMemoryDir, nonce);
         withFalse = await runArmBTurn('B2-measured-explicit-false', configDir, cwdOther, { autoMemoryEnabled: false }, production, nonce);
-      } else if (control.settled) {
-        seedArmBEntry(userMemoryDir, nonce);
-        explicitTrue = await runArmBTurn('B2-explicit-true', configDir, cwdOther, { autoMemoryEnabled: true }, production, nonce);
       }
-      return { arm: 'B2', ...classifyArmB2({ control, withFalse, explicitTrue }) };
+      return { arm: 'B2', ...classifyArmB2({ control, withFalse }) };
     } finally {
       rmSync(cwdOther, { recursive: true, force: true });
     }
