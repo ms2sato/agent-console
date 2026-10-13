@@ -676,7 +676,7 @@ A per-worker incarnation identifier: the creation timestamp (milliseconds) minte
 
 ### Backwards Range Fetch
 
-The `request-history-range` / `history-range` worker-WebSocket message pair for paging older history upward. A request names a `beforeOffset` (fetch bytes strictly before this Absolute Stream Offset), an optional `maxBytes` hint, and a `requestId` echoed back for correlation. The server answers with one storage unit's worth of bytes (a single Archive Segment or the live window — never stitched across a boundary), a `hasMore` flag (`startOffset > firstAvailableOffset`), and the Worker Epoch captured under the per-worker lock. Defined in [terminal-history-paging.md](design/terminal-history-paging.md) §5.
+The `request-history-range` / `history-range` worker-WebSocket message pair for paging older history upward. A request names a `beforeOffset` (fetch bytes strictly before this Absolute Stream Offset), an optional `maxBytes` hint, and a `requestId` echoed back for correlation. The server answers with one storage unit's worth of bytes (a single Archive Segment or the live window — never stitched across a boundary), a `hasMore` flag (`startOffset > firstAvailableOffset`), and the Worker Epoch captured under the per-worker lock. A request arriving while its connection already has `WORKER_WS_HISTORY_MAX_IN_FLIGHT` (default 4) history requests unresolved — `request-history` and `request-history-range` share that one counter — is answered immediately with a `HISTORY_LOAD_FAILED` error (carrying the `requestId` for a range request), never with the unavailable shape. Defined in [terminal-history-paging.md](design/terminal-history-paging.md) §5.
 
 ## Verification
 

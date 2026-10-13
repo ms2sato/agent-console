@@ -12,6 +12,7 @@ import {
   handleHistoryRangeRequest,
   type HistoryRangeSessionManager,
 } from '../history-range-handler.js';
+import { HistoryInFlightLimiter } from '../history-in-flight-limiter.js';
 import { asWSContext } from './ws-test-helpers.js';
 
 const SID = 'session-1';
@@ -174,5 +175,126 @@ describe('handleHistoryRangeRequest', () => {
       message: expect.any(String),
       requestId: 99,
     });
+  });
+});
+
+describe('handleHistoryRangeRequest with a per-connection limiter', () => {
+  const REQ = { type: 'request-history-range', requestId: 5, beforeOffset: 200 };
+
+  it('answers over-cap with HISTORY_LOAD_FAILED echoing requestId, without calling the manager', async () => {
+    const { ws, sent } = makeWs();
+    const limiter = new HistoryInFlightLimiter(1);
+    limiter.tryAcquire(); // the cap is already full
+    let called = false;
+    const manager = makeManager({
+      getWorkerHistoryRange: async () => {
+        called = true;
+        return RESULT;
+      },
+    });
+
+    await handleHistoryRangeRequest(ws, SID, WID, REQ, manager, { limiter });
+
+    expect(called).toBe(false);
+    expect(sent).toEqual([
+      {
+        type: 'error',
+        code: 'HISTORY_LOAD_FAILED',
+        message: 'Too many concurrent history requests on this connection (max 1); retry after the pending ones complete.',
+        requestId: 5,
+      },
+    ]);
+    // Never the unavailable shape.
+    expect(sent.some((m) => m.type === 'history-range')).toBe(false);
+    // A refused request does not take or give back a slot.
+    expect(limiter.inFlight).toBe(1);
+  });
+
+  it('holds a slot while the read is pending and releases it on success', async () => {
+    const { ws } = makeWs();
+    const limiter = new HistoryInFlightLimiter(2);
+    let resolveRead: (r: HistoryRangeResult) => void = () => {};
+    const manager = makeManager({
+      getWorkerHistoryRange: () => new Promise<HistoryRangeResult | null>((resolve) => { resolveRead = resolve; }),
+    });
+
+    const pending = handleHistoryRangeRequest(ws, SID, WID, REQ, manager, { limiter });
+    expect(limiter.inFlight).toBe(1);
+    resolveRead(RESULT);
+    await pending;
+    expect(limiter.inFlight).toBe(0);
+  });
+
+  it('releases the slot on a read error, a null result and an invalid-input fallback', async () => {
+    const cases: Array<[string, Partial<HistoryRangeSessionManager>, Record<string, unknown>]> = [
+      ['read error', { getWorkerHistoryRange: async () => { throw new Error('disk'); } }, REQ],
+      ['null result', { getWorkerHistoryRange: async () => null }, REQ],
+      ['invalid beforeOffset', {}, { ...REQ, beforeOffset: -1 }],
+    ];
+    for (const [label, overrides, request] of cases) {
+      const { ws } = makeWs();
+      const limiter = new HistoryInFlightLimiter(1);
+      await handleHistoryRangeRequest(ws, SID, WID, request, makeManager(overrides), { limiter, timeoutMs: 20 });
+      // Let the read's own settlement handler run before reading the count.
+      await Promise.resolve();
+      expect([label, limiter.inFlight]).toEqual([label, 0]);
+    }
+  });
+
+  // The slot belongs to the READ, not to the race. A read that outlives the
+  // timeout answers the client at once but keeps its slot until it settles, so
+  // at most `max` reads per connection can ever sit in the per-worker lock
+  // queue. Measured reach: releasing in the race's own `finally` instead fails
+  // this test (the follow-up request is served while the first read is still
+  // running).
+  it('keeps the slot of a timed-out read until that read settles', async () => {
+    const limiter = new HistoryInFlightLimiter(1);
+    let settleRead: (r: HistoryRangeResult | null) => void = () => {};
+    const slowManager = makeManager({
+      getWorkerHistoryRange: () => new Promise<HistoryRangeResult | null>((resolve) => { settleRead = resolve; }),
+    });
+
+    const first = makeWs();
+    await handleHistoryRangeRequest(first.ws, SID, WID, { ...REQ, requestId: 1 }, slowManager, { limiter, timeoutMs: 20 });
+    // The client was told immediately, via the race.
+    expect(first.sent).toEqual([
+      { type: 'error', code: 'HISTORY_LOAD_FAILED', message: expect.any(String), requestId: 1 },
+    ]);
+    // ...but the read is still running, so its slot is still taken.
+    expect(limiter.inFlight).toBe(1);
+
+    const second = makeWs();
+    await handleHistoryRangeRequest(second.ws, SID, WID, { ...REQ, requestId: 2 }, makeManager({ getWorkerHistoryRange: async () => RESULT }), { limiter });
+    expect(second.sent).toEqual([
+      { type: 'error', code: 'HISTORY_LOAD_FAILED', message: expect.stringContaining('Too many concurrent'), requestId: 2 },
+    ]);
+
+    settleRead(null);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(limiter.inFlight).toBe(0);
+
+    const third = makeWs();
+    await handleHistoryRangeRequest(third.ws, SID, WID, { ...REQ, requestId: 3 }, makeManager({ getWorkerHistoryRange: async () => RESULT }), { limiter });
+    expect(third.sent).toHaveLength(1);
+    expect(third.sent[0].type).toBe('history-range');
+  });
+
+  it('releases the slot when the manager throws synchronously', async () => {
+    const { ws } = makeWs();
+    const limiter = new HistoryInFlightLimiter(1);
+    const manager = makeManager({ getWorkerEpoch: () => { throw new Error('epoch lookup failed'); } });
+    await expect(handleHistoryRangeRequest(ws, SID, WID, REQ, manager, { limiter })).rejects.toThrow('epoch lookup failed');
+    expect(limiter.inFlight).toBe(0);
+  });
+
+  it('drops an invalid requestId silently and does not consume a slot, even at cap', async () => {
+    const { ws, sent } = makeWs();
+    const limiter = new HistoryInFlightLimiter(1);
+    limiter.tryAcquire();
+    await handleHistoryRangeRequest(ws, SID, WID, { type: 'request-history-range', requestId: 'x', beforeOffset: 1 }, makeManager({}), { limiter });
+    expect(sent).toEqual([]);
+    expect(limiter.inFlight).toBe(1);
+    expect(limiter.rejectedCount).toBe(0);
   });
 });

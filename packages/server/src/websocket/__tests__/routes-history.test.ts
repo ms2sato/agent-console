@@ -27,6 +27,7 @@ import { WebSocketConnectionRegistry } from '../connection-registry.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
+import { serverConfig } from '../../lib/server-config.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -309,6 +310,203 @@ describe('Worker WebSocket history and notifications', () => {
 
       expect(errorMessages).toHaveLength(1);
       expect(errorMessages[0].code).toBe('HISTORY_LOAD_FAILED');
+    });
+  });
+
+  // =========================================================================
+  // Per-connection in-flight cap shared by request-history and
+  // request-history-range
+  //
+  // Measured reach (each mutation applied to the committed tree, then
+  // restored; control = 48 pass across this file, history-range-handler,
+  // history-in-flight-limiter and race-with-timeout):
+  //   - request-history gate removed -> (a), (c), (e), (g) and the
+  //     per-connection pin fail ((e), (g) and the last need that gate to fill
+  //     the cap);
+  //   - range gate removed -> (b), (c) and two history-range-handler pins;
+  //   - request-history slot release dropped -> (d) and (g);
+  //   - a separate limiter per message type -> (b) and (c);
+  //   - the range gate moved before requestId validation -> (e) and the
+  //     handler's invalid-requestId pin.
+  // =========================================================================
+
+  describe('per-connection history in-flight cap', () => {
+    const CAP = serverConfig.WORKER_WS_HISTORY_MAX_IN_FLIGHT;
+
+    function sentByType(mockWs: ReturnType<typeof createMockWs>, type: string): Array<Record<string, unknown>> {
+      return mockWs.sentMessages.map((m) => JSON.parse(m)).filter((m) => m.type === type);
+    }
+
+    function pendingForever() {
+      spyOn(sessionManager, 'getWorkerOutputHistory').mockImplementation(() => new Promise(() => {}));
+      spyOn(sessionManager, 'getWorkerHistoryRange').mockImplementation(() => new Promise(() => {}));
+    }
+
+    const history = () => JSON.stringify({ type: 'request-history' });
+    const range = (requestId: number) =>
+      JSON.stringify({ type: 'request-history-range', requestId, beforeOffset: 100 });
+
+    it('(a) answers the request after the cap with one immediate HISTORY_LOAD_FAILED (no requestId)', async () => {
+      const { handlers, mockWs } = await createSessionAndConnect();
+      pendingForever();
+      mockWs.sentMessages.length = 0;
+
+      for (let i = 0; i < CAP; i++) handlers.onMessage({ data: history() }, mockWs);
+      expect(sentByType(mockWs, 'error')).toHaveLength(0);
+
+      handlers.onMessage({ data: history() }, mockWs);
+      const errors = sentByType(mockWs, 'error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].code).toBe('HISTORY_LOAD_FAILED');
+      expect(errors[0].message).toBe(
+        `Too many concurrent history requests on this connection (max ${CAP}); retry after the pending ones complete.`,
+      );
+      expect('requestId' in errors[0]).toBe(false);
+    });
+
+    it('(b) answers a range request after the cap with HISTORY_LOAD_FAILED echoing its requestId, never the unavailable shape', async () => {
+      const { handlers, mockWs } = await createSessionAndConnect();
+      pendingForever();
+      mockWs.sentMessages.length = 0;
+
+      for (let i = 0; i < CAP; i++) handlers.onMessage({ data: range(i) }, mockWs);
+      expect(sentByType(mockWs, 'error')).toHaveLength(0);
+
+      handlers.onMessage({ data: range(900) }, mockWs);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const errors = sentByType(mockWs, 'error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].code).toBe('HISTORY_LOAD_FAILED');
+      expect(errors[0].requestId).toBe(900);
+      expect(sentByType(mockWs, 'history-range')).toHaveLength(0);
+    });
+
+    it('(c) shares one counter across both message types', async () => {
+      const { handlers, mockWs } = await createSessionAndConnect();
+      pendingForever();
+      mockWs.sentMessages.length = 0;
+
+      for (let i = 0; i < CAP - 1; i++) handlers.onMessage({ data: history() }, mockWs);
+      handlers.onMessage({ data: range(1) }, mockWs);
+      expect(sentByType(mockWs, 'error')).toHaveLength(0);
+
+      handlers.onMessage({ data: range(2) }, mockWs);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const errors = sentByType(mockWs, 'error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].requestId).toBe(2);
+
+      // The other message type is refused by the same counter.
+      handlers.onMessage({ data: history() }, mockWs);
+      expect(sentByType(mockWs, 'error')).toHaveLength(2);
+    });
+
+    it('(d) releases slots when requests resolve and when they fail, so later requests are served', async () => {
+      const { handlers, mockWs } = await createSessionAndConnect();
+
+      // Resolve path: fill the cap with controllable requests, resolve them all.
+      const resolvers: Array<(v: null) => void> = [];
+      const outputSpy = spyOn(sessionManager, 'getWorkerOutputHistory').mockImplementation(
+        () => new Promise((resolve) => { resolvers.push(resolve as (v: null) => void); }),
+      );
+      mockWs.sentMessages.length = 0;
+      for (let i = 0; i < CAP; i++) handlers.onMessage({ data: history() }, mockWs);
+      resolvers.forEach((resolve) => resolve(null));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sentByType(mockWs, 'error')).toHaveLength(0);
+
+      mockWs.sentMessages.length = 0;
+      handlers.onMessage({ data: history() }, mockWs);
+      expect(sentByType(mockWs, 'error')).toHaveLength(0); // admitted, not refused
+      resolvers[resolvers.length - 1](null);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sentByType(mockWs, 'error')).toHaveLength(0);
+      expect(sentByType(mockWs, 'history')).toHaveLength(1);
+
+      // Error path: CAP failing requests, then one more must still be served.
+      outputSpy.mockImplementation(() => Promise.reject(new Error('Disk read error')));
+      mockWs.sentMessages.length = 0;
+      for (let i = 0; i < CAP; i++) handlers.onMessage({ data: history() }, mockWs);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const failed = sentByType(mockWs, 'error');
+      expect(failed).toHaveLength(CAP);
+      expect(failed.every((e) => !String(e.message).startsWith('Too many'))).toBe(true);
+
+      outputSpy.mockImplementation(() => Promise.resolve(null));
+      mockWs.sentMessages.length = 0;
+      handlers.onMessage({ data: history() }, mockWs);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sentByType(mockWs, 'error')).toHaveLength(0);
+      expect(sentByType(mockWs, 'history')).toHaveLength(1);
+    });
+
+    it('(e) drops a range message with an invalid requestId silently at cap, without consuming or releasing a slot', async () => {
+      const { handlers, mockWs } = await createSessionAndConnect();
+      pendingForever();
+      mockWs.sentMessages.length = 0;
+      for (let i = 0; i < CAP; i++) handlers.onMessage({ data: history() }, mockWs);
+
+      handlers.onMessage(
+        { data: JSON.stringify({ type: 'request-history-range', requestId: 'nope', beforeOffset: 1 }) },
+        mockWs,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(mockWs.sentMessages).toHaveLength(0);
+
+      // The cap is still exactly full: the next valid request is refused.
+      handlers.onMessage({ data: history() }, mockWs);
+      expect(sentByType(mockWs, 'error')).toHaveLength(1);
+    });
+
+    // The slot belongs to the READ, not to the 5s race: the timeout answers the
+    // client (timedOut history), but a read that is still running keeps its
+    // slot, so at most CAP reads per connection can sit in the lock queue.
+    // Measured reach: releasing in the race's own `finally` instead of on the
+    // read's settlement fails this test (the post-timeout request is served
+    // while every read is still pending).
+    it('(g) a timed-out read still occupies its slot: the client is answered, the next request is cap-rejected until the read settles', async () => {
+      const { handlers, mockWs } = await createSessionAndConnect();
+      const settle: Array<(v: null) => void> = [];
+      spyOn(sessionManager, 'getWorkerOutputHistory').mockImplementation(
+        () => new Promise((resolve) => { settle.push(resolve as (v: null) => void); }),
+      );
+      mockWs.sentMessages.length = 0;
+      for (let i = 0; i < CAP; i++) handlers.onMessage({ data: history() }, mockWs);
+
+      await new Promise((resolve) => setTimeout(resolve, 5500));
+      const timedOut = sentByType(mockWs, 'history');
+      expect(timedOut).toHaveLength(CAP);
+      expect(timedOut.every((h) => h.timedOut === true)).toBe(true);
+
+      // Every client has its timeout answer, yet every read is still pending.
+      mockWs.sentMessages.length = 0;
+      handlers.onMessage({ data: history() }, mockWs);
+      const refused = sentByType(mockWs, 'error');
+      expect(refused).toHaveLength(1);
+      expect(String(refused[0].message)).toStartWith('Too many concurrent');
+
+      // One read settles -> exactly one slot frees up.
+      settle[0](null);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      mockWs.sentMessages.length = 0;
+      handlers.onMessage({ data: history() }, mockWs);
+      expect(sentByType(mockWs, 'error')).toHaveLength(0);
+      settle[settle.length - 1](null);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sentByType(mockWs, 'history')).toHaveLength(1);
+    }, 15000);
+
+    it('keeps the cap per connection: a second connection is not affected by a full first one', async () => {
+      const first = await createSessionAndConnect();
+      pendingForever();
+      first.mockWs.sentMessages.length = 0;
+      for (let i = 0; i < CAP + 1; i++) first.handlers.onMessage({ data: history() }, first.mockWs);
+      expect(sentByType(first.mockWs, 'error')).toHaveLength(1);
+
+      const second = await createSessionAndConnect();
+      second.mockWs.sentMessages.length = 0;
+      second.handlers.onMessage({ data: history() }, second.mockWs);
+      expect(sentByType(second.mockWs, 'error')).toHaveLength(0);
     });
   });
 
