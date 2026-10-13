@@ -99,6 +99,22 @@ import { resolveEffectiveContextWindow } from './embedded-agent-context-window.j
  * Callbacks for WebSocket operations.
  * Injected to avoid circular dependency with websocket/routes.ts.
  */
+/**
+ * Why a notification could not be delivered. `pty-write-failed` and
+ * `embedded-delivery-failed` are the shapes a still-live worker can hit
+ * transiently; the others mean no worker can receive it.
+ */
+export type WorkerNotificationFailureReason =
+  | 'not-found'
+  | 'pty-inactive'
+  | 'pty-write-failed'
+  | 'embedded-delivery-failed'
+  | 'unsupported-worker';
+
+export type WorkerNotificationResult =
+  | { ok: true }
+  | { ok: false; error: string; reason: WorkerNotificationFailureReason };
+
 export interface WebSocketCallbacks {
   /** Notify all Worker WebSocket connections for a session that it's being deleted */
   notifySessionDeleted: (sessionId: string) => void;
@@ -945,11 +961,11 @@ export class SessionManager {
     workerId: string,
     params: PtyNotificationParams,
     opts: { replyToSessionId?: string } = {},
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
+  ): Promise<WorkerNotificationResult> {
     const session = this.getSession(sessionId);
     const worker = session?.workers.find((w) => w.id === workerId);
     if (!session || !worker) {
-      return { ok: false, error: `Worker ${workerId} not found in session ${sessionId}` };
+      return { ok: false, error: `Worker ${workerId} not found in session ${sessionId}`, reason: 'not-found' };
     }
 
     if (isPtyBackedWorker(worker)) {
@@ -964,25 +980,29 @@ export class SessionManager {
           writeInput: (data) => this.writeWorkerInput(sessionId, workerId, data),
         } as WritePtyNotificationParams);
         if (!written) {
-          return { ok: false, error: 'PTY write rejected: worker PTY is not active' };
+          return { ok: false, error: 'PTY write rejected: worker PTY is not active', reason: 'pty-inactive' };
         }
         return { ok: true };
       } catch (err) {
         const error = err instanceof Error ? err.message : 'PTY notification failed';
         logger.warn({ sessionId, workerId, err }, 'Failed to deliver PTY notification');
-        return { ok: false, error };
+        return { ok: false, error, reason: 'pty-write-failed' };
       }
     }
 
     if (worker.type === 'embedded-agent') {
       const result = await this.sendEmbeddedAgentSystemNotification(sessionId, workerId, params, opts);
       if (!result.ok) {
-        return { ok: false, error: result.error };
+        return { ok: false, error: result.error, reason: 'embedded-delivery-failed' };
       }
       return { ok: true };
     }
 
-    return { ok: false, error: `Worker ${workerId} in session ${sessionId} cannot receive notifications` };
+    return {
+      ok: false,
+      error: `Worker ${workerId} in session ${sessionId} cannot receive notifications`,
+      reason: 'unsupported-worker',
+    };
   }
 
   /** Forward a cancel command to an embedded-agent worker's loop. */

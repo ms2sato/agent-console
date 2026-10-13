@@ -405,7 +405,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
   it('returns false and logs a warning exactly once when deliverWorkerNotification resolves { ok: false }', async () => {
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
-      deliverWorkerNotification: mock(async () => ({ ok: false as const, error: 'boom' })),
+      deliverWorkerNotification: mock(async () => ({ ok: false as const, error: 'boom', reason: 'pty-write-failed' as const })),
     };
 
     const handlers = createInboundHandlers({

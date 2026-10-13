@@ -1,4 +1,5 @@
-import { describe, it, expect, mock, type Mock } from 'bun:test';
+import { describe, it, expect, mock, spyOn, type Mock } from 'bun:test';
+import { rootLogger } from '../../lib/logger.js';
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 import {
   routeProcessContent,
@@ -9,6 +10,7 @@ import {
   PROCESS_STILL_RUNNING_NOTICE,
   type ProcessOutputRouterDeps,
 } from '../process-output-router.js';
+import type { WorkerNotificationResult } from '../session-manager.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import type { PtyNotificationParams } from '../../lib/pty-notification.js';
 
@@ -36,8 +38,7 @@ function makeDeps(
   getResolver: ReturnType<typeof mock>;
 } {
   const deliverNotification = mock<ProcessOutputRouterDeps['deliverNotification']>(
-    async (_sessionId, _workerId, _params) =>
-      ({ ok: true }) as { ok: true } | { ok: false; error: string },
+    async (_sessionId, _workerId, _params) => ({ ok: true }) as WorkerNotificationResult,
   );
   const sendMessage = mock<ProcessOutputRouterDeps['sendMessage']>(async (params) => ({
     messageId: `msg-${Math.random().toString(16).slice(2, 10)}.md`,
@@ -53,6 +54,7 @@ function makeDeps(
       overrides.deliverNotification ??
       ((sessionId, workerId, params) => deliverNotification(sessionId, workerId, params)),
     sendMessage: overrides.sendMessage ?? ((params) => sendMessage(params)),
+    sleep: overrides.sleep ?? (async () => {}),
   };
   return { deps, deliverNotification, sendMessage, getResolver };
 }
@@ -228,7 +230,7 @@ describe('routeProcessContent (pty mode)', () => {
 
   it('logs a warning and does not throw when deliverNotification reports a failure', async () => {
     const { deps, sendMessage } = makeDeps({
-      deliverNotification: async () => ({ ok: false, error: 'worker gone' }),
+      deliverNotification: async () => ({ ok: false, error: 'worker gone', reason: 'not-found' }),
     });
     const process = makeProcess({ outputMode: 'pty' });
 
@@ -379,7 +381,7 @@ describe('routeProcessContent (message mode)', () => {
 
   it('logs a warning and does not throw when deliverNotification reports a failure after a successful chunk write', async () => {
     const { deps, sendMessage } = makeDeps({
-      deliverNotification: async () => ({ ok: false, error: 'worker gone' }),
+      deliverNotification: async () => ({ ok: false, error: 'worker gone', reason: 'not-found' }),
     });
     const process = makeProcess({ outputMode: 'message' });
 
@@ -618,5 +620,149 @@ describe('routeProcessExit ordering (Issue #1591)', () => {
       const message = await exitMessageFor(makeProcess({ status: 'exited', exitCode: 0, timeoutSeconds: 600 }));
       expect(message).toBe('Process exited with code 0');
     });
+  });
+});
+
+describe('delivery retry (bounded, transient failures only)', () => {
+  const TRANSIENT_PTY = { ok: false, error: 'pty write blew up', reason: 'pty-write-failed' } as const;
+  const TRANSIENT_EMBEDDED = { ok: false, error: 'stdin closed', reason: 'embedded-delivery-failed' } as const;
+
+  function scripted(results: Array<WorkerNotificationResult | Error>) {
+    let i = 0;
+    return mock(async (_s: string, _w: string, _p: PtyNotificationParams): Promise<WorkerNotificationResult> => {
+      const next = results[Math.min(i++, results.length - 1)];
+      if (next instanceof Error) throw next;
+      return next;
+    });
+  }
+
+  async function run(
+    results: Array<WorkerNotificationResult | Error>,
+    kind: 'pty-stdout' | 'message-stdout' | 'exit' = 'exit',
+  ) {
+    const deliverNotification = scripted(results);
+    const sleeps: number[] = [];
+    const { deps } = makeDeps({
+      deliverNotification: (s, w, p) => deliverNotification(s, w, p),
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    const warnSpy = spyOn(rootLogger, 'warn');
+    // Another test file may have left calls on a shared, unrestored spy.
+    warnSpy.mockClear();
+    // The no-warn cases below are anchored by their positive sibling ("three
+    // transient failures: ONE warn with attempts 3"), which uses the same
+    // 'Failed to deliver' filter and would fail on a renamed message -- so a
+    // rename cannot make the no-warn cases pass vacuously.
+    try {
+      if (kind === 'exit') {
+        await routeProcessExit(deps, makeProcess({ id: `retry-${Math.random()}`, status: 'exited', exitCode: 0 }));
+      } else {
+        await routeProcessContent(deps, {
+          process: makeProcess({ id: `retry-${Math.random()}`, outputMode: kind === 'pty-stdout' ? 'pty' : 'message' }),
+          content: 'out',
+          direction: 'stdout',
+        });
+      }
+      const warns = warnSpy.mock.calls
+        .filter((c) => String(c[1]).startsWith('Failed to deliver'))
+        .map((c) => c[0] as Record<string, unknown>);
+      return { calls: deliverNotification.mock.calls.length, sleeps, warns };
+    } finally {
+      warnSpy.mockRestore();
+    }
+  }
+
+  // Reach (measured by mutating the router): dropping the `reason` gate
+  // (retry everything) fails 4 cases (the three no-retry reasons and the
+  // transient-then-not-found case); capping attempts at 1 fails 8 cases
+  // (every multi-attempt one); not retrying a thrown call fails the two throw
+  // cases; removing the sleep fails the recorded-waits assertions and the
+  // ordering test's mid-wait check -- but the ordering test's FINAL order
+  // assertion alone would still hold, so the wait is a politeness, not what
+  // keeps exit behind stdout (that is the delivery tail).
+  it('success on the first attempt: one call, no warn', async () => {
+    const r = await run([{ ok: true }]);
+    expect(r).toEqual({ calls: 1, sleeps: [], warns: [] });
+  });
+
+  it('transient, transient, ok: three calls, waits 1s then 2s, no warn', async () => {
+    const r = await run([TRANSIENT_PTY, TRANSIENT_EMBEDDED, { ok: true }]);
+    expect(r).toEqual({ calls: 3, sleeps: [1000, 2000], warns: [] });
+  });
+
+  it('three transient failures: three calls, ONE warn with attempts 3 and the last reason', async () => {
+    const r = await run([TRANSIENT_PTY, TRANSIENT_PTY, TRANSIENT_EMBEDDED]);
+    expect(r.calls).toBe(3);
+    expect(r.warns).toHaveLength(1);
+    expect(r.warns[0]).toMatchObject({ attempts: 3, reason: 'embedded-delivery-failed', error: 'stdin closed' });
+  });
+
+  it.each(['not-found', 'pty-inactive', 'unsupported-worker'] as const)(
+    '%s on attempt 1: no retry, one warn with attempts 1',
+    async (reason) => {
+      const r = await run([{ ok: false, error: 'nobody listening', reason }]);
+      expect(r.calls).toBe(1);
+      expect(r.sleeps).toEqual([]);
+      expect(r.warns).toHaveLength(1);
+      expect(r.warns[0]).toMatchObject({ attempts: 1, reason });
+    },
+  );
+
+  it('a thrown call then ok: two calls, delivered, no warn', async () => {
+    const r = await run([new Error('boom'), { ok: true }]);
+    expect(r).toEqual({ calls: 2, sleeps: [1000], warns: [] });
+  });
+
+  it('three throws: one warn with attempts 3 and the thrown message', async () => {
+    const r = await run([new Error('boom')]);
+    expect(r.calls).toBe(3);
+    expect(r.warns).toHaveLength(1);
+    expect(r.warns[0]).toMatchObject({ attempts: 3, error: 'boom' });
+  });
+
+  it('transient then not-found: stops at the second attempt, one warn attempts 2 reason not-found', async () => {
+    const r = await run([TRANSIENT_PTY, { ok: false, error: 'gone', reason: 'not-found' }]);
+    expect(r.calls).toBe(2);
+    expect(r.warns).toHaveLength(1);
+    expect(r.warns[0]).toMatchObject({ attempts: 2, reason: 'not-found' });
+  });
+
+  it.each(['pty-stdout', 'message-stdout'] as const)('%s path retries the same way', async (kind) => {
+    const r = await run([TRANSIENT_PTY, { ok: true }], kind);
+    expect(r).toEqual({ calls: 2, sleeps: [1000], warns: [] });
+  });
+
+  it('ordering: a stdout notice stuck in its retry wait is still delivered before the exit notice', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
+    let stdoutAttempts = 0;
+    const { deps } = makeDeps({
+      deliverNotification: async (_s, _w, params) => {
+        const message = (params.fields as { message: string }).message;
+        if (message.startsWith('Process exited')) {
+          order.push('exit');
+          return { ok: true };
+        }
+        stdoutAttempts += 1;
+        order.push(`stdout-${stdoutAttempts}`);
+        return stdoutAttempts === 1 ? TRANSIENT_PTY : { ok: true };
+      },
+      sleep: () => gate,
+    });
+    const process = makeProcess({ id: 'retry-order', outputMode: 'pty' });
+
+    const stdoutPromise = routeProcessContent(deps, { process, content: 'out', direction: 'stdout' });
+    const exitPromise = routeProcessExit(deps, process);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(order).toEqual(['stdout-1']);
+
+    release();
+    await Promise.all([stdoutPromise, exitPromise]);
+    expect(order).toEqual(['stdout-1', 'stdout-2', 'exit']);
   });
 });

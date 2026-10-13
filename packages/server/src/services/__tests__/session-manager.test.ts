@@ -2819,7 +2819,7 @@ describe('SessionManager', () => {
       expect(gitDiffWorker).toBeDefined();
 
       const result = await manager.deliverWorkerNotification(session.id, gitDiffWorker.id, TIMER_PARAMS);
-      expect(result.ok).toBe(false);
+      expect(result).toEqual({ ok: false, error: expect.any(String), reason: 'unsupported-worker' });
     });
 
     it('unresolved worker: resolves { ok: false }', async () => {
@@ -2831,7 +2831,7 @@ describe('SessionManager', () => {
       });
 
       const result = await manager.deliverWorkerNotification(session.id, 'non-existent-worker', TIMER_PARAMS);
-      expect(result.ok).toBe(false);
+      expect(result).toEqual({ ok: false, error: expect.any(String), reason: 'not-found' });
     });
 
     // Q12 polarity (Issue #1654): on unmodified main, writePtyNotification's
@@ -2856,7 +2856,66 @@ describe('SessionManager', () => {
 
       const result = await manager.deliverWorkerNotification(session.id, agentWorker.id, TIMER_PARAMS);
 
-      expect(result).toEqual({ ok: false, error: expect.stringMatching(/PTY write rejected/) });
+      expect(result).toEqual({
+        ok: false,
+        error: expect.stringMatching(/PTY write rejected/),
+        reason: 'pty-inactive',
+      });
+    });
+
+    it('PTY-backed target whose write throws: resolves { ok: false, reason: pty-write-failed }', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const writeSpy = spyOn(manager, 'writeWorkerInput').mockImplementation(() => {
+        throw new Error('pty write blew up');
+      });
+
+      try {
+        const result = await manager.deliverWorkerNotification(session.id, agentWorker.id, TIMER_PARAMS);
+        expect(result).toEqual({ ok: false, error: 'pty write blew up', reason: 'pty-write-failed' });
+      } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it('embedded-agent target whose delivery fails: resolves { ok: false, reason: embedded-delivery-failed }', async () => {
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === STUB_DEF.id ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: STUB_DEF.id,
+      });
+      expect(worker).not.toBeNull();
+      const sendSpy = spyOn(manager, 'sendEmbeddedAgentSystemNotification').mockResolvedValue({
+        ok: false,
+        code: 'WRITE_FAILED',
+        error: 'stdin closed',
+      });
+
+      try {
+        const result = await manager.deliverWorkerNotification(session.id, worker!.id, TIMER_PARAMS);
+        expect(result).toEqual({ ok: false, error: 'stdin closed', reason: 'embedded-delivery-failed' });
+      } finally {
+        sendSpy.mockRestore();
+      }
     });
 
     it('PTY-backed target with a live pty: resolves { ok: true }', async () => {

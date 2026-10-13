@@ -11,6 +11,7 @@
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { PtyNotificationParams } from '../lib/pty-notification.js';
+import type { WorkerNotificationResult } from './session-manager.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('process-output-router');
@@ -42,7 +43,12 @@ export interface ProcessOutputRouterDeps {
     sessionId: string,
     workerId: string,
     params: PtyNotificationParams,
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  ) => Promise<WorkerNotificationResult>;
+  /**
+   * Wait between delivery retries. Defaults to a real timer; injected so
+   * tests do not wait.
+   */
+  sleep?: (ms: number) => Promise<void>;
   /** Send a message file via the inter-session message service. */
   sendMessage: (params: {
     toSessionId: string;
@@ -179,6 +185,67 @@ export function splitContentIntoChunks(content: string, targetBytes: number): st
  */
 export const deliveryTails = new Map<string, Promise<unknown>>();
 
+/** Waits before the 2nd and 3rd attempt of a transiently failing delivery. */
+const DELIVERY_RETRY_WAITS_MS = [1000, 2000] as const;
+
+/** Total delivery attempts: the first try plus one retry per wait. */
+const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_WAITS_MS.length + 1;
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Deliver one notification, retrying a bounded number of times when the
+ * failure is one a still-live worker can hit transiently: a PTY write that
+ * threw, an embedded-agent delivery error, or the delivery call itself
+ * throwing. Failures where no worker can receive the notice (`not-found`,
+ * `pty-inactive`, `unsupported-worker`) are not retried -- nobody is
+ * listening, and waiting only delays cleanup.
+ *
+ * Runs inside the caller's per-process `enqueue` step, so the wait also
+ * holds back later notices for the same process: ordering is preserved.
+ * Never throws; after the last failed attempt it logs `failureMessage`
+ * once with the attempt count and the last reason/error, and returns.
+ */
+async function deliverWithRetry(
+  deps: ProcessOutputRouterDeps,
+  sessionId: string,
+  workerId: string,
+  params: PtyNotificationParams,
+  failureMessage: string,
+  logContext: Record<string, unknown>,
+): Promise<boolean> {
+  const sleep = deps.sleep ?? defaultSleep;
+  let lastError = '';
+  let lastReason: string | undefined;
+  for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
+    let retryable: boolean;
+    try {
+      const result = await deps.deliverNotification(sessionId, workerId, params);
+      if (result.ok) {
+        return true;
+      }
+      lastError = result.error;
+      lastReason = result.reason;
+      retryable = result.reason === 'pty-write-failed' || result.reason === 'embedded-delivery-failed';
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      lastReason = undefined;
+      retryable = true;
+    }
+    if (!retryable || attempt === MAX_DELIVERY_ATTEMPTS) {
+      logger.warn(
+        { ...logContext, error: lastError, reason: lastReason, attempts: attempt },
+        failureMessage,
+      );
+      return false;
+    }
+    await sleep(DELIVERY_RETRY_WAITS_MS[attempt - 1]);
+  }
+  return false;
+}
+
 function noop(): void {}
 
 /**
@@ -235,8 +302,11 @@ async function deliverProcessContent(
   }
 
   if (process.outputMode === 'pty') {
-    try {
-      const result = await deps.deliverNotification(process.sessionId, process.workerId, {
+    await deliverWithRetry(
+      deps,
+      process.sessionId,
+      process.workerId,
+      {
         kind: 'internal-process',
         tag: 'internal:process',
         fields: {
@@ -245,24 +315,10 @@ async function deliverProcessContent(
           message: withStillRunningNotice(content, process, direction),
         },
         intent: direction === 'stdout' ? 'triage' : 'inform',
-      });
-      if (!result.ok) {
-        logger.warn(
-          { processId: process.id, sessionId: process.sessionId, direction, error: result.error },
-          'Failed to deliver process PTY notification',
-        );
-      }
-    } catch (error) {
-      logger.warn(
-        {
-          processId: process.id,
-          sessionId: process.sessionId,
-          direction,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to deliver process PTY notification',
-      );
-    }
+      },
+      'Failed to deliver process PTY notification',
+      { processId: process.id, sessionId: process.sessionId, direction },
+    );
     return;
   }
 
@@ -290,8 +346,11 @@ async function deliverProcessContent(
         ? `[stdout via message] path=${sendResult.path} bytes=${bytes}`
         : `[response via message] path=${sendResult.path} bytes=${bytes}`;
 
-    try {
-      const notifyResult = await deps.deliverNotification(process.sessionId, process.workerId, {
+    await deliverWithRetry(
+      deps,
+      process.sessionId,
+      process.workerId,
+      {
         kind: 'internal-process',
         tag: 'internal:process',
         fields: {
@@ -300,29 +359,10 @@ async function deliverProcessContent(
           message: withStillRunningNotice(summary, process, direction),
         },
         intent: direction === 'stdout' ? 'triage' : 'inform',
-      });
-      if (!notifyResult.ok) {
-        logger.warn(
-          {
-            processId: process.id,
-            sessionId: process.sessionId,
-            direction,
-            error: notifyResult.error,
-          },
-          'Failed to deliver brief process PTY notification (message file was written)',
-        );
-      }
-    } catch (error) {
-      logger.warn(
-        {
-          processId: process.id,
-          sessionId: process.sessionId,
-          direction,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to deliver brief process PTY notification (message file was written)',
-      );
-    }
+      },
+      'Failed to deliver brief process PTY notification (message file was written)',
+      { processId: process.id, sessionId: process.sessionId, direction },
+    );
   }
 }
 
@@ -364,8 +404,11 @@ async function deliverProcessExit(
   deps: ProcessOutputRouterDeps,
   process: InteractiveProcessInfo,
 ): Promise<void> {
-  try {
-    const result = await deps.deliverNotification(process.sessionId, process.workerId, {
+  await deliverWithRetry(
+    deps,
+    process.sessionId,
+    process.workerId,
+    {
       kind: 'internal-process',
       tag: 'internal:process',
       fields: {
@@ -376,17 +419,8 @@ async function deliverProcessExit(
           `Process exited with code ${process.exitCode ?? 'unknown'}`,
       },
       intent: 'inform',
-    });
-    if (!result.ok) {
-      logger.warn(
-        { processId: process.id, sessionId: process.sessionId, error: result.error },
-        'Failed to deliver process exit notification',
-      );
-    }
-  } catch (err) {
-    logger.warn(
-      { processId: process.id, sessionId: process.sessionId, err },
-      'Failed to deliver process exit notification',
-    );
-  }
+    },
+    'Failed to deliver process exit notification',
+    { processId: process.id, sessionId: process.sessionId },
+  );
 }

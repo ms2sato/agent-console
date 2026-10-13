@@ -421,6 +421,32 @@ established this by three experiments and a source read, disproving that
 same Issue's own original AC premise ("a bad `commandTemplate` causes an
 immediate PTY exit 127").
 
+### Delivery of `run_process` notices
+
+Delivery of `run_process` notices (stdout chunks and the exit notice) to the
+calling worker is best-effort with a bounded retry: at most 3 attempts, waiting
+1 s and then 2 s between them, for the two transient shapes a still-live
+worker can hit. After the last attempt the notice is dropped with one warning
+carrying `attempts` and the last `reason`.
+
+`SessionManager.deliverWorkerNotification` reports a failure with a `reason`
+discriminant, one per branch:
+
+| `reason` | Meaning | Retried |
+|---|---|---|
+| `not-found` | session or worker does not exist | no |
+| `pty-inactive` | the worker's PTY is not active | no |
+| `pty-write-failed` | the PTY write threw | yes |
+| `embedded-delivery-failed` | the embedded-agent system-notification send failed | yes |
+| `unsupported-worker` | the worker kind cannot receive notifications | no |
+
+A thrown delivery call is treated as the same transient class. Where no worker
+can receive the notice nobody is listening, so retrying would only delay
+cleanup. The retry runs inside the per-process delivery tail, so a notice
+waiting to retry still delivers before any later notice (including the exit
+notice) for the same process. There is no persistence: a notice dropped after
+the last attempt is not re-delivered on a later activation.
+
 ## Server Startup Behavior
 
 ### Session Inheritance on Restart
