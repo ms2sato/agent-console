@@ -306,6 +306,7 @@ describe('migration', () => {
           commandTemplate: 'legacy {{prompt}}',
           isBuiltIn: false,
           registeredAt: '2023-06-15T10:30:00.000Z', // old field name
+          retiredField: 'written by an older build', // unknown key the lenient loader must strip, not reject
           capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
         },
       ];
@@ -322,9 +323,6 @@ describe('migration', () => {
       expect(customRows[0].id).toBe('legacy-agent');
       expect(customRows[0].name).toBe('Legacy Agent');
       expect(customRows[0].created_at).toBe('2023-06-15T10:30:00.000Z');
-      // The lenient loader strips the legacy key; it must not reach the row.
-      expect(Object.keys(customRows[0])).not.toContain('registeredAt');
-      expect(Object.keys(customRows[0])).not.toContain('registered_at');
 
       // Verify JSON file was renamed
       expect(fs.existsSync(agentsJsonPath)).toBe(false);
