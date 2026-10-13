@@ -172,6 +172,8 @@ export type EmbeddedAgentChatEntry =
 export interface EmbeddedAgentContextUsage {
   promptTokens: number;
   estimated: boolean;
+  /** The model the SDK reported this usage for (claude-sdk arm); absent when not reported. */
+  model?: string;
   /**
    * Present only when this reading bears every mark of having been clamped by
    * the provider to its own input limit, rather than measuring the
@@ -1346,6 +1348,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
             // row from before the field existed", and the snapshot type has
             // no `false` to collapse those two into.
             ...(event.appearsClamped === true ? { appearsClamped: true as const } : {}),
+            ...(event.model !== undefined ? { model: event.model } : {}),
           },
         });
         // The contract is "did the ENTRIES array change", which drives the

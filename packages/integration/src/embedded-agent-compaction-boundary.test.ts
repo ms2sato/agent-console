@@ -220,7 +220,7 @@ describe('Client-Server Boundary: Compaction wire round trips', () => {
     // Simulate the loop emitting a context-usage reading followed by a
     // successful compaction's boundary marker, directly on the fake
     // subprocess's stdout.
-    fake.pushStdoutLine({ v: 1, type: 'context-usage', promptTokens: 1234, estimated: false });
+    fake.pushStdoutLine({ v: 1, type: 'context-usage', promptTokens: 1234, estimated: false, model: 'claude-x' });
     fake.pushStdoutLine({
       v: 1,
       type: 'context-compacted',
@@ -244,6 +244,9 @@ describe('Client-Server Boundary: Compaction wire round trips', () => {
       type: 'context-usage',
       promptTokens: 1234,
       estimated: false,
+      // The optional model survives the strict client-side parse (Q10: a field in the
+      // type but missing from the schema would drop the whole frame here).
+      model: 'claude-x',
     });
 
     const compactedEvent = events.find((e) => e.type === 'context-compacted');

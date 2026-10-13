@@ -491,6 +491,10 @@ export const EmbeddedAgentEventSchema = v.union([
     // rather than the conversation's size. A literal `true` and not a
     // boolean -- see the type's doc comment for why there is no `false`.
     appearsClamped: v.optional(v.literal(true)),
+    // The main-loop model the SDK says this usage was computed for (claude-sdk
+    // arm only). Optional and non-empty: absence means "not reported", and an
+    // empty string is never emitted.
+    model: v.optional(v.pipe(v.string(), v.minLength(1))),
   }),
   v.strictObject({
     v: v.literal(1),

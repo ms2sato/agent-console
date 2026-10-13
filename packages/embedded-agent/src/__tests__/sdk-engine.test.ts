@@ -2354,8 +2354,40 @@ describe('SdkEngine — context-usage polling (S1)', () => {
 
     expect(contextUsageCallCount()).toBe(1);
     expect(eventsOfType(events, 'context-usage')).toEqual([
-      { v: 1, type: 'context-usage', promptTokens: 4242, estimated: false },
+      { v: 1, type: 'context-usage', promptTokens: 4242, estimated: false, model: 'claude-sonnet-5' },
     ]);
+  });
+
+  it('forwards the SDK-reported model on the context-usage event', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(
+      [systemInit(), textDeltaEvent('hi'), messageStopEvent(), resultSuccess()],
+      { getContextUsage: async () => asContextUsage({ ...usableContextUsage(10), model: 'claude-x' }) },
+    );
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'context-usage')[0]).toMatchObject({ model: 'claude-x' });
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['empty', ''],
+    ['not a string', 42],
+  ])('omits the model key entirely when the SDK reports it %s (never model: undefined)', async (_label, reported) => {
+    const events: EmbeddedAgentEvent[] = [];
+    const response = { ...usableContextUsage(10) } as unknown as Record<string, unknown>;
+    if (reported === undefined) delete response.model;
+    else response.model = reported;
+    const { queryFn } = makeFakeQuery(
+      [systemInit(), textDeltaEvent('hi'), messageStopEvent(), resultSuccess()],
+      { getContextUsage: async () => asContextUsage(response) },
+    );
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    const usage = eventsOfType(events, 'context-usage')[0]!;
+    expect('model' in usage).toBe(false);
   });
 
   it('never polls getContextUsage absent a completed turn (no timer/interval polling)', async () => {
@@ -2405,7 +2437,7 @@ describe('SdkEngine — context-usage polling (S1)', () => {
     expect(attempts).toBe(3);
     expect(sleeps).toEqual([500, 500]);
     expect(eventsOfType(events, 'context-usage')).toEqual([
-      { v: 1, type: 'context-usage', promptTokens: 777, estimated: false },
+      { v: 1, type: 'context-usage', promptTokens: 777, estimated: false, model: 'claude-sonnet-5' },
     ]);
     expect(eventsOfType(events, 'fatal')).toHaveLength(0);
   });

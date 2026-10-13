@@ -1612,6 +1612,16 @@ describe('EmbeddedAgentEventSchema', () => {
       expect(v.safeParse(EmbeddedAgentEventSchema, base).success).toBe(true);
     });
 
+    it('accepts a context-usage carrying the SDK-reported model, and rejects an empty one', () => {
+      const base = { v: 1, type: 'context-usage', promptTokens: 10, estimated: false };
+      expect(v.safeParse(EmbeddedAgentEventSchema, { ...base, model: 'claude-x' }).success).toBe(true);
+      expect(v.safeParse(EmbeddedAgentEventSchema, base).success).toBe(true);
+      // An empty string is "not reported" and must be omitted, never sent.
+      expect(v.safeParse(EmbeddedAgentEventSchema, { ...base, model: '' }).success).toBe(false);
+      // The member stays strict: an unknown sibling is still rejected.
+      expect(v.safeParse(EmbeddedAgentEventSchema, { ...base, model: 'claude-x', provider: 'x' }).success).toBe(false);
+    });
+
     it('rejects an explicit `false` on the clamp inference', () => {
       // Three-valued by absence. Admitting `false` would add a fourth state
       // ("checked and found honest") that no consumer needs and that would
