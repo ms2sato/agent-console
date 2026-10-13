@@ -1350,7 +1350,10 @@ describe('SessionInitializationService orphan cleanup transaction (real DB, real
 
   afterEach(async () => {
     resetProcessMock();
-    await db.destroy();
+    // A dropped executor leaves the transaction open, and destroy() would wait on
+    // it forever (bun cannot interrupt a never-settling await), hanging the run
+    // instead of failing the test; bound it.
+    await Promise.race([db.destroy(), new Promise((resolve) => setTimeout(resolve, 1000))]);
   });
 
   function createService(options: { withDb: boolean }) {
