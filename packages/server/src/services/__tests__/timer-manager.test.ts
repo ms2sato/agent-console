@@ -4,6 +4,7 @@ import {
   MIN_INTERVAL_SECONDS,
   MAX_INTERVAL_SECONDS,
   MAX_TIMERS_PER_SESSION,
+  computeEffectiveIntervalSeconds,
 } from '../timer-manager.js';
 
 describe('TimerManager', () => {
@@ -404,6 +405,242 @@ describe('TimerManager', () => {
     it('should return 0 when no repository is provided', async () => {
       const count = await manager.restoreTimers();
       expect(count).toBe(0);
+    });
+  });
+  describe('computeEffectiveIntervalSeconds', () => {
+    it('stays at base for factor 1', () => {
+      expect(computeEffectiveIntervalSeconds(60, 1, 86400, 5)).toBe(60);
+    });
+
+    it('doubles per step and starts at base on step 0', () => {
+      const waits = [0, 1, 2, 3].map((step) => computeEffectiveIntervalSeconds(60, 2, 86400, step));
+      expect(waits).toEqual([60, 120, 240, 480]);
+    });
+
+    it('caps at max', () => {
+      expect(computeEffectiveIntervalSeconds(60, 10, 600, 2)).toBe(600);
+    });
+
+    it('absorbs an Infinity power into the cap', () => {
+      expect(computeEffectiveIntervalSeconds(60, 10, 86400, 1100)).toBe(86400);
+    });
+
+    it('rounds fractional waits up', () => {
+      expect(computeEffectiveIntervalSeconds(7, 1.5, 86400, 1)).toBe(11);
+    });
+  });
+
+  describe('backoff validation', () => {
+    const create = (extra: { backoffFactor?: number; maxIntervalSeconds?: number }, intervalSeconds = 60) =>
+      manager.createTimer({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds,
+        action: 'x',
+        ...extra,
+      });
+
+    it.each([
+      [0.5, 'backoffFactor 0.5 must be between 1 and 10'],
+      [0, 'backoffFactor 0 must be between 1 and 10'],
+      [11, 'backoffFactor 11 must be between 1 and 10'],
+      [10.01, 'backoffFactor 10.01 must be between 1 and 10'],
+      [Number.NaN, 'backoffFactor NaN must be between 1 and 10'],
+      [Number.POSITIVE_INFINITY, 'backoffFactor Infinity must be between 1 and 10'],
+    ])('rejects backoffFactor %p', (backoffFactor, message) => {
+      expect(() => create({ backoffFactor })).toThrow(message);
+    });
+
+    it('accepts the factor boundaries 1 and 10', () => {
+      expect(create({ backoffFactor: 1 }).backoffFactor).toBe(1);
+      expect(create({ backoffFactor: 10 }).backoffFactor).toBe(10);
+    });
+
+    it('rejects maxIntervalSeconds below intervalSeconds', () => {
+      expect(() => create({ backoffFactor: 2, maxIntervalSeconds: 30 })).toThrow(
+        'maxIntervalSeconds 30s is below intervalSeconds 60s',
+      );
+    });
+
+    it('rejects maxIntervalSeconds above the global maximum', () => {
+      expect(() => create({ backoffFactor: 2, maxIntervalSeconds: 86401 })).toThrow(
+        'maxIntervalSeconds 86401s exceeds maximum of 86400s',
+      );
+    });
+
+    it('rejects a non-integer maxIntervalSeconds', () => {
+      expect(() => create({ backoffFactor: 2, maxIntervalSeconds: 100.5 })).toThrow(
+        'maxIntervalSeconds 100.5 must be an integer',
+      );
+    });
+
+    it('rejects maxIntervalSeconds without backoffFactor', () => {
+      expect(() => create({ maxIntervalSeconds: 600 })).toThrow(
+        'maxIntervalSeconds has no effect without backoffFactor > 1',
+      );
+    });
+
+    it('rejects maxIntervalSeconds with backoffFactor 1', () => {
+      expect(() => create({ backoffFactor: 1, maxIntervalSeconds: 600 })).toThrow(
+        'maxIntervalSeconds has no effect without backoffFactor > 1',
+      );
+    });
+
+    it('accepts maxIntervalSeconds equal to intervalSeconds and to the global maximum', () => {
+      expect(create({ backoffFactor: 2, maxIntervalSeconds: 60 }).maxIntervalSeconds).toBe(60);
+      expect(create({ backoffFactor: 2, maxIntervalSeconds: 86400 }).maxIntervalSeconds).toBe(86400);
+    });
+
+    it('defaults to factor 1 and the global maximum', () => {
+      const timer = create({});
+      expect(timer.backoffFactor).toBe(1);
+      expect(timer.maxIntervalSeconds).toBe(MAX_INTERVAL_SECONDS);
+      expect(timer.currentIntervalSeconds).toBe(60);
+    });
+  });
+
+  describe('backoff firing', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      manager.disposeAll();
+      jest.useRealTimers();
+    });
+
+    const base = { sessionId: 'session-1', workerId: 'worker-1', action: 'x' };
+
+    it('stretches the wait by the factor after each fire', () => {
+      manager.createTimer({ ...base, intervalSeconds: 60, backoffFactor: 2 });
+
+      jest.advanceTimersByTime(60000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(119999);
+      expect(onTick).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(240000);
+      expect(onTick).toHaveBeenCalledTimes(3);
+    });
+
+    it('stops stretching at maxIntervalSeconds', () => {
+      manager.createTimer({ ...base, intervalSeconds: 60, backoffFactor: 10, maxIntervalSeconds: 600 });
+
+      jest.advanceTimersByTime(60000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(599999);
+      expect(onTick).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(600000);
+      expect(onTick).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps a fixed cadence by default', () => {
+      const timer = manager.createTimer({ ...base, intervalSeconds: 60 });
+
+      for (let i = 1; i <= 3; i++) {
+        jest.advanceTimersByTime(60000);
+        expect(onTick).toHaveBeenCalledTimes(i);
+        expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(60);
+      }
+    });
+
+    it('hands onTick a payload that already describes the next wake-up', () => {
+      const created = manager.createTimer({ ...base, intervalSeconds: 60, backoffFactor: 2 });
+      expect(created.nextFireAt).toBe(new Date(Date.now() + 60000).toISOString());
+
+      jest.advanceTimersByTime(60000);
+
+      const payload = onTick.mock.calls[0]?.[0];
+      expect(payload.currentIntervalSeconds).toBe(120);
+      expect(payload.nextFireAt).toBe(new Date(Date.now() + 120000).toISOString());
+      expect(payload.fireCount).toBe(1);
+    });
+
+    it('stops a chained timer when its session is deleted', () => {
+      manager.createTimer({ ...base, intervalSeconds: 60, backoffFactor: 2 });
+      jest.advanceTimersByTime(60000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+
+      manager.deleteTimersBySession('session-1');
+      jest.advanceTimersByTime(10_000_000);
+
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('resetTimer', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      manager.disposeAll();
+      jest.useRealTimers();
+    });
+
+    const base = { sessionId: 'session-1', workerId: 'worker-1', action: 'x' };
+
+    it('returns the next wait to the base interval and keeps fireCount', () => {
+      const timer = manager.createTimer({ ...base, intervalSeconds: 60, backoffFactor: 2 });
+      jest.advanceTimersByTime(60000);
+      jest.advanceTimersByTime(120000);
+      expect(onTick).toHaveBeenCalledTimes(2);
+      expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(240);
+
+      const reset = manager.resetTimer(timer.id);
+
+      expect(reset?.fireCount).toBe(2);
+      expect(reset?.currentIntervalSeconds).toBe(60);
+      expect(reset?.nextFireAt).toBe(new Date(Date.now() + 60000).toISOString());
+      jest.advanceTimersByTime(59999);
+      expect(onTick).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(3);
+      expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(120);
+    });
+
+    // Measured reach: removing the clearTimeout from resetTimer makes this fail
+    // (the old 20 s wait still fires at t=30, a third tick); the previous shape
+    // (reset right after a fire, then advance a full base interval) passed without it.
+    it('does not leave the old pending wait running', () => {
+      const timer = manager.createTimer({ ...base, intervalSeconds: 10, backoffFactor: 2 });
+      jest.advanceTimersByTime(10000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+      expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(20);
+
+      // Pending wait would fire at t=30 s; reset at t=15 s moves the next fire to t=25 s.
+      jest.advanceTimersByTime(5000);
+      manager.resetTimer(timer.id);
+      jest.advanceTimersByTime(20000);
+
+      // t=35 s: the new base fire at t=25 s only. The old wait (t=30 s) must not have fired.
+      expect(onTick).toHaveBeenCalledTimes(2);
+    });
+
+    it('restarts the wait from now on a fixed-interval timer', () => {
+      const timer = manager.createTimer({ ...base, intervalSeconds: 60 });
+      jest.advanceTimersByTime(50000);
+
+      manager.resetTimer(timer.id);
+      jest.advanceTimersByTime(59999);
+      expect(onTick).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns a copy', () => {
+      const timer = manager.createTimer({ ...base, intervalSeconds: 60, backoffFactor: 2 });
+      const reset = manager.resetTimer(timer.id);
+      expect(reset).toBeDefined();
+      if (reset) reset.fireCount = 99;
+      expect(manager.getTimer(timer.id)?.fireCount).toBe(0);
+    });
+
+    it('returns undefined for an unknown id', () => {
+      expect(manager.resetTimer('nope')).toBeUndefined();
     });
   });
 });

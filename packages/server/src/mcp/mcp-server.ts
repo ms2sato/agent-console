@@ -1636,7 +1636,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'The timer fires an [internal:timer] notification on each tick -- delivered as a PTY write for ' +
       'agent/terminal workers, or as a queued turn for embedded-agent workers. ' +
       'Not for waiting on `run_process` output -- that always arrives on its own. One standing timer per delegate; call `list_timers` first. ' +
-      'Timers are volatile and will not survive server restarts.',
+      'Timers persist across server restarts (fireCount and backoff restart from the base interval). ' +
+      'When waiting on a human decision or anything whose expected time-to-change grows with the time already waited, ' +
+      'set backoffFactor (e.g. 2) so the interval stretches up to maxIntervalSeconds, and call reset_timer when the situation changes.',
     {
       sessionId: z.string().optional().describe(
         'The session to receive timer notifications. ' +
@@ -1655,14 +1657,40 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .int()
         .min(10, 'Minimum interval is 10 seconds')
         .max(86400, 'Maximum interval is 86400 seconds (24 hours)')
-        .describe('Interval between ticks in seconds (min 10, max 86400)'),
+        .describe('Interval between ticks in seconds (min 10, max 86400); the first wait, and the base the backoff stretches from'),
       action: z
         .string()
         .min(1, 'Action is required')
         .max(500, 'Action must be under 500 characters')
         .describe('Description of what to do on each tick (included in the notification)'),
+      backoffFactor: z
+        .number()
+        .min(1, 'backoffFactor must be at least 1')
+        .max(10, 'backoffFactor must be at most 10')
+        .optional()
+        .describe(
+          'Multiplier applied to the wait after each tick (1-10). Omitted or 1 = fixed interval. ' +
+            'The wait before tick n+1 is min(ceil(intervalSeconds * backoffFactor^n), maxIntervalSeconds).',
+        ),
+      maxIntervalSeconds: z
+        .number()
+        .int()
+        .min(10, 'Minimum interval is 10 seconds')
+        .max(86400, 'Maximum interval is 86400 seconds (24 hours)')
+        .optional()
+        .describe(
+          'Upper bound for the stretched wait (default 86400; must be >= intervalSeconds). ' +
+            'Only valid together with backoffFactor > 1.',
+        ),
     },
-    async ({ sessionId: requestedSessionId, workerId: requestedWorkerId, intervalSeconds, action }) => {
+    async ({
+      sessionId: requestedSessionId,
+      workerId: requestedWorkerId,
+      intervalSeconds,
+      action,
+      backoffFactor,
+      maxIntervalSeconds,
+    }) => {
       const self = resolveSelfIdentity(
         getMcpCallerIdentity(),
         { sessionId: requestedSessionId, workerId: requestedWorkerId },
@@ -1692,6 +1720,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
           workerId,
           intervalSeconds,
           action,
+          backoffFactor,
+          maxIntervalSeconds,
         });
 
         return textResult({
@@ -1700,6 +1730,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
           workerId: timer.workerId,
           intervalSeconds: timer.intervalSeconds,
           action: timer.action,
+          backoffFactor: timer.backoffFactor,
+          maxIntervalSeconds: timer.maxIntervalSeconds,
+          nextFireAt: timer.nextFireAt,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
@@ -1727,6 +1760,35 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, timerId }, 'delete_timer failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: reset_timer ----------
+
+  mcpServer.tool(
+    'reset_timer',
+    'Reset a periodic timer to its base interval: the next tick is intervalSeconds from now and the backoff starts over ' +
+      '(fireCount is kept). Call this when the situation you are polling has changed. ' +
+      'On a fixed-interval timer (no backoffFactor) it simply restarts the wait from now.',
+    {
+      timerId: z.string().describe('The timer ID returned by create_timer'),
+    },
+    async ({ timerId }) => {
+      try {
+        const timer = timerManager.resetTimer(timerId);
+        if (!timer) {
+          return errorResult(`Timer not found: ${timerId}`);
+        }
+        return textResult({
+          reset: true,
+          nextFireAt: timer.nextFireAt,
+          currentIntervalSeconds: timer.currentIntervalSeconds,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, timerId }, 'reset_timer failed');
         return errorResult(message);
       }
     },

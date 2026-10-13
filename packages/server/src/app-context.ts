@@ -507,6 +507,8 @@ export async function createAppContext(
           timerId: timer.id,
           action: timer.action,
           fireCount: String(timer.fireCount),
+          nextIntervalSeconds: String(timer.currentIntervalSeconds),
+          nextFireAt: timer.nextFireAt,
         },
         intent: 'inform',
       })

@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 47;
+export const LATEST_SCHEMA_VERSION = 48;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -451,6 +451,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 47) {
     await migrateToV47(database);
+  }
+
+  if (currentVersion < 48) {
+    await migrateToV48(database);
   }
 }
 
@@ -3063,6 +3067,46 @@ export async function migrateToV47(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 47`.execute(database);
 
   logger.info('Migration to v47 completed');
+}
+
+/**
+ * Migration v48: Add `backoff_factor` and `max_interval_seconds` columns to
+ * `timers` -- the exponential-backoff mode of the periodic timer.
+ *
+ * Existing rows read as `backoff_factor = 1` and `max_interval_seconds = 86400`,
+ * i.e. exactly the fixed cadence they had before. No backfill, no table
+ * rebuild. Range validation lives in `TimerManager` and the MCP input schema,
+ * not in a CHECK constraint.
+ *
+ * Owner-approved DDL:
+ * ```sql
+ * ALTER TABLE timers ADD COLUMN backoff_factor REAL NOT NULL DEFAULT 1;
+ * ALTER TABLE timers ADD COLUMN max_interval_seconds INTEGER NOT NULL DEFAULT 86400;
+ * PRAGMA user_version = 48;
+ * ```
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV48(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v48: Adding backoff_factor and max_interval_seconds columns to timers');
+
+  try {
+    await sql`ALTER TABLE timers ADD COLUMN backoff_factor REAL NOT NULL DEFAULT 1`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column backoff_factor already exists, skipping');
+  }
+
+  try {
+    await sql`ALTER TABLE timers ADD COLUMN max_interval_seconds INTEGER NOT NULL DEFAULT 86400`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column max_interval_seconds already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 48`.execute(database);
+
+  logger.info('Migration to v48 completed');
 }
 
 /**

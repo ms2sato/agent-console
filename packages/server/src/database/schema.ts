@@ -519,6 +519,10 @@ export interface TimersTable {
   action: string;
   /** Creation timestamp as ISO 8601 string */
   created_at: string;
+  /** Multiplier applied to the wait after each fire (1 = fixed interval) */
+  backoff_factor: number;
+  /** Upper bound in seconds for the stretched wait */
+  max_interval_seconds: number;
 }
 
 /** Timer row as returned from SELECT queries */

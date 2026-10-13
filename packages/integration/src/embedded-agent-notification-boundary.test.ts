@@ -323,7 +323,7 @@ describe('Client-Server Boundary: embedded-agent internal-notification `notifica
     const result = await sessionManager.sendEmbeddedAgentSystemNotification(sessionId, workerId, {
       kind: 'internal-timer',
       tag: 'internal:timer',
-      fields: { timerId: 'timer-1', action: 'fire', fireCount: '3' },
+      fields: { timerId: 'timer-1', action: 'fire', fireCount: '3', nextIntervalSeconds: '60', nextFireAt: '2026-01-01T00:01:00.000Z' },
       intent: 'inform',
     });
     expect(result.ok).toBe(true);
@@ -418,7 +418,13 @@ describe('Client-Server Boundary: create_timer targeting an embedded-agent worke
       void sessionManager.deliverWorkerNotification(timer.sessionId, timer.workerId, {
         kind: 'internal-timer',
         tag: 'internal:timer',
-        fields: { timerId: timer.id, action: timer.action, fireCount: String(timer.fireCount) },
+        fields: {
+          timerId: timer.id,
+          action: timer.action,
+          fireCount: String(timer.fireCount),
+          nextIntervalSeconds: String(timer.currentIntervalSeconds),
+          nextFireAt: timer.nextFireAt,
+        },
         intent: 'inform',
       });
     });

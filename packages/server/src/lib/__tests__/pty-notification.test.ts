@@ -248,12 +248,27 @@ describe('writePtyNotification', () => {
     writePtyNotification({
       kind: 'internal-timer',
       tag: 'internal:timer',
-      fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
+      fields: { timerId: 'timer-1', action: 'check', fireCount: '1', nextIntervalSeconds: '60', nextFireAt: '2026-01-01T00:01:00.000Z' },
       intent: 'inform',
       writeInput: (data) => { written.push(data); return true; },
     });
 
     expect(written[0]).toMatch(/timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+  });
+
+  it('renders the next interval and next fire time in internal-timer notifications', () => {
+    const written: string[] = [];
+
+    writePtyNotification({
+      kind: 'internal-timer',
+      tag: 'internal:timer',
+      fields: { timerId: 'timer-1', action: 'check', fireCount: '1', nextIntervalSeconds: '120', nextFireAt: '2026-01-01T00:02:00.000Z' },
+      intent: 'inform',
+      writeInput: (data) => { written.push(data); return true; },
+    });
+
+    expect(written[0]).toContain('nextIntervalSeconds=120');
+    expect(written[0]).toContain('nextFireAt=2026-01-01T00:02:00.000Z');
   });
 
   it('places timestamp as the first field in the notification', () => {
@@ -262,7 +277,7 @@ describe('writePtyNotification', () => {
     writePtyNotification({
       kind: 'internal-timer',
       tag: 'internal:timer',
-      fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
+      fields: { timerId: 'timer-1', action: 'check', fireCount: '1', nextIntervalSeconds: '60', nextFireAt: '2026-01-01T00:01:00.000Z' },
       intent: 'inform',
       writeInput: (data) => { written.push(data); return true; },
     });
@@ -289,7 +304,7 @@ describe('writePtyNotification', () => {
       const result = writePtyNotification({
         kind: 'internal-timer',
         tag: 'internal:timer',
-        fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
+        fields: { timerId: 'timer-1', action: 'check', fireCount: '1', nextIntervalSeconds: '60', nextFireAt: '2026-01-01T00:01:00.000Z' },
         intent: 'inform',
         writeInput,
       });
@@ -319,7 +334,7 @@ describe('writePtyNotification', () => {
       const result = writePtyNotification({
         kind: 'internal-timer',
         tag: 'internal:timer',
-        fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
+        fields: { timerId: 'timer-1', action: 'check', fireCount: '1', nextIntervalSeconds: '60', nextFireAt: '2026-01-01T00:01:00.000Z' },
         intent: 'inform',
         writeInput,
       });
@@ -482,7 +497,7 @@ describe('extractNotificationSummary — internal-worker-interrupted', () => {
     const summary = extractNotificationSummary({
       kind: 'internal-timer',
       tag: 'internal:timer',
-      fields: { timerId: 't1', action: 'fire', fireCount: '1' },
+      fields: { timerId: 't1', action: 'fire', fireCount: '1', nextIntervalSeconds: '60', nextFireAt: '2026-01-01T00:01:00.000Z' },
       intent: 'inform',
     });
 

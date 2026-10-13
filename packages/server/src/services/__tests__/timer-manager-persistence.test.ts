@@ -45,6 +45,25 @@ describe('TimerManager with persistence', () => {
       expect(records[0].intervalSeconds).toBe(60);
       expect(records[0].action).toBe('check status');
       expect(records[0].createdAt).toBe(timer.createdAt);
+      expect(records[0].backoffFactor).toBe(1);
+      expect(records[0].maxIntervalSeconds).toBe(86400);
+    });
+
+    it('should persist backoffFactor and maxIntervalSeconds', async () => {
+      manager.createTimer({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 60,
+        action: 'wait for a human',
+        backoffFactor: 2,
+        maxIntervalSeconds: 600,
+      });
+
+      await flush();
+
+      const records = await repository.findAll();
+      expect(records[0].backoffFactor).toBe(2);
+      expect(records[0].maxIntervalSeconds).toBe(600);
     });
   });
 
@@ -122,6 +141,58 @@ describe('TimerManager with persistence', () => {
         expect(timers[0].intervalSeconds).toBe(60);
         expect(timers[0].action).toBe('check status');
         expect(timers[0].fireCount).toBe(0);
+      } finally {
+        manager2.disposeAll();
+      }
+    });
+
+    it('should restore the backoff mode and restart at the base interval', async () => {
+      const timer = manager.createTimer({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 60,
+        action: 'wait for a human',
+        backoffFactor: 2,
+        maxIntervalSeconds: 600,
+      });
+      await flush();
+      manager.disposeAll();
+
+      const manager2 = new TimerManager(mock(() => {}), repository);
+      try {
+        await manager2.restoreTimers();
+
+        const restored = manager2.getTimer(timer.id);
+        expect(restored?.backoffFactor).toBe(2);
+        expect(restored?.maxIntervalSeconds).toBe(600);
+        expect(restored?.currentIntervalSeconds).toBe(60);
+        expect(restored?.fireCount).toBe(0);
+      } finally {
+        manager2.disposeAll();
+      }
+    });
+
+    it('should restore a row written without the backoff columns as a fixed-interval timer', async () => {
+      await db
+        .insertInto('timers')
+        .values({
+          id: 'legacy-timer',
+          session_id: 'session-1',
+          worker_id: 'worker-1',
+          interval_seconds: 60,
+          action: 'legacy',
+          created_at: new Date().toISOString(),
+        } as never)
+        .execute();
+
+      const manager2 = new TimerManager(mock(() => {}), repository);
+      try {
+        await manager2.restoreTimers();
+
+        const restored = manager2.getTimer('legacy-timer');
+        expect(restored?.backoffFactor).toBe(1);
+        expect(restored?.maxIntervalSeconds).toBe(86400);
+        expect(restored?.currentIntervalSeconds).toBe(60);
       } finally {
         manager2.disposeAll();
       }
