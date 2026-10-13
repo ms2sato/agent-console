@@ -6,7 +6,9 @@
  */
 import { promises as fsPromises } from 'fs';
 import * as crypto from 'crypto';
+import type { Kysely } from 'kysely';
 import type { PersistedSession } from './persisted-types.js';
+import type { Database } from '../database/schema.js';
 import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
 import { createLogger } from '../lib/logger.js';
 import { isErrnoException } from '../lib/type-guards.js';
@@ -73,7 +75,8 @@ export class JsonSessionRepository implements SessionRepository {
     return sessions.filter((s) => s.serverPid === pid);
   }
 
-  async save(session: PersistedSession): Promise<void> {
+  // `_executor` on save / saveAll / delete is accepted and ignored: a JSON file has no database handle to run on.
+  async save(session: PersistedSession, _executor?: Kysely<Database>): Promise<void> {
     const sessions = await this.findAll();
     const index = sessions.findIndex((s) => s.id === session.id);
 
@@ -86,11 +89,11 @@ export class JsonSessionRepository implements SessionRepository {
     await atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
   }
 
-  async saveAll(sessions: PersistedSession[]): Promise<void> {
+  async saveAll(sessions: PersistedSession[], _executor?: Kysely<Database>): Promise<void> {
     await atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, _executor?: Kysely<Database>): Promise<void> {
     const sessions = await this.findAll();
     const filtered = sessions.filter((s) => s.id !== id);
     await atomicWrite(this.filePath, JSON.stringify(filtered, null, 2));

@@ -614,4 +614,16 @@ describe('JsonSessionRepository', () => {
       expect(content).toContain('{\n  ');
     });
   });
+  describe('executor argument', () => {
+    // A JSON file has no database handle: the optional argument is accepted
+    // (the interface declares it) and ignored. Compiling these calls is the pin.
+    it('save, saveAll and delete accept an undefined executor and behave as without it', async () => {
+      await repository.save(buildPersistedQuickSession({ id: 'json-1' }), undefined);
+      await repository.saveAll([buildPersistedQuickSession({ id: 'json-1' }), buildPersistedQuickSession({ id: 'json-2' })], undefined);
+      await repository.delete('json-1', undefined);
+
+      expect((await repository.findAll()).map((s) => s.id)).toEqual(['json-2']);
+    });
+  });
+
 });

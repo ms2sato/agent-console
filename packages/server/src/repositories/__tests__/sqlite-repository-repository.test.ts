@@ -1155,4 +1155,29 @@ describe('SqliteRepositoryRepository', () => {
     });
   });
 
+  describe('delete with an executor (a caller-held transaction)', () => {
+    it('rolls the delete back when the surrounding transaction throws after it', async () => {
+      await repository.save(createRepository({ id: 'repo-trx', path: '/path/trx' }));
+
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await repository.delete('repo-trx', trx);
+          throw new Error('injected failure after the delete');
+        }),
+      ).rejects.toThrow('injected failure after the delete');
+
+      expect(await repository.findById('repo-trx')).not.toBeNull();
+    });
+
+    it('commits the delete together with the surrounding transaction (control)', async () => {
+      await repository.save(createRepository({ id: 'repo-trx-ok', path: '/path/trx-ok' }));
+
+      await db.transaction().execute(async (trx) => {
+        await repository.delete('repo-trx-ok', trx);
+      });
+
+      expect(await repository.findById('repo-trx-ok')).toBeNull();
+    });
+  });
+
 });

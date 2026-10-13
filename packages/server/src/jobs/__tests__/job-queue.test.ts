@@ -1107,4 +1107,55 @@ describe('JobQueue', () => {
       await jobQueue.stop(); // Should not throw
     });
   });
+  describe('enqueue with an executor (a caller-held transaction)', () => {
+    const emitterOf = (queue: JobQueue) => (queue as unknown as { emitter: import('events').EventEmitter }).emitter;
+
+    it('leaves no jobs row and emits no job:added when the surrounding transaction throws', async () => {
+      let emitted = 0;
+      emitterOf(jobQueue).on('job:added', () => {
+        emitted += 1;
+      });
+
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await jobQueue.enqueue(testType('test:job'), { n: 1 }, { executor: trx });
+          throw new Error('injected failure after the enqueue');
+        }),
+      ).rejects.toThrow('injected failure after the enqueue');
+
+      expect(await jobQueue.countJobs()).toBe(0);
+      expect(emitted).toBe(0);
+    });
+
+    it('does not run the handler until wake() is called after the commit', async () => {
+      let runs = 0;
+      jobQueue.registerHandler(testType('test:job'), async () => {
+        runs += 1;
+      });
+      await jobQueue.start();
+
+      await db.transaction().execute(async (trx) => {
+        await jobQueue.enqueue(testType('test:job'), { n: 1 }, { executor: trx });
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(runs).toBe(0);
+
+      jobQueue.wake();
+      await waitFor(() => runs === 1);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(runs).toBe(1);
+    });
+
+    it('still emits job:added by itself when no executor is given', async () => {
+      let emitted = 0;
+      emitterOf(jobQueue).on('job:added', () => {
+        emitted += 1;
+      });
+
+      await jobQueue.enqueue(testType('test:job'), { n: 1 });
+
+      expect(emitted).toBe(1);
+    });
+  });
+
 });
