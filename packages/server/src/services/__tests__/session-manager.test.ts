@@ -3522,6 +3522,41 @@ describe('SessionManager', () => {
       const retrieved = manager.getSession(created.id);
       expect(retrieved?.createdByUsername).toBe('alice');
     });
+
+    it('primeActiveSessionUsernames primes the createdBy of every in-memory session, and is a no-op without a real lookup', async () => {
+      const stubUserRepo = {
+        async findById(id: string): Promise<AuthUser | null> {
+          return { id, username: `name-of-${id}`, homeDir: '/home/x' };
+        },
+      } as unknown as UserRepository;
+      const usernameLookup = new UsernameLookupService(stubUserRepo);
+      const primeMany = spyOn(usernameLookup, 'primeMany');
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        usernameLookup,
+      });
+      await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' }, { createdBy: 'u-1' });
+      await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' }, { createdBy: 'u-2' });
+      await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+      primeMany.mockClear();
+
+      await manager.primeActiveSessionUsernames();
+
+      expect(primeMany).toHaveBeenCalledTimes(1);
+      expect([...(primeMany.mock.calls[0]![0] as string[])].sort()).toEqual(['u-1', 'u-2']);
+
+      // Default manager (null lookup): resolves without touching anything.
+      const plain = await getSessionManager();
+      await expect(plain.primeActiveSessionUsernames()).resolves.toBeUndefined();
+    });
   });
 
   describe('getAllSessions', () => {
