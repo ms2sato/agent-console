@@ -2363,6 +2363,14 @@ describe('API Routes Integration', () => {
         expect(sessionStillExists).toBe(true);
       });
 
+      // Explicit timeout, on this test only. It does the most work in the file:
+      // createApp(), two real POST /api/sessions (full SessionManager creation
+      // each), then the async DELETE and a driven deletion job. Measured at
+      // 1.6-2.0 s on a host at load average ~5.5 (not idle: other suites were
+      // running), against bun's 5 s default, which a host at load ~7 crossed.
+      // 15 s is a load margin, not a fix for slowness; a real hang is still
+      // caught at 15 s, and the per-test guard reset bounds any timeout to one
+      // failure.
       it('should broadcast worktree-deletion-completed exactly once with all deleted session ids', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
@@ -2423,7 +2431,7 @@ describe('API Routes Integration', () => {
         expect(broadcastSessionIds).toContain(session1.id);
         expect(broadcastSessionIds).toContain(session2.id);
         expect(broadcastSessionIds.length).toBe(2);
-      });
+      }, 15_000);
 
       it('should broadcast worktree-deletion-completed with empty sessionIds when no sessions exist for deleted worktree', async () => {
         const app = await createApp();
