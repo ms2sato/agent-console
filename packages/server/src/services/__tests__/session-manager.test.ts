@@ -3348,6 +3348,26 @@ describe('SessionManager', () => {
       expect(updatedSession?.workers.find((w: Worker) => w.id === workerId)).toBeUndefined();
     });
 
+    it('writes the session without the worker on a transaction when a database handle is injected', async () => {
+      const repo = await createTestSessionRepository();
+      const saveSpy = spyOn(repo, 'save');
+      const manager = await getSessionManager({ sessionRepository: repo, db: getDatabase() });
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const workerId = session.workers.find((w: Worker) => w.type === 'agent')!.id;
+      saveSpy.mockClear();
+
+      expect(await manager.deleteWorker(session.id, workerId)).toBe(true);
+
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+      const [persisted, executor] = saveSpy.mock.calls[0];
+      expect(persisted.workers.find((w) => w.id === workerId)).toBeUndefined();
+      expect(executor?.isTransaction).toBe(true);
+    });
+
     it('should return false for non-existent worker', async () => {
       const manager = await getSessionManager();
 
@@ -4570,6 +4590,22 @@ describe('SessionManager', () => {
       // Check session was removed from persistence
       const savedData = JSON.parse(fs.readFileSync(`${TEST_CONFIG_DIR}/sessions.json`, 'utf-8'));
       expect(savedData.length).toBe(0);
+    });
+
+    it('deletes the row on a transaction when a database handle is injected', async () => {
+      const repo = await createTestSessionRepository();
+      const deleteSpy = spyOn(repo, 'delete');
+      const manager = await getSessionManager({ sessionRepository: repo, db: getDatabase() });
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      expect(await manager.deleteSession(session.id)).toBe(true);
+
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy.mock.calls[0][1]?.isTransaction).toBe(true);
     });
 
     it('should return false for non-existent session', async () => {

@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import type { Kysely } from 'kysely';
 import { SessionDeletionService, type SessionDeletionDeps } from '../session-deletion-service.js';
 import type { InternalSession } from '../internal-types.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import type { WorkerManager } from '../worker-manager.js';
-import type { JobQueue } from '../../jobs/index.js';
+import { JobQueue as RealJobQueue, JOB_TYPES, type JobQueue } from '../../jobs/index.js';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
+import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
+import { rootLogger } from '../../lib/logger.js';
 import type { NotificationManager } from '../notifications/notification-manager.js';
 import type { MessageService } from '../message-service.js';
 import type { InterSessionMessageService } from '../inter-session-message-service.js';
@@ -537,6 +542,146 @@ describe('SessionDeletionService', () => {
 
       const result = await service.forceDeleteSession('orphan-1');
       expect(result).toBe(true);
+    });
+  });
+});
+
+describe('SessionDeletionService delete transaction (real DB, real JobQueue)', () => {
+  let db: Kysely<Database>;
+  let sessionRepository: SqliteSessionRepository;
+  let jobQueue: RealJobQueue;
+  let memory: Map<string, InternalSession>;
+
+  // A statement issued on the shared connection from inside an open
+  // transaction body never completes (single connection behind a mutex), so a
+  // dropped executor shows up as 'hung' here instead of a failure message.
+  const settle = <T>(p: Promise<T>): Promise<T | 'hung'> =>
+    Promise.race([
+      p,
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3000)),
+    ]);
+
+  beforeEach(async () => {
+    db = await createDatabaseForTest();
+    sessionRepository = new SqliteSessionRepository(db);
+    jobQueue = new RealJobQueue(db);
+    memory = new Map();
+  });
+
+  afterEach(async () => {
+    await db.destroy();
+  });
+
+  function createService(options: { withDb: boolean }) {
+    return new SessionDeletionService(createMockDeps({
+      getSession: (id) => memory.get(id),
+      setSession: (id, session) => memory.set(id, session),
+      deleteSessionFromMemory: (id) => memory.delete(id),
+      sessionRepository,
+      jobQueue,
+      db: options.withDb ? db : null,
+    }));
+  }
+
+  async function seedSession(id: string, opts: { inMemory: boolean }): Promise<void> {
+    await sessionRepository.save(buildPersistedWorktreeSession({ id }));
+    if (opts.inMemory) {
+      memory.set(id, buildInternalWorktreeSession([], { id }));
+    }
+  }
+
+  async function jobTypes(): Promise<string[]> {
+    const rows = await db.selectFrom('jobs').select('type').execute();
+    return rows.map((r) => r.type);
+  }
+
+  function recordDeleteAndWake(): string[] {
+    const events: string[] = [];
+    const realDelete = sessionRepository.delete.bind(sessionRepository);
+    spyOn(sessionRepository, 'delete').mockImplementation(async (id, executor) => {
+      await realDelete(id, executor);
+      events.push('delete-resolved');
+    });
+    spyOn(jobQueue, 'wake').mockImplementation(() => { events.push('wake'); });
+    return events;
+  }
+
+  describe('deleteSession', () => {
+    it('deletes the row and enqueues exactly one cleanup job, waking the queue once after the delete', async () => {
+      await seedSession('s-ok', { inMemory: true });
+      const events = recordDeleteAndWake();
+
+      expect(await settle(createService({ withDb: true }).deleteSession('s-ok'))).toBe(true);
+
+      expect(await sessionRepository.findById('s-ok')).toBeNull();
+      expect(await jobTypes()).toEqual([JOB_TYPES.CLEANUP_SESSION_OUTPUTS]);
+      // An enqueue on a transaction emits nothing itself, so the single wake is
+      // the post-commit one.
+      expect(events).toEqual(['delete-resolved', 'wake']);
+    });
+
+    it('rolls the cleanup job back and restores the session in memory when the row delete fails', async () => {
+      await seedSession('s-fail', { inMemory: true });
+      spyOn(sessionRepository, 'delete').mockRejectedValue(new Error('injected delete failure'));
+
+      await expect(createService({ withDb: true }).deleteSession('s-fail')).rejects.toThrow('injected delete failure');
+
+      expect(await sessionRepository.findById('s-fail')).not.toBeNull();
+      expect(memory.has('s-fail')).toBe(true);
+      expect(await jobTypes()).toEqual([]);
+    });
+
+    it('without an injected database falls back to the two separate writes and warns once', async () => {
+      await seedSession('s-no-db', { inMemory: true });
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        await createService({ withDb: false }).deleteSession('s-no-db');
+
+        expect(await sessionRepository.findById('s-no-db')).toBeNull();
+        expect(await jobTypes()).toEqual([JOB_TYPES.CLEANUP_SESSION_OUTPUTS]);
+        const fallbackWarns = warnSpy.mock.calls.filter((call) => JSON.stringify(call).includes('not atomic'));
+        expect(fallbackWarns).toHaveLength(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('forceDeleteSession (orphaned: persisted only)', () => {
+    it('deletes the row and enqueues exactly one cleanup job, waking the queue once after the delete', async () => {
+      await seedSession('o-ok', { inMemory: false });
+      const events = recordDeleteAndWake();
+
+      expect(await settle(createService({ withDb: true }).forceDeleteSession('o-ok'))).toBe(true);
+
+      expect(await sessionRepository.findById('o-ok')).toBeNull();
+      expect(await jobTypes()).toEqual([JOB_TYPES.CLEANUP_SESSION_OUTPUTS]);
+      expect(events).toEqual(['delete-resolved', 'wake']);
+    });
+
+    it('rolls the cleanup job back when the row delete fails', async () => {
+      await seedSession('o-fail', { inMemory: false });
+      spyOn(sessionRepository, 'delete').mockRejectedValue(new Error('injected delete failure'));
+
+      await expect(createService({ withDb: true }).forceDeleteSession('o-fail')).rejects.toThrow('injected delete failure');
+
+      expect(await sessionRepository.findById('o-fail')).not.toBeNull();
+      expect(await jobTypes()).toEqual([]);
+    });
+
+    it('without an injected database falls back to the two separate writes and warns once', async () => {
+      await seedSession('o-no-db', { inMemory: false });
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        await createService({ withDb: false }).forceDeleteSession('o-no-db');
+
+        expect(await sessionRepository.findById('o-no-db')).toBeNull();
+        expect(await jobTypes()).toEqual([JOB_TYPES.CLEANUP_SESSION_OUTPUTS]);
+        const fallbackWarns = warnSpy.mock.calls.filter((call) => JSON.stringify(call).includes('not atomic'));
+        expect(fallbackWarns).toHaveLength(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 });

@@ -22,7 +22,8 @@ import { WorkerLifecycleManager, type WorkerLifecycleDeps } from '../worker-life
 import type { InternalAgentWorker, InternalTerminalWorker, InternalGitDiffWorker } from '../worker-types.js';
 import type { InternalSession } from '../internal-types.js';
 import type { SessionLifecycleCallbacks } from '../session-lifecycle-types.js';
-import { JobQueue } from '../../jobs/index.js';
+import { JobQueue, JOB_TYPES } from '../../jobs/index.js';
+import { rootLogger } from '../../lib/logger.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { AnnotationService } from '../annotation-service.js';
@@ -1388,6 +1389,112 @@ describe('WorkerLifecycleManager', () => {
       // The broadcast session should not contain the deleted worker
       const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find(w => w.id === deletedWorkerId)).toBeUndefined();
+    });
+  });
+
+  describe('deleteWorker: cleanup job and session write share a transaction', () => {
+    // A statement issued on the shared connection from inside an open
+    // transaction body never completes (single connection behind a mutex), so a
+    // dropped executor shows up as 'hung' here instead of a failure message.
+    const settle = <T>(p: Promise<T>): Promise<T | 'hung'> =>
+      Promise.race([
+        p,
+        new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3000)),
+      ]);
+
+    async function jobTypes(): Promise<string[]> {
+      const rows = await getDatabase().selectFrom('jobs').select('type').execute();
+      return rows.map((r) => r.type);
+    }
+
+    async function managerWithTransaction(persist: WorkerLifecycleDeps['persistSession']) {
+      const manager = new WorkerLifecycleManager(createDeps({ db: getDatabase(), persistSession: persist }));
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const worker = await manager.createWorker(session.id, { type: 'terminal' });
+      return { manager, session, workerId: worker!.id };
+    }
+
+    it('enqueues exactly one cleanup job in the same transaction as the write that drops the worker, then wakes the queue once', async () => {
+      const seen: { workerIdsInPersistedShape: string[]; executorIsTransaction: boolean; jobsVisibleInside: number; memoryHadWorker: boolean }[] = [];
+      let workerIdUnderTest = '';
+      const events: string[] = [];
+      const persist = mock<WorkerLifecycleDeps['persistSession']>(async (persisted, executor) => {
+        if (!executor) return; // createWorker's own persist
+        const jobsVisibleInside = (await executor.selectFrom('jobs').select('type').execute()).length;
+        seen.push({
+          workerIdsInPersistedShape: Array.from(persisted.workers.keys()),
+          executorIsTransaction: executor.isTransaction,
+          jobsVisibleInside,
+          memoryHadWorker: sessions.get(persisted.id)!.workers.has(workerIdUnderTest),
+        });
+        events.push('persist-resolved');
+      });
+      const { manager, session, workerId } = await managerWithTransaction(persist);
+      workerIdUnderTest = workerId;
+      spyOn(testJobQueue!, 'wake').mockImplementation(() => { events.push('wake'); });
+
+      expect(await settle(manager.deleteWorker(session.id, workerId))).toBe(true);
+
+      expect(seen).toEqual([{
+        workerIdsInPersistedShape: [],
+        executorIsTransaction: true,
+        jobsVisibleInside: 1,
+        memoryHadWorker: true,
+      }]);
+      expect(await jobTypes()).toEqual([JOB_TYPES.CLEANUP_WORKER_OUTPUT]);
+      expect(session.workers.has(workerId)).toBe(false);
+      expect(events).toEqual(['persist-resolved', 'wake']);
+    });
+
+    it('rolls the cleanup job back and keeps the worker listed when the session write fails', async () => {
+      const persist = mock<WorkerLifecycleDeps['persistSession']>(async (_persisted, executor) => {
+        if (executor) throw new Error('injected persist failure');
+      });
+      const { manager, session, workerId } = await managerWithTransaction(persist);
+
+      await expect(manager.deleteWorker(session.id, workerId)).rejects.toThrow('injected persist failure');
+
+      expect(await jobTypes()).toEqual([]);
+      expect(session.workers.has(workerId)).toBe(true);
+    });
+
+    it('opens no transaction for a worker with no output to clean up (git-diff)', async () => {
+      const persist = mock<WorkerLifecycleDeps['persistSession']>(async () => {});
+      const manager = new WorkerLifecycleManager(createDeps({ db: getDatabase(), persistSession: persist }));
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const worker = await manager.createWorker(session.id, { type: 'git-diff' });
+      persist.mockClear();
+
+      expect(await manager.deleteWorker(session.id, worker!.id)).toBe(true);
+
+      expect(persist).toHaveBeenCalledTimes(1);
+      expect(persist.mock.calls[0]).toHaveLength(1); // no executor
+      expect(await jobTypes()).toEqual([]);
+      expect(session.workers.has(worker!.id)).toBe(false);
+    });
+
+    it('without an injected database falls back to the two separate writes and warns once', async () => {
+      const persist = mock<WorkerLifecycleDeps['persistSession']>(async () => {});
+      const manager = new WorkerLifecycleManager(createDeps({ persistSession: persist }));
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const worker = await manager.createWorker(session.id, { type: 'terminal' });
+      persist.mockClear();
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        expect(await manager.deleteWorker(session.id, worker!.id)).toBe(true);
+
+        expect(await jobTypes()).toEqual([JOB_TYPES.CLEANUP_WORKER_OUTPUT]);
+        expect(persist).toHaveBeenCalledTimes(1);
+        expect(persist.mock.calls[0]).toHaveLength(1);
+        expect(session.workers.has(worker!.id)).toBe(false);
+        const fallbackWarns = warnSpy.mock.calls.filter((call) => JSON.stringify(call).includes('not atomic'));
+        expect(fallbackWarns).toHaveLength(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

@@ -6,6 +6,8 @@ import type { PersistedSession } from '../../repositories/persisted-types.js';
 import type { SessionRepository, SessionUpdateFields } from '../../repositories/index.js';
 import type { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { JobQueue } from '../../jobs/index.js';
+import { JobQueue as RealJobQueue, JOB_TYPES } from '../../jobs/index.js';
+import { rootLogger } from '../../lib/logger.js';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
@@ -1322,5 +1324,120 @@ describe('SessionInitializationService integration (real DB → mapper → servi
       .selectAll()
       .executeTakeFirst();
     expect(notification?.status).toBe('pending');
+  });
+});
+
+describe('SessionInitializationService orphan cleanup transaction (real DB, real JobQueue)', () => {
+  let db: Kysely<Database>;
+  let sessionRepository: SqliteSessionRepository;
+  let jobQueue: RealJobQueue;
+
+  // A statement issued on the shared connection from inside an open
+  // transaction body never completes (single connection behind a mutex), so a
+  // dropped executor shows up as 'hung' here instead of a failure message.
+  const settle = <T>(p: Promise<T>): Promise<T | 'hung'> =>
+    Promise.race([
+      p,
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3000)),
+    ]);
+
+  beforeEach(async () => {
+    resetProcessMock();
+    db = await createDatabaseForTest();
+    sessionRepository = new SqliteSessionRepository(db);
+    jobQueue = new RealJobQueue(db);
+  });
+
+  afterEach(async () => {
+    resetProcessMock();
+    await db.destroy();
+  });
+
+  function createService(options: { withDb: boolean }) {
+    return new SessionInitializationService({
+      sessionRepository,
+      pathExists: async () => true,
+      isSessionInMemory: () => false,
+      workerOutputFileManager: createMockWorkerOutputFileManager(),
+      jobQueue,
+      db: options.withDb ? db : null,
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick', '/test/config'),
+      baseDirForPersistedSession: () => '/test/config/_quick',
+      getServerPid: () => TEST_SERVER_PID,
+      resolveSpawnUsername: async (createdBy) => createdBy ?? 'test-server-user',
+      sweepOrphanProcessesImpl: noopSweepOrphanProcessesImpl,
+    });
+  }
+
+  // A paused quick session owned by a dead server: preserved by
+  // initializeSessions, removed by cleanupOrphanProcesses.
+  async function seedOrphan(id: string): Promise<void> {
+    await sessionRepository.save(buildPersistedQuickSession({
+      id,
+      locationPath: '/some/path',
+      serverPid: 88888,
+      pausedAt: '2024-01-01T01:00:00.000Z',
+    }));
+  }
+
+  async function cleanupJobTypes(): Promise<string[]> {
+    const rows = await db.selectFrom('jobs').select('type').execute();
+    return rows.map((r) => r.type);
+  }
+
+  it('deletes the row and enqueues exactly one cleanup job, waking the queue once after the delete', async () => {
+    await seedOrphan('orphan-ok');
+    const events: string[] = [];
+    const realDelete = sessionRepository.delete.bind(sessionRepository);
+    spyOn(sessionRepository, 'delete').mockImplementation(async (id, executor) => {
+      await realDelete(id, executor);
+      events.push('delete-resolved');
+    });
+    spyOn(jobQueue, 'wake').mockImplementation(() => { events.push('wake'); });
+
+    expect(await settle(createService({ withDb: true }).initialize())).not.toBe('hung');
+
+    expect(await sessionRepository.findById('orphan-ok')).toBeNull();
+    expect(await cleanupJobTypes()).toEqual([JOB_TYPES.CLEANUP_SESSION_OUTPUTS]);
+    // An enqueue on a transaction emits nothing itself, so the single wake is
+    // the post-commit one.
+    expect(events).toEqual(['delete-resolved', 'wake']);
+  });
+
+  it('rolls the cleanup job back when the row delete fails (no job for a session that is still there)', async () => {
+    await seedOrphan('orphan-delete-fails');
+    spyOn(sessionRepository, 'delete').mockRejectedValue(new Error('injected delete failure'));
+
+    await expect(createService({ withDb: true }).initialize()).rejects.toThrow('injected delete failure');
+
+    expect(await sessionRepository.findById('orphan-delete-fails')).not.toBeNull();
+    expect(await cleanupJobTypes()).toEqual([]);
+  });
+
+  it('keeps the row when the enqueue fails (the row is no longer deleted first)', async () => {
+    await seedOrphan('orphan-enqueue-fails');
+    spyOn(jobQueue, 'enqueue').mockRejectedValue(new Error('injected enqueue failure'));
+
+    await expect(createService({ withDb: true }).initialize()).rejects.toThrow('injected enqueue failure');
+
+    expect(await sessionRepository.findById('orphan-enqueue-fails')).not.toBeNull();
+    expect(await cleanupJobTypes()).toEqual([]);
+  });
+
+  it('without an injected database falls back to the two separate writes and warns', async () => {
+    await seedOrphan('orphan-no-db');
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      await createService({ withDb: false }).initialize();
+
+      expect(await sessionRepository.findById('orphan-no-db')).toBeNull();
+      expect(await cleanupJobTypes()).toEqual([JOB_TYPES.CLEANUP_SESSION_OUTPUTS]);
+      const fallbackWarns = warnSpy.mock.calls.filter((call) =>
+        JSON.stringify(call).includes('not atomic'),
+      );
+      expect(fallbackWarns).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
