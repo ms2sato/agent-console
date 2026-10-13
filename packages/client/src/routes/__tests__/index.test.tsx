@@ -1136,10 +1136,10 @@ describe('Dashboard / stop-pause result feedback', () => {
  * session when there is none (paused rows matter most: the sidebar lists only
  * running sessions) -- and on the quick-session card. Single-user renders nothing.
  *
- * Reach, measured (control: all cases green): not rendering the badge in
- * WorktreeRow fails the active and paused cases; reading only `session` (not
- * `pausedSession`) fails the paused case; not rendering it in SessionCard fails the
- * quick case; the single-user case fails if the badge ignored the multi-user gate.
+ * Reach, measured (control: 36 pass / 0 fail): reading only `session` (not
+ * `pausedSession`) in the row fails 1 (the paused case); not rendering the badge in
+ * SessionCard fails 1 (the quick case); dropping the badge's multi-user gate fails 2
+ * (the single-user row and the single-user card).
  */
 describe('Dashboard / owner badge (multi-user)', () => {
   const SELF = { id: 'self-uuid', username: 'me', homeDir: '/home/me' };

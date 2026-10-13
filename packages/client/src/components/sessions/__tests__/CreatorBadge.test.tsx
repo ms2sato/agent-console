@@ -3,9 +3,9 @@ import { render, screen, cleanup } from '@testing-library/react';
 import { CreatorBadge } from '../CreatorBadge';
 import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 
-// Reach, measured (control: all cases green): inverting the self/others colour
-// rule fails the mine and others cases; dropping the multi-user gate fails the
-// single-user case; dropping the username gate fails the no-username cases.
+// Reach, measured (control: 9 pass / 0 fail): inverting the self/others colour
+// rule fails 3 cases (and 2 sidebar cases); dropping the multi-user gate fails 1
+// (the single-user case).
 
 const SELF = { id: 'self-uuid', username: 'me', homeDir: '/home/me' };
 
