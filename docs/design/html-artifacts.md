@@ -124,7 +124,7 @@ Artifacts are user-scoped by requirement (per-user history), not session-scoped:
 - Bytes: `<AGENT_CONSOLE_HOME>/artifacts/<users.id>/<artifactId>.html` — a new namespace, deliberately parallel to (not inside) `repositories/`.
 - Metadata: a new `artifacts` table — `id` (UUID PK), `user_id` (FK `users.id`), `title`, `created_at`, `size_bytes`, `source_session_id` (nullable). Originally provenance-only; §4.2 (Issue #1370) added a read path over it — the column is populated at creation time regardless, so no migration or backfill was needed when that read path landed.
 
-Lifecycle (pre-pr-completeness Q7, answered at design time): **created** by the tool (§6); **read** by the serving endpoint and the history list; **deleted** by the owning user (UI delete; optionally an MCP delete tool at AC time) — deletion removes the row and the file together; **never** auto-expired in v1. Files are written by the server process and owned by it — no elevation anywhere in this feature (multi-user viewers go through HTTP, never the filesystem). The deletion story ships in the same phase as the creation story.
+Lifecycle (pre-pr-completeness Q7, answered at design time): **created** by the tool (§6); **read** by the serving endpoint and the history list; **updated** in place by the owning user (section 5.4); **deleted** by the owning user (UI delete; optionally an MCP delete tool at AC time) — deletion removes the row and the file together; **never** auto-expired in v1. Files are written by the server process and owned by it — no elevation anywhere in this feature (multi-user viewers go through HTTP, never the filesystem). The deletion story ships in the same phase as the creation story.
 
 ### 5.2 Attribution — the session ownership chain, never the caller identity
 
@@ -133,6 +133,40 @@ The artifact's `user_id` is the **calling worker's session `createdBy`** — the
 ### 5.3 Title resolution
 
 `title` param → document `<title>` → first heading — and when the document has none of these, the terminal fallback is the literal **"Untitled"** (the history row already shows `created_at` beside it, keeping the list scannable). An artifact id is never used as a display title.
+
+### 5.4 Update — content lifecycle (Issue #1372)
+
+An existing artifact's content can be replaced. The decision, and why it is a decision rather than a patch: replacing bytes under a handed-out URL changes a property the original design never stated but quietly had — a URL, once shared, refers to fixed content.
+
+**Ruling: option 1, in-place replace under the same id and URL, with a visible change signal.** Options 2 and 3 are rejected, for these reasons:
+
+| Option | Shared URL after the change | Content stability | Storage / API cost | What it deletes from the UI |
+|---|---|---|---|---|
+| 1. In-place replace, same id (**chosen**) | keeps working, now serves the new content | none by itself; the reader is told by the "Updated" signal below | one nullable column, one repository method, one tool | nothing |
+| 2. New artifact, caller deletes the old one | goes dead (the case that exists today) | full | none new | the old entry, so the history loses the link people were given |
+| 3. Versioned update | keeps working | full, with history | a versions table, a version-addressing API and UI for a history nobody asked for | nothing |
+
+- **The owner asked for "update"**, and what a user wants updated is the URL they already shared. Option 2 already exists and is exactly the case where the shared URL goes dead; option 1 adds the missing case rather than replacing one.
+- **URL-to-content stability was never a stated requirement.** Section 1 lists seven requirements and none is immutability. Premise P5 covers who may read, not whether what they read is stable. The risk option 1 adds is "a reader sees changed content without knowing", and that is closed by a signal, not by versioning.
+- **Option 3 can be added later on top of option 1 without undoing it** (an `artifact_versions` table keyed by the same id). That is the test for choosing the cheaper option now.
+
+**Data model.** `artifacts` gains `updated_at TEXT NULL`: NULL means never updated and stays NULL on create. `size_bytes` is rewritten on update. The DDL below is quoted from the implementation Issue (#2076), which puts it in front of the owner for approval — a database migration is an owner gate:
+
+```sql
+ALTER TABLE artifacts ADD COLUMN updated_at TEXT
+```
+
+**Storage.** The file at the existing path (section 5.1) is replaced by write-to-temp-then-rename inside the same per-user directory, following the conventions of `lib/artifact-storage.ts`. The rename is atomic, so a reader mid-request sees either the old file or the new one, never a torn file.
+
+**Authorization.** Same chain as delete: the session ownership chain of section 5.2 resolves the user, and only the owning `user_id` may update. The template is `DELETE /:id` in `routes/artifacts.ts`, which loads the record and compares `artifact.userId` against the caller before acting; `delete_html_artifact` does the same against `session.createdBy`.
+
+**Title.** Unchanged unless the update passes `title`. When the update passes none, the stored title stays: it is NOT re-derived from the new document (section 5.3's chain runs at create only). A re-derivation would silently rename the entry a user is tracking in the history list.
+
+**Change signal.** The viewer shell (section 7) shows "Updated <time>" next to the title, outside the frame, in the chrome the artifact cannot spoof; the history list shows `updated_at` when present.
+
+**The boundary is untouched** (section 3, the CSP, the viewer token, P6′): an update changes the bytes of the response and nothing else — the headers and the origin stay what they were. The serving route already answers with `Cache-Control: no-store`, so a replaced file is not hidden behind a cached copy.
+
+Implementation: Issue #2076 (its PR is the one that finishes #1372).
 
 ## 6. Surfaces — one MCP tool, two callers, no builtin variant
 
@@ -145,13 +179,15 @@ The owner's correction ("for the embedded agent it should be provided as a tool"
 - **No `AGENT_OPERATIONS` entry**: artifact creation is not an agent-directory operation, and force-fitting non-agent operations into that table is prohibited (the `send_session_message` precedent). Cross-surface parity for this feature is guaranteed by the per-surface E2E in §8, not by the exposure tables.
 - **Path-taking params are out of v1 on both surfaces.** The blocker was never path confinement (the embedded side owns that primitive) but server-side reads of user-owned files under elevation. An embedded agent that wants to upload a file it has on disk composes builtin `Read` → inline `content`; a terminal agent does the same with its own file tools.
 
+- **One MCP tool addition for update (Issue #1372, section 5.4)**: `update_html_artifact({ id, content, title? })` — same ≤ 5 MiB server-enforced cap and same result shape as the create tool, registered once in `mcp-server.ts`, reaching both callers the same way as every other tool here. REST `PUT /api/artifacts/:id` is a non-goal for v1: both callers of this section are MCP.
+
 Tool result shape: `{ artifactId, path, url?, note? }` per §4.1 — `url` present only when `PUBLIC_ORIGIN` is configured; `note` explains its absence otherwise.
 
 ## 7. UI
 
-- **History page**: the authenticated user's own artifacts, newest first — title, created-at, size, view link, delete. Others' artifacts are reachable by URL (requirement 3) but v1 has no global browse; that is a deliberate v1 cut, not an oversight.
+- **History page**: the authenticated user's own artifacts, newest first — title, created-at, an updated-at when the artifact has been updated (section 5.4), size, view link, delete. Others' artifacts are reachable by URL (requirement 3) but v1 has no global browse; that is a deliberate v1 cut, not an oversight.
 - **Session-scoped surfacing (Issue #1370)**: from a session's own view, the artifacts it created are also reachable directly — presented the way the session's Memo already is (a collapsible sidebar, hidden when empty), not merged into or replacing the history page above. The presentation is analogous to Memo; the storage mechanism is not (Memo is a file at `~/.agent-console/memos/{sessionId}.md`; artifacts remain SQLite rows filtered via §4.2). Deep links from this surfacing inherit the same plain-`<a>`, non-SPA navigation as the history page's view link (§3's navigation jail applies uniformly to every artifact deep link, regardless of which list surfaced it).
-- **Viewer page**: the sandboxed-iframe wrapper (§4), with title and owner shown outside the frame so artifact content cannot spoof the chrome around it — rendered **as a text node, never HTML-interpolated into markup or an attribute sink**, both in the viewer chrome and the history page's title column. The stored title is already stripped to plain text at write time (§5.3's title-resolution chain runs the fragment through a fixed-point tag-strip, closing the storage-time half of this obligation), but the render site must not rely on that alone: a future title write path (a rename API, an import) could bypass the strip, and this sentence is the boundary claim for the chrome specifically — it is either true or false at the render site, independent of what wrote the value. Required test: a `<script>`-bearing title injected directly at the storage layer (bypassing the strip, so the raw unstripped value is what's in the DB) must not execute when rendered in the history or viewer chrome.
+- **Viewer page**: the sandboxed-iframe wrapper (§4), with title, owner and — when the artifact has been updated (section 5.4) — an "Updated <time>" line shown outside the frame so artifact content cannot spoof the chrome around it — rendered **as a text node, never HTML-interpolated into markup or an attribute sink**, both in the viewer chrome and the history page's title column. The stored title is already stripped to plain text at write time (§5.3's title-resolution chain runs the fragment through a fixed-point tag-strip, closing the storage-time half of this obligation), but the render site must not rely on that alone: a future title write path (a rename API, an import) could bypass the strip, and this sentence is the boundary claim for the chrome specifically — it is either true or false at the render site, independent of what wrote the value. Required test: a `<script>`-bearing title injected directly at the storage layer (bypassing the strip, so the raw unstripped value is what's in the DB) must not execute when rendered in the history or viewer chrome.
 - **Realtime refresh (Issue #1520 / #1632)**: both `create_html_artifact` and `delete_html_artifact` (MCP) and `DELETE /api/artifacts/:id` (REST, the history/session-panel delete button's route) emit a trigger-only `/ws/app` message (`artifact-created` / `artifact-deleted`, carrying at most `{ sessionId, artifactId }`, never content) after the repository write succeeds. There is no REST `POST /api/artifacts`, so `artifact-created` stays MCP-only. All emitters call through the same shared writer (`packages/server/src/lib/artifact-bookmark-triggers.ts`), which owns the delete trigger's "owning session" resolution (the session whose panel query the artifact is listed under, resolved from the deleted record's `sourceSessionId`; the MCP tools additionally supply their own calling session as a fallback when `sourceSessionId` is null, while the REST route supplies no fallback and skips the broadcast in that case -- a sessionId is never invented). The history page and the session-scoped surfacing (above) both invalidate their scoped query on receipt (N1: the broadcast is never itself a source of list content).
 
 ## 8. Verification floor
@@ -165,7 +201,7 @@ Tool result shape: `{ artifactId, path, url?, note? }` per §4.1 — `url` prese
 
 ## 9. Non-goals (v1)
 
-Expiry and quota automation; CDN/external resources in artifacts (documented knob, trade-off stated in §3.2); path-taking tool params; per-artifact ACLs or sharing outside authenticated users; artifact editing/versioning (re-upload is a new artifact); a builtin-tool variant (§6, invariant); an `AGENT_OPERATIONS` entry (§6); server-side rendering or screenshotting.
+Expiry and quota automation; CDN/external resources in artifacts (documented knob, trade-off stated in §3.2); path-taking tool params; per-artifact ACLs or sharing outside authenticated users; artifact versioning or retained history (in-place update ships in section 5.4; a version table can be added later on top of it); a REST update route (the MCP tool is the only update surface in v1); a builtin-tool variant (§6, invariant); an `AGENT_OPERATIONS` entry (§6); server-side rendering or screenshotting.
 
 ## 10. Accepted risks (consolidated)
 
@@ -176,6 +212,7 @@ Each risk below was accepted as a deliberate decision; the reasoning lives next 
 | Any authenticated user can view any artifact; no per-artifact ACL, no global browse | §1 req. 3, §7 — resting on premise **P5** (§3.3): trusted internal team, with a stated re-derivation trigger |
 | Artifact scripts run (`'unsafe-inline'`); an artifact can visually imitate anything, including a login form | §3.2 — cannot send what it collects: fetch/XHR blocked by CSP (`connect-src` fallback), form POST blocked by the sandbox's missing `allow-forms`, navigation blocked by the shell's `frame-src` plus the two-tier gate that makes the shell mandatory (§3.3 P6′/P7); visual deception reduced to a social problem |
 | ~~In-frame navigation to external sites remains possible~~ — **reversed 2026-08-16**: navigation out of an artifact (script-driven or user-clicked) is now blocked entirely by the navigation jail | §3.2 (reversal recorded in place), §3.3 P6′/P7 |
+| A shared artifact URL may serve changed content after an in-place update; the signal is the "Updated <time>" line in the viewer chrome, and the risk rests on P5 (trusted viewer population) | §5.4 (Issue #1372) |
 | No expiry, no count quota; artifacts accumulate until manually deleted | §1 req. 6, §9 — deliberate v1 cut |
 | Boundary rests on named premises P1–P7 (opaque-origin support, `SameSite=Lax` cookie, unfiltered embedded tools-list, `/api`-mount auth, trusted viewer population, Fetch-Metadata-origin-conditionality + token fallback, embedder-governs-child-navigation) | §3.3 — each with its probe/test, and each with the consequence of losing it stated |
 | Unconfigured `PUBLIC_ORIGIN` degrades the tool result to a relative path | §4.1 — loud and actionable over silently-wrong absolute URLs |
