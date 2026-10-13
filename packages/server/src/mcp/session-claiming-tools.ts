@@ -25,6 +25,7 @@ export const SESSION_CLAIMING_TOOLS = [
   'set_agent_parameters',
   'set_mcp_server_permission',
   'write_memo',
+  'close_session',
 ] as const;
 
 export type SessionClaimingTool = (typeof SESSION_CLAIMING_TOOLS)[number];
@@ -41,10 +42,6 @@ export type SessionClaimingTool = (typeof SESSION_CLAIMING_TOOLS)[number];
  * to `SESSION_CLAIMING_TOOLS`) or keep it ungated with a stated reason.
  */
 export const SESSION_ID_TAKING_UNGATED_TOOLS: ReadonlyArray<{ tool: string; reason: string }> = [
-  {
-    tool: 'close_session',
-    reason: 'pending owner decision: the UI treats ending another member\'s session as a team operation',
-  },
   { tool: 'get_session_status', reason: 'read; whether to gate it is decided separately' },
   { tool: 'list_timers', reason: 'read; whether to gate it is decided separately' },
 ];

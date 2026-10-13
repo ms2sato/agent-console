@@ -1462,6 +1462,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: close_session ----------
 
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'close_session',
     'WARNING: For worktree sessions, prefer mcp__agent-console__remove_worktree instead. ' +
@@ -1470,7 +1471,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'sessionId is invalidated). close_session should be used ONLY when you explicitly ' +
       'want to preserve the git worktree directory and branch. ' +
       'This tool closes a session and cleans up its workers; for worktree sessions, ' +
-      'the worktree directory on disk is not removed.',
+      'the worktree directory on disk is not removed. ' +
+      'Under AGENT_CONSOLE_MCP_AUTH=enforce the caller may close only sessions it owns; ' +
+      "the UI's End Session is not gated (owner decision 2026-10-14).",
     {
       sessionId: z.string().describe('The session ID to close'),
     },
@@ -1480,6 +1483,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!session) {
           return errorResult(`Session not found: ${sessionId}`);
         }
+
+        // An agent closes only its own sessions. The UI's End Session is
+        // deliberately not gated (a team operation); this gate protects the
+        // caller-identity integrity of the MCP surface.
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'close_session' },
+        );
+        if (authError) return errorResult(authError.error);
 
         const deleted = await sessionManager.deleteSession(sessionId);
         if (!deleted) {

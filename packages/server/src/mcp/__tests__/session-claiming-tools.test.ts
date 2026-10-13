@@ -118,16 +118,18 @@ describe('sessionId-taking tools: the converse of the registry', () => {
   // Mutations measured when this test was written (each restored):
   // - removing `write_memo` from SESSION_CLAIMING_TOOLS fails the registry
   //   test above (listedButNotGated / missingFromRegistry);
-  // - removing the `close_session` exemption fails the "neither gates nor is
+  // - removing the `get_session_status` exemption fails the "neither gates nor is
   //   exempted" half below;
-  // - adding a fourth exemption for a tool that gates (e.g. `write_memo`)
+  // - adding a third exemption for a tool that gates (e.g. `close_session`)
   //   fails the stale-exemption half below.
   it('positive control: the parser classifies known tools correctly', () => {
     const byName = new Map(blocks.map((b) => [b.name, b]));
     expect(takesSessionId(byName.get('write_memo')!)).toBe(true);
     expect(gatesSessionId(byName.get('write_memo')!)).toBe(true);
+    expect(takesSessionId(byName.get('get_session_status')!)).toBe(true);
+    expect(gatesSessionId(byName.get('get_session_status')!)).toBe(false);
     expect(takesSessionId(byName.get('close_session')!)).toBe(true);
-    expect(gatesSessionId(byName.get('close_session')!)).toBe(false);
+    expect(gatesSessionId(byName.get('close_session')!)).toBe(true);
     expect(takesSessionId(byName.get('list_sessions')!)).toBe(false);
   });
 
