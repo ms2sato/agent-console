@@ -9,7 +9,7 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { deleteSession } from '../../lib/api';
-import { useSessionStopTasksContext } from '../../routes/__root';
+import { useSessionStopTasksContext } from '../../contexts/root-contexts';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
 export interface EndSessionDialogProps {
@@ -88,11 +88,11 @@ export function EndSessionDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle className="text-red-400">Stop Session</AlertDialogTitle>
+          <AlertDialogTitle className="text-red-400">End Session</AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="space-y-2">
               <p>
-                Are you sure you want to stop{' '}
+                Are you sure you want to end{' '}
                 <span className="font-medium text-gray-300">
                   {sessionTitle || 'this session'}
                 </span>
@@ -117,7 +117,7 @@ export function EndSessionDialog({
             onClick={handleStop}
             className="btn btn-danger"
           >
-            Stop Session
+            End Session
           </button>
         </AlertDialogFooter>
       </AlertDialogContent>

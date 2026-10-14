@@ -27,6 +27,7 @@ import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
 import { GitHubIcon, VSCodeIcon } from '../components/Icons';
 import { Spinner, ButtonSpinner } from '../components/ui/Spinner';
 import { CreatorBadge } from '../components/sessions/CreatorBadge';
+import { EndSessionDialog } from '../components/sessions/EndSessionDialog';
 import { hasVSCode } from '../lib/capabilities';
 import {
   AlertDialog,
@@ -891,13 +892,16 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
   const navigate = useNavigate();
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
   const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
+  const [endSessionOpen, setEndSessionOpen] = useState(false);
+  // End applies to whichever session this worktree has, live or paused.
+  const endableSession = session ?? pausedSession;
   const { errorDialogProps, showError } = useErrorDialog();
   const { tasks: deletionTasks, addTask } = useWorktreeDeletionTasksContext();
   const isDeleting = deletionTasks.some(
     (t) => t.worktreePath === worktree.path && t.status === 'deleting'
   );
   const { getTask: getStopTask, removeTask: removeStopTask } = useSessionStopTasksContext();
-  const stopTask = session ? getStopTask(session.id) : undefined;
+  const stopTask = endableSession ? getStopTask(endableSession.id) : undefined;
 
   const restoreSessionMutation = useMutation({
     mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),
@@ -1066,6 +1070,14 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
               {restoreSessionMutation.isPending ? 'Restoring...' : 'Restore'}
             </button>
           )}
+          {endableSession && (
+            <button
+              onClick={() => setEndSessionOpen(true)}
+              className="btn btn-danger text-xs"
+            >
+              End
+            </button>
+          )}
           <button
             onClick={onPull}
             disabled={isPulling}
@@ -1117,6 +1129,14 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
         variant="danger"
         onConfirm={() => executeDelete(deleteConfirmType === 'force' || session !== undefined)}
       />
+      {endableSession && (
+        <EndSessionDialog
+          open={endSessionOpen}
+          onOpenChange={setEndSessionOpen}
+          sessionId={endableSession.id}
+          sessionTitle={endableSession.title || worktree.branch}
+        />
+      )}
       <ErrorDialog {...errorDialogProps} />
     </div>
   );

@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { EndSessionDialog, type EndSessionDialogProps } from '../EndSessionDialog';
+import { EndSessionDialog, runStopSession, type EndSessionDialogProps } from '../EndSessionDialog';
 import { SessionStopTasksContext } from '../../../contexts/root-contexts';
 import { useSessionStopTasks, type UseSessionStopTasksReturn } from '../../../hooks/useSessionStopTasks';
 import { renderWithRouter } from '../../../test/renderWithRouter';
@@ -175,7 +175,7 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
     const onOpenChange = mock(() => {});
     await renderWithRouterAndContext({ onOpenChange });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
 
     // Assert synchronously (before resolving/flushing the mocked fetch promise).
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -184,6 +184,21 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
     expect(resolveDeleteSession).not.toBeNull();
 
     // Clean up: resolve the pending fetch so the test doesn't leak a dangling promise.
+    resolveDeleteSession?.();
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+  });
+
+  it('registers a stop task for the given session id and title on confirm (also used for paused sessions)', async () => {
+    const sessionStopTasks = createMockSessionStopTasks();
+    await renderWithRouterAndContext({ sessionId: 'paused-1', sessionTitle: 'Paused Title' }, sessionStopTasks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
+
+    expect(sessionStopTasks.addTask).toHaveBeenCalledWith({
+      sessionId: 'paused-1',
+      action: 'stop',
+      sessionTitle: 'Paused Title',
+    });
     resolveDeleteSession?.();
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
   });
@@ -213,7 +228,7 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
       </RealSessionStopTasksProvider>
     );
 
-    const button = screen.getByRole('button', { name: 'Stop Session' });
+    const button = screen.getByRole('button', { name: 'End Session' });
     fireEvent.click(button);
     fireEvent.click(button);
 
@@ -227,7 +242,7 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
     const sessionStopTasks = createMockSessionStopTasks();
     await renderWithRouterAndContext({}, sessionStopTasks);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
 
     rejectDeleteSession?.(new Error('Network error'));
 
@@ -250,7 +265,7 @@ describe('EndSessionDialog navigation timing', () => {
   it('does not navigate before the request resolves, navigates to / once after', async () => {
     const { router } = await renderAt();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
 
     // Request is in flight: still on the session page.
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -265,12 +280,41 @@ describe('EndSessionDialog navigation timing', () => {
     const sessionStopTasks = createMockSessionStopTasks();
     const { router } = await renderAt(sessionStopTasks);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
     rejectDeleteSession?.(new Error('Server error'));
 
     await waitFor(() => {
       expect(sessionStopTasks.markAsFailed).toHaveBeenCalledWith('session-1', 'Server error');
     });
     expect(router.state.location.pathname).toBe('/sessions/session-1');
+  });
+});
+
+describe('EndSessionDialog / End Session for paused and primary-worktree sessions', () => {
+  it('does not send the delete request when the stop task cannot be added', async () => {
+    const sessionStopTasks = createMockSessionStopTasks({ addTask: mock(() => false) });
+    await renderWithRouter(
+      <SessionStopTasksContext.Provider value={sessionStopTasks}>
+        <EndSessionDialog open onOpenChange={mock(() => {})} sessionId="session-1" />
+      </SessionStopTasksContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('runStopSession returns true on success and, on failure, marks the task failed and returns false', async () => {
+    const markAsFailed = mock(() => {});
+
+    const okPromise = runStopSession('session-1', markAsFailed);
+    resolveDeleteSession?.();
+    expect(await okPromise).toBe(true);
+    expect(markAsFailed).not.toHaveBeenCalled();
+
+    const failPromise = runStopSession('session-1', markAsFailed);
+    rejectDeleteSession?.(new Error('boom'));
+    expect(await failPromise).toBe(false);
+    expect(markAsFailed).toHaveBeenCalledWith('session-1', 'boom');
   });
 });
