@@ -1,13 +1,11 @@
 import { describe, it, expect } from 'bun:test';
-import {
-  isPtyBackedWorker,
-  canReceiveSessionMessages,
-  canReceiveNotifications,
-  type AgentWorker,
-  type TerminalWorker,
-  type GitDiffWorker,
-  type EmbeddedAgentWorker,
-} from '../worker.js';
+import { isPtyBackedWorker, canReceiveSessionMessages, canReceiveNotifications } from '../worker-predicates.js';
+import type {
+  AgentWorker,
+  TerminalWorker,
+  GitDiffWorker,
+  EmbeddedAgentWorker,
+} from '../../schemas/app-server-message.js';
 
 const agentWorker: AgentWorker = {
   id: 'w-agent',
