@@ -463,11 +463,12 @@ describe('scripts/install-hooks.mjs on a bare repository (Issue #2091)', () => {
   // the same reason as the linked-worktree case above.
   //
   // Mutations measured when this block was written (each restored):
-  // - detecting bareness via the cwd instead of the common dir -> (a) fails
-  //   (exit 1, "source missing" with the bare dir's parent in the path) and (c)
-  //   fails;
-  // - allowing the symlink attempt on a bare repo -> (a)'s regular-file
-  //   assertion fails (the hook would be a symlink to the ephemeral worktree).
+  // - detecting bareness via the cwd instead of the common dir -> (a), (b), (d)
+  //   fail (exit 1, "source missing" with the bare dir's parent in the path)
+  //   and so does (c)'s source-shape assertion; (c)'s git-behaviour assertions
+  //   do NOT depend on the script (they pin the facts the rule relies on);
+  // - allowing the symlink attempt on a bare repo -> (a), (b), (d) fail (the
+  //   hook would be a symlink to the ephemeral worktree).
   let root;
   let source; // scratch non-bare repo
   let bare; // git clone --bare of `source`
@@ -553,6 +554,13 @@ describe('scripts/install-hooks.mjs on a bare repository (Issue #2091)', () => {
       env: sanitizeInheritedGitEnv(process.env),
     }).stdout.trim();
     expect(realpathSync(resolve(wt, hooksPath))).toBe(realpathSync(join(bare, 'hooks')));
+
+    // And the script must really ask the common dir: the one assertion in this
+    // test that reads the script. It pins the detection site so replacing the
+    // `-C <common-dir>` form with the cwd form fails here, not only in (a).
+    expect(readFileSync(INSTALL_SCRIPT, 'utf8')).toContain(
+      "['-C', commonDirAbs, 'rev-parse', '--is-bare-repository']",
+    );
   });
 
   it('(d) the postinstall command string from package.json exits 0 in the linked worktree', () => {
