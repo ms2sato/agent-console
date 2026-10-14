@@ -18,6 +18,27 @@ describe('shared index exports', () => {
     expect(result.success).toBe(true);
   });
 
+  it('should re-export the worker capability predicates and the entity schemas the derived types come from', async () => {
+    const mod = await import('../index.js');
+    expect(typeof mod.isPtyBackedWorker).toBe('function');
+    expect(typeof mod.canReceiveSessionMessages).toBe('function');
+    expect(typeof mod.canReceiveNotifications).toBe('function');
+    for (const name of [
+      'WorkerBaseSchema',
+      'SessionBaseSchema',
+      'WorktreeSessionSchema',
+      'QuickSessionSchema',
+      'SessionSchema',
+      'WorkerSchema',
+      'WorkerActivityInfoSchema',
+      'RepositorySchema',
+      'WorktreeCreationCompletedSchema',
+      'WorktreeCreationFailedSchema',
+    ] as const) {
+      expect(mod[name]).toBeDefined();
+    }
+  });
+
   it('should export InteractiveProcessInfo type', async () => {
     const mod = await import('../index.js');
     // InteractiveProcessInfo is a type-only export — verify the module loads successfully
