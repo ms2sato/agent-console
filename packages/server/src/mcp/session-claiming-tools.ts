@@ -38,10 +38,12 @@ export type SessionClaimingTool = (typeof SESSION_CLAIMING_TOOLS)[number];
  * param) as well as when a tool takes `sessionId` and is on neither list, so
  * the next ungated tool fails CI instead of being found by a sweep.
  *
- * An entry leaves this list when its question is decided: gate it (and add it
- * to `SESSION_CLAIMING_TOOLS`) or keep it ungated with a stated reason.
+ * Entries are reads of team-visible data; a WRITE never belongs here.
  */
 export const SESSION_ID_TAKING_UNGATED_TOOLS: ReadonlyArray<{ tool: string; reason: string }> = [
-  { tool: 'get_session_status', reason: 'read; whether to gate it is decided separately' },
-  { tool: 'list_timers', reason: 'read; whether to gate it is decided separately' },
+  { tool: 'get_session_status', reason: 'read of data every client already receives in sessions-sync' },
+  {
+    tool: 'list_timers',
+    reason: 'read; lists all timers when sessionId is omitted, so a per-session gate would not restrict the data',
+  },
 ];
