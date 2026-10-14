@@ -1,10 +1,14 @@
 /**
- * Client-Server Boundary Test: the eight GET fetchers that parse their response
- * through a strict wire schema (#1367 pass 1).
+ * Client-Server Boundary Test: the sixteen read fetchers that parse their
+ * response through a strict wire schema (#1367 pass 1 and pass 2).
  *
- * Each fetcher (`fetchRepository`, `fetchWorkers`, `fetchWorktrees`,
- * `fetchBranches`, `fetchAgent`, `fetchMessageTemplates`, `fetchSkills`,
- * `fetchCurrentUser`) used to cast the JSON and trust it. They now `v.parse`
+ * Pass 1: `fetchRepository`, `fetchWorkers`, `fetchWorktrees`, `fetchBranches`,
+ * `fetchAgent`, `fetchMessageTemplates`, `fetchSkills`, `fetchCurrentUser`.
+ * Pass 2: `getSession` (live AND paused), `fetchRepositories`,
+ * `fetchSessionBranches`, `fetchBranchCommits`, `fetchGitHubIssue`,
+ * `fetchAgents`, `fetchSessionPrLink`, `getRemoteBranchStatus`.
+ *
+ * Each fetcher used to cast the JSON and trust it. They now `v.parse`
  * a `v.strictObject` schema, so a server body that gains or renames a field
  * turns a working call into a runtime throw in the browser -- and nothing on
  * either side alone would notice: the route tests assert the fields they know,
@@ -40,6 +44,14 @@ import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils
 import { onApiError } from '@agent-console/server/src/lib/error-handler';
 import { api } from '@agent-console/server/src/routes/api';
 import {
+  getSession,
+  fetchRepositories,
+  fetchSessionBranches,
+  fetchBranchCommits,
+  fetchGitHubIssue,
+  fetchAgents,
+  fetchSessionPrLink,
+  getRemoteBranchStatus,
   fetchRepository,
   fetchWorkers,
   fetchWorktrees,
@@ -50,6 +62,13 @@ import {
   fetchCurrentUser,
 } from '@agent-console/client/src/lib/api';
 import {
+  SessionResponseSchema,
+  RepositoriesResponseSchema,
+  BranchCommitsResponseSchema,
+  GitHubIssueResponseSchema,
+  AgentsResponseSchema,
+  SessionPrLinkResponseSchema,
+  RemoteBranchStatusSchema,
   RepositoryResponseSchema,
   WorkersResponseSchema,
   WorktreesResponseSchema,
@@ -63,12 +82,13 @@ import { createFetchBridge } from './test-utils';
 
 const TEST_REPO_PATH = '/test/repo-response-schemas';
 
-describe('Client-Server Boundary: strict response schemas on the eight pass-1 GET fetchers', () => {
+describe('Client-Server Boundary: strict response schemas on the pass-1 and pass-2 read fetchers', () => {
   let ctx: AppContext;
   let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
   let repoId: string;
   let sessionId: string;
+  let worktreeSessionId: string;
   let authUserId: string;
 
   beforeEach(async () => {
@@ -85,6 +105,17 @@ describe('Client-Server Boundary: strict response schemas on the eight pass-1 GE
       { createdBy: authUserId },
     );
     sessionId = session.id;
+    const worktreeSession = await ctx.sessionManager.createSession(
+      {
+        type: 'worktree',
+        locationPath: TEST_REPO_PATH,
+        repositoryId: repoId,
+        worktreeId: 'main',
+        agentId: 'claude-code-builtin',
+      },
+      { createdBy: authUserId },
+    );
+    worktreeSessionId = worktreeSession.id;
 
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
@@ -187,5 +218,115 @@ describe('Client-Server Boundary: strict response schemas on the eight pass-1 GE
     expect(result).toEqual(body as typeof result);
     expect(result.user?.id).toBe(authUserId);
     expectStrictControl(CurrentUserResponseSchema, body);
+  });
+
+  // ---- pass 2 ----
+
+  it('getSession: a live session parses, and an extra field is rejected', async () => {
+    const result = await getSession(sessionId);
+    const body = await rawBody(`/api/sessions/${sessionId}`);
+
+    expect(result).toEqual((body as { session: typeof result }).session);
+    expect(result?.id).toBe(sessionId);
+    expectStrictControl(SessionResponseSchema, body);
+  });
+
+  it('getSession: the PAUSED (persisted) session parses too, and an extra field is rejected', async () => {
+    const pauseRes = await app.request(`/api/sessions/${worktreeSessionId}/pause`, { method: 'POST' });
+    expect(pauseRes.status).toBe(200);
+    // The pause moved the session out of memory: the route now serves the persisted row.
+    expect(ctx.sessionManager.getSession(worktreeSessionId)).toBeUndefined();
+
+    const result = await getSession(worktreeSessionId);
+    const body = await rawBody(`/api/sessions/${worktreeSessionId}`);
+
+    expect(result).toEqual((body as { session: typeof result }).session);
+    expect(result?.activationState).toBe('hibernated');
+    expectStrictControl(SessionResponseSchema, body);
+  });
+
+  it('fetchRepositories: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchRepositories();
+    const body = await rawBody('/api/repositories');
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.repositories.map((r) => r.id)).toEqual([repoId]);
+    expectStrictControl(RepositoriesResponseSchema, body);
+  });
+
+  it('fetchSessionBranches: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchSessionBranches(sessionId);
+    const body = await rawBody(`/api/sessions/${sessionId}/branches`);
+
+    expect(result).toEqual(body as typeof result);
+    expectStrictControl(BranchesResponseSchema, body);
+  });
+
+  it('fetchBranchCommits: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchBranchCommits(sessionId, 'main');
+    const body = await rawBody(`/api/sessions/${sessionId}/commits?base=main`);
+
+    expect(result).toEqual(body as typeof result);
+    expectStrictControl(BranchCommitsResponseSchema, body);
+  });
+
+  it('fetchGitHubIssue: the real body parses, and an extra field is rejected', async () => {
+    // `fetchGitHubIssue` is not a createTestContext option; the route reads it from the context object.
+    ctx.fetchGitHubIssue = () =>
+      Promise.resolve({
+        org: 'owner',
+        repo: 'repo',
+        number: 7,
+        title: 'An issue',
+        body: 'Body',
+        url: 'https://github.com/owner/repo/issues/7',
+        suggestedBranch: 'an-issue',
+      });
+
+    const result = await fetchGitHubIssue(repoId, '#7');
+    const res = await app.request(`/api/repositories/${repoId}/github-issue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference: '#7' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.issue.number).toBe(7);
+    expectStrictControl(GitHubIssueResponseSchema, body);
+  });
+
+  it('fetchAgents: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchAgents();
+    const body = await rawBody('/api/agents');
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.agents.length).toBeGreaterThan(0);
+    expectStrictControl(AgentsResponseSchema, body);
+  });
+
+  it('fetchSessionPrLink: the real body parses, and an extra field is rejected', async () => {
+    ctx.fetchPullRequestUrl = () => Promise.resolve('https://github.com/owner/repo/pull/9');
+
+    const result = await fetchSessionPrLink(worktreeSessionId);
+    const body = await rawBody(`/api/sessions/${worktreeSessionId}/pr-link`);
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.prUrl).toBe('https://github.com/owner/repo/pull/9');
+    expect(result.orgRepo).toBe('owner/repo');
+    expectStrictControl(SessionPrLinkResponseSchema, body);
+  });
+
+  it('getRemoteBranchStatus: the real body parses, and an extra field is rejected', async () => {
+    mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(3));
+    mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(2));
+
+    const result = await getRemoteBranchStatus(repoId, 'main');
+    const body = await rawBody(`/api/repositories/${repoId}/branches/main/remote-status`);
+
+    expect(result).toEqual(body as typeof result);
+    expect(result).toEqual({ behind: 3, ahead: 2 });
+    expectStrictControl(RemoteBranchStatusSchema, body);
   });
 });

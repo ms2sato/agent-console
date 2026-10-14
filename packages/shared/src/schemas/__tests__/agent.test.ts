@@ -8,6 +8,7 @@ import {
   AgentDefinitionSchema,
   type AgentDefinition,
   AgentResponseSchema,
+  AgentsResponseSchema,
   isSafeRegex,
   isValidRegex,
   hasMalformedPlaceholder,
@@ -989,5 +990,28 @@ describe('AgentResponseSchema', () => {
     expect(v.safeParse(AgentResponseSchema, {}).success).toBe(false);
     expect(v.safeParse(AgentResponseSchema, { agent: { ...agent, extra: 1 } }).success).toBe(false);
     expect(v.safeParse(AgentResponseSchema, { agent, extra: 1 }).success).toBe(false);
+  });
+});
+
+describe('AgentsResponseSchema', () => {
+  const agent = {
+    id: 'a1',
+    name: 'Agent',
+    isBuiltIn: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    commandTemplate: 'run {{prompt}}',
+    capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+  };
+
+  it('accepts an empty list and a list of definitions', () => {
+    expect(v.safeParse(AgentsResponseSchema, { agents: [] }).success).toBe(true);
+    expect(v.parse(AgentsResponseSchema, { agents: [agent] })).toEqual({ agents: [agent] });
+  });
+
+  it('rejects a missing agents key, a malformed element, an unknown element field and an extra top-level key', () => {
+    expect(v.safeParse(AgentsResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(AgentsResponseSchema, { agents: [{ id: 'a1' }] }).success).toBe(false);
+    expect(v.safeParse(AgentsResponseSchema, { agents: [{ ...agent, extra: 1 }] }).success).toBe(false);
+    expect(v.safeParse(AgentsResponseSchema, { agents: [agent], extra: 1 }).success).toBe(false);
   });
 });

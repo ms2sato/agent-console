@@ -7,6 +7,7 @@ import {
   UpdateSessionRequestSchema,
   UpdateSessionMemoRequestSchema,
   RestoreInfoMessageSchema,
+  SessionResponseSchema,
 } from '../session';
 
 describe('CreateWorktreeSessionRequestSchema', () => {
@@ -1065,5 +1066,35 @@ describe('RestoreInfoMessageSchema — FAILURE form preservation (R4, #1447 stag
       expect(result.output.sdkResumed).toBe(true);
       expect(result.output.preservation).toBe('sidecar');
     }
+  });
+});
+
+describe('SessionResponseSchema', () => {
+  const quick = {
+    id: 's1',
+    type: 'quick',
+    locationPath: '/path',
+    status: 'active',
+    activationState: 'running',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    workers: [],
+    isShared: false,
+    recoveryState: 'healthy',
+  };
+
+  it('accepts a live session and a paused (hibernated) one', () => {
+    expect(v.safeParse(SessionResponseSchema, { session: quick }).success).toBe(true);
+    expect(
+      v.safeParse(SessionResponseSchema, {
+        session: { ...quick, activationState: 'hibernated', pausedAt: '2026-01-02T00:00:00.000Z' },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a missing session key, a malformed session, an unknown session field and an extra top-level key', () => {
+    expect(v.safeParse(SessionResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(SessionResponseSchema, { session: { id: 's1' } }).success).toBe(false);
+    expect(v.safeParse(SessionResponseSchema, { session: { ...quick, extra: 1 } }).success).toBe(false);
+    expect(v.safeParse(SessionResponseSchema, { session: quick, extra: 1 }).success).toBe(false);
   });
 });

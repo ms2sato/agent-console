@@ -18,6 +18,12 @@ import {
   fetchWorkers,
   fetchWorktrees,
   fetchBranches,
+  fetchAgents,
+  fetchSessionBranches,
+  fetchBranchCommits,
+  fetchGitHubIssue,
+  fetchSessionPrLink,
+  getRemoteBranchStatus,
   fetchAgent,
   fetchMessageTemplates,
   fetchSkills,
@@ -53,6 +59,19 @@ globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof 
 afterAll(() => {
   globalThis.fetch = originalFetch;
 });
+
+// A body-valid quick session (what GET /api/sessions/:id sends inside `{ session }`).
+const validQuickSession = {
+  id: 's1',
+  type: 'quick',
+  locationPath: '/path',
+  status: 'active',
+  activationState: 'running',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  workers: [],
+  isShared: false,
+  recoveryState: 'healthy',
+};
 
 // Helper to create mock Response
 function createMockResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
@@ -215,12 +234,20 @@ describe('API Client', () => {
 
   describe('getSession', () => {
     it('should return session when exists', async () => {
-      const mockSession = { session: { id: '1', type: 'worktree', status: 'active' } };
+      const mockSession = { session: validQuickSession };
       mockFetch.mockResolvedValue(createMockResponse(mockSession));
 
       const result = await getSession('session-id');
 
       expect(result).toEqual(mockSession.session);
+    });
+
+    it('should throw a validation error (not null, not ServerUnavailableError) when a 200 body has no session', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({}));
+
+      const error = await getSession('session-id').then(() => null, (e: unknown) => e);
+
+      expect(error instanceof v.ValiError).toBe(true);
     });
 
     it('should return null when session not found (404)', async () => {
@@ -524,7 +551,7 @@ describe('API Client', () => {
 
   describe('fetchRepositories', () => {
     it('should fetch repositories successfully', async () => {
-      const mockRepos = { repositories: [{ id: '1', name: 'repo1' }] };
+      const mockRepos = { repositories: [{ id: '1', name: 'repo1', path: '/repo1', createdAt: '2026-01-01T00:00:00.000Z', orchestratorSessionIds: [], clonedSourceRepoPath: null }] };
       mockFetch.mockResolvedValue(createMockResponse(mockRepos));
 
       const result = await fetchRepositories();
@@ -532,6 +559,12 @@ describe('API Client', () => {
       // Hono RPC client passes explicit options even for GET requests
       expect((mockFetch.mock.calls as unknown[][])[0]?.[0]).toBe('/api/repositories');
       expect(result).toEqual(mockRepos);
+    });
+
+    it('should throw when the body has no repositories key', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({}));
+
+      await expect(fetchRepositories()).rejects.toThrow();
     });
   });
 
@@ -811,10 +844,16 @@ describe('API Client', () => {
 
   describe('fetchAgents', () => {
     it('should fetch agents successfully', async () => {
-      const { fetchAgents } = await import('../api');
       const mockAgents = {
         agents: [
-          { id: 'claude-code', name: 'Claude Code', command: 'claude', isBuiltIn: true },
+          {
+            id: 'claude-code',
+            name: 'Claude Code',
+            commandTemplate: 'claude {{prompt}}',
+            isBuiltIn: true,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+          },
         ],
       };
       mockFetch.mockResolvedValue(createMockResponse(mockAgents));
@@ -826,8 +865,13 @@ describe('API Client', () => {
       expect(result).toEqual(mockAgents);
     });
 
+    it('should throw when the body has no agents key', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({}));
+
+      await expect(fetchAgents()).rejects.toThrow();
+    });
+
     it('should throw error on failure', async () => {
-      const { fetchAgents } = await import('../api');
       mockFetch.mockResolvedValue(
         createMockResponse({}, { status: 500, ok: false })
       );
@@ -1631,6 +1675,92 @@ describe('API Client', () => {
     it('fetchCurrentUser accepts the unauthenticated body { user: null } (no preferences)', async () => {
       mockFetch.mockResolvedValue(createMockResponse({ user: null }));
       expect(await fetchCurrentUser()).toEqual({ user: null });
+    });
+  });
+
+  // #1367 pass 2: eight more read fetchers parse a strict wire schema (the same table is run
+  // against the REAL routes in packages/integration's api-response-schemas-boundary.test.ts).
+  describe('strict response parsing (pass 2)', () => {
+    const repository = {
+      id: 'repo-1',
+      name: 'repo',
+      path: '/repo',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      orchestratorSessionIds: [],
+      clonedSourceRepoPath: null,
+    };
+    const agent = {
+      id: 'a1',
+      name: 'Agent',
+      isBuiltIn: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      commandTemplate: 'run {{prompt}}',
+      capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+    };
+    const commit = { hash: 'abc123', shortHash: 'abc', message: 'msg', author: 'me', date: '2026-01-01 00:00:00 +0000' };
+    const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>, string]> = [
+      ['getSession', () => getSession('s1'), { session: validQuickSession }, 'session'],
+      ['fetchRepositories', () => fetchRepositories(), { repositories: [repository] }, 'repositories'],
+      [
+        'fetchSessionBranches',
+        () => fetchSessionBranches('s1'),
+        { local: ['main'], remote: ['origin/main'], defaultBranch: 'main' },
+        'local',
+      ],
+      ['fetchBranchCommits', () => fetchBranchCommits('s1', 'main'), { commits: [commit] }, 'commits'],
+      [
+        'fetchGitHubIssue',
+        () => fetchGitHubIssue('repo-1', '#1'),
+        { issue: { org: 'o', repo: 'r', number: 1, title: 'T', body: 'B', url: 'https://github.com/o/r/issues/1' } },
+        'issue',
+      ],
+      ['fetchAgents', () => fetchAgents(), { agents: [agent] }, 'agents'],
+      [
+        'fetchSessionPrLink',
+        () => fetchSessionPrLink('s1'),
+        { prUrl: null, branchName: 'feat/x', orgRepo: 'o/r' },
+        'branchName',
+      ],
+      ['getRemoteBranchStatus', () => getRemoteBranchStatus('repo-1', 'main'), { behind: 1, ahead: 2 }, 'behind'],
+    ];
+
+    it.each(cases)('%s resolves with a valid body', async (name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse(valid));
+      const result = await call();
+      expect(name === 'getSession' ? { session: result } : result).toEqual(valid);
+    });
+
+    it.each(cases)('%s throws on a body with an unknown extra field', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse({ ...valid, extra: true }));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it.each(cases)('%s throws when a required key is missing', async (_name, call, valid, requiredKey) => {
+      const { [requiredKey]: _dropped, ...rest } = valid;
+      mockFetch.mockResolvedValue(createMockResponse(rest));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it('fetchBranchCommits throws when ONE commit lacks a field (element-level strictness)', async () => {
+      const { date: _date, ...withoutDate } = commit;
+      mockFetch.mockResolvedValue(createMockResponse({ commits: [withoutDate] }));
+      await expect(fetchBranchCommits('s1', 'main')).rejects.toThrow();
+    });
+
+    it('fetchBranchCommits throws when ONE commit carries an unknown field', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ commits: [{ ...commit, extra: true }] }));
+      await expect(fetchBranchCommits('s1', 'main')).rejects.toThrow();
+    });
+
+    it('fetchBranchCommits accepts an empty commit list', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ commits: [] }));
+      expect(await fetchBranchCommits('s1', 'main')).toEqual({ commits: [] });
+    });
+
+    it('fetchSessionPrLink accepts a pull-request URL with a null orgRepo', async () => {
+      const body = { prUrl: 'https://github.com/o/r/pull/3', branchName: 'feat/x', orgRepo: null };
+      mockFetch.mockResolvedValue(createMockResponse(body));
+      expect(await fetchSessionPrLink('s1')).toEqual(body);
     });
   });
 });
