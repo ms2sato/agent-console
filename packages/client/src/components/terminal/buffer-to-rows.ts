@@ -170,8 +170,9 @@ export function extractRow(
   key: number,
   opts: ExtractRowOptions = {},
 ): TerminalRow {
-  const segments = walkCells(line, cols, nullCell, -1);
-  if (opts.keepTrailingWhitespace !== true) trimTrailingDefaultWhitespace(segments);
+  const keep = opts.keepTrailingWhitespace === true;
+  const segments = walkCells(line, keep ? writtenColumnCount(line, cols, nullCell) : cols, nullCell, -1);
+  if (!keep) trimTrailingDefaultWhitespace(segments);
 
   // Keep at least one (empty) segment so the row box renders its line height.
   if (segments.length === 0) {
@@ -198,17 +199,39 @@ export function extractRowWithCursor(
   cursorX: number,
   opts: ExtractRowOptions = {},
 ): TerminalRow {
-  const segments = walkCells(line, cols, nullCell, cursorX);
+  const keep = opts.keepTrailingWhitespace === true;
+  const limit = keep ? Math.max(writtenColumnCount(line, cols, nullCell), cursorX + 1) : cols;
+  const segments = walkCells(line, limit, nullCell, cursorX);
   // Trim trailing default-style blanks like extractRow, but protect the cursor
   // segment (and everything up to it): the cursor commonly sits on a blank cell
   // just after the text, so only whitespace strictly AFTER the cursor is trimmed.
   const cursorIndex = segments.findIndex((s) => s.style === CURSOR_STYLE);
   const protectedCount = cursorIndex === -1 ? 0 : cursorIndex + 1;
-  if (opts.keepTrailingWhitespace !== true) trimTrailingDefaultWhitespace(segments, protectedCount);
+  if (!keep) trimTrailingDefaultWhitespace(segments, protectedCount);
   if (segments.length === 0) {
     segments.push({ text: '', style: null });
   }
   return { key, segments, isWrapped: line.isWrapped, links: [] };
+}
+
+/**
+ * How many leading columns of `line` hold written content: `cols` minus the
+ * trailing run of EMPTY cells (`getChars() === ''`, never written). A written
+ * space is not empty (`getChars() === ' '`), so the space that ends a full row
+ * before a soft wrap is kept; but when a two-column character starts with one
+ * column left, xterm wraps the character and leaves that last cell empty
+ * (measured: chars `''`, code 0, width 1), and that filler must not be copied
+ * as a space (`abcdefghi界` would paste as `abcdefghi 界`). Used only for a
+ * row that keeps its trailing blanks.
+ */
+function writtenColumnCount(line: IBufferLine, cols: number, nullCell: IBufferCell): number {
+  let count = cols;
+  while (count > 0) {
+    const cell = line.getCell(count - 1, nullCell);
+    if (!cell || cell.getChars() !== '' || cell.getWidth() === 0) break;
+    count--;
+  }
+  return count;
 }
 
 /**

@@ -216,6 +216,31 @@ describe('trailing blanks at a soft-wrap point', () => {
     expect(wrapContinuationOptions(buffer, buffer.length - 1)).toEqual({ keepTrailingWhitespace: false }); // no successor
   });
 
+  it('a wide character that wraps leaves an EMPTY filler cell: it is not kept as a space, but a written space still is (both ways)', async () => {
+    // At 10 columns `abcdefghi` fills nine, and the two-column `界` does not fit in
+    // the one that remains: xterm wraps it and leaves column 9 empty (chars '').
+    const wide = 'abcdefghi界';
+    await write(term, wide);
+    const buffer = term.buffer.active;
+    const rows = [0, 1].map((y) =>
+      extractRow(buffer.getLine(y)!, term.cols, buffer.getNullCell(), y, wrapContinuationOptions(buffer, y)),
+    );
+    expect(rows[1].isWrapped).toBe(true);
+    expect(text(rows[0])).toBe('abcdefghi'); // no filler space
+    expect(joinSelectedRows(rows.map((r) => ({ text: text(r), isWrapped: r.isWrapped })))).toBe(wide);
+
+    // Control in the same terminal size: a WRITTEN space at the same column is kept.
+    const other = new Terminal({ cols: COLS, rows: 24, allowProposedApi: true });
+    try {
+      await write(other, WRAPPED);
+      const b2 = other.buffer.active;
+      const r0 = extractRow(b2.getLine(0)!, other.cols, b2.getNullCell(), 0, wrapContinuationOptions(b2, 0));
+      expect(text(r0)).toBe('abcdefghi ');
+    } finally {
+      other.dispose();
+    }
+  });
+
   it('end to end through the join: the copied line equals the original, space included', async () => {
     await write(term, WRAPPED);
     const buffer = term.buffer.active;
