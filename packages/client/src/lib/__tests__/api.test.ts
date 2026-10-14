@@ -1455,7 +1455,7 @@ describe('API Client', () => {
     it('fetches artifacts and parses the response through the wire schema', async () => {
       const mockArtifacts = {
         artifacts: [
-          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
         ],
       };
       mockFetch.mockResolvedValue(createMockResponse(mockArtifacts));
@@ -1470,7 +1470,7 @@ describe('API Client', () => {
       // sizeBytes is missing -- ArtifactsListResponseSchema must reject this,
       // not silently pass through `undefined` (the #926 silent-drop gap).
       mockFetch.mockResolvedValue(
-        createMockResponse({ artifacts: [{ id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z' }] })
+        createMockResponse({ artifacts: [{ id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', updatedAt: null }] })
       );
 
       await expect(fetchArtifacts()).rejects.toThrow();

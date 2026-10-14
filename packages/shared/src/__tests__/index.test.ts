@@ -164,6 +164,7 @@ describe('shared index exports', () => {
       title: 'My Artifact',
       createdAt: '2026-04-27T00:00:00.000Z',
       sizeBytes: 1024,
+      updatedAt: null,
     });
     expect(accepted.success).toBe(true);
   });
