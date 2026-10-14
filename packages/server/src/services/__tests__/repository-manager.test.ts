@@ -610,21 +610,32 @@ describe('RepositoryManager', () => {
         // pino-internal log-capture plumbing.
         const fallback = buildManualFallbackCommands(TEST_REPO_DIR, `${TEST_REPO_DIR}/.git`, 'agent-console-users');
         expect(fallback.length).toBe(4);
-        expect(fallback.some((c) => c.includes('git config core.sharedRepository group'))).toBe(true);
+        expect(fallback.some((c) => c.includes('config core.sharedRepository group'))).toBe(true);
         expect(fallback.some((c) => c.includes('chmod g+rwxs'))).toBe(true);
         expect(fallback.some((c) => c.includes('chmod -R g+rw'))).toBe(true);
         expect(fallback.some((c) => c.includes('chgrp -R agent-console-users'))).toBe(true);
       });
 
-      it('quotes a git directory containing a space or shell metacharacters in the manual fallback commands', () => {
-        const gitDir = '/srv/my repo$;x.git';
-        const fallback = buildManualFallbackCommands(gitDir, gitDir, 'agent-console-users');
-        const quoted = `'${gitDir}'`;
-        expect(fallback).toContain(`sudo find ${quoted} -type d -exec chmod g+rwxs {} +`);
+      it('quotes the repository path and the git directory when they contain a space or shell metacharacters', () => {
+        const repoPath = '/srv/my repo$;x';
+        const gitDir = `${repoPath}/.git`;
+        const fallback = buildManualFallbackCommands(repoPath, gitDir, 'agent-console-users');
+        const quotedGitDir = `'${gitDir}'`;
+        expect(fallback).toContain(`sudo -u agentconsole git -C '${repoPath}' config core.sharedRepository group`);
+        expect(fallback).toContain(`sudo find ${quotedGitDir} -type d -exec chmod g+rwxs {} +`);
+        expect(fallback).toContain(`sudo chmod -R g+rw ${quotedGitDir}`);
+        expect(fallback).toContain(`sudo chgrp -R agent-console-users ${quotedGitDir}`);
+        // No command carries either path unquoted.
+        expect(fallback.some((c) => c.includes(` ${repoPath}`))).toBe(false);
+      });
+
+      it('quotes a bare source whose repository path is its git directory', () => {
+        const bare = '/srv/my repo$;x.git';
+        const fallback = buildManualFallbackCommands(bare, bare, 'agent-console-users');
+        const quoted = `'${bare}'`;
+        expect(fallback[0]).toBe(`sudo -u agentconsole git -C ${quoted} config core.sharedRepository group`);
         expect(fallback).toContain(`sudo chmod -R g+rw ${quoted}`);
-        expect(fallback).toContain(`sudo chgrp -R agent-console-users ${quoted}`);
-        // The first command takes the repository path, not the git directory.
-        expect(fallback.slice(1).some((c) => c.includes(` ${gitDir}`))).toBe(false);
+        expect(fallback.some((c) => c.includes(` ${bare}`))).toBe(false);
       });
 
       it('honours AGENT_CONSOLE_SERVICE_GROUP override for the chgrp target group', async () => {

@@ -994,7 +994,7 @@ and proceeds with registration. Apply the same commands manually as a
 privileged user:
 
 ```bash
-sudo -u agentconsole bash -lc 'cd <repo-path> && git config core.sharedRepository group'
+sudo -u agentconsole git -C <repo-path> config core.sharedRepository group
 sudo find <repo-path>/.git -type d -exec chmod g+rwxs {} +
 sudo chmod -R g+rw <repo-path>/.git
 sudo chgrp -R agent-console-users <repo-path>/.git

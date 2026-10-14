@@ -67,11 +67,12 @@ export function buildManualFallbackCommands(
   gitDir: string,
   sharedGroup: string,
 ): string[] {
-  // For a bare source `gitDir` is the user-supplied repository root, so it is
-  // quoted exactly as the apply chain quotes it.
+  // Both paths derive from the user-supplied repository root (for a bare source
+  // `gitDir` is that root itself), so each is quoted as the apply chain quotes it.
+  const escapedRepo = shellEscape(repoPath);
   const escapedGitDir = shellEscape(gitDir);
   return [
-    `sudo -u agentconsole bash -lc 'cd ${repoPath} && git config core.sharedRepository group'`,
+    `sudo -u agentconsole git -C ${escapedRepo} config core.sharedRepository group`,
     `sudo find ${escapedGitDir} -type d -exec chmod g+rwxs {} +`,
     `sudo chmod -R g+rw ${escapedGitDir}`,
     `sudo chgrp -R ${sharedGroup} ${escapedGitDir}`,
