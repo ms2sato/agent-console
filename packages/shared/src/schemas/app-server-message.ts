@@ -9,8 +9,13 @@ const SessionActivationStateSchema = v.picklist(['running', 'hibernated']);
 const AgentActivityStateSchema = v.picklist(['active', 'idle', 'asking', 'unknown']);
 
 // === Worker schemas ===
+//
+// Each entity type below is DERIVED from its schema (`v.InferOutput`); the
+// schema is the single writer. Adding or changing a field means editing the
+// schema entry only. The doc comments sit on the schema entries for that
+// reason -- they are the field's specification.
 
-const WorkerBaseSchema = v.strictObject({
+export const WorkerBaseSchema = v.strictObject({
   id: v.string(),
   name: v.string(),
   createdAt: v.string(),
@@ -19,49 +24,100 @@ const WorkerBaseSchema = v.strictObject({
 export const AgentWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('agent'),
+  /** References AgentDefinition.id (e.g., 'claude-code-builtin') */
   agentId: v.string(),
+  /** Whether the PTY is running (false when hibernated) */
   activated: v.boolean(),
 });
 
 export const TerminalWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('terminal'),
+  /** Whether the PTY is running (false when hibernated) */
   activated: v.boolean(),
 });
 
 export const GitDiffWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('git-diff'),
+  /** Comparison base commit hash (calculated at creation) */
   baseCommit: v.string(),
 });
 
 export const EmbeddedAgentWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('embedded-agent'),
+  /** References EmbeddedAgentDefinition.id (NOT AgentDefinition.id). */
   embeddedAgentId: v.string(),
+  /** Whether the agent subprocess is running (false after server restart until reactivated). */
   activated: v.boolean(),
-  // Compaction's per-worker auto toggle. Mirrors EmbeddedAgentWorker in
-  // types/worker.ts -- this object is strict, so the field must exist here
-  // or it is stripped off the wire with no error on either side.
+  /**
+   * Compaction's automatic-firing toggle. Deliberately per-WORKER, not per
+   * definition: two workers built from the same embedded agent can differ,
+   * because the decision belongs to the conversation in front of the user.
+   * Defaults ON (`workers.auto_compaction NOT NULL DEFAULT 1`), including
+   * for rows that predate the column.
+   */
   autoCompaction: v.boolean(),
-  // Effective context-window token denominator. Mirrors EmbeddedAgentWorker
-  // in types/worker.ts -- this object is strict, so the field must exist
-  // here or it is stripped off the wire with no error on either side.
+  /**
+   * Effective context-window token denominator for the compaction usage
+   * gauge, resolved server-side (single writer:
+   * `resolveEffectiveContextWindow` in
+   * `packages/server/src/services/embedded-agent-context-window.ts`).
+   * `undefined` when the underlying definition declares no window (or the
+   * definition is missing) -- the gauge must render indeterminate in that
+   * case, never inherit a stale or unrelated value.
+   */
   contextWindowTokens: v.optional(v.number()),
-  // Effective model / reasoning effort, plus the override flag. Mirror
-  // EmbeddedAgentWorker in types/worker.ts -- this object is strict, so
-  // each field must exist here or it is stripped off the wire with no
-  // error on either side. `model` is OPTIONAL (unresolvable without a
-  // definition, absent means UNKNOWN) while `reasoningEffort` is required
-  // and nullable (never unresolvable); see the type's doc comments.
+  /**
+   * EFFECTIVE model this worker runs on, resolved server-side (single
+   * writer: `resolveEffectiveModelParams` in
+   * `packages/server/src/services/embedded-agent-model-params.ts`) -- the
+   * client never resolves an override against the definition registry
+   * itself, exactly as with `contextWindowTokens` above.
+   *
+   * OPTIONAL for the SAME reason `contextWindowTokens` is: the value is
+   * UNRESOLVABLE when this worker carries no `model` override AND the
+   * definition cannot be looked up (a deleted definition, or the paused-
+   * session converter whose definition lookup is itself optional). Absent
+   * therefore means UNKNOWN, never "the definition's default" -- a control
+   * that edits this value must disable itself on absence rather than
+   * render a guess, the same discipline the compaction toggle already
+   * follows for an unknown wire value.
+   */
   model: v.optional(v.string()),
+  /**
+   * EFFECTIVE reasoning effort, resolved server-side by the same single
+   * writer as `model` above. REQUIRED, unlike `model`: it resolves to
+   * `worker.reasoningEffort ?? null` and needs no definition lookup, so it
+   * is never unresolvable. `null` means no effort override is in effect.
+   */
   reasoningEffort: v.nullable(v.string()),
+  /**
+   * Whether ANY of this worker's three override fields is set --
+   * `worker.model !== null || worker.reasoningEffort !== null ||
+   * worker.contextWindowTokens !== null`, computed server-side by
+   * `hasEmbeddedAgentParameterOverride`
+   * (`packages/server/src/services/embedded-agent-model-params.ts`).
+   *
+   * Exists so a surface can distinguish "override" from "definition
+   * default" WITHOUT reconstructing the precedence rules: the effective
+   * `model` above is the same string in both cases, so no client-side
+   * comparison can recover the distinction.
+   */
   hasParameterOverride: v.boolean(),
-  // epic #1636 Phase 5 PR-2. Mirrors EmbeddedAgentWorker in types/worker.ts
-  // -- this object is strict, so the field must exist here or it is
-  // stripped off the wire with no error on either side. Optional: absent on
-  // every openai-api worker and on a claude-sdk worker with no discovery
-  // reading yet.
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+   * the `claude-sdk` engine's own discovery of this worker's project
+   * `.mcp.json`, as last reported by the `mcp-servers-discovered` event
+   * (up to 3 times per activation, last-write-wins). Absent on every
+   * `openai-api` worker (no MCP-discovery concept) and on a `claude-sdk`
+   * worker that has not yet reported a discovery reading (e.g. never
+   * activated). `decision` here has ONE more member than the wire event's
+   * own picklist -- `'denied'` -- because a server-computed decision (a user
+   * explicitly denying a pending server) is never something the subprocess
+   * itself emits.
+   */
   mcpServers: v.optional(
     v.array(
       v.strictObject({
@@ -82,43 +138,119 @@ export const WorkerSchema = v.union([
   EmbeddedAgentWorkerSchema,
 ]);
 
+export type WorkerBase = v.InferOutput<typeof WorkerBaseSchema>;
+export type AgentWorker = v.InferOutput<typeof AgentWorkerSchema>;
+export type TerminalWorker = v.InferOutput<typeof TerminalWorkerSchema>;
+export type GitDiffWorker = v.InferOutput<typeof GitDiffWorkerSchema>;
+export type EmbeddedAgentWorker = v.InferOutput<typeof EmbeddedAgentWorkerSchema>;
+export type Worker = v.InferOutput<typeof WorkerSchema>;
+
 // === Session schemas ===
 
-const SessionBaseSchema = v.strictObject({
+export const SessionBaseSchema = v.strictObject({
   id: v.string(),
+  /** Working directory (always required) */
   locationPath: v.string(),
   status: SessionStatusSchema,
+  /** Whether PTY workers are running */
   activationState: SessionActivationStateSchema,
   createdAt: v.string(),
   workers: v.array(WorkerSchema),
+  /** The prompt used to start the session */
   initialPrompt: v.optional(v.string()),
+  /**
+   * Whether `initialPrompt` has already been delivered as the session's
+   * initial agent-kind worker's (embedded OR terminal-agent) first message.
+   * Once true, delivery never re-fires, including across worker/server
+   * restart -- this is intentional (a one-time creation-time prompt,
+   * distinct from the ephemeral chat history that DOES reset on restart).
+   * Undefined for sessions with no `initialPrompt` or no eligible
+   * agent-kind worker.
+   */
   initialPromptDelivered: v.optional(v.boolean()),
+  /** Human-readable title for the session */
   title: v.optional(v.string()),
+  /** ISO 8601 timestamp when this session was paused (undefined = not paused) */
   pausedAt: v.optional(v.string()),
+  /** Parent session ID that delegated/created this session */
   parentSessionId: v.optional(v.string()),
+  /** Parent worker ID that delegated/created this session */
   parentWorkerId: v.optional(v.string()),
+  /** User UUID (from users table) of the user who created this session (nullable for backwards compatibility) */
   createdBy: v.optional(v.string()),
+  /**
+   * OS username derived server-side from `createdBy` UUID via UserRepository.
+   * Set on Session responses for client display. Null when `createdBy` is
+   * undefined (legacy sessions) or when the user record is no longer
+   * resolvable (deleted user account).
+   *
+   * Same `derived field on shared type + conditional client render` pattern
+   * as Repository's `clonedSourceRepoPath`. The client decides visibility
+   * (e.g., only show in multi-user mode).
+   */
   createdByUsername: v.optional(v.nullable(v.string())),
+  /**
+   * User UUID of the authenticated user who actually created this session.
+   * For shared sessions, this differs from `createdBy` (which is the shared
+   * account). For personal sessions, this is left undefined.
+   * See docs/design/shared-orchestrator-session.md §"Schema Notes".
+   */
   initiatedBy: v.optional(v.string()),
+  /**
+   * Whether this session is owned by a configured shared account. Derived
+   * server-side from `createdBy` resolving to a registered shared account
+   * via SharedAccountRegistry; clients consume this boolean only and never
+   * see the underlying set of shared-account user-ids. `false` when
+   * `createdBy` is null/undefined (legacy sessions) or refers to a regular
+   * user. See docs/design/shared-orchestrator-session.md §UI.
+   */
   isShared: v.boolean(),
+  /** Session recovery state, surfaced from server. 'healthy' | 'orphaned'. */
   recoveryState: v.picklist(['healthy', 'orphaned']),
 });
 
-const WorktreeSessionSchema = v.strictObject({
+export const WorktreeSessionSchema = v.strictObject({
   ...SessionBaseSchema.entries,
   type: v.literal('worktree'),
   repositoryId: v.string(),
+  /** Human-readable repository name */
   repositoryName: v.string(),
+  /** Worktree identifier (branch name) */
   worktreeId: v.string(),
+  /** Whether this session is on the main (non-added) worktree */
   isMainWorktree: v.boolean(),
 });
 
-const QuickSessionSchema = v.strictObject({
+export const QuickSessionSchema = v.strictObject({
   ...SessionBaseSchema.entries,
   type: v.literal('quick'),
 });
 
 export const SessionSchema = v.union([WorktreeSessionSchema, QuickSessionSchema]);
+
+export type SessionBase = v.InferOutput<typeof SessionBaseSchema>;
+export type WorktreeSession = v.InferOutput<typeof WorktreeSessionSchema>;
+export type QuickSession = v.InferOutput<typeof QuickSessionSchema>;
+export type Session = v.InferOutput<typeof SessionSchema>;
+
+/** A session that has been paused (hibernated with pausedAt timestamp) */
+export type PausedSession = (WorktreeSession | QuickSession) & {
+  activationState: 'hibernated';
+  pausedAt: string;
+};
+
+/** A session that is actively running */
+export type RunningSession = (WorktreeSession | QuickSession) & {
+  activationState: 'running';
+};
+
+export interface CreateSessionResponse {
+  session: Session;
+}
+
+export interface CreateWorkerResponse {
+  worker: Worker;
+}
 
 // === Supporting schemas ===
 
@@ -128,27 +260,65 @@ export const WorkerActivityInfoSchema = v.strictObject({
   activityState: AgentActivityStateSchema,
 });
 
+export type WorkerActivityInfo = v.InferOutput<typeof WorkerActivityInfoSchema>;
+
 export const RepositorySchema = v.strictObject({
+  /** UUID */
   id: v.string(),
+  /** Display name (directory name) */
   name: v.string(),
+  /** Absolute path */
   path: v.string(),
+  /** Creation date (ISO 8601) */
   createdAt: v.string(),
+  /** Git remote URL for origin (if available) */
   remoteUrl: v.optional(v.string()),
+  /** Shell command to run after creating worktrees */
   setupCommand: v.optional(v.nullable(v.string())),
+  /** Shell command to run before deleting worktrees */
   cleanupCommand: v.optional(v.nullable(v.string())),
+  /** Environment variables in .env format (applied to workers) */
   envVars: v.optional(v.nullable(v.string())),
+  /** Brief description of the repository */
   description: v.optional(v.nullable(v.string())),
+  /** Default agent ID for worktree creation */
   defaultAgentId: v.optional(v.nullable(v.string())),
-  // Required (not optional): the set of sessions designated as this
-  // repository's Orchestrators (see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). Zero designations is `[]`,
-  // never an absent key.
+  /**
+   * The set of sessions designated as this repository's Orchestrators (see
+   * docs/design/shared-orchestrator-session.md, "Designation in multi-user");
+   * sorted by designation time then id; a designation disappears with its
+   * session (DB ON DELETE CASCADE). Required (not optional): zero
+   * designations is `[]`, never an absent key.
+   */
   orchestratorSessionIds: v.array(v.string()),
+  /** Comma-separated GitHub label names (case-insensitive, trimmed) that route labeled-Issue webhooks to every live session in orchestratorSessionIds */
   issueTriggerLabels: v.optional(v.nullable(v.string())),
+  /** Username of the bound shared account (Release 1: storage only, not yet consulted by session creation), or null when unbound */
   sharedAccountUsername: v.optional(v.nullable(v.string())),
-  // Required (not optional) so every broadcast carries a defined value;
-  // server derives via `withRepositoryRemote` against `getSourceReposDir()`.
+  /**
+   * Equal to `path` when this repository's registered path lives under the
+   * shared `source-repos` directory (`getSourceReposDir()`); `null` otherwise.
+   * Required (not optional) so every broadcast carries a defined value;
+   * server derives via `withRepositoryRemote` against `getSourceReposDir()`.
+   *
+   * This is a pure path-containment check, NOT a provenance check. A
+   * repository whose path falls inside the source-repos prefix is treated
+   * as a cloned source repo for the purposes of the unregister UI,
+   * regardless of HOW the directory was created -- whether via
+   * `POST /api/repositories/clone`, an operator-side `git clone` followed
+   * by registration through `POST /api/repositories`, or any other means.
+   *
+   * The client uses this field to gate the "also remove the cloned source
+   * repo" checkbox visibility on the unregister UI. When the user checks
+   * the box, `DELETE /api/repositories/:id` is sent with
+   * `removeSourceRepo: true` and the server's CLEANUP_REPOSITORY job
+   * removes this directory via `extraDir` in addition to the main data
+   * subtree.
+   */
   clonedSourceRepoPath: v.nullable(v.string()),
 });
+
+export type Repository = v.InferOutput<typeof RepositorySchema>;
 
 const WorkerMessageSchema = v.strictObject({
   id: v.string(),
@@ -329,7 +499,7 @@ const RepositoryDeletedSchema = v.strictObject({
   repositoryId: v.string(),
 });
 
-const WorktreeCreationCompletedSchema = v.strictObject({
+export const WorktreeCreationCompletedSchema = v.strictObject({
   type: v.literal('worktree-creation-completed'),
   taskId: v.string(),
   worktree: WorktreeSchema,
@@ -344,11 +514,17 @@ const WorktreeCreationCompletedSchema = v.strictObject({
   fetchError: v.optional(v.string()),
 });
 
-const WorktreeCreationFailedSchema = v.strictObject({
+export const WorktreeCreationFailedSchema = v.strictObject({
   type: v.literal('worktree-creation-failed'),
   taskId: v.string(),
   error: v.string(),
 });
+
+/** Payload for the worktree-creation-completed WebSocket message (the message minus its `type` discriminant). */
+export type WorktreeCreationCompletedPayload = Omit<v.InferOutput<typeof WorktreeCreationCompletedSchema>, 'type'>;
+
+/** Payload for the worktree-creation-failed WebSocket message (the message minus its `type` discriminant). */
+export type WorktreeCreationFailedPayload = Omit<v.InferOutput<typeof WorktreeCreationFailedSchema>, 'type'>;
 
 const WorktreeDeletionCompletedSchema = v.strictObject({
   type: v.literal('worktree-deletion-completed'),

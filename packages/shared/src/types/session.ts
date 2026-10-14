@@ -1,100 +1,9 @@
-import type { Worker, AgentActivityState, ExitReason } from './worker.js';
+import type { AgentActivityState, ExitReason } from './worker.js';
 
 export type SessionStatus = 'active' | 'inactive';
 
 /** Whether a session has active PTY processes running */
 export type SessionActivationState = 'running' | 'hibernated';
-
-export interface SessionBase {
-  id: string;
-  locationPath: string;      // Working directory (always required)
-  status: SessionStatus;
-  activationState: SessionActivationState;  // Whether PTY workers are running
-  createdAt: string;
-  workers: Worker[];
-  initialPrompt?: string;    // The prompt used to start the session
-  /**
-   * Whether `initialPrompt` has already been delivered as the session's
-   * initial agent-kind worker's (embedded OR terminal-agent) first message.
-   * Once true, delivery never re-fires, including across worker/server
-   * restart -- this is intentional (a one-time creation-time prompt,
-   * distinct from the ephemeral chat history that DOES reset on restart).
-   * Undefined for sessions with no `initialPrompt` or no eligible
-   * agent-kind worker.
-   */
-  initialPromptDelivered?: boolean;
-  title?: string;            // Human-readable title for the session
-  /** ISO 8601 timestamp when this session was paused (undefined = not paused) */
-  pausedAt?: string;
-  /** Parent session ID that delegated/created this session */
-  parentSessionId?: string;
-  /** Parent worker ID that delegated/created this session */
-  parentWorkerId?: string;
-  /** User UUID (from users table) of the user who created this session (nullable for backwards compatibility) */
-  createdBy?: string;
-  /**
-   * OS username derived server-side from `createdBy` UUID via UserRepository.
-   * Set on Session responses for client display. Null when `createdBy` is
-   * undefined (legacy sessions) or when the user record is no longer
-   * resolvable (deleted user account).
-   *
-   * Same `derived field on shared type + conditional client render` pattern
-   * as Repository's `clonedSourceRepoPath`. The client decides visibility
-   * (e.g., only show in multi-user mode).
-   */
-  createdByUsername?: string | null;
-  /**
-   * User UUID of the authenticated user who actually created this session.
-   * For shared sessions, this differs from `createdBy` (which is the shared
-   * account). For personal sessions, this is left undefined.
-   * See docs/design/shared-orchestrator-session.md §"Schema Notes".
-   */
-  initiatedBy?: string;
-  /**
-   * Whether this session is owned by a configured shared account. Derived
-   * server-side from `createdBy` resolving to a registered shared account
-   * via SharedAccountRegistry; clients consume this boolean only and never
-   * see the underlying set of shared-account user-ids. `false` when
-   * `createdBy` is null/undefined (legacy sessions) or refers to a regular
-   * user. See docs/design/shared-orchestrator-session.md §UI.
-   */
-  isShared: boolean;
-  /** Session recovery state, surfaced from server. 'healthy' | 'orphaned'. */
-  recoveryState: 'healthy' | 'orphaned';
-}
-
-export interface WorktreeSession extends SessionBase {
-  type: 'worktree';
-  repositoryId: string;
-  repositoryName: string;    // Human-readable repository name
-  worktreeId: string;        // Worktree identifier (branch name)
-  isMainWorktree: boolean;   // Whether this session is on the main (non-added) worktree
-}
-
-export interface QuickSession extends SessionBase {
-  type: 'quick';
-}
-
-export type Session = WorktreeSession | QuickSession;
-
-/** A session that has been paused (hibernated with pausedAt timestamp) */
-export type PausedSession = (WorktreeSession | QuickSession) & {
-  activationState: 'hibernated';
-  pausedAt: string;
-};
-
-/** A session that is actively running */
-export type RunningSession = (WorktreeSession | QuickSession) & {
-  activationState: 'running';
-};
-
-export interface CreateSessionResponse {
-  session: Session;
-}
-
-export interface CreateWorkerResponse {
-  worker: Worker;
-}
 
 export type WorkerClientMessage =
   | { type: 'input'; data: string }
@@ -301,12 +210,6 @@ export type WorkerServerMessage =
       sdkResumed?: boolean;
       preservation?: RestorePreservation;
     };
-
-export interface WorkerActivityInfo {
-  sessionId: string;
-  workerId: string;
-  activityState: AgentActivityState;
-}
 
 /**
  * Valid message types for AppClientMessage.

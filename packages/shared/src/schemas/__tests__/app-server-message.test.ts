@@ -13,6 +13,109 @@ import {
   WorktreeSchema,
   type AppServerMessage,
 } from '../app-server-message';
+import type {
+  Session,
+  WorktreeSession,
+  QuickSession,
+  SessionBase,
+  Worker,
+  WorkerBase,
+  AgentWorker,
+  TerminalWorker,
+  GitDiffWorker,
+  EmbeddedAgentWorker,
+  WorkerActivityInfo,
+  Repository,
+} from '../app-server-message';
+
+// Key-set pins. The entity types are derived from their schemas, so the
+// schema is the only place a field is edited; each pin compares a member's
+// `keyof` with an explicit literal union, so a field added to (or removed
+// from) a schema alone is a `tsc` failure (TS2344) naming the difference,
+// rather than a silent change to every consumer. `Assert<Equals<...>>` is
+// the form that fails under drift; a `declare const x: never` form would
+// type-check under it.
+//
+// Measured reach (`tsc` diagnostics, control clean first): adding a field to
+// `SessionBaseSchema` fails `_SessionBaseKeys`, `_WorktreeSessionKeys` and
+// `_QuickSessionKeys` (each flags the unexpected key); renaming
+// `GitDiffWorkerSchema`'s `baseCommit` fails `_GitDiffWorkerKeys` (plus the
+// TS2561 at the one consumer that read the old name); changing
+// `QuickSessionSchema`'s `type` literal fails `_SessionNarrowsOnType`.
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+type WorkerBaseKeys = 'id' | 'name' | 'createdAt';
+export type _WorkerBaseKeys = Assert<Equals<keyof WorkerBase, WorkerBaseKeys>>;
+export type _AgentWorkerKeys = Assert<Equals<keyof AgentWorker, WorkerBaseKeys | 'type' | 'agentId' | 'activated'>>;
+export type _TerminalWorkerKeys = Assert<Equals<keyof TerminalWorker, WorkerBaseKeys | 'type' | 'activated'>>;
+export type _GitDiffWorkerKeys = Assert<Equals<keyof GitDiffWorker, WorkerBaseKeys | 'type' | 'baseCommit'>>;
+export type _EmbeddedAgentWorkerKeys = Assert<
+  Equals<
+    keyof EmbeddedAgentWorker,
+    | WorkerBaseKeys
+    | 'type'
+    | 'embeddedAgentId'
+    | 'activated'
+    | 'autoCompaction'
+    | 'contextWindowTokens'
+    | 'model'
+    | 'reasoningEffort'
+    | 'hasParameterOverride'
+    | 'mcpServers'
+  >
+>;
+type SessionBaseKeys =
+  | 'id'
+  | 'locationPath'
+  | 'status'
+  | 'activationState'
+  | 'createdAt'
+  | 'workers'
+  | 'initialPrompt'
+  | 'initialPromptDelivered'
+  | 'title'
+  | 'pausedAt'
+  | 'parentSessionId'
+  | 'parentWorkerId'
+  | 'createdBy'
+  | 'createdByUsername'
+  | 'initiatedBy'
+  | 'isShared'
+  | 'recoveryState';
+export type _SessionBaseKeys = Assert<Equals<keyof SessionBase, SessionBaseKeys>>;
+export type _WorktreeSessionKeys = Assert<
+  Equals<keyof WorktreeSession, SessionBaseKeys | 'type' | 'repositoryId' | 'repositoryName' | 'worktreeId' | 'isMainWorktree'>
+>;
+export type _QuickSessionKeys = Assert<Equals<keyof QuickSession, SessionBaseKeys | 'type'>>;
+export type _WorkerActivityInfoKeys = Assert<Equals<keyof WorkerActivityInfo, 'sessionId' | 'workerId' | 'activityState'>>;
+export type _RepositoryKeys = Assert<
+  Equals<
+    keyof Repository,
+    | 'id'
+    | 'name'
+    | 'path'
+    | 'createdAt'
+    | 'remoteUrl'
+    | 'setupCommand'
+    | 'cleanupCommand'
+    | 'envVars'
+    | 'description'
+    | 'defaultAgentId'
+    | 'orchestratorSessionIds'
+    | 'issueTriggerLabels'
+    | 'sharedAccountUsername'
+    | 'clonedSourceRepoPath'
+  >
+>;
+
+// The unions derive as discriminated unions: narrowing on `type` selects the
+// member that carries the variant-only fields.
+export type _WorkerNarrowsOnType = Assert<
+  Equals<Extract<Worker, { type: 'embedded-agent' }>, EmbeddedAgentWorker>
+>;
+export type _SessionNarrowsOnType = Assert<Equals<Extract<Session, { type: 'worktree' }>, WorktreeSession>>;
+export type _WorktreeFieldOnlyOnWorktreeMember = Assert<
+  Equals<'repositoryId' extends keyof Extract<Session, { type: 'quick' }> ? true : false, false>
+>;
 
 // Helper to assert valid parse
 function expectValid(data: unknown) {

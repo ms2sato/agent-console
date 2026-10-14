@@ -309,3 +309,117 @@ describe('useAppWsEvent wire consumption (one real frame per AppServerMessage ty
     }
   });
 });
+
+/**
+ * The entity types the dispatcher hands to its callbacks (`Session`,
+ * `Worker`, `Repository`) are derived from the wire schemas, so the fullest
+ * real-shaped entity -- every optional field populated, a nullable carrying
+ * null, the widest worker variant -- must survive the real parse and reach
+ * the callback unchanged.
+ */
+describe('useAppWsEvent wire consumption (fully populated derived entities)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+  let consoleSpies: Array<ReturnType<typeof spyOn>>;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    consoleSpies = [
+      spyOn(console, 'log').mockImplementation(() => {}),
+      spyOn(console, 'error').mockImplementation(() => {}),
+    ];
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', { value: originalLocation, writable: true });
+    for (const spy of consoleSpies) spy.mockRestore();
+  });
+
+  const fullWorktreeSession = {
+    id: 'session-full',
+    type: 'worktree',
+    locationPath: '/repos/repo/wt-1',
+    status: 'active',
+    activationState: 'running',
+    createdAt: '2024-01-01',
+    workers: [
+      {
+        id: 'worker-e',
+        name: 'Embedded',
+        createdAt: '2024-01-01',
+        type: 'embedded-agent',
+        embeddedAgentId: 'embedded-agent-1',
+        activated: true,
+        autoCompaction: true,
+        contextWindowTokens: 128000,
+        model: 'gpt-4o',
+        reasoningEffort: null,
+        hasParameterOverride: false,
+        mcpServers: [{ name: 'srv', scope: 'project', hash: 'h', decision: 'allowed', status: 'connected' }],
+      },
+    ],
+    initialPrompt: 'do it',
+    initialPromptDelivered: true,
+    title: 'Title',
+    pausedAt: '2026-01-01T00:00:00.000Z',
+    parentSessionId: 'session-parent',
+    parentWorkerId: 'worker-parent',
+    createdBy: 'user-1',
+    createdByUsername: null,
+    initiatedBy: 'user-2',
+    isShared: true,
+    recoveryState: 'orphaned',
+    repositoryId: 'repo-1',
+    repositoryName: 'repo',
+    worktreeId: 'feature',
+    isMainWorktree: false,
+  };
+
+  it('session-created: a fully populated worktree session with an embedded-agent worker reaches onSessionCreated unchanged', () => {
+    const onSessionCreated = mock(() => {});
+    renderHook(() => useAppWsEvent({ onSessionCreated }));
+    const ws = MockWebSocket.getLastInstance();
+
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-created', session: fullWorktreeSession }));
+    });
+
+    expect(onSessionCreated).toHaveBeenCalledTimes(1);
+    expect(onSessionCreated).toHaveBeenCalledWith(fullWorktreeSession);
+  });
+
+  it('repository-created: a fully populated repository reaches onRepositoryCreated unchanged', () => {
+    const onRepositoryCreated = mock(() => {});
+    const fullRepository = {
+      ...repository,
+      remoteUrl: 'git@example.com:o/r.git',
+      setupCommand: null,
+      cleanupCommand: 'make clean',
+      envVars: 'A=1',
+      description: null,
+      defaultAgentId: 'agent-1',
+      orchestratorSessionIds: ['session-1'],
+      issueTriggerLabels: 'bug',
+      sharedAccountUsername: null,
+      clonedSourceRepoPath: '/repos/repo',
+    };
+    renderHook(() => useAppWsEvent({ onRepositoryCreated }));
+    const ws = MockWebSocket.getLastInstance();
+
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'repository-created', repository: fullRepository }));
+    });
+
+    expect(onRepositoryCreated).toHaveBeenCalledTimes(1);
+    expect(onRepositoryCreated).toHaveBeenCalledWith(fullRepository);
+  });
+});
