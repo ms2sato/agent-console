@@ -149,6 +149,8 @@ Both pin an explicit SHA, so `DEPLOYED_SHA` (`:282`) stays reproducible and the 
 
 `docs/multi-user-setup-guide.md` ("sync the source-repo ... to the intended commit before invoking") needs the same update, and so does the Orchestrator's sync step (3.5).
 
+Phase 0 of the staged plan measured these build shapes and reviewed the whole deploy flow: see [deploy-build-flow.md](deploy-build-flow.md). Its measurements (install is under a second; the build is 22 to 26 s) change the recommendation above in favour of `git archive` of a pinned SHA into a per-deploy build directory, and it found that a persistent worktree of a bare repo cannot run `bun install` today (`scripts/install-hooks.mjs:69`).
+
 ## 7. Migration strategy
 
 The Issue's three options, evaluated against measurements. The columns the decision turns on:
