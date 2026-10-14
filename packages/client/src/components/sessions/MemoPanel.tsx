@@ -8,6 +8,8 @@ import { sessionKeys } from '../../lib/query-keys';
 import { AccordionSectionBody } from './AccordionSectionBody';
 import { UntrustedLink, untrustedUrlTransform } from '../ui/UntrustedMarkdownLink';
 import { MarkdownCodeBlock } from '../ui/MarkdownCodeBlock';
+import { useSessionTerminalRun } from './SessionTerminalRunContext';
+import { RunCommandDialog } from './RunCommandDialog';
 
 interface MemoPanelProps {
   sessionId: string;
@@ -34,6 +36,9 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExp
   const [draft, setDraft] = useState('');
   const [hasIncomingUpdateWhileEditing, setHasIncomingUpdateWhileEditing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // The command awaiting the human's confirmation; null when no Run is pending.
+  const [pendingRunCommand, setPendingRunCommand] = useState<string | null>(null);
+  const terminalRun = useSessionTerminalRun();
 
   // The baseline draft was seeded with, for the Escape-cancel comparison
   // (R2). Deliberately a ref, not state: it is never rendered, only read
@@ -288,7 +293,12 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExp
               // `pre > code` and inline code as a bare `code`, so routing `pre`
               // leaves inline code untouched.
               pre: ({ children }) => (
-                <MarkdownCodeBlock tabIndex={isExpanded ? undefined : -1}>{children}</MarkdownCodeBlock>
+                <MarkdownCodeBlock
+                  tabIndex={isExpanded ? undefined : -1}
+                  onRun={terminalRun ? setPendingRunCommand : undefined}
+                >
+                  {children}
+                </MarkdownCodeBlock>
               ),
             }}
           >
@@ -296,6 +306,14 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExp
           </Markdown>
         )}
       </AccordionSectionBody>
+      {terminalRun && pendingRunCommand !== null && (
+        <RunCommandDialog
+          sessionId={sessionId}
+          command={pendingRunCommand}
+          terminalRun={terminalRun}
+          onClose={() => setPendingRunCommand(null)}
+        />
+      )}
     </div>
   );
 }

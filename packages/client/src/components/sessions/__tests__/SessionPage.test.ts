@@ -495,7 +495,7 @@ describe('embedded-agent tab bar wiring (Phase 3, Issue #1021)', () => {
     const result: UseTabManagementResult = {
       tabs: [],
       activeTabId: null,
-      addTerminalTab: async () => {},
+      addTerminalTab: async () => null,
       addAgentTab: async (_params: AddAgentWorkerParams) => {},
       closeTab: async () => {},
       handleTabClick: () => {},
@@ -877,12 +877,12 @@ describe('unified shell/agent picker wiring', () => {
     // "Add shell tab" button -- it passes `addTerminalTab` (from
     // useTabManagement) as AddAgentWorkerMenu's `onSelectShell` prop instead.
     // If AddAgentWorkerMenu ever dropped `onSelectShell`, or its signature
-    // diverged from `addTerminalTab: () => Promise<void>`, this file would
+    // diverged from `addTerminalTab: () => Promise<Tab | null>`, this file would
     // fail to typecheck.
     const result: UseTabManagementResult = {
       tabs: [],
       activeTabId: null,
-      addTerminalTab: async () => {},
+      addTerminalTab: async () => null,
       addAgentTab: async (_params: AddAgentWorkerParams) => {},
       closeTab: async () => {},
       handleTabClick: () => {},

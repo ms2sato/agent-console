@@ -31,8 +31,12 @@ afterEach(() => {
 });
 
 /** The same routing MemoPanel uses: fenced blocks (`pre`) go to MarkdownCodeBlock, inline `code` is untouched. */
-function MemoLike({ source }: { source: string }) {
-  return <Markdown components={{ pre: ({ children }) => <MarkdownCodeBlock>{children}</MarkdownCodeBlock> }}>{source}</Markdown>;
+function MemoLike({ source, onRun }: { source: string; onRun?: (command: string) => void }) {
+  return (
+    <Markdown components={{ pre: ({ children }) => <MarkdownCodeBlock onRun={onRun}>{children}</MarkdownCodeBlock> }}>
+      {source}
+    </Markdown>
+  );
 }
 
 const LONG_ONE_LINE_COMMAND = `curl -s https://example.com/api/${'segment-'.repeat(36)}end --header 'X-Token: abc' | jq .`;
@@ -135,5 +139,68 @@ describe('MarkdownCodeBlock', () => {
 
     expect(screen.queryByText('Copied!')).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
+  });
+
+  describe('Run control', () => {
+    const RUN = { name: 'Run command in terminal' };
+
+    it('renders beside Copy on a terminal-tagged block and passes the exact Copy text to onRun', () => {
+      const onRun = mock((_command: string) => {});
+      render(<MemoLike source={'```terminal\necho `id` $HOME\n```'} onRun={onRun} />);
+
+      const run = screen.getByRole('button', RUN);
+      expect(run.textContent).toBe('Run');
+      const copy = screen.getByRole('button', { name: 'Copy code' });
+      expect(run.parentElement).toBe(copy.parentElement);
+
+      fireEvent.click(run);
+      expect(onRun).toHaveBeenCalledTimes(1);
+      expect(onRun.mock.calls[0][0]).toBe('echo `id` $HOME');
+      expect(onRun.mock.calls[0][0]).toBe(codeBlockCopyText('echo `id` $HOME\n'));
+    });
+
+    it('passes a multi-line terminal block as one string', () => {
+      const onRun = mock((_command: string) => {});
+      render(<MemoLike source={['```terminal', ...THREE_LINE_SCRIPT.split('\n'), '```'].join('\n')} onRun={onRun} />);
+
+      fireEvent.click(screen.getByRole('button', RUN));
+      expect(onRun.mock.calls).toEqual([[THREE_LINE_SCRIPT]]);
+    });
+
+    it('does not render on an untagged block', () => {
+      render(<MemoLike source={'```\nls\n```'} onRun={() => {}} />);
+      expect(screen.queryByRole('button', RUN)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
+    });
+
+    it('does not render on other-language blocks, including look-alike tags', () => {
+      for (const tag of ['bash', 'sh', 'terminal-output', 'myterminal']) {
+        cleanup();
+        render(<MemoLike source={`\`\`\`${tag}\nls\n\`\`\``} onRun={() => {}} />);
+        expect(screen.queryByRole('button', RUN)).toBeNull();
+        expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
+      }
+    });
+
+    it('does not render on a terminal block when no onRun is provided', () => {
+      render(<MemoLike source={'```terminal\nls\n```'} />);
+      expect(screen.queryByRole('button', RUN)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
+    });
+
+    it('renders on an empty terminal block and passes an empty command', () => {
+      const onRun = mock((_command: string) => {});
+      render(<MemoLike source={'```terminal\n```'} onRun={onRun} />);
+
+      fireEvent.click(screen.getByRole('button', RUN));
+      expect(onRun.mock.calls).toEqual([['']]);
+    });
+
+    it('keeps the touch-safe visibility classes (not hover-only)', () => {
+      render(<MemoLike source={'```terminal\nls\n```'} onRun={() => {}} />);
+      const tokens = screen.getByRole('button', RUN).className.split(/\s+/);
+      expect(tokens).not.toContain('opacity-0');
+      expect(tokens).toContain('[@media(hover:hover)]:opacity-0');
+    });
   });
 });

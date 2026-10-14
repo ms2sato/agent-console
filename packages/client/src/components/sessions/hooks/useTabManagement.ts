@@ -76,7 +76,8 @@ export type AddAgentWorkerParams =
 export interface UseTabManagementResult {
   tabs: Tab[];
   activeTabId: string | null;
-  addTerminalTab: () => Promise<void>;
+  /** Resolves to the created terminal tab, or null when nothing was created (the failure has already been surfaced via showError). */
+  addTerminalTab: () => Promise<Tab | null>;
   addAgentTab: (params: AddAgentWorkerParams) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   handleTabClick: (tabId: string) => void;
@@ -157,8 +158,8 @@ export function useTabManagement({
   }, [urlWorkerId, tabs, activeSession, activeTabId, navigateToSession, navigateToWorker]);
 
   // Add a new terminal (shell) tab
-  const addTerminalTab = useCallback(async () => {
-    if (!activeSession) return;
+  const addTerminalTab = useCallback(async (): Promise<Tab | null> => {
+    if (!activeSession) return null;
 
     try {
       const { worker } = await createWorker(sessionId, {
@@ -175,9 +176,11 @@ export function useTabManagement({
       setTabs(prev => appendTabIfAbsent(prev, newTab));
       setActiveTabId(worker.id);
       navigateToWorker(worker.id);
+      return newTab;
     } catch (error) {
       logger.error('Failed to create terminal worker:', error);
       showError('Failed to Create Worker', error instanceof Error ? error.message : 'Unknown error');
+      return null;
     }
   }, [activeSession, sessionId, tabs, navigateToWorker, showError]);
 

@@ -25,6 +25,7 @@ import type { AgentDefinition, EmbeddedAgentWorker, Session, Worker } from '@age
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { SessionSidePanels } from './SessionSidePanels';
 import { SessionSidePanelsDrawer } from './SessionSidePanelsDrawer';
+import { SessionTerminalRunContext, type SessionTerminalRun } from './SessionTerminalRunContext';
 import { useAgents } from '../../hooks/useAgents';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useSessionStopTasksContext } from '../../routes/__root';
@@ -740,7 +741,17 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     </div>
   ) : null;
 
+  // Read from `session.workers` on every render, never held locally.
+  const terminalRun: SessionTerminalRun = {
+    terminalWorkers: session.workers
+      .filter((w) => w.type === 'terminal')
+      .map((w) => ({ id: w.id, name: w.name })),
+    activateWorker: handleTabClick,
+    createTerminalWorker: addTerminalTab,
+  };
+
   return (
+    <SessionTerminalRunContext.Provider value={terminalRun}>
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Non-modal Stop/Pause task banner (scoped to this session) */}
       {stopTask && stopTask.status === 'failed' && (
@@ -899,5 +910,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       </div>
       <ErrorDialog {...errorDialogProps} />
     </div>
+    </SessionTerminalRunContext.Provider>
   );
 }

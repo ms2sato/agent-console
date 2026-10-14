@@ -4,12 +4,13 @@ import { screen, cleanup, waitFor, act, fireEvent } from '@testing-library/react
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { waitForAbsent } from '../../../test/waitForAbsent';
 import { MemoPanel } from '../MemoPanel';
+import { SessionTerminalRunContext, type SessionTerminalRun } from '../SessionTerminalRunContext';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 
 // Fetch-level mock (testing.md Anti-Pattern #2: mock at the fetch boundary).
 const originalFetch = globalThis.fetch;
-const mockFetch = mock(() => Promise.resolve(new Response()));
+const mockFetch = mock((_url?: unknown, _init?: RequestInit) => Promise.resolve(new Response()));
 globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
 afterAll(() => {
@@ -166,6 +167,87 @@ describe('MemoPanel', () => {
 
       await waitFor(() => expect(screen.getByText('inline code')).toBeTruthy());
       expect(screen.queryByRole('button', { name: 'Copy code' })).toBeNull();
+    });
+  });
+
+  describe('memo code blocks (Run control)', () => {
+    const MEMO = 'Do:\n\n```terminal\nbun run build\n```\n\n```bash\nls\n```\n';
+
+    function makeRun(workers: Array<{ id: string; name: string }>): SessionTerminalRun {
+      return {
+        terminalWorkers: workers,
+        activateWorker: mock(() => {}),
+        createTerminalWorker: mock(async () => ({ id: 'new', name: 'Shell 1' })),
+      };
+    }
+
+    async function renderMemo(run: SessionTerminalRun | null) {
+      mockFetch.mockImplementation(async (url: unknown) =>
+        String(url).includes('/messages')
+          ? jsonResponse({ message: { id: 'm1' } })
+          : jsonResponse({ content: MEMO }),
+      );
+      await renderWithRouter(
+        <SessionTerminalRunContext.Provider value={run}>
+          <ControlledMemoPanel sessionId="session-1" />
+        </SessionTerminalRunContext.Provider>,
+      );
+      await waitFor(() => expect(document.querySelector('.memo-content')).toBeTruthy());
+    }
+
+    function messageCalls(): FormData[] {
+      return (mockFetch.mock.calls as unknown[][])
+        .filter((c) => String(c[0]).includes('/messages'))
+        .map((c) => (c[1] as RequestInit).body as FormData);
+    }
+
+    it('offers Run only on the terminal block (Copy stays on both) when a session provides terminals', async () => {
+      await renderMemo(makeRun([{ id: 't1', name: 'Shell 1' }]));
+
+      expect(await screen.findAllByRole('button', { name: 'Run command in terminal' })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: 'Copy code' })).toHaveLength(2);
+    });
+
+    it('offers no Run control without a provider', async () => {
+      await renderMemo(null);
+
+      await screen.findAllByRole('button', { name: 'Copy code' });
+      expect(screen.queryByRole('button', { name: 'Run command in terminal' })).toBeNull();
+    });
+
+    it('clicking Run opens the confirmation with the command and sends nothing until confirmed', async () => {
+      await renderMemo(makeRun([{ id: 't1', name: 'Shell 1' }]));
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Run command in terminal' }));
+
+      expect((await screen.findByTestId('run-command-text')).textContent).toBe('bun run build');
+      expect(messageCalls()).toHaveLength(0);
+    });
+
+    it('confirming sends the block text to the terminal and closes the dialog', async () => {
+      const run = makeRun([{ id: 't1', name: 'Shell 1' }]);
+      await renderMemo(run);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Run command in terminal' }));
+      await screen.findByTestId('run-command-text');
+      fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+      await waitForAbsent(() => screen.queryByTestId('run-command-text'));
+      expect(messageCalls()).toHaveLength(1);
+      expect(messageCalls()[0].get('toWorkerId')).toBe('t1');
+      expect(messageCalls()[0].get('content')).toBe('bun run build');
+      expect(run.activateWorker).toHaveBeenCalledWith('t1');
+    });
+
+    it('cancelling closes the dialog and sends nothing', async () => {
+      await renderMemo(makeRun([{ id: 't1', name: 'Shell 1' }]));
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Run command in terminal' }));
+      await screen.findByTestId('run-command-text');
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      await waitForAbsent(() => screen.queryByTestId('run-command-text'));
+      expect(messageCalls()).toHaveLength(0);
     });
   });
 

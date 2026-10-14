@@ -11,10 +11,16 @@ import { logger } from '../../lib/logger';
 // inline code: it has no `inline` prop any more, a fenced block is a `pre`
 // whose single child is a `code` element, while inline code is a bare `code`
 // element with no `pre` parent -- so overriding `pre` (and leaving `code`
-// alone) touches fenced blocks only. The ```terminal tag is deliberately NOT
-// required: a Copy control is harmless on any block.
+// alone) touches fenced blocks only. The Copy control is harmless on any block,
+// so it needs no tag. A Run control executes, so it needs an explicit marker:
+// it renders only on a ```terminal block, and only when the consumer supplies
+// `onRun`.
 
 const COPIED_LABEL_MS = 1500;
+const TERMINAL_LANGUAGE_CLASS = 'language-terminal';
+
+const CONTROL_CLASS =
+  'flex items-center gap-1 rounded bg-slate-700 px-1.5 py-1 text-xs text-gray-200 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus:opacity-100 hover:bg-slate-600';
 
 function childrenText(children: ReactNode): string {
   if (typeof children === 'string' || typeof children === 'number') return String(children);
@@ -37,7 +43,14 @@ export function codeBlockCopyText(children: ReactNode): string {
   return childrenText(children).replace(/\n$/, '');
 }
 
-export function MarkdownCodeBlock({ children, tabIndex }: { children?: ReactNode; tabIndex?: number }) {
+interface MarkdownCodeBlockProps {
+  children?: ReactNode;
+  tabIndex?: number;
+  /** Called with the block's exact text (equal to the Copy text). Run is offered only on a ```terminal block. */
+  onRun?: (command: string) => void;
+}
+
+export function MarkdownCodeBlock({ children, tabIndex, onRun }: MarkdownCodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -52,6 +65,7 @@ export function MarkdownCodeBlock({ children, tabIndex }: { children?: ReactNode
   const className = codeElement?.props.className;
   const codeChildren = codeElement ? codeElement.props.children : children;
   const text = codeBlockCopyText(codeChildren);
+  const isTerminalBlock = (className ?? '').split(/\s+/).includes(TERMINAL_LANGUAGE_CLASS);
 
   const handleCopy = async () => {
     try {
@@ -70,15 +84,28 @@ export function MarkdownCodeBlock({ children, tabIndex }: { children?: ReactNode
       <pre>
         <code className={className}>{codeChildren}</code>
       </pre>
-      <button
-        type="button"
-        aria-label="Copy code"
-        tabIndex={tabIndex}
-        onClick={handleCopy}
-        className="absolute top-1 right-1 flex items-center gap-1 rounded bg-slate-700 px-1.5 py-1 text-xs text-gray-200 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus:opacity-100 hover:bg-slate-600"
-      >
-        {copied ? <span role="status">Copied!</span> : <CopyIcon className="w-3.5 h-3.5" />}
-      </button>
+      <div className="absolute top-1 right-1 flex items-center gap-1">
+        {onRun && isTerminalBlock && (
+          <button
+            type="button"
+            aria-label="Run command in terminal"
+            tabIndex={tabIndex}
+            onClick={() => onRun(text)}
+            className={CONTROL_CLASS}
+          >
+            Run
+          </button>
+        )}
+        <button
+          type="button"
+          aria-label="Copy code"
+          tabIndex={tabIndex}
+          onClick={handleCopy}
+          className={CONTROL_CLASS}
+        >
+          {copied ? <span role="status">Copied!</span> : <CopyIcon className="w-3.5 h-3.5" />}
+        </button>
+      </div>
     </div>
   );
 }
