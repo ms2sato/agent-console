@@ -32,6 +32,17 @@ describe('replayHistoryChunk: trailing blank at a soft-wrap point', () => {
 });
 
 describe('replayHistoryChunk', () => {
+  it('joins a hard-wrapped URL in a replayed chunk via the shared row pipeline', async () => {
+    const COLS = 40;
+    const row1 = 'https://example.com/' + 'a'.repeat(COLS - 'https://example.com/'.length);
+    const row2 = 'bcd/end';
+    const { rows } = await replayHistoryChunk(`${row1}\r\n${row2}\r\n`, COLS, 24, identity);
+    expect(textOf(rows)).toEqual([row1, row2]);
+    expect(rows[1].isWrapped).toBe(false);
+    expect(rows[0].fillsLastColumn).toBe(true);
+    expect(rows[1].links).toEqual([{ start: 0, end: row2.length, href: row1 + row2 }]);
+  });
+
   it('extracts settled line-flow rows, trailing blanks trimmed', async () => {
     const { rows, overflow } = await replayHistoryChunk(
       'line one\r\nline two\r\nline three\r\n',

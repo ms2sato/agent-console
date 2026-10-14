@@ -15,6 +15,7 @@ const ROWS: TerminalRow[] = [
     key: 0,
     isWrapped: false,
     links: [],
+    fillsLastColumn: false,
     segments: [
       { text: 'hello ', style: null },
       { text: 'world', style: { bold: true, fg: '#ff0000' } },
@@ -24,6 +25,7 @@ const ROWS: TerminalRow[] = [
     key: 1,
     isWrapped: false,
     links: [],
+    fillsLastColumn: false,
     segments: [
       { text: 'see ', style: null },
       { text: '#123', style: null, link: { href: 'https://github.com/acme/widgets/issues/123' } },
@@ -249,6 +251,7 @@ const URL_ROWS: TerminalRow[] = [
     key: 0,
     isWrapped: false,
     links: [{ start: 0, end: LOCALHOST_URL.length, href: LOCALHOST_URL }],
+    fillsLastColumn: false,
     segments: [{ text: LOCALHOST_URL, style: null }],
   },
 ];
@@ -546,6 +549,7 @@ function makeRows(count: number, negCount: number): TerminalRow[] {
     key: i < negCount ? -(i + 1) : i,
     isWrapped: false,
     links: [],
+    fillsLastColumn: false,
     segments: [{ text: `row${i}`, style: null }],
   }));
 }

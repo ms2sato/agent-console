@@ -188,6 +188,7 @@ describe('TerminalAdapter', () => {
             key: 0,
             isWrapped: false,
             links: [{ start: 0, end: LOCALHOST_URL.length, href: LOCALHOST_URL }],
+            fillsLastColumn: false,
             segments: [{ text: LOCALHOST_URL, style: null }],
           },
         ],
