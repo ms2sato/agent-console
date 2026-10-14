@@ -32,7 +32,6 @@ export function RunCommandDialog({ sessionId, command, terminalRun, onClose }: R
   const target = terminalWorkers.find((w) => w.id === selectedId) ?? terminalWorkers[0] ?? null;
 
   const handleConfirm = async () => {
-    if (isRunning) return;
     setIsRunning(true);
     setError(null);
     try {
