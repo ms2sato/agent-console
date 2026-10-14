@@ -176,6 +176,29 @@ describe('AddAgentWorkerMenu', () => {
     expect(embeddedIndex).toBeGreaterThan(terminalIndex);
   });
 
+  it('Shell calls onSelectShell once, whether its handler resolves to nothing or to the created tab', async () => {
+    agentsResponse = { agents: [] };
+    embeddedAgentsResponse = { embeddedAgents: [] };
+
+    for (const resolved of [undefined, { id: 'w1', workerType: 'terminal', name: 'Shell 1' }]) {
+      const onSelectShell = mock(async () => resolved);
+      const { unmount } = await renderWithRouter(
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={onSelectShell} />,
+      );
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+      const shellItem = within(screen.getByRole('menu'))
+        .getAllByRole('menuitem')
+        .find((item) => item.textContent?.includes('Shell'));
+      await user.click(shellItem as HTMLElement);
+
+      await waitFor(() => {
+        expect(onSelectShell).toHaveBeenCalledTimes(1);
+      });
+      unmount();
+    }
+  });
+
   it('empty embedded registry still shows terminal agents plus a link to create one', async () => {
     agentsResponse = {
       agents: [{ id: 'claude-code', name: 'Claude Code', isBuiltIn: true }],
