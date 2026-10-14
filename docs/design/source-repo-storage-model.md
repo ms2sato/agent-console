@@ -1,6 +1,6 @@
 # Source Repository Storage Model: Bare Source Repos
 
-Status: design proposal (not implemented). Owner review requested; two owner decisions are marked below.
+Status: design proposal, staged. **Owner direction (2026-10-14, Issue [#919](https://github.com/ms2sato/agent-console/issues/919)): bare and non-bare source repositories are both supported permanently, side by side; nothing converts existing repositories.** Consequences recorded below: section 6 (phase 1, the deploy build) is applied by PR [#2115](https://github.com/ms2sato/agent-console/pull/2115); section 7 (conversion sequence) and section 10 item 5 are not pursued; the section 11 migration decision is moot. The measurements in those sections are kept as evidence. Owner decisions still open are marked in sections 5 and 11.
 
 This document decides whether a [Source Repository](../glossary.md#source-repository) should keep a checked-out working tree, how existing ones would be converted, and what the conversion costs. It is written from the code at `main` and from measurements on a scratch clone, not from the Issue text. Every "bare-safe" claim below names the line it was checked against or the command that was run.
 
@@ -11,7 +11,7 @@ On 2026-06-29 a source repository on the dogfood host ended up with a branch ref
 What a working tree at the source-repo path is used for today:
 
 - **Users: nothing.** Every user action goes through a linked worktree under `<AGENT_CONSOLE_HOME>/repositories/<org>/<repo>/worktrees/`. The one exception is the dashboard's *main worktree* entry, which opens a session directly on the source path (section 5).
-- **The deploy script: build and rsync.** `scripts/update-and-deploy-for-multiuser-ubuntu.sh` runs `bun install` and `bun run build` inside the source-repo working tree and then rsyncs that tree to the deploy target (section 6).
+- **The deploy script: build and rsync.** `scripts/update-and-deploy-for-multiuser-ubuntu.sh` ran `bun install` and `bun run build` inside the source-repo working tree and then rsynced that tree to the deploy target (section 6); since PR #2115 it builds a pinned SHA from `git archive` instead.
 - **The Orchestrator: a ref update by hand.** The "sync the source repo to `origin/main` before delegating" step is done as a `git fetch origin main:main`-shaped operation, which is exactly the operation that produced the drift.
 
 Keeping a working tree that nobody edits, next to refs that are updated out of band, is the structural cause. A bare repository has no index and no working tree to disagree with.
@@ -26,7 +26,7 @@ A bare source repository holds objects and refs only. Branches are checked out i
 
 The registered `repo.path` does not change: the bare repository lives at the same path the non-bare one did. No `.git` suffix is added to the directory name, because `deriveRepositorySlug(repo.path, path.basename(repo.path))` and `getRepositoryDir(orgRepo)` key on the basename, and because a stable path keeps the stored `Repository.path`, `safe.directory` entries and session `locationPath` values valid (identity stability).
 
-**Scope: only repositories under the source-repos directory are in the model.** `registerRepository` accepts any local git checkout by path (`repository-manager.ts:318-346`), for example an operator's own working copy outside `getSourceReposDir()`. Those are the operator's checkouts and must never be converted. `isUnderSourceReposDir` (`lib/repository-remote.ts:36`) is the boundary. Consequence: bare and non-bare repositories coexist permanently, whichever migration option is chosen (section 7).
+**Scope: only repositories under the source-repos directory are in the model.** `registerRepository` accepts any local git checkout by path (`repository-manager.ts:318-346`), for example an operator's own working copy outside `getSourceReposDir()`. Those are the operator's checkouts and must never be converted. `isUnderSourceReposDir` (`lib/repository-remote.ts:36`) is the boundary. Consequence: bare and non-bare repositories coexist permanently, whichever migration option is chosen (section 7). The owner direction of 2026-10-14 makes this the goal rather than a side effect: bare is an additional supported shape, and later phases are designed under the constraint that an existing non-bare repository keeps working unchanged.
 
 ## 3. Measurements (scratch clone, git on the dogfood host)
 
@@ -136,6 +136,8 @@ This decision is independent of the End Session proposal's pending approval; tha
 
 ## 6. Deploy impact (owner-gated)
 
+**Status: phase 1 applied by PR [#2115](https://github.com/ms2sato/agent-console/pull/2115) (Issue #2090, merged 2026-10-14; owner approval 2026-10-14).** The deploy script now resolves `DEPLOY_SHA` (`AGENT_CONSOLE_DEPLOY_SHA`, default `origin/main`) and builds from `git archive` of that SHA into a per-deploy build directory, which is shape 2 below as revised by Phase 0. The line numbers in the bullets that follow describe the script as it was BEFORE that PR and are kept as the measured evidence; the current anchors, re-read at `82a7d062`, are: `SRC` at `:126`, `DEPLOY_SHA` resolution at `:288` and `:298`, the build directory at `:310`, `git archive` at `:320-324`, `bun install` at `:327-330`, the build at `:334-337`, and the rsync at `:341-345`. `docs/multi-user-setup-guide.md` (deploy section, around `:582`) now says the script builds from a pinned commit and tells the operator to `fetch origin` first. What this section's last paragraph calls the Orchestrator's sync step is not part of that PR: see section 10 item 7.
+
 `scripts/update-and-deploy-for-multiuser-ubuntu.sh` is the one real breaking change, and any edit to it is **owner-gated**.
 
 - `:118` sets `SRC` to the source repository (`source-repos/agent-console` by default, or `AGENT_CONSOLE_APP_SOURCE_DIR`).
@@ -149,11 +151,13 @@ Two replacement shapes:
 
 Both pin an explicit SHA, so `DEPLOYED_SHA` (`:282`) stays reproducible and the "HEAD changed during build / during deploy" re-checks (`:298-:311`) stop being load-bearing: a build of a fixed SHA cannot be invalidated by a concurrent ref move. **Recommendation: shape 1.** Today's deploy reuses `node_modules` in the source tree between deploys; a persistent build worktree keeps that, whereas shape 2 reinstalls every time. Shape 2 is simpler and stateless; choose it if the owner prefers no persistent build state. The trade is stated, not timed: no install-time measurement was taken. The build worktree must be cleaned of untracked build output (but not `node_modules`) before each build, and a crashed deploy can leave a stale administrative entry that `git worktree prune` removes.
 
-`docs/multi-user-setup-guide.md` ("sync the source-repo ... to the intended commit before invoking") needs the same update, and so does the Orchestrator's sync step (3.5).
+`docs/multi-user-setup-guide.md` ("sync the source-repo ... to the intended commit before invoking") needed the same update (done by PR #2115: it now describes the pinned-commit build), and so does the Orchestrator's sync step (3.5), which remains open as section 10 item 7.
 
 Phase 0 of the staged plan measured these build shapes and reviewed the whole deploy flow: see [deploy-build-flow.md](deploy-build-flow.md). Its measurements (install is under a second; the build is 22 to 26 s) change the recommendation above in favour of `git archive` of a pinned SHA into a per-deploy build directory, and it found that a persistent worktree of a bare repo cannot run `bun install` today (`scripts/install-hooks.mjs:69`).
 
 ## 7. Migration strategy
+
+**Not pursued (owner, 2026-10-14: bare and non-bare coexist permanently; no conversion).** Nothing below is scheduled. The options, the conversion sequence, the crash points and their measurements are kept as the record of why conversion was costed and then dropped, and as a starting point if the direction is ever reversed; do not implement them without a new owner decision.
 
 The Issue's three options, evaluated against measurements. The columns the decision turns on:
 
@@ -202,13 +206,13 @@ To get a working tree back for a converted repo: `git -C <repo> worktree add <pa
 2. **Registration and multi-user config for bare paths.** `registerRepository` accepts a bare repo; `applyMultiUserSharedRepoConfig` and `git-error-hints.ts` address the git directory correctly.
 3. **Main-worktree rule (owner decision, section 5).** `parsePorcelainOutput` skips the bare entry; `isMain` / `isMainWorktree` / `isWorktreeOf` follow the chosen rule; with option (i), create `<worktrees>/main` at registration.
 4. **Source-reading features.** `findTemplatesDir`, the repository-description README read, and the headless-agent cwd read from the default branch or the main worktree.
-5. **Automatic conversion** following the section 7 sequence, with the marker and crash-recovery tests.
-6. **Deploy script: build worktree or `git archive`** (owner-gated), plus the setup-guide deploy paragraph.
-7. **Orchestrator procedure and docs**: replace the by-hand `fetch origin main:main` sync with `fetch origin` plus a fast-forward in the main worktree.
-8. **Multi-user real-host verification** of group-write behaviour on a bare repo (tier 2).
+5. **Automatic conversion** following the section 7 sequence, with the marker and crash-recovery tests. **Not pursued** (owner, 2026-10-14: bare and non-bare coexist permanently; no conversion).
+6. **Deploy script: build worktree or `git archive`** (owner-gated), plus the setup-guide deploy paragraph. **Applied** by PR #2115 (`git archive` of a pinned SHA; see section 6).
+7. **Orchestrator procedure and docs**: replace the by-hand `fetch origin main:main` sync with `fetch origin` plus a fast-forward in the main worktree. Tracked by Issue #2094, whose scope is narrowed to items 7 and 8 (for bare-cloned repositories only; the non-bare procedure is unchanged).
+8. **Multi-user real-host verification** of group-write behaviour on a bare repo (tier 2), with a non-bare control in the same run. Tracked by Issue #2094.
 
 ## 11. Owner decisions
 
 - **Main-worktree session**: option (i) (recommended) or (ii), section 5.
-- **Deploy build shape**: persistent build worktree (recommended) or `git archive`, section 6.
-- **Migration**: option 1 with the section 7 sequence (recommended) or option 2.
+- **Deploy build shape**: decided and applied: `git archive` of a pinned SHA (Phase 0 measurements, section 6; PR #2115).
+- **Migration**: moot (owner, 2026-10-14: bare and non-bare coexist permanently; no conversion, section 7).
