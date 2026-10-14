@@ -13,7 +13,7 @@ import type { AddAgentWorkerParams } from './hooks/useTabManagement';
 
 interface AddAgentWorkerMenuProps {
   onSelect: (params: AddAgentWorkerParams) => Promise<void>;
-  onSelectShell: () => Promise<void>;
+  onSelectShell: () => Promise<unknown>;
   /**
    * Injectable seam for the kind-dispatch capability accessor, defaulting to
    * the real `getAgentParameterCapabilitiesFor` (agent-surface.ts's SINGLE

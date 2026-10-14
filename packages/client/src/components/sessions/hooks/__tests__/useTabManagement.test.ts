@@ -324,9 +324,13 @@ describe('useTabManagement', () => {
 
       navigateToWorker.mockClear();
 
+      let created = null as Awaited<ReturnType<typeof result.current.addTerminalTab>>;
       await act(async () => {
-        await result.current.addTerminalTab();
+        created = await result.current.addTerminalTab();
       });
+
+      // The created tab is handed back so a caller can target the new worker.
+      expect(created).toEqual({ id: 'new-terminal-1', workerType: 'terminal', name: 'Shell 1' });
 
       // Verify the POST was made to the workers endpoint
       const postCalls = findFetchCalls(/\/sessions\/session-1\/workers$/);
@@ -584,6 +588,24 @@ describe('useTabManagement', () => {
       });
     });
 
+    it('addTerminalTab resolves to null and surfaces the error when the create fails', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const showError = mock(() => {});
+      const options = createDefaultOptions({ activeSession: { workers }, urlWorkerId: 'agent-1', showError });
+      mockFetch.mockImplementationOnce(async () => new Response(JSON.stringify({ error: 'boom' }), { status: 400 }));
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      let created = null as Awaited<ReturnType<typeof result.current.addTerminalTab>>;
+      await act(async () => {
+        created = await result.current.addTerminalTab();
+      });
+
+      expect(created).toBeNull();
+      expect(showError).toHaveBeenCalledWith('Failed to Create Worker', expect.any(String));
+      expect(result.current.tabs).toHaveLength(1);
+    });
+
     it('addAgentTab surfaces an error via showError on API failure', async () => {
       const workers = [createAgentWorker('agent-1')];
       const showError = mock(() => {});
@@ -798,7 +820,7 @@ describe('useTabManagement', () => {
 
       const { result } = renderHook(() => useTabManagement(options));
 
-      let addPromise: Promise<void> = Promise.resolve();
+      let addPromise: Promise<unknown> = Promise.resolve();
       act(() => {
         addPromise = result.current.addTerminalTab();
       });
@@ -874,7 +896,7 @@ describe('useTabManagement', () => {
 
       const { result } = renderHook(() => useTabManagement(options));
 
-      let addPromise: Promise<void> = Promise.resolve();
+      let addPromise: Promise<unknown> = Promise.resolve();
       act(() => {
         addPromise = result.current.addAgentTab({ type: 'embedded-agent', embeddedAgentId: 'embedded-def-1' });
       });
@@ -937,7 +959,7 @@ describe('useTabManagement', () => {
 
       const { result } = renderHook(() => useTabManagement(options));
 
-      let addPromise: Promise<void> = Promise.resolve();
+      let addPromise: Promise<unknown> = Promise.resolve();
       act(() => {
         addPromise = result.current.addTerminalTab();
       });
