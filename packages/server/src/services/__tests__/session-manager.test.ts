@@ -1748,6 +1748,66 @@ describe('SessionManager', () => {
       await deactivatePromise;
     });
 
+    it('forwards a worker\'s window reading to the embeddedAgentManager register (window-drift feed wiring)', async () => {
+      // Mutation measured: dropping `recordWindowObservation` from the
+      // EmbeddedAgentWorkerService construction in session-manager.ts leaves
+      // the manager's register unfed -- the spy below is never called.
+      const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      const subprocess: FakeSubprocess = { pid: 4245, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
+      const recordWindowObservation = mock((_definitionId: string, _observation: unknown) => {});
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined),
+          recordWindowObservation: recordWindowObservation as never,
+        },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+      await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
+
+      stdoutCtrl.enqueue(
+        new TextEncoder().encode(
+          '{"v":1,"type":"context-compacted","source":"auto","providerStatedWindowTokens":65536}\n',
+        ),
+      );
+      const deadline = Date.now() + 2000;
+      while (recordWindowObservation.mock.calls.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(recordWindowObservation).toHaveBeenCalledWith('stub-def', { kind: 'providerStated', tokens: 65536 });
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      resolveExited(0);
+      stdoutCtrl.close();
+      stderrCtrl.close();
+      await deactivatePromise;
+    });
+
     it('forwards the ensureMemoryDirFn option through to EmbeddedAgentWorkerService (test/polarity seam, Issue #1709 PR-3b)', async () => {
       // Mutation measured: dropping `ensureMemoryDirFn: options.ensureMemoryDirFn`
       // from the EmbeddedAgentWorkerService construction in
