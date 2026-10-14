@@ -14,7 +14,6 @@
  * via `sudo -i`. When `requestUser` is null/undefined (the default), the
  * historical `Bun.spawn(['git', ...args])` direct-spawn path runs verbatim.
  */
-import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
   runAsUser as defaultRunAsUser,
@@ -907,71 +906,42 @@ export async function fetchAllRemote(
  *
  * Returns `null` when `repoPath` is not a git repository (either probe fails).
  *
- * The probes trust `repoPath` (and the common dir) through `-c safe.directory`
- * on the command line, which git honours as protected configuration. A source
- * repo cloned by another OS user is owned by someone other than the server, and
- * registration used to need only `access(<path>/.git)`, not a git invocation;
- * without this the probe would fail with "dubious ownership" and register
- * would report "Not a git repository" for a valid repo. The trust is scoped to
- * these two read-only `rev-parse` calls.
  */
 export async function resolveGitDir(
   repoPath: string,
 ): Promise<{ gitDir: string; bare: boolean } | null> {
   const abs = path.resolve(repoPath);
-  const canonical = await realpath(abs).catch(() => abs);
-  const trust = (dir: string) => ['-c', `safe.directory=${dir}`];
-  const trustRepo = [...trust(abs), ...(canonical === abs ? [] : trust(canonical))];
 
-  const common = await gitSafe([...trustRepo, 'rev-parse', '--git-common-dir'], abs);
+  const common = await gitSafe(['rev-parse', '--git-common-dir'], abs);
   if (common === null || common === '') return null;
   const gitDir = path.resolve(abs, common);
 
-  const bare = await gitSafe(
-    [...trustRepo, ...trust(gitDir), '-C', gitDir, 'rev-parse', '--is-bare-repository'],
-    abs,
-  );
+  const bare = await gitSafe(['-C', gitDir, 'rev-parse', '--is-bare-repository'], abs);
   if (bare === null) return null;
   return { gitDir, bare: bare === 'true' };
 }
 
-/** Refspec `git clone` writes for a non-bare clone and `git clone --bare` does not. */
-const ORIGIN_FETCH_REFSPEC = '+refs/heads/*:refs/remotes/origin/*';
-
 /**
- * Make a BARE repository's `origin` usable by the ref-only helpers in this
- * file (`listRemoteBranches`, `refreshDefaultBranch`, `getCommitsBehind` ...).
- * `git clone --bare` writes no `remote.origin.fetch` and no
- * `refs/remotes/origin/*`, so without a refspec `branch -r` is empty and
- * `remote set-head origin -a` fails with "Not a valid ref".
+ * Whether a repository's `origin` carries the fetch refspec the ref-only
+ * helpers (`listRemoteBranches`, `refreshDefaultBranch`, `getCommitsBehind` ...)
+ * rely on. READ-ONLY: it never writes into the repository.
  *
- * - No `remote.origin.url`: nothing to configure -> `'no-remote'`.
- * - `remote.origin.fetch` already set: no-op -> `'present'`.
- * - Otherwise set the standard refspec, then one `fetch origin` and `remote
- *   set-head origin -a` -> `'configured'`. The refspec write is the part that
- *   matters (a later fetch by any user then populates the tracking refs); the
- *   network fetch and set-head are best effort and a failure of either is
- *   logged, not thrown (the caller is repository registration).
+ * `git clone --bare` writes no `remote.origin.fetch` and no
+ * `refs/remotes/origin/*`, so on a bare clone `branch -r` is empty and `remote
+ * set-head origin -a` fails with "Not a valid ref". A non-bare clone always has
+ * the refspec.
+ *
+ * - No `remote.origin.url`: nothing to track -> `'no-remote'`.
+ * - `remote.origin.fetch` set -> `'present'`.
+ * - URL set, refspec absent -> `'missing'`.
  */
-export async function ensureOriginFetchRefspec(
+export async function assertOriginFetchRefspec(
   repoPath: string,
-): Promise<'no-remote' | 'present' | 'configured'> {
+): Promise<'no-remote' | 'present' | 'missing'> {
   const url = await gitSafe(['config', '--get', 'remote.origin.url'], repoPath);
   if (url === null || url === '') return 'no-remote';
   const existing = await gitSafe(['config', '--get', 'remote.origin.fetch'], repoPath);
-  if (existing !== null && existing !== '') return 'present';
-
-  await git(['config', 'remote.origin.fetch', ORIGIN_FETCH_REFSPEC], repoPath);
-  try {
-    await fetchAllRemote(repoPath);
-    await git(['remote', 'set-head', 'origin', '-a'], repoPath, NETWORK_GIT_TIMEOUT_MS);
-  } catch (err) {
-    logger.warn(
-      { err, repoPath },
-      'Set remote.origin.fetch on a bare repository, but the first fetch / set-head failed; tracking refs appear on the next successful fetch',
-    );
-  }
-  return 'configured';
+  return existing !== null && existing !== '' ? 'present' : 'missing';
 }
 
 /**

@@ -89,8 +89,8 @@ export const mockGit = {
   // repo as a directory containing `.git` (memfs) registers as before; a bare
   // repository is a per-test override: `mockResolvedValueOnce({ gitDir, bare: true })`.
   resolveGitDir: mock(defaultResolveGitDir) as Mock<typeof defaultResolveGitDir>,
-  ensureOriginFetchRefspec: mock(() => Promise.resolve('present' as const)) as Mock<
-    (repoPath: string) => Promise<'no-remote' | 'present' | 'configured'>
+  assertOriginFetchRefspec: mock(() => Promise.resolve('present' as const)) as Mock<
+    (repoPath: string) => Promise<'no-remote' | 'present' | 'missing'>
   >,
 
   // Remote fetch operations
@@ -146,7 +146,7 @@ export function resetGitMocks(): void {
   mockGit.getOrgRepoFromPath.mockReset();
   mockGit.deriveRepositorySlug.mockReset();
   mockGit.resolveGitDir.mockReset();
-  mockGit.ensureOriginFetchRefspec.mockReset();
+  mockGit.assertOriginFetchRefspec.mockReset();
   mockGit.fetchRemote.mockReset();
   mockGit.fetchAllRemote.mockReset();
   mockGit.getCommitsBehind.mockReset();
@@ -184,7 +184,7 @@ export function resetGitMocks(): void {
   mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/repo'));
   mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('owner/repo'));
   mockGit.resolveGitDir.mockImplementation(defaultResolveGitDir);
-  mockGit.ensureOriginFetchRefspec.mockImplementation(() => Promise.resolve('present' as const));
+  mockGit.assertOriginFetchRefspec.mockImplementation(() => Promise.resolve('present' as const));
   mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
   mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
   mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));

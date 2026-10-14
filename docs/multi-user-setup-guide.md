@@ -955,15 +955,23 @@ there is no `<repo-path>/.git`. Create one by hand and register it through
 `POST /api/repositories`:
 
 ```bash
+# Run all four as the user who owns the repository (the server never writes into it).
 git clone --bare --config core.sharedRepository=group <url> ${AGENT_CONSOLE_DATA_ROOT}/source-repos/<name>
+git -C ${AGENT_CONSOLE_DATA_ROOT}/source-repos/<name> config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git -C ${AGENT_CONSOLE_DATA_ROOT}/source-repos/<name> fetch origin
+git -C ${AGENT_CONSOLE_DATA_ROOT}/source-repos/<name> remote set-head origin -a
 ```
 
-Registration accepts the bare path, applies the same group-writability
-configuration to the repository root, and — because `git clone --bare`
-writes no `remote.origin.fetch` — sets `+refs/heads/*:refs/remotes/origin/*`,
-fetches once and sets `origin/HEAD`, so branch listing, the default branch and
-ahead/behind work. The bare variant of the four commands (the git directory
-is the repo root):
+`git clone --bare` writes no `remote.origin.fetch` (and no tracking refs), and
+branch listing, the default branch and ahead/behind need them, so the last
+three commands are part of the recipe. Registration **refuses** a bare
+repository that has an `origin` URL but no `remote.origin.fetch`, and its error
+message quotes those commands; registration itself never writes into the
+repository (the only server-side write is the server's own global
+`safe.directory` list, as before). A bare repository with no `origin` registers
+as is. Registration then accepts the bare path and applies the same
+group-writability configuration to the repository root. The bare variant of the
+four group-writability commands (the git directory is the repo root):
 
 ```bash
 git -C <repo-path> config core.sharedRepository group

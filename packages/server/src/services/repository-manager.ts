@@ -5,7 +5,7 @@ import type { Kysely } from 'kysely';
 import type { CleanupRepositoryPayload, Repository } from '@agent-console/shared';
 import { getConfigDir, getRepositoryDir, getSourceReposDir } from '../lib/config.js';
 import { isUnderSourceReposDir } from '../lib/repository-remote.js';
-import { deriveRepositorySlug, ensureOriginFetchRefspec, resolveGitDir } from '../lib/git.js';
+import { assertOriginFetchRefspec, deriveRepositorySlug, resolveGitDir } from '../lib/git.js';
 import { canonicalPath } from '../lib/canonical-path.js';
 import { createLogger } from '../lib/logger.js';
 import { RepositoryNotFoundError } from '../lib/errors.js';
@@ -73,6 +73,22 @@ export function buildManualFallbackCommands(
     `sudo chmod -R g+rw ${gitDir}`,
     `sudo chgrp -R ${sharedGroup} ${gitDir}`,
   ];
+}
+
+/**
+ * The refusal message for a bare repository that has an `origin` URL but no
+ * `remote.origin.fetch`: quotes the commands the repository's owner runs.
+ *
+ * @internal Exported for testing.
+ */
+export function buildMissingRefspecMessage(repoPath: string): string {
+  return (
+    `Bare repository has no remote.origin.fetch refspec: ${repoPath}. ` +
+    `Run these as the repository's owner, then register again: ` +
+    `git -C ${shellEscape(repoPath)} config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' ; ` +
+    `git -C ${shellEscape(repoPath)} fetch origin ; ` +
+    `git -C ${shellEscape(repoPath)} remote set-head origin -a`
+  );
 }
 
 /**
@@ -348,6 +364,18 @@ export class RepositoryManager {
       throw new Error(`Path does not exist: ${absolutePath}`);
     }
 
+    // In multi-user mode, bootstrap `safe.directory` into the SERVER's own
+    // gitconfig FIRST, so every server-run git call that follows (the
+    // `resolveGitDir` probe, the shared-config `git config` probe, later
+    // `listWorktrees` / `fetch` ...) against a source repo cloned by a different
+    // OS user does not hit `dubious ownership`. This is the server's own
+    // per-path trust list (idempotent, warn-only), the only server-side write
+    // registration makes; it never writes into the repository itself. Mirror of
+    // `bootstrapSafeDirectoryForUser` in worktree-service.ts but with
+    // `username: null` (run as the server itself, writing the server's
+    // gitconfig).
+    await this.bootstrapSafeDirectoryForServer(absolutePath);
+
     // Check if it's a git repository. `resolveGitDir` is the single writer of
     // "where is the git directory": `<path>/.git` for a non-bare repository,
     // the path itself for a bare one (which has no `.git` entry).
@@ -374,25 +402,16 @@ export class RepositoryManager {
     // manual fallback).
     await this.applyMultiUserSharedRepoConfig(absolutePath, resolved.gitDir);
 
-    // In multi-user mode, also bootstrap `safe.directory` into the SERVER's
-    // own gitconfig so subsequent server-initiated git operations
-    // (`listWorktrees`, `getRemoteUrl`, `fetch`, ...) against a source repo
-    // cloned by a different OS user do not hit `dubious ownership`. Mirror of
-    // `bootstrapSafeDirectoryForUser` in worktree-service.ts but with
-    // `username: null` (run as the server itself, writing the server's
-    // gitconfig).
-    await this.bootstrapSafeDirectoryForServer(absolutePath);
-
-    // A bare clone has no `remote.origin.fetch` (and no tracking refs), which
-    // the ref-only helpers (`listRemoteBranches`, `refreshDefaultBranch`,
-    // `getCommitsBehind` ...) need. Best effort: a failure must not block
-    // registration, the helpers degrade the way they did before this step.
+    // A bare clone carries no `remote.origin.fetch` (and no tracking refs),
+    // which the ref-only helpers (`listRemoteBranches`, `refreshDefaultBranch`,
+    // `getCommitsBehind` ...) need. Registration never writes into the
+    // repository: it only checks, and refuses with the owner-run commands. The
+    // server has no requesting user to run a write as, and must not write into
+    // another user's repository.
     if (resolved.bare) {
-      try {
-        const outcome = await ensureOriginFetchRefspec(absolutePath);
-        logger.info({ path: absolutePath, outcome }, 'Bare source repository: origin fetch refspec ensured');
-      } catch (err) {
-        logger.warn({ err, path: absolutePath }, 'Failed to ensure the origin fetch refspec on a bare source repository; continuing with registration');
+      const refspec = await assertOriginFetchRefspec(absolutePath);
+      if (refspec === 'missing') {
+        throw new Error(buildMissingRefspecMessage(absolutePath));
       }
     }
 

@@ -1,46 +1,41 @@
 /**
- * Real-git tests for `resolveGitDir` and `ensureOriginFetchRefspec`
+ * Real-git tests for `resolveGitDir` and `assertOriginFetchRefspec`
  * (`lib/git.ts`) on non-bare and BARE repositories.
  *
- * Why a child process and no `fs`: `lib/git.js` is replaced process-globally by
- * `mock-git-helper.ts` in many sibling test files, and `fs` by `mock-fs-helper.ts`
- * (memfs). A test that imported the real `lib/git.js` or made its fixtures with
- * `fs` would bind to whichever mock state the process happened to be in. So the
- * fixtures are built with `git` subprocesses and the functions under test run in
- * a fresh `bun` child that imports the REAL module -- immune to both mocks, and
- * it needs no `assertRealFs` registration. The same reason `git-bare-...` does
- * not import `mock-git-helper.ts`.
+ * Hermetic git: the fixtures use `createScratchGitRepo` (scratch-git.ts), whose
+ * throwaway global config keeps the operator's signing / hooks / aliases out of
+ * these commits; every subprocess here runs with that repo's `env`.
  *
- * Hermetic env: `GIT_CONFIG_GLOBAL=/dev/null` + `GIT_CONFIG_NOSYSTEM=1` so the
- * operator's signing / hooks / aliases never reach these commits, and no repo
- * location variable is inherited.
+ * Why the functions under test run in a child process: `lib/git.js` is replaced
+ * process-globally by `mock-git-helper.ts` in many sibling test files, so a test
+ * that imported the real `lib/git.js` would bind to whichever mock state the
+ * process happened to be in. A fresh `bun` child imports the REAL module. The
+ * fixtures need directories a real `git` subprocess can see, so this file runs
+ * in the second (real-fs) `bun test` invocation (`package.json`) and calls
+ * `assertRealFs` first, per `testing.md`'s real-fs placement rule.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
+import { createScratchGitRepo, type ScratchGitRepo } from '../../__tests__/utils/scratch-git.js';
 
 const GIT_TS = join(dirname(fileURLToPath(import.meta.url)), '..', 'git.ts');
 
-const BASE_ENV: Record<string, string> = Object.fromEntries(
-  Object.entries(process.env).filter(
-    ([k, v]) =>
-      v !== undefined &&
-      !k.startsWith('GIT_') &&
-      !k.startsWith('AGENT_CONSOLE_'),
-  ) as [string, string][],
-);
-const GIT_ENV = { ...BASE_ENV, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+let scratch: ScratchGitRepo;
 
-async function run(cmd: string[], cwd: string, env: Record<string, string> = GIT_ENV): Promise<{ code: number; out: string; err: string }> {
-  const proc = Bun.spawn(cmd, { cwd, env, stdout: 'pipe', stderr: 'pipe' });
+async function run(cmd: string[], cwd: string): Promise<{ code: number; out: string; err: string }> {
+  const proc = Bun.spawn(cmd, { cwd, env: scratch.env, stdout: 'pipe', stderr: 'pipe' });
   const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   const code = await proc.exited;
   return { code, out: out.trim(), err: err.trim() };
 }
 
+/** `git <args>` with the scratch config, `cwd` as given (the scratch repo's own `git()` is fixed to its dir). */
 async function git(args: string[], cwd: string): Promise<string> {
-  const r = await run(['git', '-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], cwd);
+  const r = await run(['git', ...args], cwd);
   if (r.code !== 0) throw new Error(`git ${args.join(' ')} failed (${r.code}): ${r.err}`);
   return r.out;
 }
@@ -58,7 +53,7 @@ async function inChild<T>(dir: string, body: string): Promise<T> {
   return JSON.parse(r.out.split('\n').pop()!) as T;
 }
 
-describe('resolveGitDir / ensureOriginFetchRefspec on real repositories', () => {
+describe('resolveGitDir / assertOriginFetchRefspec on real repositories', () => {
   let root: string;
   let upstream: string; // non-bare repo with a remote-ish role (has branches main + feature)
   let nonBare: string; // non-bare clone of upstream (has origin + refspec)
@@ -67,12 +62,11 @@ describe('resolveGitDir / ensureOriginFetchRefspec on real repositories', () => 
   let bareWt: string;
 
   beforeAll(async () => {
-    root = (await run(['mktemp', '-d', join(tmpdir(), 'git-bare-repository-XXXXXX')], '/')).out;
-    upstream = join(root, 'upstream');
-    await run(['mkdir', '-p', upstream], root);
-    await git(['init', '-q', '-b', 'main'], upstream);
-    await git(['commit', '-q', '--allow-empty', '-m', 'init'], upstream);
-    await git(['branch', 'feature'], upstream);
+    await assertRealFs('git-bare-repository.test.ts setup');
+    root = await mkdtemp(join(tmpdir(), 'git-bare-repository-'));
+    scratch = await createScratchGitRepo({ parentDir: root, name: 'upstream-' });
+    upstream = scratch.dir;
+    await scratch.git(['branch', 'feature']);
 
     nonBare = join(root, 'nonbare');
     await git(['clone', '-q', upstream, nonBare], root);
@@ -85,7 +79,8 @@ describe('resolveGitDir / ensureOriginFetchRefspec on real repositories', () => 
   });
 
   afterAll(async () => {
-    if (root) await run(['rm', '-r', root], '/');
+    if (scratch) await scratch.cleanup();
+    if (root) await rm(root, { recursive: true, force: true });
   });
 
   describe('resolveGitDir', () => {
@@ -112,56 +107,66 @@ describe('resolveGitDir / ensureOriginFetchRefspec on real repositories', () => 
     });
 
     it('a directory that is not a git repository: null', async () => {
-      const plain = join(root, 'plain');
-      await run(['mkdir', '-p', plain], root);
+      const plain = await mkdtemp(join(root, 'plain-'));
       expect(await resolveIn(plain)).toBeNull();
     });
   });
 
-  describe('ensureOriginFetchRefspec', () => {
-    it('on a bare clone (refspec absent): before, branch -r is empty and refreshDefaultBranch fails; after, tracking refs exist and it succeeds; a second call is a no-op', async () => {
-      // Fresh bare clone so this case does not depend on test order.
+  describe('assertOriginFetchRefspec (read-only)', () => {
+    const assertIn = (dir: string) => inChild<string>(dir, 'return await lib.assertOriginFetchRefspec(dir);');
+
+    it('a bare clone without the refspec is reported missing, and nothing was written', async () => {
       const own = join(root, 'bare-own.git');
       await git(['clone', '-q', '--bare', upstream, own], root);
       expect((await run(['git', 'config', '--get', 'remote.origin.fetch'], own)).code).not.toBe(0);
 
-      const result = await inChild<{
-        before: string;
-        beforeRemote: string[];
-        outcome: string;
-        after: string;
-        afterRemote: string[];
-        again: string;
-      }>(
+      expect(await assertIn(own)).toBe('missing');
+
+      // Read-only: the check left the repository exactly as it found it.
+      expect((await run(['git', 'config', '--get', 'remote.origin.fetch'], own)).code).not.toBe(0);
+      expect((await run(['git', 'branch', '-r'], own)).out).toBe('');
+    });
+
+    it('polarity, both ways: without the refspec the helpers are broken; after the owner runs the two commands they work and the check says present', async () => {
+      const own = join(root, 'bare-own-2.git');
+      await git(['clone', '-q', '--bare', upstream, own], root);
+
+      const result = await inChild<{ missing: string; before: string; beforeRemote: string[] }>(
         own,
         `
+        const missing = await lib.assertOriginFetchRefspec(dir);
         const before = await lib.refreshDefaultBranch(dir).then(() => 'ok', () => 'threw');
         const beforeRemote = await lib.listRemoteBranches(dir);
-        const outcome = await lib.ensureOriginFetchRefspec(dir);
-        const after = await lib.refreshDefaultBranch(dir).then((b) => b, () => 'threw');
-        const afterRemote = await lib.listRemoteBranches(dir);
-        const again = await lib.ensureOriginFetchRefspec(dir);
-        return { before, beforeRemote, outcome, after, afterRemote, again };
+        return { missing, before, beforeRemote };
         `,
       );
+      expect(result).toEqual({ missing: 'missing', before: 'threw', beforeRemote: [] });
 
-      // Polarity (doc measurement 3.1 reproduced): without the refspec these are the broken shapes.
-      expect(result.before).toBe('threw');
-      expect(result.beforeRemote).toEqual([]);
-      expect(result.outcome).toBe('configured');
-      expect(result.after).toBe('main');
-      expect(result.afterRemote).toContain('origin/main');
-      expect(result.afterRemote).toContain('origin/feature');
-      expect(result.again).toBe('present');
-      expect((await run(['git', 'config', '--get', 'remote.origin.fetch'], own)).out).toBe('+refs/heads/*:refs/remotes/origin/*');
+      // The two commands the registration refusal quotes, run as the owner.
+      await git(['config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'], own);
+      await git(['fetch', 'origin'], own);
+
+      const after = await inChild<{ present: string; refreshed: string; remote: string[] }>(
+        own,
+        `
+        const present = await lib.assertOriginFetchRefspec(dir);
+        const refreshed = await lib.refreshDefaultBranch(dir).then((b) => b, () => 'threw');
+        const remote = await lib.listRemoteBranches(dir);
+        return { present, refreshed, remote };
+        `,
+      );
+      expect(after.present).toBe('present');
+      expect(after.refreshed).toBe('main');
+      expect(after.remote).toContain('origin/main');
+      expect(after.remote).toContain('origin/feature');
     });
 
-    it('a non-bare clone already carries the refspec: a no-op', async () => {
-      expect(await inChild<string>(nonBare, 'return await lib.ensureOriginFetchRefspec(dir);')).toBe('present');
+    it('a non-bare clone carries the refspec: present', async () => {
+      expect(await inChild<string>(nonBare, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
     });
 
-    it('a repository with no origin remote: nothing to configure', async () => {
-      expect(await inChild<string>(upstream, 'return await lib.ensureOriginFetchRefspec(dir);')).toBe('no-remote');
+    it('a repository with no origin remote: nothing to track', async () => {
+      expect(await inChild<string>(upstream, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('no-remote');
     });
   });
 });
