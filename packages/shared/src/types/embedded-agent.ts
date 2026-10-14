@@ -156,6 +156,25 @@ export type EmbeddedAgentRestoredMessage =
 export const DEFAULT_COMPACTION_THRESHOLD = 0.85;
 
 /**
+ * What running workers have observed about the definition's declared context
+ * window (docs/design/embedded-agent-worker.md, "Window-declaration drift on
+ * the definition"). A server-side, in-memory register fed from worker events;
+ * at most ONE latest observation per kind, and the two kinds are never merged
+ * into one "real window" number -- a provider-stated limit is THEIR number, an
+ * apparent clamp is OUR inference.
+ *
+ * Deliberately carries no `workerId` / `sessionId`: the register is keyed by
+ * definition, and serving another user's session or worker id on a
+ * server-wide definition would disclose a session the viewer may not see.
+ */
+export interface EmbeddedAgentWindowObservations {
+  /** The provider's own stated limit, taken from a rejection a compaction was forced by. */
+  providerStated?: { tokens: number; observedAt: string };
+  /** A usage reading that looks clamped by a lenient provider; carries no number. */
+  apparentClamp?: { observedAt: string };
+}
+
+/**
  * Fields shared by both engine arms of {@link EmbeddedAgentDefinition}. See
  * docs/design/embedded-agent-sdk-engine.md §3.1 "Engine selection: a
  * structural discriminant, never inference" — the discriminant lives on the
@@ -177,6 +196,14 @@ interface EmbeddedAgentDefinitionBase {
   instructions?: string[];
   contextWindowTokens?: number;  // Compaction; operator-declared model context window, denominator for the usage ratio
   compaction?: { threshold?: number }; // Compaction; the openai-api engine's auto-fire ratio, default DEFAULT_COMPACTION_THRESHOLD
+  /**
+   * Window-declaration drift observed by running workers; absent when none has
+   * been observed since the process started or since `contextWindowTokens` was
+   * last PATCHed. Composed onto the served definition server-side and never
+   * persisted -- crossing the wire needs the matching entry on
+   * `EmbeddedAgentDefinitionSchema` (a `strictObject`).
+   */
+  windowObservations?: EmbeddedAgentWindowObservations;
   isBuiltIn: boolean;          // mirrors AgentDefinition.isBuiltIn (schemas/agent.ts); true only for the claude-sdk builtin (Phase 1) -- see services/embedded-agents/claude-sdk-builtin.ts
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;

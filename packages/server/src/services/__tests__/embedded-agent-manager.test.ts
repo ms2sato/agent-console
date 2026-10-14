@@ -826,4 +826,125 @@ describe('EmbeddedAgentManager', () => {
       expect(manager.findByName('No Such Name')).toEqual([]);
     });
   });
+  describe('window observations (window-declaration drift)', () => {
+    async function seed(manager: EmbeddedAgentManager, engine: 'openai-api' | 'claude-sdk' = 'openai-api') {
+      return engine === 'openai-api'
+        ? manager.createEmbeddedAgent(
+            { engine: 'openai-api', name: 'Drift', provider: VALID_PROVIDER, contextWindowTokens: 32000 },
+            'owner-id'
+          )
+        : manager.createEmbeddedAgent(
+            { engine: 'claude-sdk', name: 'Drift SDK', provider: { model: 'claude-sonnet-5' } },
+            'owner-id'
+          );
+    }
+
+    it('composes the register entry onto the served definition and never onto the stored one', async () => {
+      const manager = await getManager();
+      const def = await seed(manager);
+
+      manager.recordWindowObservation(def.id, { kind: 'providerStated', tokens: 200000 });
+
+      const served = manager.toServed(def);
+      expect(served.windowObservations?.providerStated?.tokens).toBe(200000);
+      expect(manager.getEmbeddedAgent(def.id)?.windowObservations).toBeUndefined();
+      expect(repository.getAllSaved().find((d) => d.id === def.id)?.windowObservations).toBeUndefined();
+      expect(manager.getAllServedEmbeddedAgents().find((d) => d.id === def.id)?.windowObservations).toBeDefined();
+      // The agent-surface directory serves the raw definition.
+      expect(manager.get(def.id)?.agent.windowObservations).toBeUndefined();
+    });
+
+    it('serves no windowObservations key when nothing was observed', async () => {
+      const manager = await getManager();
+      const def = await seed(manager);
+
+      expect('windowObservations' in manager.toServed(def)).toBe(false);
+    });
+
+    it('a second worker on the same definition sees the first one\'s observation (the register is per definition)', async () => {
+      const manager = await getManager();
+      const def = await seed(manager);
+
+      manager.recordWindowObservation(def.id, { kind: 'apparentClamp' });
+      // The second worker's own reading of the same kind adds nothing, but
+      // what it reads back from the definition is the first worker's.
+      manager.recordWindowObservation(def.id, { kind: 'apparentClamp' });
+
+      expect(manager.toServed(def).windowObservations?.apparentClamp).toBeDefined();
+    });
+
+    it('broadcasts embedded-agent-updated once per visible change and not for a repeated reading', async () => {
+      const manager = await getManager();
+      const recorder = createCallbackRecorder();
+      manager.setLifecycleCallbacks(recorder.callbacks);
+      const def = await seed(manager);
+      recorder.updated.length = 0;
+
+      manager.recordWindowObservation(def.id, { kind: 'apparentClamp' });
+      manager.recordWindowObservation(def.id, { kind: 'apparentClamp' });
+      manager.recordWindowObservation(def.id, { kind: 'apparentClamp' });
+
+      expect(recorder.updated).toHaveLength(1);
+      expect(recorder.updated[0].windowObservations?.apparentClamp).toBeDefined();
+    });
+
+    it('drops a reading for an unknown definition without broadcasting', async () => {
+      const manager = await getManager();
+      const recorder = createCallbackRecorder();
+      manager.setLifecycleCallbacks(recorder.callbacks);
+
+      manager.recordWindowObservation('no-such-definition', { kind: 'apparentClamp' });
+
+      expect(recorder.updated).toHaveLength(0);
+    });
+
+    it.each(['openai-api', 'claude-sdk'] as const)(
+      'a PATCH carrying contextWindowTokens clears the observations (%s engine), including an equal value, and the broadcast carries the cleared state',
+      async (engine) => {
+        const manager = await getManager();
+        const def = await seed(manager, engine);
+        manager.recordWindowObservation(def.id, { kind: 'providerStated', tokens: 1000 });
+        const recorder = createCallbackRecorder();
+        manager.setLifecycleCallbacks(recorder.callbacks);
+
+        await manager.updateEmbeddedAgent(def.id, { contextWindowTokens: 32000 });
+
+        expect(manager.toServed(def).windowObservations).toBeUndefined();
+        expect(recorder.updated.at(-1)?.windowObservations).toBeUndefined();
+      }
+    );
+
+    it.each(['openai-api', 'claude-sdk'] as const)(
+      'a PATCH of another field does not clear the observations (%s engine)',
+      async (engine) => {
+        const manager = await getManager();
+        const def = await seed(manager, engine);
+        manager.recordWindowObservation(def.id, { kind: 'providerStated', tokens: 1000 });
+
+        await manager.updateEmbeddedAgent(def.id, { name: 'Renamed' });
+
+        expect(manager.toServed(def).windowObservations?.providerStated?.tokens).toBe(1000);
+      }
+    );
+
+    it('a PATCH that clears contextWindowTokens with null also clears the observations', async () => {
+      const manager = await getManager();
+      const def = await seed(manager);
+      manager.recordWindowObservation(def.id, { kind: 'apparentClamp' });
+
+      await manager.updateEmbeddedAgent(def.id, { contextWindowTokens: null });
+
+      expect(manager.toServed(def).windowObservations).toBeUndefined();
+    });
+
+    it('deleting a definition drops its observations', async () => {
+      const manager = await getManager();
+      const def = await seed(manager);
+      manager.recordWindowObservation(def.id, { kind: 'apparentClamp' });
+
+      await manager.deleteEmbeddedAgent(def.id);
+
+      expect(manager.toServed(def).windowObservations).toBeUndefined();
+    });
+  });
 });

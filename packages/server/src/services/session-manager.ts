@@ -200,7 +200,10 @@ interface SessionManagerOptions {
    * get a null-object default; production (createAppContext) passes the real
    * manager so validation is enforced end-to-end.
    */
-  embeddedAgentManager?: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>;
+  embeddedAgentManager?: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'> &
+    // Optional so the many minimal definition fakes in tests keep compiling;
+    // production (app-context) always passes the real manager.
+    Partial<Pick<EmbeddedAgentManager, 'recordWindowObservation'>>;
   /**
    * Per-worker MCP bearer token registry. Minted at embedded-agent activation
    * and delivered to the loop over stdin; revoked on exit / deactivation.
@@ -512,6 +515,7 @@ export class SessionManager {
       persistSession: (session) => this.persistSession(session),
       getPathResolver: (session) => this.getPathResolverForSession(session),
       getEmbeddedAgent: (id) => embeddedAgentManager.getEmbeddedAgent(id),
+      recordWindowObservation: (id, observation) => embeddedAgentManager.recordWindowObservation?.(id, observation),
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
       resolveDisableClaudeAiConnectors: (userId) =>
         resolveDisableClaudeAiConnectors(userId, this.userRepository),

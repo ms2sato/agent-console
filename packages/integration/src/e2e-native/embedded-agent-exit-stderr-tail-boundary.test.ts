@@ -227,6 +227,7 @@ describe('Client-Server Boundary: exited.stderrTail survives to the client (#145
         onSessionUpdated: () => {},
         getPathResolver: () => resolver,
         getEmbeddedAgent: (id) => (id === CLAUDE_SDK_AGENT_ID ? claudeSdkAgent : undefined),
+        recordWindowObservation: () => {},
         resolveSpawnUsername: async () => 'testuser',
         resolveDisableClaudeAiConnectors: async () => false,
         mcpTokenRegistry: new McpTokenRegistry(),

@@ -59,6 +59,7 @@ import {
 import { serverConfig } from '../../lib/server-config.js';
 import { rootLogger } from '../../lib/logger.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
+import type { WindowObservation } from '../embedded-agent-window-observations.js';
 
 const MCP_BASE_URL = 'http://localhost:3457/mcp';
 const ENTRY_PATH = '/install/embedded-agent/src/main.ts';
@@ -278,6 +279,7 @@ interface Recorder {
 
 interface Harness {
   service: EmbeddedAgentWorkerService;
+  recordWindowObservation: ReturnType<typeof mock>;
   deps: EmbeddedAgentWorkerServiceDeps;
   sessionId: string;
   workerId: string;
@@ -474,6 +476,7 @@ function setup(opts?: {
     opts?.loadProviderKeyFn ?? mock(async () => API_KEY);
   const forceFlush = mock(async () => {});
   const persistSession = mock(async () => {});
+  const recordWindowObservation = mock((_definitionId: string, _observation: WindowObservation) => {});
   const onSessionUpdated = mock((_session: InternalSession) => {});
   const globalActivity = mock(() => {});
   const globalExit = mock(() => {});
@@ -502,6 +505,7 @@ function setup(opts?: {
     onSessionUpdated: onSessionUpdated as never,
     getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()),
     getEmbeddedAgent: () => definition,
+    recordWindowObservation: recordWindowObservation as never,
     resolveSpawnUsername: async () => USERNAME,
     resolveDisableClaudeAiConnectors:
       (opts?.resolveDisableClaudeAiConnectorsFn as never) ??
@@ -550,6 +554,7 @@ function setup(opts?: {
     forceFlush,
     loadProviderKeyFn,
     persistSession,
+    recordWindowObservation,
     onSessionUpdated,
     globalActivity,
     globalExit,
@@ -6468,5 +6473,69 @@ describe('EmbeddedAgentWorkerService.deactivate output durability', () => {
     expect(h.worker.epoch).toBe(epochBefore);
     const hist = await wofm.readHistoryWithOffset(h.sessionId, h.workerId, h.deps.getPathResolver(h.session));
     expect(hist.data).toContain('"type":"exited"');
+  });
+});
+
+describe('EmbeddedAgentWorkerService window-declaration drift feed', () => {
+  const COMPACTED_WITH_LIMIT =
+    '{"v":1,"type":"context-compacted","source":"auto","providerStatedWindowTokens":131072}';
+  const COMPACTED_WITHOUT_LIMIT = '{"v":1,"type":"context-compacted","source":"auto"}';
+  const USAGE_CLAMPED =
+    '{"v":1,"type":"context-usage","promptTokens":200000,"estimated":false,"appearsClamped":true}';
+  const USAGE_PLAIN = '{"v":1,"type":"context-usage","promptTokens":1000,"estimated":false}';
+  const READY = '{"v":1,"type":"ready"}';
+
+  /** Push a trailing marker line and wait for it, so earlier lines are known to have been handled. */
+  async function flushThroughReady(h: ReturnType<typeof setup>): Promise<void> {
+    h.fake.pushStdout(`${READY}\n`);
+    await waitFor(() => appendedLines(h.bufferOutput).includes(READY));
+  }
+
+  it('feeds a provider-stated limit from context-compacted, keyed by the worker\'s definition id', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout(`${COMPACTED_WITH_LIMIT}\n`);
+    await flushThroughReady(h);
+
+    expect(h.recordWindowObservation).toHaveBeenCalledTimes(1);
+    expect(h.recordWindowObservation).toHaveBeenCalledWith(h.worker.embeddedAgentId, {
+      kind: 'providerStated',
+      tokens: 131072,
+    });
+  });
+
+  it('feeds an apparent clamp from context-usage', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout(`${USAGE_CLAMPED}\n`);
+    await flushThroughReady(h);
+
+    expect(h.recordWindowObservation).toHaveBeenCalledTimes(1);
+    expect(h.recordWindowObservation).toHaveBeenCalledWith(h.worker.embeddedAgentId, { kind: 'apparentClamp' });
+  });
+
+  it('feeds nothing for readings that carry no drift evidence (no stated limit, no clamp flag)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout(`${COMPACTED_WITHOUT_LIMIT}\n`);
+    h.fake.pushStdout(`${USAGE_PLAIN}\n`);
+    await flushThroughReady(h);
+
+    expect(h.recordWindowObservation).not.toHaveBeenCalled();
+  });
+
+  it('negative control: a worker with a model override does NOT feed the definition\'s register', async () => {
+    const h = setup();
+    h.worker.model = 'override-model';
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout(`${COMPACTED_WITH_LIMIT}\n`);
+    h.fake.pushStdout(`${USAGE_CLAMPED}\n`);
+    await flushThroughReady(h);
+
+    expect(h.recordWindowObservation).not.toHaveBeenCalled();
   });
 });

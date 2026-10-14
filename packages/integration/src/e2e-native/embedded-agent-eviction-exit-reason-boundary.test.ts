@@ -220,6 +220,7 @@ describe('Client-Server Boundary: exited.reason survives to the client as `evict
         // the engine value is load-bearing for this test even reaching the
         // value under test.
         getEmbeddedAgent: (id) => (id === CLAUDE_SDK_AGENT_ID ? claudeSdkAgent : undefined),
+        recordWindowObservation: () => {},
         resolveSpawnUsername: async () => 'testuser',
         resolveDisableClaudeAiConnectors: async () => false,
         mcpTokenRegistry: new McpTokenRegistry(),

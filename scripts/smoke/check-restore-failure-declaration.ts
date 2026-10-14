@@ -349,6 +349,7 @@ async function main(): Promise<void> {
       persistSession: async () => {},
       getPathResolver: (session) => resolversById.get(session.id)! as never,
       getEmbeddedAgent: (id) => definitionsById.get(id),
+      recordWindowObservation: () => {},
       resolveSpawnUsername: async () => os.userInfo().username,
       mcpTokenRegistry: ctx.mcpTokenRegistry,
       workerOutputFileManager: wofm,
