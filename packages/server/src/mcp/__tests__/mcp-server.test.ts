@@ -220,6 +220,10 @@ const TEST_EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
   updatedAt: '2024-01-01T00:00:00.000Z',
 };
 
+// Owner id -> username table behind the stub `usernameLookup` handed to the
+// SessionManager; any id absent here resolves to `null`, like a cache miss.
+const TEST_USERNAMES_BY_ID: Record<string, string> = { 'owner-alice-id': 'alice' };
+
 // Map-backed embedded-agent registry stub, reset in `beforeEach` (mirrors
 // `mcpRunAsUserCapture` / `mockSuggestSessionMetadata` reset pattern) so
 // tests don't leak dynamically-registered fixtures into each other.
@@ -578,6 +582,7 @@ describe('MCP Server Tools', () => {
         getWorktreeIndexNumber: async () => 0,
       },
       embeddedAgentManager: testEmbeddedAgentManagerStub,
+      usernameLookup: { getUsername: (userId: string) => TEST_USERNAMES_BY_ID[userId] ?? null },
     });
 
     // Create RepositoryManager (initially empty). Tests that create worktree
@@ -1280,6 +1285,73 @@ describe('MCP Server Tools', () => {
       };
 
       expect(data.sessions[0].repositoryId).toBeUndefined();
+    });
+
+    it('should include createdBy and createdByUsername for an owned session', async () => {
+      await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'owner-alice-id' },
+      );
+
+      const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const data = parseToolResult(response) as {
+        sessions: Array<{ createdBy?: string; createdByUsername?: string | null }>;
+      };
+
+      expect(data.sessions[0].createdBy).toBe('owner-alice-id');
+      expect(data.sessions[0].createdByUsername).toBe('alice');
+    });
+
+    it('should report createdByUsername null when the owner username cannot be resolved', async () => {
+      await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'owner-unknown-id' },
+      );
+
+      const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const data = parseToolResult(response) as {
+        sessions: Array<{ createdBy?: string; createdByUsername?: string | null }>;
+      };
+
+      expect(data.sessions[0].createdBy).toBe('owner-unknown-id');
+      expect(data.sessions[0].createdByUsername).toBeNull();
+    });
+
+    it('should report createdByUsername null and omit createdBy for a session with no owner', async () => {
+      await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const data = parseToolResult(response) as { sessions: Array<Record<string, unknown>> };
+
+      expect(data.sessions[0].createdByUsername).toBeNull();
+      expect('createdBy' in data.sessions[0]).toBe(false);
+    });
+
+    it('should report createdByUsername null for a legacy projection that carries neither owner field', async () => {
+      await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      // The real projection always derives `createdByUsername` as string | null, so
+      // the optional-field case (a projection written before the field existed) is
+      // only reachable by handing the tool a projection without it.
+      const [real] = sessionManager.getAllSessions();
+      const { createdBy: _createdBy, createdByUsername: _createdByUsername, ...legacy } = real;
+      const spy = jest.spyOn(sessionManager, 'getAllSessions').mockReturnValue([legacy]);
+      try {
+        const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+        const data = parseToolResult(response) as { sessions: Array<Record<string, unknown>> };
+
+        expect(data.sessions[0].createdByUsername).toBeNull();
+        expect('createdBy' in data.sessions[0]).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 

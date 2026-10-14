@@ -251,6 +251,8 @@ List active sessions (useful for discovering existing work).
     worktreeId?: string,
     parentSessionId?: string,
     parentWorkerId?: string,
+    createdBy?: string,              // owner's user id; omitted when the session has no recorded owner
+    createdByUsername: string | null, // owner's resolved username; null when no owner or unresolvable
     status: 'active' | 'inactive',
     workers: Array<{
       id: string,
