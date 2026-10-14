@@ -13,6 +13,7 @@ import { installMockWebSocket } from '../../../test/mock-websocket';
 import { _resetTerminals } from '../../terminal/terminal-store';
 import type { Session, Worker } from '@agent-console/shared';
 import { completeWireBody } from '../../../test/wire-fixtures';
+import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 
 /**
  * Component-render tests for `SessionPage` (the sibling `SessionPage.test.ts`
@@ -69,7 +70,7 @@ function createMockSession(overrides: Partial<Session> = {}): Session {
   } as Session;
 }
 
-function routeFetch(workers: Worker[] = []): void {
+function routeFetch(workers: Worker[] = [], sessionOverrides: Partial<Session> = {}): void {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
     const url = urlToString(input);
     if (
@@ -80,7 +81,7 @@ function routeFetch(workers: Worker[] = []): void {
       !url.includes('/pr-link') &&
       !url.includes('/workers')
     ) {
-      return Promise.resolve(jsonResponse({ session: createMockSession({ workers }) }));
+      return Promise.resolve(jsonResponse({ session: createMockSession({ ...sessionOverrides, workers }) }));
     }
     if (url.includes('/memo')) {
       return Promise.resolve(jsonResponse({ content: MEMO_CONTENT }));
@@ -629,5 +630,83 @@ describe('SessionPage stop/pause task banner', () => {
       expect(deletes.length).toBe(1);
     });
     expect(pauseCallCount()).toBe(0);
+  });
+});
+
+describe('SessionPage owner badge (Issue #684)', () => {
+  const SELF = { id: 'self-uuid', username: 'me', homeDir: '/home/me' };
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetch.mockReset();
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetAuth();
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("shows another user's session owner in the amber (others) colour in multi-user mode", async () => {
+    setAuthMode('multi-user');
+    setCurrentUser(SELF);
+    routeFetch([], { createdBy: 'other-uuid', createdByUsername: 'alice' });
+    await renderSessionPage();
+
+    const badge = await screen.findByTestId('session-creator-username');
+    expect(badge.textContent).toBe('alice');
+    expect(badge.className).toContain('amber');
+    expect(badge.className).not.toContain('indigo');
+  });
+
+  it('shows the owner in the indigo (mine) colour when the current user owns the session', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser(SELF);
+    routeFetch([], { createdBy: 'self-uuid', createdByUsername: 'me' });
+    await renderSessionPage();
+
+    const badge = await screen.findByTestId('session-creator-username');
+    expect(badge.textContent).toBe('me');
+    expect(badge.className).toContain('indigo');
+    expect(badge.className).not.toContain('amber');
+  });
+
+  it('renders no badge in multi-user mode when the session has no owner username', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser(SELF);
+    routeFetch([], { createdBy: 'self-uuid', createdByUsername: null });
+    await renderSessionPage();
+
+    // Positive control: the page (and its status bar) has rendered.
+    await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
+    expect(screen.queryByTestId('session-creator-username')).toBeNull();
+  });
+
+  it('renders no badge in single-user mode even when the session has an owner username', async () => {
+    // authMode defaults to 'none' from resetAuth()
+    routeFetch([], { createdBy: 'self-uuid', createdByUsername: 'me' });
+    await renderSessionPage();
+
+    await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
+    expect(screen.queryByTestId('session-creator-username')).toBeNull();
   });
 });
