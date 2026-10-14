@@ -48,6 +48,26 @@ afterEach(() => {
 // each test names the mutation that makes it fail.
 
 describe('checkGlossaryTerms: class A (Terminology terms)', () => {
+  it('does not treat a glossary heading that merely CONTAINS the term (or is contained by it) as a definition', () => {
+    // Mutation: replace `defined.has(normalizeTerm(term))` with a substring test,
+    // `[...defined].some((d) => d.includes(key) || key.includes(d))`, and both
+    // violations disappear; this test fails (measured; the other 18 tests stay green under it).
+    glossary('### SharedSession\nA shared session is accessed by all users (prose mentioning "shared session").');
+    designDoc('d', '# D\n\n## Terminology\n\n- **Shared session**: spaced spelling.\n- **Session**: a substring of the heading.\n');
+    const { violations } = run();
+    expect(violations.map((v) => `${v.file}:${v.line} ${v.term}`)).toEqual([
+      'docs/design/d.md:5 Shared session',
+      'docs/design/d.md:6 Session',
+    ]);
+  });
+
+  it('matches the Terminology heading exactly: bullets under `## Terminology notes` are ignored', () => {
+    // Mutation: `/^## Terminology\s*$/` -> `/^## Terminology/` makes the Ghost bullet a violation.
+    glossary('### Alpha\nAn alpha.');
+    designDoc('d', '## Terminology notes\n\n- **Ghost**: not in the Terminology section.\n');
+    expect(run().violations).toEqual([]);
+  });
+
   it('reports a Terminology bullet with no glossary entry, naming file:line', () => {
     // Mutation: `if (defined.has(...)) continue;` -> `continue;` makes this fail (no violation).
     glossary('### Alpha\nAn alpha.');
