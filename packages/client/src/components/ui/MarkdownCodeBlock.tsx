@@ -75,7 +75,7 @@ export function MarkdownCodeBlock({ children, tabIndex }: { children?: ReactNode
         aria-label="Copy code"
         tabIndex={tabIndex}
         onClick={handleCopy}
-        className="absolute top-1 right-1 flex items-center gap-1 rounded bg-slate-700 px-1.5 py-1 text-xs text-gray-200 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 hover:bg-slate-600"
+        className="absolute top-1 right-1 flex items-center gap-1 rounded bg-slate-700 px-1.5 py-1 text-xs text-gray-200 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus:opacity-100 hover:bg-slate-600"
       >
         {copied ? <span role="status">Copied!</span> : <CopyIcon className="w-3.5 h-3.5" />}
       </button>

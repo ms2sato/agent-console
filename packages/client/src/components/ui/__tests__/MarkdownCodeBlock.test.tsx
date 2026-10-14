@@ -93,6 +93,17 @@ describe('MarkdownCodeBlock', () => {
     expect(writeText.mock.calls[0][0]).toBe('second cmd');
   });
 
+  it('hides the Copy control only where hover exists, so touch devices can still find it', () => {
+    render(<MemoLike source={'```\necho hi\n```'} />);
+    const tokens = screen.getByRole('button', { name: 'Copy code' }).className.split(/\s+/);
+
+    // A bare `opacity-0` would hide the control on a device that has no hover to reveal it.
+    expect(tokens).not.toContain('opacity-0');
+    expect(tokens).toContain('[@media(hover:hover)]:opacity-0');
+    expect(tokens).toContain('[@media(hover:hover)]:group-hover:opacity-100');
+    expect(tokens).toContain('[@media(hover:hover)]:focus:opacity-100');
+  });
+
   it('renders inline code without any Copy control', () => {
     render(<MemoLike source={'Run `ls -la` then stop.'} />);
 
