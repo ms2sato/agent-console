@@ -14,6 +14,7 @@ import {
   getDefaultBranch as gitGetDefaultBranch,
   refreshDefaultBranch as gitRefreshDefaultBranch,
   GitError,
+  resolveGitDir,
   type WorktreeRemovalRunner,
 } from '../lib/git.js';
 // listLocalBranches, listRemoteBranches, getDefaultBranch, refreshDefaultBranch
@@ -420,6 +421,18 @@ export class WorktreeService {
       let head = '';
       let branch = '';
 
+      // The bare repository itself is listed first by `git worktree list
+      // --porcelain` as a lone `bare` entry with no HEAD or branch. It is not a
+      // worktree, so it produces no row. It still CONSUMES the "first entry"
+      // slot: that is what keeps every linked worktree after it from being
+      // promoted to `isMain` (on a bare repository no row is `isMain`; the
+      // main-worktree rule is a later phase, and promoting the first linked
+      // worktree here would pre-empt it).
+      if (lines.includes('bare')) {
+        sawFirstEntry = true;
+        continue;
+      }
+
       for (const line of lines) {
         if (line.startsWith('worktree ')) {
           worktreePath = line.substring(9);
@@ -588,10 +601,18 @@ export class WorktreeService {
       return { worktreePath, index: newIndex, copiedFiles };
     } catch (error) {
       const raw = extractErrorMessage(error);
-      const message =
-        error instanceof WorktreeAddGitError
-          ? augmentWorktreeAddPermissionError(raw, { multiUser: isMultiUserAuthMode(), repoPath })
-          : raw;
+      let message = raw;
+      if (error instanceof WorktreeAddGitError) {
+        const multiUser = isMultiUserAuthMode();
+        // The hint names the repository's git directory, which is the repo
+        // root itself for a bare repository. Resolved only when a hint can
+        // actually be produced (multi-user mode), so a failure elsewhere does
+        // not pay an extra git call.
+        const gitDir = multiUser
+          ? ((await resolveGitDir(repoPath))?.gitDir ?? path.join(repoPath, '.git'))
+          : path.join(repoPath, '.git');
+        message = augmentWorktreeAddPermissionError(raw, { multiUser, repoPath, gitDir });
+      }
       logger.error({ err: error, message }, 'Failed to create worktree');
       return { worktreePath: '', error: message };
     }

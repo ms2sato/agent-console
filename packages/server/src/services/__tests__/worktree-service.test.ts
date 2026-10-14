@@ -243,6 +243,69 @@ detached
     });
   });
 
+  // A bare source repository: `git worktree list --porcelain` lists the bare
+  // directory FIRST as a lone `bare` entry (no HEAD, no branch), then the linked
+  // worktrees. The bare entry is not a worktree and must not count as the first
+  // entry, so on a bare repository NO row is `isMain` (the main-worktree rule is
+  // a later phase; promoting the first linked worktree would pre-empt it).
+  // Mutation: drop the bare skip in `parsePorcelainOutput` -> the bare dir
+  // surfaces as a branchless `isMain` row and the first test fails.
+  describe('listWorktrees on a bare repository', () => {
+    const bareHeader = (p: string) => `worktree ${p}\nbare\n`;
+    const linked = (p: string, b: string) => `worktree ${p}\nHEAD abc123\nbranch refs/heads/${b}\n`;
+
+    async function listWith(porcelain: string, records: Array<{ path: string; index: number }> = []) {
+      for (const r of records) {
+        mockRepo.records.push({
+          id: `wt-${r.index}`,
+          repositoryId: 'repo-1',
+          path: r.path,
+          indexNumber: r.index,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      mockGit.listWorktrees.mockImplementation(() => Promise.resolve(porcelain));
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      return (await service.listWorktrees('/srv/source-repos/bare.git', 'repo-1')).worktrees;
+    }
+
+    it('skips the bare entry: two linked worktrees give two rows, both isMain=false, indexes from the DB records', async () => {
+      fs.mkdirSync('/srv/source-repos/bare.git', { recursive: true });
+      fs.mkdirSync('/srv/wt/a', { recursive: true });
+      fs.mkdirSync('/srv/wt/b', { recursive: true });
+      const output = [bareHeader('/srv/source-repos/bare.git'), linked('/srv/wt/a', 'feat-a'), linked('/srv/wt/b', 'feat-b')].join('\n');
+
+      const worktrees = await listWith(output, [
+        { path: '/srv/wt/a', index: 1 },
+        { path: '/srv/wt/b', index: 2 },
+      ]);
+
+      expect(worktrees).toEqual([
+        { path: '/srv/wt/a', branch: 'feat-a', isMain: false, repositoryId: 'repo-1', index: 1 },
+        { path: '/srv/wt/b', branch: 'feat-b', isMain: false, repositoryId: 'repo-1', index: 2 },
+      ]);
+      expect(worktrees.some((wt: Worktree) => wt.path === '/srv/source-repos/bare.git')).toBe(false);
+    });
+
+    it('a bare repository with no linked worktrees lists nothing', async () => {
+      const worktrees = await listWith(bareHeader('/srv/source-repos/bare.git'));
+      expect(worktrees).toEqual([]);
+    });
+
+    it('control: a non-bare listing is unchanged -- the first entry is still the main worktree', async () => {
+      fs.mkdirSync('/srv/repo', { recursive: true });
+      const output = [linked('/srv/repo', 'main'), linked('/srv/wt/a', 'feat-a')].join('\n');
+      fs.mkdirSync('/srv/wt/a', { recursive: true });
+
+      const worktrees = await listWith(output, [{ path: '/srv/wt/a', index: 1 }]);
+
+      expect(worktrees).toHaveLength(2);
+      expect(worktrees[0]).toMatchObject({ path: '/srv/repo', isMain: true, branch: 'main' });
+      expect(worktrees[1]).toMatchObject({ path: '/srv/wt/a', isMain: false, index: 1 });
+    });
+  });
+
   // Path identity: git prints realpaths while the repository path stored by
   // the app is only `path.resolve`d, so the two can differ by a symlinked
   // segment or a rename. The main worktree is the first porcelain entry, and

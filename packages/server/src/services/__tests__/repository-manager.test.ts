@@ -4,7 +4,7 @@ import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
 import type { CleanupRepositoryPayload } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
-import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { JobQueue } from '../../jobs/index.js';
 import { rootLogger } from '../../lib/logger.js';
@@ -15,7 +15,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 import type { RepositoryRepository } from '../../repositories/repository-repository.js';
 import { isMultiUserAuthMode, type RunAsUserOpts, type RunAsUserResult } from '../privilege-elevation.js';
-import { buildManualFallbackCommands } from '../repository-manager.js';
+import { buildManualFallbackCommands, buildMissingRefspecMessage } from '../repository-manager.js';
 
 /**
  * Capture-and-respond fake for `runAsUser`. Mirrors the pattern used by
@@ -179,6 +179,154 @@ describe('RepositoryManager', () => {
       await expect(
         manager.registerRepository('/non-git-dir')
       ).rejects.toThrow('Not a git repository');
+    });
+
+    describe('bare source repository', () => {
+      const BARE_DIR = '/test/bare-source.git';
+      let originalAuthMode: string | undefined;
+
+      beforeEach(() => {
+        originalAuthMode = process.env.AUTH_MODE;
+        // A bare repository has no `.git` entry; the path itself is the git dir,
+        // shaped like one: a `HEAD` file and an `objects` directory at its root.
+        fs.mkdirSync(path.join(BARE_DIR, 'objects'), { recursive: true });
+        fs.writeFileSync(path.join(BARE_DIR, 'HEAD'), 'ref: refs/heads/main\n');
+        mockGit.resolveGitDir.mockImplementation(async (repoPath: string) =>
+          repoPath === BARE_DIR ? { gitDir: BARE_DIR, bare: true } : null,
+        );
+      });
+
+      afterEach(() => {
+        // Restore the default `resolveGitDir` / `assertOriginFetchRefspec` mocks:
+        // the overrides above would otherwise leak into every later test.
+        resetGitMocks();
+        if (originalAuthMode === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it('registers a bare path (no `.git` entry) whose origin has the fetch refspec, checking it exactly once and writing nothing', async () => {
+        delete process.env.AUTH_MODE;
+        mockGit.assertOriginFetchRefspec.mockImplementation(() => Promise.resolve('present'));
+        const manager = await getRepositoryManager();
+
+        const repo = await manager.registerRepository(BARE_DIR);
+
+        expect(repo.path).toBe(BARE_DIR);
+        expect(mockGit.assertOriginFetchRefspec).toHaveBeenCalledTimes(1);
+        expect(mockGit.assertOriginFetchRefspec).toHaveBeenCalledWith(BARE_DIR);
+        // Registration never writes into the repository: no `git config`, no fetch.
+        expect(mockGit.git).not.toHaveBeenCalled();
+        expect(mockGit.fetchAllRemote).not.toHaveBeenCalled();
+      });
+
+      it('REFUSES a bare repository with an origin URL and no fetch refspec, quoting the owner-run commands; nothing is registered', async () => {
+        delete process.env.AUTH_MODE;
+        mockGit.assertOriginFetchRefspec.mockImplementation(() => Promise.resolve('missing'));
+        const manager = await getRepositoryManager();
+
+        await expect(manager.registerRepository(BARE_DIR)).rejects.toThrow(buildMissingRefspecMessage(BARE_DIR));
+
+        const message = buildMissingRefspecMessage(BARE_DIR);
+        expect(message).toContain(`git -C '${BARE_DIR}' config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`);
+        expect(message).toContain(`git -C '${BARE_DIR}' fetch origin`);
+        expect(message).toContain(`git -C '${BARE_DIR}' remote set-head origin -a`);
+        expect(await repositoryRepository.findAll()).toEqual([]);
+      });
+
+      it('a bare repository with no origin remote registers (nothing to track)', async () => {
+        delete process.env.AUTH_MODE;
+        mockGit.assertOriginFetchRefspec.mockImplementation(() => Promise.resolve('no-remote'));
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(BARE_DIR);
+        expect(repo.path).toBe(BARE_DIR);
+      });
+
+      it('does not check the refspec of a NON-bare repository', async () => {
+        resetGitMocks(); // back to the default: `<path>/.git` exists -> non-bare
+        const manager = await getRepositoryManager();
+        await manager.registerRepository(TEST_REPO_DIR);
+        expect(mockGit.assertOriginFetchRefspec).not.toHaveBeenCalled();
+      });
+
+      it('a path that is not shaped like a repository is refused with NO safe.directory bootstrap and no runAsUser at all', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        fs.mkdirSync('/plain-dir', { recursive: true });
+        const manager = await getRepositoryManager();
+
+        await expect(manager.registerRepository('/plain-dir')).rejects.toThrow('Not a git repository: /plain-dir');
+
+        // Polarity: without the shape pre-check the bootstrap IS recorded (and
+        // `/plain-dir` would sit in the server's global safe.directory list).
+        expect(runAsUserMock.calls).toEqual([]);
+      });
+
+      it('a directory with only HEAD and objects/ passes the shape check, is trusted, and is then refused by resolveGitDir', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const FAKE = '/test/fake-bare';
+        fs.mkdirSync(path.join(FAKE, 'objects'), { recursive: true });
+        fs.writeFileSync(path.join(FAKE, 'HEAD'), 'ref: refs/heads/main\n');
+        mockGit.resolveGitDir.mockImplementation(async () => null);
+        const manager = await getRepositoryManager();
+
+        await expect(manager.registerRepository(FAKE)).rejects.toThrow(`Not a git repository: ${FAKE}`);
+
+        // The shape check is deliberately permissive: the bootstrap ran, and git
+        // (`resolveGitDir`) still has the final say.
+        expect(runAsUserMock.calls.some((c) => c.command.includes('safe.directory'))).toBe(true);
+      });
+
+      it('ORDER pin: the server-side safe.directory bootstrap runs before resolveGitDir and before the shared-config probe/apply', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const order: string[] = [];
+        mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => {
+          order.push('resolveGitDir');
+          return repoPath === BARE_DIR ? { gitDir: BARE_DIR, bare: true } : null;
+        });
+        const innerResponder = runAsUserMock.responder.fn;
+        runAsUserMock.responder.fn = async (opts) => {
+          if (opts.command.includes('safe.directory')) order.push('bootstrap');
+          else if (opts.command.includes('chgrp -R ')) order.push('apply');
+          return innerResponder(opts);
+        };
+        try {
+          const manager = await getRepositoryManager();
+          await manager.registerRepository(BARE_DIR);
+        } finally {
+          runAsUserMock.responder.fn = innerResponder;
+        }
+
+        expect(order).toEqual(['bootstrap', 'resolveGitDir', 'apply']);
+      });
+
+      it('a non-git directory still fails with the unchanged message', async () => {
+        const manager = await getRepositoryManager();
+        fs.mkdirSync('/not-a-repo', { recursive: true });
+        await expect(manager.registerRepository('/not-a-repo')).rejects.toThrow('Not a git repository: /not-a-repo');
+      });
+
+      it('multi-user shared config targets the bare directory itself, not <path>/.git', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const manager = await getRepositoryManager();
+
+        await manager.registerRepository(BARE_DIR);
+
+        const apply = runAsUserMock.calls.find((c) => c.command.includes('chgrp -R '));
+        expect(apply).toBeDefined();
+        expect(apply!.command).toContain(`git -C '${BARE_DIR}' config core.sharedRepository group`);
+        expect(apply!.command).toContain(`find '${BARE_DIR}' -type d -exec chmod g+rwxs {} +`);
+        expect(apply!.command).toContain(`chmod -R g+rw '${BARE_DIR}'`);
+        expect(apply!.command).toContain(`chgrp -R 'agent-console-users' '${BARE_DIR}'`);
+        expect(apply!.command).not.toContain(`${BARE_DIR}/.git`);
+      });
+
+      it('the manual fallback commands target the given git directory', () => {
+        const fallback = buildManualFallbackCommands(BARE_DIR, BARE_DIR, 'agent-console-users');
+        expect(fallback).toContain(`sudo chgrp -R agent-console-users '${BARE_DIR}'`);
+        expect(fallback.some((c) => c.includes(`${BARE_DIR}/.git`))).toBe(false);
+      });
     });
 
     it('should throw error for duplicate registration', async () => {
@@ -396,9 +544,11 @@ describe('RepositoryManager', () => {
         // probe-first contract ensures we tightly assert the idempotent-skip
         // path was actually taken (not bypassed early).
         expect(runAsUserMock.calls.length).toBe(3);
-        expect(runAsUserMock.calls[0].command).toContain('getent group ');
-        expect(runAsUserMock.calls[1].command).toContain('--get core.sharedRepository');
-        expect(runAsUserMock.calls[2].command).toContain('safe.directory');
+        // The safe.directory bootstrap runs FIRST (it precedes every server-run
+        // git probe), then the shared-group lookup, then the config probe.
+        expect(runAsUserMock.calls[0].command).toContain('safe.directory');
+        expect(runAsUserMock.calls[1].command).toContain('getent group ');
+        expect(runAsUserMock.calls[2].command).toContain('--get core.sharedRepository');
         const applyCalls = runAsUserMock.calls.filter((c) =>
           c.command.includes('chgrp -R '),
         );
@@ -458,12 +608,34 @@ describe('RepositoryManager', () => {
         // present in the docs section is in the output. This pins the
         // contract the production WARN log delivers without depending on
         // pino-internal log-capture plumbing.
-        const fallback = buildManualFallbackCommands(TEST_REPO_DIR, 'agent-console-users');
+        const fallback = buildManualFallbackCommands(TEST_REPO_DIR, `${TEST_REPO_DIR}/.git`, 'agent-console-users');
         expect(fallback.length).toBe(4);
-        expect(fallback.some((c) => c.includes('git config core.sharedRepository group'))).toBe(true);
+        expect(fallback.some((c) => c.includes('config core.sharedRepository group'))).toBe(true);
         expect(fallback.some((c) => c.includes('chmod g+rwxs'))).toBe(true);
         expect(fallback.some((c) => c.includes('chmod -R g+rw'))).toBe(true);
         expect(fallback.some((c) => c.includes('chgrp -R agent-console-users'))).toBe(true);
+      });
+
+      it('quotes the repository path and the git directory when they contain a space or shell metacharacters', () => {
+        const repoPath = '/srv/my repo$;x';
+        const gitDir = `${repoPath}/.git`;
+        const fallback = buildManualFallbackCommands(repoPath, gitDir, 'agent-console-users');
+        const quotedGitDir = `'${gitDir}'`;
+        expect(fallback).toContain(`sudo -u agentconsole git -C '${repoPath}' config core.sharedRepository group`);
+        expect(fallback).toContain(`sudo find ${quotedGitDir} -type d -exec chmod g+rwxs {} +`);
+        expect(fallback).toContain(`sudo chmod -R g+rw ${quotedGitDir}`);
+        expect(fallback).toContain(`sudo chgrp -R agent-console-users ${quotedGitDir}`);
+        // No command carries either path unquoted.
+        expect(fallback.some((c) => c.includes(` ${repoPath}`))).toBe(false);
+      });
+
+      it('quotes a bare source whose repository path is its git directory', () => {
+        const bare = '/srv/my repo$;x.git';
+        const fallback = buildManualFallbackCommands(bare, bare, 'agent-console-users');
+        const quoted = `'${bare}'`;
+        expect(fallback[0]).toBe(`sudo -u agentconsole git -C ${quoted} config core.sharedRepository group`);
+        expect(fallback).toContain(`sudo chmod -R g+rw ${quoted}`);
+        expect(fallback.some((c) => c.includes(` ${bare}`))).toBe(false);
       });
 
       it('honours AGENT_CONSOLE_SERVICE_GROUP override for the chgrp target group', async () => {
@@ -491,7 +663,7 @@ describe('RepositoryManager', () => {
           );
 
           // The fallback helper also threads the override through.
-          const fallback = buildManualFallbackCommands(TEST_REPO_DIR, 'custom-shared-group');
+          const fallback = buildManualFallbackCommands(TEST_REPO_DIR, `${TEST_REPO_DIR}/.git`, 'custom-shared-group');
           expect(fallback.some((c) => c.includes('chgrp -R custom-shared-group'))).toBe(true);
         } finally {
           if (originalGroup === undefined) {

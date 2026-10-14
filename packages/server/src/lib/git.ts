@@ -14,6 +14,7 @@
  * via `sudo -i`. When `requestUser` is null/undefined (the default), the
  * historical `Bun.spawn(['git', ...args])` direct-spawn path runs verbatim.
  */
+import path from 'node:path';
 import {
   runAsUser as defaultRunAsUser,
   shellEscape,
@@ -887,6 +888,60 @@ export async function fetchAllRemote(
   requestUser?: string | null,
 ): Promise<void> {
   await git(['fetch', 'origin'], cwd, NETWORK_GIT_TIMEOUT_MS, requestUser);
+}
+
+/**
+ * Where a repository's git directory is, and whether the repository is bare.
+ * SINGLE WRITER of "where is the git directory": callers that used to build
+ * `path.join(repoPath, '.git')` (which does not exist for a bare repository,
+ * whose git directory IS the repository root) ask this instead.
+ *
+ * - `git rev-parse --git-common-dir` (resolved against `repoPath`): the
+ *   `.git` of a non-bare repo, the repo root of a bare one. The common dir,
+ *   not `--git-dir`, so a linked worktree resolves to the repository it
+ *   belongs to.
+ * - Bareness is asked of the COMMON dir (`git -C <common-dir> rev-parse
+ *   --is-bare-repository`), never the cwd: inside a linked worktree of a bare
+ *   repository the cwd form prints `false`.
+ *
+ * Returns `null` when `repoPath` is not a git repository (either probe fails).
+ *
+ */
+export async function resolveGitDir(
+  repoPath: string,
+): Promise<{ gitDir: string; bare: boolean } | null> {
+  const abs = path.resolve(repoPath);
+
+  const common = await gitSafe(['rev-parse', '--git-common-dir'], abs);
+  if (common === null || common === '') return null;
+  const gitDir = path.resolve(abs, common);
+
+  const bare = await gitSafe(['-C', gitDir, 'rev-parse', '--is-bare-repository'], abs);
+  if (bare === null) return null;
+  return { gitDir, bare: bare === 'true' };
+}
+
+/**
+ * Whether a repository's `origin` carries the fetch refspec the ref-only
+ * helpers (`listRemoteBranches`, `refreshDefaultBranch`, `getCommitsBehind` ...)
+ * rely on. READ-ONLY: it never writes into the repository.
+ *
+ * `git clone --bare` writes no `remote.origin.fetch` and no
+ * `refs/remotes/origin/*`, so on a bare clone `branch -r` is empty and `remote
+ * set-head origin -a` fails with "Not a valid ref". A non-bare clone always has
+ * the refspec.
+ *
+ * - No `remote.origin.url`: nothing to track -> `'no-remote'`.
+ * - `remote.origin.fetch` set -> `'present'`.
+ * - URL set, refspec absent -> `'missing'`.
+ */
+export async function assertOriginFetchRefspec(
+  repoPath: string,
+): Promise<'no-remote' | 'present' | 'missing'> {
+  const url = await gitSafe(['config', '--get', 'remote.origin.url'], repoPath);
+  if (url === null || url === '') return 'no-remote';
+  const existing = await gitSafe(['config', '--get', 'remote.origin.fetch'], repoPath);
+  return existing !== null && existing !== '' ? 'present' : 'missing';
 }
 
 /**
