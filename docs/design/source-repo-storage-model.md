@@ -115,6 +115,8 @@ Non-server sites: `scripts/update-and-deploy-for-multiuser-ubuntu.sh` (section 6
 
 **Owner decision.** This is the substantive design question; the storage change itself is mechanical.
 
+**Interim (phase 2):** the server already accepts an existing bare source repository, and `parsePorcelainOutput` skips the bare entry so no row is `isMain` on a bare repository; the dashboard therefore shows no "main" row for it, and the main-worktree rule below is phase 3's, landing together with the clone switch to `--bare`.
+
 The dashboard shows one *main worktree* entry per repository and lets the user open a session on it. In code, "main worktree" means two things that coincide only on a non-bare repo: the **first entry** of `git worktree list` (`parsePorcelainOutput`, `worktree-service.ts:437`) and the **registered path** itself (`session-converter-service.ts:206/300` compares `repository.path` with `session.locationPath`; `routes/worktrees.ts:265-279` and `isWorktreeOf` treat the repo path as always valid). Consumers: `client/src/routes/index.tsx:932/1013/1076` (`worktree.isMain` hides the delete action and marks the row), `components/SessionSettings.tsx` and `SessionSettingsMenu.tsx:203` (`isMainWorktree` hides the delete-worktree menu item), `worktree-deletion-service.ts:210/357` (refuses to delete the main worktree's sessions).
 
 On a bare repo the first entry is the bare directory itself: no branch, nothing a session could run in (measured, section 2). Left alone, the dashboard would show a branchless "main" row.

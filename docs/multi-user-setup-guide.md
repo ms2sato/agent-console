@@ -947,6 +947,35 @@ chmod -R g+rw <repo-path>/.git
 chgrp -R agent-console-users <repo-path>/.git
 ```
 
+### Bare source repositories
+
+A source repo can also be a **bare** repository (`git clone --bare`): it has
+no working tree, and its git directory is the repository root itself, so
+there is no `<repo-path>/.git`. Create one by hand and register it through
+`POST /api/repositories`:
+
+```bash
+git clone --bare --config core.sharedRepository=group <url> ${AGENT_CONSOLE_DATA_ROOT}/source-repos/<name>
+```
+
+Registration accepts the bare path, applies the same group-writability
+configuration to the repository root, and — because `git clone --bare`
+writes no `remote.origin.fetch` — sets `+refs/heads/*:refs/remotes/origin/*`,
+fetches once and sets `origin/HEAD`, so branch listing, the default branch and
+ahead/behind work. The bare variant of the four commands (the git directory
+is the repo root):
+
+```bash
+git -C <repo-path> config core.sharedRepository group
+find <repo-path> -type d -exec chmod g+rwxs {} +
+chmod -R g+rw <repo-path>
+chgrp -R agent-console-users <repo-path>
+```
+
+While the main-worktree rule is not yet decided, the dashboard shows no
+"main" row for a bare repository (see `docs/design/source-repo-storage-model.md`
+section 5); sessions are created on linked worktrees as usual.
+
 ### Manual fallback (operator step)
 
 The auto-apply step requires the server process (`agentconsole`) to either
@@ -962,6 +991,9 @@ sudo find <repo-path>/.git -type d -exec chmod g+rwxs {} +
 sudo chmod -R g+rw <repo-path>/.git
 sudo chgrp -R agent-console-users <repo-path>/.git
 ```
+
+For a bare repository replace `<repo-path>/.git` with `<repo-path>` in the
+last three commands (the git directory is the repository root).
 
 ### Pre-#845 source repos
 
