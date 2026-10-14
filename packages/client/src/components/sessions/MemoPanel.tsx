@@ -7,6 +7,7 @@ import { useAppWsEvent } from '../../hooks/useAppWs';
 import { sessionKeys } from '../../lib/query-keys';
 import { AccordionSectionBody } from './AccordionSectionBody';
 import { UntrustedLink, untrustedUrlTransform } from '../ui/UntrustedMarkdownLink';
+import { MarkdownCodeBlock } from '../ui/MarkdownCodeBlock';
 
 interface MemoPanelProps {
   sessionId: string;
@@ -282,6 +283,12 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExp
                 <UntrustedLink href={href} tabIndex={isExpanded ? undefined : -1}>
                   {children}
                 </UntrustedLink>
+              ),
+              // Fenced blocks only: react-markdown 10 renders a fenced block as
+              // `pre > code` and inline code as a bare `code`, so routing `pre`
+              // leaves inline code untouched.
+              pre: ({ children }) => (
+                <MarkdownCodeBlock tabIndex={isExpanded ? undefined : -1}>{children}</MarkdownCodeBlock>
               ),
             }}
           >
