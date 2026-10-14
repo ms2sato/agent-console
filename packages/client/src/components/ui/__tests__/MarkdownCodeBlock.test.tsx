@@ -1,6 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import Markdown from 'react-markdown';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import { MarkdownCodeBlock, codeBlockCopyText } from '../MarkdownCodeBlock';
 
 // The clipboard is faked at the navigator boundary (not by mocking lib/clipboard,
@@ -108,7 +109,7 @@ describe('MarkdownCodeBlock', () => {
     });
     expect(screen.getByText('Copied!')).toBeTruthy();
 
-    await waitFor(() => expect(screen.queryByText('Copied!')).toBeNull(), { timeout: 2500 });
+    await waitForAbsent(() => screen.queryByText('Copied!'), { timeout: 2500 });
     expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
   });
 
