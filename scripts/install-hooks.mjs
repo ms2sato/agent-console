@@ -16,6 +16,15 @@
  * different content, the script refuses to overwrite and asks the user to
  * remove it explicitly.
  *
+ * Bare repositories: a bare repository has no main worktree to own
+ * scripts/git-hooks/, and the checkout this script runs from is a linked
+ * worktree (an ephemeral path). Bareness is therefore asked of the COMMON dir
+ * (`git -C <common-dir> rev-parse --is-bare-repository`; the cwd form prints
+ * `false` inside a linked worktree of a bare repo), the source is read from
+ * the script's own checkout, and the hook is installed by COPY only, never by
+ * symlink, so no ephemeral path is embedded in the hooks directory. The
+ * non-bare path (symlink first, bound to the main worktree) is unchanged.
+ *
  * Soft-fail ownership: when no git repository is resolvable at
  * all (`git rev-parse --git-common-dir` fails — no `.git`, e.g. a Docker bind
  * mount of a worktree without its main repo, or a non-git checkout), this
@@ -53,6 +62,11 @@ import { dirname, join, resolve } from 'node:path';
 
 const HOOKS = [{ name: 'commit-msg', source: 'scripts/git-hooks/commit-msg' }];
 
+/**
+ * Resolve where the hook sources live and whether the repository is bare.
+ * Returns `null` when no git repository is resolvable (soft-fail, see the
+ * module docstring), otherwise `{ root, bare }`.
+ */
 function resolveRepoRoot() {
   const result = spawnSync('git', ['rev-parse', '--git-common-dir'], {
     encoding: 'utf8',
@@ -62,11 +76,36 @@ function resolveRepoRoot() {
     console.error(`\`git rev-parse --git-common-dir\` failed: ${result.stderr || '(no stderr)'}`);
     return null;
   }
+  const commonDirAbs = resolve(result.stdout.trim());
+
+  // Bareness is a property of the COMMON dir, not of the cwd: inside a linked
+  // worktree of a bare repository `git rev-parse --is-bare-repository` prints
+  // `false`, while `git -C <common-dir> rev-parse --is-bare-repository` prints
+  // `true`. Asked of the cwd, a linked worktree would be mistaken for a
+  // non-bare checkout. A failure here comes after the repository was already
+  // found, so it is a hard failure (same asymmetry as `resolveHooksDir`).
+  const bareResult = spawnSync('git', ['-C', commonDirAbs, 'rev-parse', '--is-bare-repository'], {
+    encoding: 'utf8',
+  });
+  if (bareResult.status !== 0) {
+    console.error(
+      'hooks:install — `git rev-parse --is-bare-repository` failed even though a git repository was found:',
+    );
+    console.error(bareResult.stderr || '(no stderr)');
+    process.exit(1);
+  }
+  if (bareResult.stdout.trim() === 'true') {
+    // A bare repository has no main worktree to own scripts/git-hooks/. The
+    // source is the checkout this script runs from (a linked worktree, an
+    // ephemeral path), so it is read from here and COPIED, never symlinked:
+    // no ephemeral path is embedded in the hooks directory.
+    return { root: resolve(import.meta.dirname, '..'), bare: true };
+  }
   // `.git` (relative) when run from the main worktree, absolute path to the
   // shared `.git` when run from a linked worktree. Either way the parent
   // directory is the main worktree root, which is the stable location that
   // owns scripts/git-hooks/.
-  return dirname(resolve(result.stdout.trim()));
+  return { root: dirname(commonDirAbs), bare: false };
 }
 
 function resolveHooksDir() {
@@ -86,7 +125,7 @@ function resolveHooksDir() {
   return resolve(result.stdout.trim());
 }
 
-function installOne({ name, source }, hooksDir, repoRoot) {
+function installOne({ name, source }, hooksDir, repoRoot, { copyOnly }) {
   // Resolve the source against the main worktree root rather than cwd:
   // `resolve(source)` alone is cwd-bound, so running from a linked
   // worktree would embed that ephemeral worktree's path into the symlink
@@ -137,14 +176,16 @@ function installOne({ name, source }, hooksDir, repoRoot) {
     process.exit(1);
   }
 
-  try {
-    symlinkSync(sourceAbs, target);
-    console.log(`hooks:install — symlinked ${target} -> ${sourceAbs}`);
-    return;
-  } catch (err) {
-    console.warn(
-      `hooks:install — symlink failed (${err?.code || err?.message || 'unknown'}), falling back to copy.`,
-    );
+  if (!copyOnly) {
+    try {
+      symlinkSync(sourceAbs, target);
+      console.log(`hooks:install — symlinked ${target} -> ${sourceAbs}`);
+      return;
+    } catch (err) {
+      console.warn(
+        `hooks:install — symlink failed (${err?.code || err?.message || 'unknown'}), falling back to copy.`,
+      );
+    }
   }
   copyFileSync(sourceAbs, target);
   chmodSync(target, 0o755);
@@ -152,13 +193,13 @@ function installOne({ name, source }, hooksDir, repoRoot) {
 }
 
 function main() {
-  const repoRoot = resolveRepoRoot();
-  if (repoRoot === null) {
+  const repo = resolveRepoRoot();
+  if (repo === null) {
     process.exit(0);
   }
   const hooksDir = resolveHooksDir();
   mkdirSync(hooksDir, { recursive: true });
-  for (const hook of HOOKS) installOne(hook, hooksDir, repoRoot);
+  for (const hook of HOOKS) installOne(hook, hooksDir, repo.root, { copyOnly: repo.bare });
 }
 
 main();

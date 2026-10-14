@@ -33,6 +33,10 @@ than as a silent string of denied operations.
 | `gh-setup.sh`              | `SessionStart`| (any)                | Install `gh` CLI on Claude Code on the Web                         |
 | `enforce-permissions.sh`   | `PreToolUse`  | `Bash\|Read\|Write\|Edit` | Reject catastrophic / credential-touching operations              |
 
+## Git hooks installed by `hooks:install`
+
+`scripts/install-hooks.mjs` (run by `bun install`'s `postinstall`, or `bun run hooks:install`) installs the repository's git hooks (currently `commit-msg`, the language check) into the shared hooks directory. It symlinks the hook to the MAIN worktree's `scripts/git-hooks/` (never to an ephemeral linked-worktree path) and falls back to a copy when the symlink fails. On a bare repository there is no main worktree to bind to, so it asks the common directory whether the repository is bare, reads the source from the checkout it runs from, and installs by copy only.
+
 ## `enforce-permissions.sh` policy
 
 The Claude Code runtime guarantees that **a `permissionDecision: "deny"`
