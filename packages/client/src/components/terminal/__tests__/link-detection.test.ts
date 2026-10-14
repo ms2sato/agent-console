@@ -102,8 +102,18 @@ describe('detectRowLinks', () => {
       expect(links.has(1)).toBe(false);
     });
 
-    it('(d) does not join when the next row starts with a space', () => {
-      const links = detectRowLinks([row(0, r0, false, true), row(1, ' next')]);
+    it('(d) does not join when the next row is only spaces', () => {
+      // A single leading space is a legal hanging indent now; what stays excluded is a
+      // row with nothing URL-like behind the blanks.
+      for (const next of [' ', '    ', ' '.repeat(9)]) {
+        const links = detectRowLinks([row(0, r0, false, true), row(1, next)]);
+        expect(links.get(0)).toEqual([{ start: 4, end: r0.length, href: r0.slice(4) }]);
+        expect(links.has(1)).toBe(false);
+      }
+    });
+
+    it('(d3) does not join when blanks are followed by a non-URL character', () => {
+      const links = detectRowLinks([row(0, r0, false, true), row(1, '  │ box')]);
       expect(links.get(0)).toEqual([{ start: 4, end: r0.length, href: r0.slice(4) }]);
       expect(links.has(1)).toBe(false);
     });
@@ -139,6 +149,56 @@ describe('detectRowLinks', () => {
       expect(links.get(1)).toEqual([{ start: 0, end: next.length, href: next }]);
     });
 
+    describe('hanging-indent continuation', () => {
+      const bullet = '\u25CF https://a.b/aaaa';
+
+      it('(i) joins an indented continuation and excludes the indent from href and range', () => {
+        const next = '  bbbb/c';
+        const href = 'https://a.b/aaaabbbb/c';
+        const links = detectRowLinks([row(0, bullet, false, true), row(1, next)]);
+        expect(links.get(0)).toEqual([{ start: 2, end: bullet.length, href }]);
+        expect(links.get(1)).toEqual([{ start: 2, end: next.length, href }]);
+      });
+
+      it('(l) joins a third row after an indented second row', () => {
+        const r1 = '  bbbb';
+        const r2 = '  cc/d';
+        const href = 'https://a.b/aaaabbbbcc/d';
+        const links = detectRowLinks([
+          row(0, bullet, false, true),
+          row(1, r1, false, true),
+          row(2, r2),
+        ]);
+        expect(links.get(0)).toEqual([{ start: 2, end: bullet.length, href }]);
+        expect(links.get(1)).toEqual([{ start: 2, end: r1.length, href }]);
+        expect(links.get(2)).toEqual([{ start: 2, end: r2.length, href }]);
+      });
+
+      it('(j) does not join a continuation indented past the cap', () => {
+        const links = detectRowLinks([
+          row(0, bullet, false, true),
+          row(1, ' '.repeat(9) + 'bbbb'),
+        ]);
+        expect(links.get(0)).toEqual([{ start: 2, end: bullet.length, href: 'https://a.b/aaaa' }]);
+        expect(links.has(1)).toBe(false);
+      });
+
+      it('(j2) joins a continuation indented exactly at the cap', () => {
+        const next = ' '.repeat(8) + 'bbbb';
+        const links = detectRowLinks([row(0, bullet, false, true), row(1, next)]);
+        expect(links.get(1)).toEqual([{ start: 8, end: next.length, href: 'https://a.b/aaaabbbb' }]);
+      });
+
+      it('(k) does not strip leading blanks of a soft-wrapped continuation', () => {
+        const links = detectRowLinks([
+          row(0, bullet, false, true),
+          row(1, '  bbbb', true),
+        ]);
+        expect(links.get(0)).toEqual([{ start: 2, end: bullet.length, href: 'https://a.b/aaaa' }]);
+        expect(links.has(1)).toBe(false);
+      });
+    });
+
     it('does not synthesise a URL from a row that ends in a partial scheme', () => {
       // Row 1 has an earlier, closed URL and then ends in 'ht'; blind gluing of 'ht' + 'tps://x.y'
       // would create a new link whose row-1 range starts inside the prose.
@@ -162,9 +222,15 @@ describe('detectRowLinks', () => {
       expect(mayContinuePreviousRow(full, row(1, '/path'))).toBe(true);
     });
 
-    it('is false for a non-full previous row, a space start, or an empty row', () => {
+    it('is true for a hanging indent up to the cap behind a URL-plausible start', () => {
+      expect(mayContinuePreviousRow(full, row(1, '  abc'))).toBe(true);
+      expect(mayContinuePreviousRow(full, row(1, ' '.repeat(8) + 'abc'))).toBe(true);
+    });
+
+    it('is false past the cap, for blanks-only, a non-full previous row, or an empty row', () => {
       expect(mayContinuePreviousRow(notFull, row(1, 'abc'))).toBe(false);
-      expect(mayContinuePreviousRow(full, row(1, ' abc'))).toBe(false);
+      expect(mayContinuePreviousRow(full, row(1, ' '.repeat(9) + 'abc'))).toBe(false);
+      expect(mayContinuePreviousRow(full, row(1, '    '))).toBe(false);
       expect(mayContinuePreviousRow(full, row(1, ''))).toBe(false);
     });
   });
