@@ -3,11 +3,12 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { useAgentDirectory } from '../useAgentDirectory';
+import { completeWireBody } from '../../test/wire-fixtures';
 
 const originalFetch = globalThis.fetch;
 
 function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
+  return new Response(JSON.stringify(completeWireBody(data)), {
     status,
     headers: { 'content-type': 'application/json' },
   });

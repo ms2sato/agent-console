@@ -12,6 +12,7 @@ import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { installMockWebSocket } from '../../../test/mock-websocket';
 import { _resetTerminals } from '../../terminal/terminal-store';
 import type { Session, Worker } from '@agent-console/shared';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 /**
  * Component-render tests for `SessionPage` (the sibling `SessionPage.test.ts`
@@ -32,7 +33,7 @@ afterAll(() => {
 });
 
 function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
+  return new Response(JSON.stringify(completeWireBody(data)), {
     status,
     headers: { 'content-type': 'application/json' },
   });

@@ -7,11 +7,12 @@ import { waitForAbsent } from '../../../test/waitForAbsent';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
 import type { AddAgentWorkerParams } from '../hooks/useTabManagement';
 import { AGENT_KIND_PRESENTATION } from '../../agents';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 const originalFetch = globalThis.fetch;
 
 function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
+  return new Response(JSON.stringify(completeWireBody(data)), {
     status,
     headers: { 'content-type': 'application/json' },
   });

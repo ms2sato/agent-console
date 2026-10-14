@@ -27,11 +27,12 @@ import { AgentsPage } from '../../../routes/agents/index';
 import { SessionDataContext } from '../../../contexts/root-contexts';
 import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 import * as useAppWsModule from '../../../hooks/useAppWs';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 const originalFetch = globalThis.fetch;
 
 function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
+  return new Response(JSON.stringify(completeWireBody(data)), {
     status,
     headers: { 'content-type': 'application/json' },
   });

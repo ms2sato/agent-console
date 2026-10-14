@@ -7,6 +7,7 @@ import { WorktreeDeletionTasksContext, SessionStopTasksContext } from '../../con
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { UseSessionStopTasksReturn } from '../../hooks/useSessionStopTasks';
 import type { Session } from '@agent-console/shared';
+import { completeWireBody } from '../../test/wire-fixtures';
 
 // Helper to create mock Response
 function createMockResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
@@ -15,7 +16,7 @@ function createMockResponse(body: unknown, options: { status?: number; ok?: bool
     ok,
     status,
     statusText: status === 200 ? 'OK' : 'Error',
-    json: mock(() => Promise.resolve(body)),
+    json: mock(() => Promise.resolve(completeWireBody(body))),
   } as unknown as Response;
 }
 

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Repository } from '@agent-console/shared';
 import { EditRepositoryForm } from '../EditRepositoryForm';
 import { setAuthMode, _reset as resetAuth } from '../../../lib/auth';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -93,7 +94,7 @@ function createMockResponse(body: unknown, ok = true) {
   return {
     ok,
     status: ok ? 200 : 400,
-    json: () => Promise.resolve(body),
+    json: () => Promise.resolve(completeWireBody(body)),
   } as unknown as Response;
 }
 

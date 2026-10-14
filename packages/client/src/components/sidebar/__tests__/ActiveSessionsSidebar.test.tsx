@@ -18,6 +18,7 @@ import type { UseSessionStopTasksReturn } from '../../../hooks/useSessionStopTas
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session, Repository } from '@agent-console/shared';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 // --- Global fetch mock (Issue #1643 PR-2) ---
 //
@@ -38,7 +39,7 @@ function installGlobalFetchMock() {
       const url = input instanceof Request ? input.url : String(input);
       const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
       if (url.includes('/api/repositories') && method === 'GET') {
-        return new Response(JSON.stringify(repositoriesResponse), {
+        return new Response(JSON.stringify(completeWireBody(repositoriesResponse)), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
@@ -2052,7 +2053,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
         const url = input instanceof Request ? input.url : String(input);
         const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
         if (url.includes('/api/repositories') && method === 'GET') {
-          return new Response(JSON.stringify(repositoriesResponse), {
+          return new Response(JSON.stringify(completeWireBody(repositoriesResponse)), {
             status: 200,
             headers: { 'content-type': 'application/json' },
           });
@@ -2098,7 +2099,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
         const url = input instanceof Request ? input.url : String(input);
         const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
         if (url.includes('/api/repositories') && method === 'GET') {
-          return new Response(JSON.stringify(repositoriesResponse), {
+          return new Response(JSON.stringify(completeWireBody(repositoriesResponse)), {
             status: 200,
             headers: { 'content-type': 'application/json' },
           });
@@ -2194,7 +2195,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
         const url = input instanceof Request ? input.url : String(input);
         const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
         if (url.includes('/api/repositories') && method === 'GET') {
-          return new Response(JSON.stringify(repositoriesResponse), {
+          return new Response(JSON.stringify(completeWireBody(repositoriesResponse)), {
             status: 200,
             headers: { 'content-type': 'application/json' },
           });
