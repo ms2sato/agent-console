@@ -81,6 +81,8 @@ interface UseAppWsEventOptions {
   onReviewQueueUpdated?: () => void;
   /** Called when an HTML artifact is created (realtime refresh trigger; carries no content, invalidate and re-fetch) */
   onArtifactCreated?: (sessionId: string, artifactId: string) => void;
+  /** Called when an HTML artifact's content is updated in place (realtime refresh trigger; carries no content, invalidate and re-fetch) */
+  onArtifactUpdated?: (sessionId: string, artifactId: string) => void;
   /** Called when an HTML artifact is deleted (realtime refresh trigger) */
   onArtifactDeleted?: (sessionId: string, artifactId: string) => void;
   /** Called when a bookmark is created (realtime refresh trigger; carries no content, invalidate and re-fetch) */
@@ -255,6 +257,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'artifact-created':
           logger.debug(`[WebSocket] artifact-created: ${msg.artifactId}`);
           optionsRef.current.onArtifactCreated?.(msg.sessionId, msg.artifactId);
+          break;
+        case 'artifact-updated':
+          logger.debug(`[WebSocket] artifact-updated: ${msg.artifactId}`);
+          optionsRef.current.onArtifactUpdated?.(msg.sessionId, msg.artifactId);
           break;
         case 'artifact-deleted':
           logger.debug(`[WebSocket] artifact-deleted: ${msg.artifactId}`);

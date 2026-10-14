@@ -1,9 +1,14 @@
 import type { Kysely } from 'kysely';
 import type { Artifact } from '@agent-console/shared';
-import type { ArtifactRepository, ArtifactRecord, CreateArtifactParams } from './artifact-repository.js';
+import type {
+  ArtifactRepository,
+  ArtifactRecord,
+  CreateArtifactParams,
+  UpdateArtifactParams,
+} from './artifact-repository.js';
 import type { Database } from '../database/schema.js';
 import { toArtifact, toArtifactRecord } from '../database/mappers.js';
-import { writeArtifactFile, deleteArtifactFile } from '../lib/artifact-storage.js';
+import { writeArtifactFile, replaceArtifactFile, deleteArtifactFile } from '../lib/artifact-storage.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('sqlite-artifact-repository');
@@ -84,6 +89,40 @@ export class SqliteArtifactRepository implements ArtifactRepository {
       .orderBy('created_at', 'desc')
       .execute();
     return rows.map(toArtifact);
+  }
+
+  async update(id: string, params: UpdateArtifactParams): Promise<ArtifactRecord | null> {
+    // Check the row FIRST: a missing row must not leave a file behind.
+    const existing = await this.db
+      .selectFrom('artifacts')
+      .where('id', '=', id)
+      .select('user_id')
+      .executeTakeFirst();
+    if (!existing) {
+      return null;
+    }
+
+    // Replace the file BEFORE the DB row (same ordering rationale as create):
+    // if the atomic replace fails the old bytes and the old row are both
+    // intact and the call can be retried. The reverse order could advertise a
+    // new size / updated time for bytes that were never written.
+    await replaceArtifactFile(existing.user_id, id, params.content);
+
+    const sizeBytes = Buffer.byteLength(params.content, 'utf-8');
+    const now = new Date().toISOString();
+    await this.db
+      .updateTable('artifacts')
+      .set({
+        size_bytes: sizeBytes,
+        updated_at: now,
+        ...(params.title !== undefined ? { title: params.title } : {}),
+      })
+      .where('id', '=', id)
+      .execute();
+
+    logger.debug({ artifactId: id, userId: existing.user_id, sizeBytes }, 'Artifact updated');
+
+    return this.findById(id);
   }
 
   async delete(id: string): Promise<boolean> {

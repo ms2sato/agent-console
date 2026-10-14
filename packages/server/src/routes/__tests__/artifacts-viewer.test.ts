@@ -132,6 +132,59 @@ describe('Artifact viewer shell route', () => {
       expect(body).toContain(`<iframe sandbox="allow-scripts" src="/api/artifacts/${created.id}?vt=`);
     });
 
+    it('renders no Updated line for a never-updated artifact', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'Never updated',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const res = await buildApp(OWNER).request(`/artifacts/${created.id}`);
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).not.toContain('Updated');
+    });
+
+    it('renders an "Updated <time>" line outside the frame, after the owner line, once the artifact was updated', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'Updated doc',
+        content: '<p>v1</p>',
+        sourceSessionId: null,
+      });
+      const updated = await artifactRepository.update(created.id, { content: '<p>v2</p>' });
+
+      const res = await buildApp(OWNER).request(`/artifacts/${created.id}`);
+      const body = await res.text();
+
+      const updatedLine = `<p class="updated">Updated <time datetime="${updated!.updatedAt}">${updated!.updatedAt}</time></p>`;
+      expect(body).toContain(updatedLine);
+      // Above the frame: header (owner line, then updated line) precedes the iframe.
+      expect(body.indexOf('Created by owner')).toBeLessThan(body.indexOf(updatedLine));
+      expect(body.indexOf(updatedLine)).toBeLessThan(body.indexOf('<iframe'));
+      // The serving boundary is unchanged: same shell CSP.
+      expect(res.headers.get('Content-Security-Policy')).toBe(ARTIFACT_SHELL_CSP);
+    });
+
+    it('HTML-escapes the updated-at text like the title (a stored value containing markup renders inert)', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'Escape probe',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+      await db.updateTable('artifacts').set({ updated_at: '<script>alert(1)</script>' }).where('id', '=', created.id).execute();
+
+      const body = await (await buildApp(OWNER).request(`/artifacts/${created.id}`)).text();
+
+      expect(body).not.toContain('<script>alert(1)</script>');
+      expect(body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    });
+
     it('the shell response carries Cache-Control: no-store (the shell embeds a fresh single-use token per render, so it is no longer idempotent and must never be served from a cache)', async () => {
       const created = await artifactRepository.create({
         id: randomUUID(),

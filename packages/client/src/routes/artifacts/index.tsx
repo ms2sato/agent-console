@@ -34,6 +34,9 @@ export function ArtifactsPage() {
     onArtifactCreated: () => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.list(), exact: true });
     },
+    onArtifactUpdated: () => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.list(), exact: true });
+    },
     onArtifactDeleted: () => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.list(), exact: true });
     },
@@ -170,6 +173,11 @@ function ArtifactRow({ artifact, onDelete }: ArtifactRowProps) {
       <td className="py-3 px-4">{artifact.title}</td>
       <td className="py-3 px-4 text-gray-400">
         {formatTimestamp(new Date(artifact.createdAt).getTime())}
+        {artifact.updatedAt !== null && (
+          <div className="text-xs text-gray-500">
+            Updated {formatTimestamp(new Date(artifact.updatedAt).getTime())}
+          </div>
+        )}
       </td>
       <td className="py-3 px-4 text-gray-400">{formatBytes(artifact.sizeBytes)}</td>
       <td className="py-3 px-4 text-right">

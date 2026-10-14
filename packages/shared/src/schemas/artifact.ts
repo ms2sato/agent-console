@@ -12,6 +12,9 @@ export const ArtifactSchema = v.strictObject({
   title: v.pipe(v.string(), v.minLength(1)),
   createdAt: v.string(),
   sizeBytes: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  // Required-nullable (like `clonedSourceRepoPath`): the server always sends
+  // it; `null` = never updated. Mirrors `Artifact.updatedAt`.
+  updatedAt: v.nullable(v.string()),
 });
 
 export type ArtifactSchemaOutput = v.InferOutput<typeof ArtifactSchema>;

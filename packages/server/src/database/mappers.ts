@@ -826,6 +826,7 @@ export function toArtifact(row: ArtifactRow): Artifact {
     title: row.title,
     createdAt: row.created_at,
     sizeBytes: row.size_bytes,
+    updatedAt: row.updated_at,
   };
 }
 

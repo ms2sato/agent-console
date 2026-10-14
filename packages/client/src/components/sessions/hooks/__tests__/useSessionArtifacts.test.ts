@@ -92,7 +92,7 @@ describe('useSessionArtifacts', () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         artifacts: [
-          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
         ],
       })
     );
@@ -104,7 +104,7 @@ describe('useSessionArtifacts', () => {
     expect(getLastFetchUrl()).toContain('/api/artifacts');
     expect(getLastFetchUrl()).toContain('sessionId=session-1');
     expect(result.current.data).toEqual([
-      { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+      { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
     ]);
   });
 
@@ -149,7 +149,7 @@ describe('useSessionArtifacts', () => {
 
       // Positive control: a SAME-session message actually triggers a
       // refetch in this exact render/connection.
-      const newArtifact = { id: 'artifact-new', title: 'New Dashboard', createdAt: '2026-08-20T00:00:00.000Z', sizeBytes: 10 };
+      const newArtifact = { id: 'artifact-new', title: 'New Dashboard', createdAt: '2026-08-20T00:00:00.000Z', sizeBytes: 10, updatedAt: null };
       mockFetch.mockResolvedValueOnce(jsonResponse({ artifacts: [newArtifact] }));
 
       await act(async () => {
@@ -174,8 +174,48 @@ describe('useSessionArtifacts', () => {
       expect(result.current.data).toEqual([newArtifact]);
     });
 
+    it('refetches for a SAME-session artifact-updated message, then does NOT refetch for a DIFFERENT session', async () => {
+      const before = { id: 'artifact-1', title: 'Doc', createdAt: '2026-08-20T00:00:00.000Z', sizeBytes: 5, updatedAt: null };
+      const after = { ...before, sizeBytes: 9, updatedAt: '2026-08-21T00:00:00.000Z' };
+      mockFetch.mockResolvedValueOnce(jsonResponse({ artifacts: [before] }));
+
+      const { result } = renderHook(() => useSessionArtifacts('session-U'), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.isPending).toBe(false));
+      expect(result.current.data).toEqual([before]);
+
+      const ws = requireLastWs();
+      act(() => {
+        ws.simulateOpen();
+      });
+
+      // Positive control: a SAME-session message actually triggers a refetch
+      // in this exact render/connection.
+      mockFetch.mockResolvedValueOnce(jsonResponse({ artifacts: [after] }));
+
+      await act(async () => {
+        ws.simulateMessage(
+          JSON.stringify({ type: 'artifact-updated', sessionId: 'session-U', artifactId: 'artifact-1' })
+        );
+      });
+
+      await waitFor(() => expect(result.current.data).toEqual([after]));
+
+      // Negative: a DIFFERENT-session message must not cause another refetch.
+      const callsBefore = mockFetch.mock.calls.length;
+
+      await act(async () => {
+        ws.simulateMessage(
+          JSON.stringify({ type: 'artifact-updated', sessionId: 'session-OTHER', artifactId: 'artifact-x' })
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+
+      expect(mockFetch.mock.calls.length).toBe(callsBefore);
+      expect(result.current.data).toEqual([after]);
+    });
+
     it('refetches for a SAME-session artifact-deleted message, then does NOT refetch for a DIFFERENT session', async () => {
-      const existing = { id: 'artifact-1', title: 'Existing', createdAt: '2026-08-20T00:00:00.000Z', sizeBytes: 5 };
+      const existing = { id: 'artifact-1', title: 'Existing', createdAt: '2026-08-20T00:00:00.000Z', sizeBytes: 5, updatedAt: null };
       mockFetch.mockResolvedValueOnce(jsonResponse({ artifacts: [existing] }));
 
       const { result } = renderHook(() => useSessionArtifacts('session-C'), { wrapper: createWrapper() });

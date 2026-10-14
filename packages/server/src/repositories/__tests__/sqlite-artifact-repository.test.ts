@@ -78,6 +78,7 @@ describe('SqliteArtifactRepository', () => {
         title: 'My Dashboard',
         createdAt: artifact.createdAt,
         sizeBytes: Buffer.byteLength('<html><body>hi</body></html>', 'utf-8'),
+        updatedAt: null,
         sourceSessionId: 'session-1',
       });
       // `create`/`findById` return the server-internal ArtifactRecord (wire
@@ -86,7 +87,7 @@ describe('SqliteArtifactRepository', () => {
       // `content`/`sourceSessionId` still never leak; `userId` is NOT part
       // of the wire `Artifact` type and must never be serialized into an
       // HTTP response (see packages/shared/src/types/artifact.ts).
-      expect(Object.keys(artifact).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'sourceSessionId', 'title', 'userId']);
+      expect(Object.keys(artifact).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'sourceSessionId', 'title', 'updatedAt', 'userId']);
 
       const written = await readArtifactFile('user-1', 'artifact-1');
       expect(written).toBe('<html><body>hi</body></html>');
@@ -320,6 +321,76 @@ describe('SqliteArtifactRepository', () => {
 
     it('returns false for a non-existent id, and does not throw', async () => {
       await expect(repository.delete('never-existed')).resolves.toBe(false);
+    });
+  });
+
+  describe('update', () => {
+    const original = '<html><head><title>Doc</title></head><body>v1</body></html>';
+
+    async function seed(id = 'artifact-u1') {
+      return repository.create({ id, userId: 'user-1', title: 'Doc', content: original, sourceSessionId: 'session-1' });
+    }
+
+    it('is null before and set after: updatedAt, sizeBytes and the file all change; createdAt and sourceSessionId do not', async () => {
+      const created = await seed();
+      expect(created.updatedAt).toBeNull();
+      const longer = original + '<p>more bytes</p>';
+
+      const updated = await repository.update('artifact-u1', { content: longer });
+
+      expect(updated).not.toBeNull();
+      expect(updated!.updatedAt).not.toBeNull();
+      expect(updated!.sizeBytes).toBe(Buffer.byteLength(longer, 'utf-8'));
+      expect(updated!.createdAt).toBe(created.createdAt);
+      expect(updated!.sourceSessionId).toBe('session-1');
+      expect(await readArtifactFile('user-1', 'artifact-u1')).toBe(longer);
+      expect((await repository.findById('artifact-u1'))!.updatedAt).toBe(updated!.updatedAt);
+    });
+
+    it('a title-less update keeps the stored title (never re-derived from the new document)', async () => {
+      await seed();
+
+      const updated = await repository.update('artifact-u1', {
+        content: '<html><head><title>A Different Title</title></head></html>',
+      });
+
+      expect(updated!.title).toBe('Doc');
+    });
+
+    it('replaces the title only when one is passed', async () => {
+      await seed();
+
+      const updated = await repository.update('artifact-u1', { content: '<p>v2</p>', title: 'Renamed' });
+
+      expect(updated!.title).toBe('Renamed');
+    });
+
+    it('a second update advances updatedAt', async () => {
+      await seed();
+      const first = await repository.update('artifact-u1', { content: '<p>v2</p>' });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const second = await repository.update('artifact-u1', { content: '<p>v3</p>' });
+
+      expect(new Date(second!.updatedAt!).getTime()).toBeGreaterThan(new Date(first!.updatedAt!).getTime());
+    });
+
+    it('returns null for an unknown id and does NOT touch the file system', async () => {
+      const result = await repository.update('never-existed', { content: '<p>x</p>' });
+
+      expect(result).toBeNull();
+      expect(await readArtifactFile('user-1', 'never-existed')).toBeNull();
+    });
+
+    it('listing reads updatedAt through the same mapper (null for never-updated, a value after)', async () => {
+      await seed('artifact-u2');
+      await seed('artifact-u3');
+      await repository.update('artifact-u3', { content: '<p>changed</p>' });
+
+      const listed = await repository.findByUserId('user-1');
+
+      expect(listed.find((a) => a.id === 'artifact-u2')!.updatedAt).toBeNull();
+      expect(listed.find((a) => a.id === 'artifact-u3')!.updatedAt).not.toBeNull();
+      expect(Object.keys(listed[0]).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'title', 'updatedAt']);
     });
   });
 });

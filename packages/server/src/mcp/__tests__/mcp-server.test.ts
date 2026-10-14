@@ -5982,6 +5982,41 @@ describe('MCP Server Tools', () => {
   // actually registered by createMcpApp and exposes the expected params.
   // ===========================================================================
 
+  describe('update_html_artifact: registration (mcp-server.ts wiring)', () => {
+    it('is registered by createMcpApp with artifactId, content, title and sessionId parameters, and delete_html_artifact points at it', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      const listBody = (await listRes.json()) as {
+        result?: {
+          tools?: Array<{
+            name: string;
+            description?: string;
+            inputSchema?: { properties?: Record<string, unknown> };
+          }>;
+        };
+      };
+      const updateTool = listBody.result?.tools?.find((t) => t.name === 'update_html_artifact');
+
+      expect(updateTool).toBeDefined();
+      for (const param of ['artifactId', 'content', 'title', 'sessionId']) {
+        expect(updateTool?.inputSchema?.properties?.[param]).toBeDefined();
+      }
+      // The title param's description states the keep-the-stored-title rule (omitted, or empty once sanitized).
+      expect(JSON.stringify(updateTool?.inputSchema?.properties?.title)).toContain('whitespace only');
+      // The delete tool no longer claims an in-place update is unavailable.
+      const deleteTool = listBody.result?.tools?.find((t) => t.name === 'delete_html_artifact');
+      expect(deleteTool?.description).toContain('update_html_artifact');
+      expect(deleteTool?.description).not.toContain('not available');
+    });
+  });
+
   describe('delete_html_artifact: registration (mcp-server.ts wiring)', () => {
     it('is registered by createMcpApp with artifactId and sessionId parameters', async () => {
       const listRes = await app.request('/mcp', {

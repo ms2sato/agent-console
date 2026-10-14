@@ -465,6 +465,7 @@ describe('delete_html_artifact', () => {
         findById: artifactRepository.findById.bind(artifactRepository),
         findByUserId: artifactRepository.findByUserId.bind(artifactRepository),
         findByUserIdAndSourceSessionId: artifactRepository.findByUserIdAndSourceSessionId.bind(artifactRepository),
+        update: artifactRepository.update.bind(artifactRepository),
         delete: async () => {
           throw new Error('simulated disk failure');
         },

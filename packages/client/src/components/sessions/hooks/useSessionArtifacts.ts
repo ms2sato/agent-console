@@ -25,6 +25,11 @@ export function useSessionArtifacts(sessionId: string) {
         queryClient.invalidateQueries({ queryKey: artifactKeys.listBySession(sessionId), exact: true });
       }
     },
+    onArtifactUpdated: (msgSessionId) => {
+      if (msgSessionId === sessionId) {
+        queryClient.invalidateQueries({ queryKey: artifactKeys.listBySession(sessionId), exact: true });
+      }
+    },
     onArtifactDeleted: (msgSessionId) => {
       if (msgSessionId === sessionId) {
         queryClient.invalidateQueries({ queryKey: artifactKeys.listBySession(sessionId), exact: true });

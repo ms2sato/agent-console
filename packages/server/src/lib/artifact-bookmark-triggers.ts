@@ -1,6 +1,6 @@
 /**
  * Realtime-refresh trigger emitters for HTML artifacts and bookmarks
- * (`artifact-created` / `artifact-deleted` / `bookmark-created` /
+ * (`artifact-created` / `artifact-updated` / `artifact-deleted` / `bookmark-created` /
  * `bookmark-deleted`), shared by the MCP tools (`create_html_artifact`,
  * `delete_html_artifact`, `create_bookmark`, `delete_bookmark` in
  * `mcp/mcp-server.ts`) and the REST routes (`routes/bookmarks.ts`,
@@ -57,6 +57,27 @@ export function emitArtifactCreated(
   params: { sessionId: string; artifactId: string },
 ): void {
   broadcast({ type: 'artifact-created', sessionId: params.sessionId, artifactId: params.artifactId });
+}
+
+/**
+ * `artifact-updated`: a trigger-only message (ids, never content) telling the
+ * OWNING session's panel and the history list to refetch after an in-place
+ * content update. Owning-session resolution and the fallback are identical to
+ * {@link emitArtifactDeleted}: `sourceSessionId` of the record, never the
+ * calling session, with the caller's session id only as a fallback.
+ */
+export function emitArtifactUpdated(
+  broadcast: (msg: AppServerMessage) => void,
+  record: { sourceSessionId: string | null },
+  artifactId: string,
+  fallbackSessionId?: string,
+): void {
+  const sessionId = record.sourceSessionId ?? fallbackSessionId;
+  if (!sessionId) {
+    logger.debug({ artifactId }, 'Skipping artifact-updated broadcast: no owning session and no fallback caller session');
+    return;
+  }
+  broadcast({ type: 'artifact-updated', sessionId, artifactId });
 }
 
 export function emitBookmarkDeleted(

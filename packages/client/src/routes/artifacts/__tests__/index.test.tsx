@@ -81,10 +81,29 @@ describe('ArtifactsPage', () => {
     });
   });
 
+  it('shows "Updated <time>" under the created time only for an updated artifact', async () => {
+    listResponse = {
+      artifacts: [
+        { id: 'artifact-u', title: 'Updated Doc', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 10, updatedAt: '2026-08-17T00:00:00.000Z' },
+        { id: 'artifact-n', title: 'Plain Doc', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 10, updatedAt: null },
+      ],
+    };
+    await renderWithRouter(<ArtifactsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Updated Doc')).toBeTruthy();
+    });
+    const rows = screen.getAllByRole('row');
+    const updatedRow = rows.find((r) => r.textContent?.includes('Updated Doc'))!;
+    const plainRow = rows.find((r) => r.textContent?.includes('Plain Doc'))!;
+    expect(updatedRow.textContent).toContain('Updated ');
+    expect(plainRow.textContent).not.toContain('Updated');
+  });
+
   it('renders artifact rows with title, formatted size, and a plain view anchor (not a router Link)', async () => {
     listResponse = {
       artifacts: [
-        { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+        { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
       ],
     };
     await renderWithRouter(<ArtifactsPage />);
@@ -102,8 +121,8 @@ describe('ArtifactsPage', () => {
   it('does NOT re-sort the server-provided artifact order', async () => {
     listResponse = {
       artifacts: [
-        { id: 'artifact-b', title: 'B Artifact', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 10 },
-        { id: 'artifact-a', title: 'A Artifact', createdAt: '2026-08-15T00:00:00.000Z', sizeBytes: 20 },
+        { id: 'artifact-b', title: 'B Artifact', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 10, updatedAt: null },
+        { id: 'artifact-a', title: 'A Artifact', createdAt: '2026-08-15T00:00:00.000Z', sizeBytes: 20, updatedAt: null },
       ],
     };
     await renderWithRouter(<ArtifactsPage />);
@@ -120,7 +139,7 @@ describe('ArtifactsPage', () => {
   it('deletes an artifact after confirmation and refetches the list', async () => {
     listResponse = {
       artifacts: [
-        { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+        { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
       ],
     };
     await renderWithRouter(<ArtifactsPage />);
@@ -157,7 +176,7 @@ describe('ArtifactsPage', () => {
     const dangerousTitle = 'Evil <script>alert(1)</script>';
     listResponse = {
       artifacts: [
-        { id: 'artifact-1', title: dangerousTitle, createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 10 },
+        { id: 'artifact-1', title: dangerousTitle, createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 10, updatedAt: null },
       ],
     };
     await renderWithRouter(<ArtifactsPage />);
@@ -190,7 +209,7 @@ describe('ArtifactsPage', () => {
 
       listResponse = {
         artifacts: [
-          { id: 'artifact-new', title: 'Freshly Created', createdAt: '2026-08-20T00:00:00.000Z', sizeBytes: 42 },
+          { id: 'artifact-new', title: 'Freshly Created', createdAt: '2026-08-20T00:00:00.000Z', sizeBytes: 42, updatedAt: null },
         ],
       };
 
@@ -207,10 +226,42 @@ describe('ArtifactsPage', () => {
       });
     });
 
+    it('refetches the list when an artifact-updated message arrives (an in-place update changes the row)', async () => {
+      listResponse = {
+        artifacts: [
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
+        ],
+      };
+      await renderWithRouter(<ArtifactsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('My Dashboard')).toBeTruthy();
+      });
+      expect(screen.getByText('1.2 KB')).toBeTruthy();
+
+      listResponse = {
+        artifacts: [
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 5120, updatedAt: '2026-08-21T00:00:00.000Z' },
+        ],
+      };
+
+      const ws = MockWebSocket.getLastInstance();
+      await act(async () => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'artifact-updated', sessionId: 'some-session', artifactId: 'artifact-1' })
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('5.0 KB')).toBeTruthy();
+      });
+    });
+
     it('refetches the list when an artifact-deleted message arrives', async () => {
       listResponse = {
         artifacts: [
-          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
         ],
       };
       await renderWithRouter(<ArtifactsPage />);
