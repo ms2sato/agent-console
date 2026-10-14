@@ -22,6 +22,7 @@ import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
 import type { AgentDefinition, EmbeddedAgentWorker, Session, Worker } from '@agent-console/shared';
+import { CreatorBadge } from './CreatorBadge';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { SessionSidePanels } from './SessionSidePanels';
 import { SessionSidePanelsDrawer } from './SessionSidePanelsDrawer';
@@ -864,6 +865,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Status bar at bottom */}
       <div className="bg-slate-800 border-t border-slate-700 px-3 py-1.5 flex flex-wrap items-center gap-2 md:gap-4 shrink-0">
         <span className="text-green-400 font-medium text-sm">{branchName}</span>
+        <CreatorBadge createdBy={session.createdBy} createdByUsername={session.createdByUsername} />
         <span
           onClick={() => {
             openPath(session.locationPath);
