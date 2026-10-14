@@ -3,7 +3,7 @@ import { rowText, detectAndAssignLinks } from '../row-pipeline';
 import type { TerminalRow } from '../buffer-to-rows';
 
 function row(key: number, text: string, isWrapped = false): TerminalRow {
-  return { key, segments: [{ text, style: null }], isWrapped, links: [] };
+  return { key, segments: [{ text, style: null }], isWrapped, links: [], fillsLastColumn: false };
 }
 
 describe('rowText', () => {
@@ -16,6 +16,7 @@ describe('rowText', () => {
       ],
       isWrapped: false,
       links: [],
+      fillsLastColumn: false,
     };
     expect(rowText(r)).toBe('foobar');
   });

@@ -480,6 +480,37 @@ describe('terminal-store', () => {
     }
   });
 
+  it('joins a hard-wrapped URL whose first row is cached scrollback and whose continuation is the first viewport row', async () => {
+    const instance = getOrCreateTerminal('lnk-hard', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    const cols = instance.getSnapshot().cols;
+    const termRows = instance.getSnapshot().terminalRows;
+    // Row 1 is written through the last column; the TUI-style break is a real CRLF.
+    const row1 = 'https://example.com/' + 'a'.repeat(cols - 'https://example.com/'.length);
+    const row2 = 'bcd/end';
+    const href = row1 + row2;
+    let offset = 0;
+    const send = async (data: string) => {
+      ws!.simulateMessage(JSON.stringify({ type: 'output', data, offset }));
+      offset += data.length;
+      await flush();
+    };
+    // Cursor on the last screen row, nothing scrolled yet: row1 is y=0, row2 is y=1.
+    await send(`${row1}\r\n${row2}${'\r\n'.repeat(termRows - 2)}`);
+    // One more line scrolls row1 into scrollback (cached after this rebuild); row2
+    // becomes the first viewport row.
+    await send('\r\n');
+    // A later rebuild re-detects only fresh rows: row2, with row1 coming from cache.
+    await send('x');
+
+    const rows = instance.getSnapshot().rows;
+    expect(rows[0].segments.map((s) => s.text).join('')).toBe(row1);
+    expect(rows[1].segments.map((s) => s.text).join('')).toBe(row2);
+    expect(rows[1].links).toEqual([{ start: 0, end: row2.length, href }]);
+    expect(rows[0].links[0].href).toBe(href);
+  });
+
   it('F1: repeated DECSET mode bursts keep the snapshot stable and touch no selection state', async () => {
     const instance = getOrCreateTerminal('f1', 'w');
     const ws = MockWebSocket.getLastInstance();

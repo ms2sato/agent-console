@@ -79,7 +79,7 @@ function extractSettledRows(buffer: ReplayBuffer, cols: number): TerminalRow[] {
     rows.push(
       line
         ? extractRow(line, cols, nullCell, y, wrapContinuationOptions(buffer, y))
-        : { key: y, segments: [{ text: '', style: null }], isWrapped: false, links: [] },
+        : { key: y, segments: [{ text: '', style: null }], isWrapped: false, links: [], fillsLastColumn: false },
     );
   }
   while (rows.length > 0 && isBlankRow(rows[rows.length - 1])) rows.pop();

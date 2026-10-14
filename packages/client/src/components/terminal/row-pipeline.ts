@@ -26,7 +26,12 @@ export function rowText(row: TerminalRow): string {
  */
 export function detectAndAssignLinks(rows: TerminalRow[]): void {
   if (rows.length === 0) return;
-  const window = rows.map((r) => ({ key: r.key, text: rowText(r), isWrapped: r.isWrapped }));
+  const window = rows.map((r) => ({
+    key: r.key,
+    text: rowText(r),
+    isWrapped: r.isWrapped,
+    fillsLastColumn: r.fillsLastColumn,
+  }));
   const linkMap = detectRowLinks(window);
   for (const r of rows) {
     r.links = linkMap.get(r.key) ?? [];

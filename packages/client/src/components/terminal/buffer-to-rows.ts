@@ -40,6 +40,10 @@ export interface TerminalRow {
   segments: TerminalSegment[];
   isWrapped: boolean; // true = this row is a soft-wrap continuation of the previous
   links: LinkRange[]; // URL column ranges over the row's concatenated text (empty = none)
+  // True when written cells reach the last column. Measured in cells, not code
+  // units: a CJK prefix makes text.length < cols while the row is still full.
+  // Link detection uses it to spot an application-authored hard break at the edge.
+  fillsLastColumn: boolean;
 }
 
 // Standard xterm dark-theme 16-color palette (ANSI 0-15).
@@ -171,7 +175,8 @@ export function extractRow(
   opts: ExtractRowOptions = {},
 ): TerminalRow {
   const keep = opts.keepTrailingWhitespace === true;
-  const segments = walkCells(line, keep ? writtenColumnCount(line, cols, nullCell) : cols, nullCell, -1);
+  const written = writtenColumnCount(line, cols, nullCell);
+  const segments = walkCells(line, keep ? written : cols, nullCell, -1);
   if (!keep) trimTrailingDefaultWhitespace(segments);
 
   // Keep at least one (empty) segment so the row box renders its line height.
@@ -179,7 +184,7 @@ export function extractRow(
     segments.push({ text: '', style: null });
   }
 
-  return { key, segments, isWrapped: line.isWrapped, links: [] };
+  return { key, segments, isWrapped: line.isWrapped, links: [], fillsLastColumn: written === cols };
 }
 
 // Cursor cell rendering: a solid block (light bg, dark fg) at the cursor cell.
@@ -200,7 +205,8 @@ export function extractRowWithCursor(
   opts: ExtractRowOptions = {},
 ): TerminalRow {
   const keep = opts.keepTrailingWhitespace === true;
-  const limit = keep ? Math.max(writtenColumnCount(line, cols, nullCell), cursorX + 1) : cols;
+  const written = writtenColumnCount(line, cols, nullCell);
+  const limit = keep ? Math.max(written, cursorX + 1) : cols;
   const segments = walkCells(line, limit, nullCell, cursorX);
   // Trim trailing default-style blanks like extractRow, but protect the cursor
   // segment (and everything up to it): the cursor commonly sits on a blank cell
@@ -211,7 +217,7 @@ export function extractRowWithCursor(
   if (segments.length === 0) {
     segments.push({ text: '', style: null });
   }
-  return { key, segments, isWrapped: line.isWrapped, links: [] };
+  return { key, segments, isWrapped: line.isWrapped, links: [], fillsLastColumn: written === cols };
 }
 
 /**

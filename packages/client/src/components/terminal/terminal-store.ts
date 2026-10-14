@@ -14,7 +14,7 @@ import { subscribe as subscribeApp } from '../../lib/app-websocket.js';
 import { stripSystemMessages, stripScrollbackClear as applyScrollbackFilter } from '../../lib/terminal-utils.js';
 import { logger } from '../../lib/logger';
 import { extractRow, extractRowWithCursor, wrapContinuationOptions, type TerminalRow } from './buffer-to-rows';
-import { detectRowLinks } from './link-detection';
+import { detectRowLinks, mayContinuePreviousRow } from './link-detection';
 import { replayHistoryChunk, replayHistoryPair, replayHistoryJoint } from './history-replay';
 import { rowText } from './row-pipeline';
 
@@ -1582,7 +1582,7 @@ class TerminalController implements TerminalInstance {
         ? isCursorRow
           ? extractRowWithCursor(line, cols, nullCell, y, cursorX, wrapContinuationOptions(buffer, y))
           : extractRow(line, cols, nullCell, y, wrapContinuationOptions(buffer, y))
-        : { key: y, segments: [{ text: '', style: null }], isWrapped: false, links: [] };
+        : { key: y, segments: [{ text: '', style: null }], isWrapped: false, links: [], fillsLastColumn: false };
 
       rows.push(row);
       freshYs.add(y);
@@ -1592,17 +1592,26 @@ class TerminalController implements TerminalInstance {
     }
 
     // Detect links only for freshly-built rows, expanding left to the head of a
-    // soft-wrapped logical line so a URL that wraps across the cache boundary is
-    // joined. Cached rows keep the links computed when they were built (correct:
-    // a wrapped line's rows scroll into cache together, after the join existed).
+    // wrapped logical line (soft-wrapped, or hard-broken at the edge of the row)
+    // so a URL that wraps across the cache boundary is joined. Cached rows keep
+    // the links computed when they were built (correct: a wrapped line's rows
+    // scroll into cache together, after the join existed).
     if (minFreshY !== -1) {
-      let windowStart = minFreshY;
-      while (windowStart > 0 && rows[windowStart].isWrapped) windowStart--;
-      const window = rows.slice(windowStart).map((r) => ({
+      const toDetectRow = (r: TerminalRow) => ({
         key: r.key,
         text: rowText(r),
         isWrapped: r.isWrapped,
-      }));
+        fillsLastColumn: r.fillsLastColumn,
+      });
+      let windowStart = minFreshY;
+      while (
+        windowStart > 0 &&
+        (rows[windowStart].isWrapped ||
+          mayContinuePreviousRow(toDetectRow(rows[windowStart - 1]), toDetectRow(rows[windowStart])))
+      ) {
+        windowStart--;
+      }
+      const window = rows.slice(windowStart).map(toDetectRow);
       const linkMap = detectRowLinks(window);
       for (const y of freshYs) {
         rows[y].links = linkMap.get(rows[y].key) ?? [];

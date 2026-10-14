@@ -251,3 +251,48 @@ describe('trailing blanks at a soft-wrap point', () => {
     expect(joinSelectedRows(rows.map((r) => ({ text: text(r), isWrapped: r.isWrapped })))).toBe(WRAPPED);
   });
 });
+
+describe('fillsLastColumn', () => {
+  const COLS = 10;
+  let term: Terminal;
+
+  beforeEach(() => {
+    term = new Terminal({ cols: COLS, rows: 24, allowProposedApi: true });
+  });
+
+  afterEach(() => {
+    term.dispose();
+  });
+
+  async function extract(data: string, cursorX?: number) {
+    await write(term, data);
+    const buffer = term.buffer.active;
+    const line = buffer.getLine(0)!;
+    return cursorX === undefined
+      ? extractRow(line, COLS, buffer.getNullCell(), 0)
+      : extractRowWithCursor(line, COLS, buffer.getNullCell(), 0, cursorX);
+  }
+
+  it('is true when the last cell is written', async () => {
+    expect((await extract('abcdefghij')).fillsLastColumn).toBe(true);
+  });
+
+  it('is false when the row ends with a trailing blank', async () => {
+    expect((await extract('abcdefghi')).fillsLastColumn).toBe(false);
+  });
+
+  it('is true for a CJK-prefixed row whose text is shorter than cols in code units', async () => {
+    // 4 wide chars (8 cells) + 2 ASCII = 10 cells, 6 code units.
+    const row = await extract('あいうえoo');
+    expect(row.segments.map((s) => s.text).join('')).toHaveLength(6);
+    expect(row.fillsLastColumn).toBe(true);
+  });
+
+  it('extractRowWithCursor: a cursor on a blank last cell does not count as written', async () => {
+    expect((await extract('abcdefghi', COLS - 1)).fillsLastColumn).toBe(false);
+  });
+
+  it('extractRowWithCursor: a written last cell is true', async () => {
+    expect((await extract('abcdefghij', 0)).fillsLastColumn).toBe(true);
+  });
+});

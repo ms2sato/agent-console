@@ -35,6 +35,14 @@ describe('joinSelectedRows', () => {
     expect(joined).toBe('line one\nline two');
   });
 
+  it('keeps the newline in a hard-wrapped URL (only link detection joins it)', () => {
+    const joined = joinSelectedRows([
+      { text: 'https://example.com/' + 'a'.repeat(60), isWrapped: false },
+      { text: 'bcd/end', isWrapped: false },
+    ]);
+    expect(joined).toBe('https://example.com/' + 'a'.repeat(60) + '\nbcd/end');
+  });
+
   it('mixes wrapped and hard rows correctly', () => {
     // logical line 1 (wrapped across 2 rows), then a hard break, then logical line 2.
     const joined = joinSelectedRows([
