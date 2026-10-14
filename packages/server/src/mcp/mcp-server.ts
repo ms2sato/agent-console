@@ -126,6 +126,10 @@ interface SessionListItem {
   repositoryName?: string;
   parentSessionId?: string;
   parentWorkerId?: string;
+  /** Owner's user id. Omitted from the JSON when the session has no recorded owner. */
+  createdBy?: string;
+  /** Owner's resolved username; `null` when there is no owner or it cannot be resolved. */
+  createdByUsername: string | null;
   status: 'active' | 'inactive';
   workers: Array<{
     id: string;
@@ -731,7 +735,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   mcpServer.tool(
     'list_sessions',
-    'List all active sessions in AgentConsole. Returns session IDs, types, titles, and worker activity states.',
+    'List all active sessions in AgentConsole. Returns session IDs, types, titles, owner (createdBy user id and createdByUsername), and worker activity states.',
     {},
     async () => {
       try {
@@ -746,6 +750,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
             workers: mapWorkers(s),
             parentSessionId: s.parentSessionId,
             parentWorkerId: s.parentWorkerId,
+            createdBy: s.createdBy,
+            createdByUsername: s.createdByUsername ?? null,
           };
           if (s.type === 'worktree') {
             base.worktreeId = s.worktreeId;
