@@ -354,6 +354,10 @@ describe('scripts/install-hooks.mjs hard-failure polarity (Issue #1214)', () => 
         '  echo "/tmp/fake-common-dir"',
         '  exit 0',
         'fi',
+        'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--is-bare-repository" ]; then',
+        '  echo "false"',
+        '  exit 0',
+        'fi',
         'if [ "$1" = "rev-parse" ] && [ "$2" = "--git-path" ]; then',
         '  echo "simulated corrupted repo" 1>&2',
         '  exit 1',
@@ -371,6 +375,40 @@ describe('scripts/install-hooks.mjs hard-failure polarity (Issue #1214)', () => 
       });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('git rev-parse --git-path hooks');
+    } finally {
+      rmSync(stubBin, { recursive: true, force: true });
+    }
+  });
+
+  it('a `git rev-parse --is-bare-repository` failure after the repo resolved stays hard (exit 1), same asymmetry', () => {
+    // Same stub shape as above, but now the bare probe fails: the repository
+    // was found, so this is an abnormal state, not "no git repo", and must not
+    // be swallowed (it would otherwise pick a wrong install mode silently).
+    const stubBin = mkdtempSync(join(tmpdir(), 'install-hooks-stubgit-bare-'));
+    const gitStub = join(stubBin, 'git');
+    writeFileSync(
+      gitStub,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--git-common-dir" ]; then',
+        '  echo "/tmp/fake-common-dir"',
+        '  exit 0',
+        'fi',
+        'echo "simulated failure" 1>&2',
+        'exit 1',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(gitStub, 0o755);
+
+    try {
+      const result = spawnSync('bun', [INSTALL_SCRIPT], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${stubBin}:${process.env.PATH}` },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('git rev-parse --is-bare-repository');
+      expect(result.stderr).toContain('simulated failure');
     } finally {
       rmSync(stubBin, { recursive: true, force: true });
     }
@@ -413,6 +451,136 @@ describe('scripts/install-hooks.mjs invoked via package.json#postinstall in a gi
     expect(stat.isSymbolicLink()).toBe(true);
     expect(realpathSync(resolve(hooksDir, readlinkSync(target)))).toBe(
       realpathSync(resolve(sandbox, 'scripts/git-hooks/commit-msg')),
+    );
+  });
+});
+
+describe('scripts/install-hooks.mjs on a bare repository (Issue #2091)', () => {
+  // Fixture: a scratch non-bare repo that contains the hook source AND a copy of
+  // install-hooks.mjs (so `import.meta.dirname` is the checkout the script runs
+  // from, exactly as in a real worktree), a `git clone --bare` of it, and a
+  // detached linked worktree of the bare clone. Hermetic commit env, inline, for
+  // the same reason as the linked-worktree case above.
+  //
+  // Mutations measured when this block was written (each restored):
+  // - detecting bareness via the cwd instead of the common dir -> (a) fails
+  //   (exit 1, "source missing" with the bare dir's parent in the path) and (c)
+  //   fails;
+  // - allowing the symlink attempt on a bare repo -> (a)'s regular-file
+  //   assertion fails (the hook would be a symlink to the ephemeral worktree).
+  let root;
+  let source; // scratch non-bare repo
+  let bare; // git clone --bare of `source`
+  let wt; // detached linked worktree of `bare`
+
+  const hermeticGit = (args, cwd) => {
+    const noSignConfigPath = join(root, '.no-sign.gitconfig');
+    writeFileSync(noSignConfigPath, '[commit]\n\tgpgsign = false\n');
+    return spawnSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=test', ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: {
+        ...sanitizeInheritedGitEnv(process.env),
+        GIT_CONFIG_GLOBAL: noSignConfigPath,
+        GIT_CONFIG_NOSYSTEM: '1',
+      },
+    });
+  };
+
+  const bareFlag = (cwd) =>
+    spawnSync('git', ['rev-parse', '--is-bare-repository'], {
+      cwd,
+      encoding: 'utf8',
+      env: sanitizeInheritedGitEnv(process.env),
+    }).stdout.trim();
+
+  const runIn = (cwd) =>
+    spawnSync('bun', [join(cwd, 'scripts/install-hooks.mjs')], {
+      encoding: 'utf8',
+      cwd,
+      env: sanitizeInheritedGitEnv(process.env),
+    });
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'install-hooks-bare-'));
+    source = join(root, 'source');
+    mkdirSync(join(source, 'scripts/git-hooks'), { recursive: true });
+    copyFileSync(SOURCE_HOOK, join(source, 'scripts/git-hooks/commit-msg'));
+    chmodSync(join(source, 'scripts/git-hooks/commit-msg'), 0o755);
+    copyFileSync(INSTALL_SCRIPT, join(source, 'scripts/install-hooks.mjs'));
+    expect(hermeticGit(['init', '-q', '-b', 'main'], source).status).toBe(0);
+    expect(hermeticGit(['add', '.'], source).status).toBe(0);
+    expect(hermeticGit(['commit', '-q', '-m', 'init'], source).status).toBe(0);
+    bare = join(root, 'bare.git');
+    expect(hermeticGit(['clone', '-q', '--bare', source, bare], root).status).toBe(0);
+    wt = join(root, 'wt');
+    expect(hermeticGit(['worktree', 'add', '-q', '--detach', wt, 'HEAD'], bare).status).toBe(0);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('(a) installs by COPY into the bare repository\'s hooks dir: a regular file, equal content, mode 0755', () => {
+    const result = runIn(wt);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('hooks:install — copied');
+
+    const target = join(bare, 'hooks', 'commit-msg');
+    const stat = lstatSync(target);
+    expect(stat.isSymbolicLink()).toBe(false);
+    expect(stat.isFile()).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe(readFileSync(join(wt, 'scripts/git-hooks/commit-msg'), 'utf8'));
+    expect(stat.mode & 0o777).toBe(0o755);
+  });
+
+  it('(b) a re-run exits 0 and reports "already installed (copy)"', () => {
+    expect(runIn(wt).status).toBe(0);
+    const again = runIn(wt);
+    expect(again.status).toBe(0);
+    expect(again.stdout).toContain('already installed (copy)');
+  });
+
+  it('(c) detection-site pin: the cwd form says false inside the linked worktree, the common-dir form says true, and the hooks path is the bare dir\'s', () => {
+    // These two outputs are WHY the script must ask the common dir: a future
+    // "simplification" to the cwd form would read `false` here and mistake the
+    // worktree for a non-bare checkout.
+    expect(bareFlag(wt)).toBe('false');
+    expect(bareFlag(bare)).toBe('true');
+    const hooksPath = spawnSync('git', ['rev-parse', '--git-path', 'hooks'], {
+      cwd: wt,
+      encoding: 'utf8',
+      env: sanitizeInheritedGitEnv(process.env),
+    }).stdout.trim();
+    expect(realpathSync(resolve(wt, hooksPath))).toBe(realpathSync(join(bare, 'hooks')));
+  });
+
+  it('(d) the postinstall command string from package.json exits 0 in the linked worktree', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'));
+    const result = spawnSync('sh', ['-c', pkg.scripts.postinstall], {
+      encoding: 'utf8',
+      cwd: wt,
+      env: sanitizeInheritedGitEnv(process.env),
+    });
+    // The real postinstall is a chain; only its install-hooks step is under
+    // test here, and it must not be the part that fails.
+    expect(result.stderr).not.toContain('source missing');
+    expect(result.status).toBe(0);
+    expect(lstatSync(join(bare, 'hooks', 'commit-msg')).isFile()).toBe(true);
+  });
+
+  it('(e) non-bare control: a linked worktree of a NON-bare repo still gets a SYMLINK bound to the main worktree', () => {
+    const nonBareWt = join(root, 'nb-wt');
+    expect(hermeticGit(['worktree', 'add', '-q', '--detach', nonBareWt, 'HEAD'], source).status).toBe(0);
+    const result = runIn(nonBareWt);
+    expect(result.status).toBe(0);
+
+    const target = join(source, '.git', 'hooks', 'commit-msg');
+    expect(lstatSync(target).isSymbolicLink()).toBe(true);
+    const link = readlinkSync(target);
+    expect(link).not.toContain(nonBareWt);
+    expect(realpathSync(resolve(dirname(target), link))).toBe(
+      realpathSync(join(source, 'scripts/git-hooks/commit-msg')),
     );
   });
 });
