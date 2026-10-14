@@ -147,6 +147,28 @@ describe('MemoPanel', () => {
     expect(screen.getByText('Hello Memo').tagName).toBe('H1');
   });
 
+  describe('memo code blocks (Copy control)', () => {
+    async function renderMemo(content: string) {
+      mockFetch.mockResolvedValue(jsonResponse({ content }));
+      await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+      await waitFor(() => expect(document.querySelector('.memo-content')).toBeTruthy());
+    }
+
+    it('renders exactly one Copy button for a memo with one fenced block', async () => {
+      await renderMemo('Run this:\n\n```bash\nbun run test\n```\n');
+
+      expect(await screen.findAllByRole('button', { name: 'Copy code' })).toHaveLength(1);
+      expect(document.querySelectorAll('[data-testid="markdown-code-block"]')).toHaveLength(1);
+    });
+
+    it('renders zero Copy buttons for a memo with no fenced block, including one that only has inline code', async () => {
+      await renderMemo('Just prose with `inline code` and **bold**.');
+
+      await waitFor(() => expect(screen.getByText('inline code')).toBeTruthy());
+      expect(screen.queryByRole('button', { name: 'Copy code' })).toBeNull();
+    });
+  });
+
   describe('memo links (agent-authored, untrusted)', () => {
     async function renderMemo(content: string) {
       mockFetch.mockResolvedValue(jsonResponse({ content }));
