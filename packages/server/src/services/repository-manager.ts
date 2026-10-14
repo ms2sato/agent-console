@@ -5,7 +5,7 @@ import type { Kysely } from 'kysely';
 import type { CleanupRepositoryPayload, Repository } from '@agent-console/shared';
 import { getConfigDir, getRepositoryDir, getSourceReposDir } from '../lib/config.js';
 import { isUnderSourceReposDir } from '../lib/repository-remote.js';
-import { deriveRepositorySlug } from '../lib/git.js';
+import { deriveRepositorySlug, ensureOriginFetchRefspec, resolveGitDir } from '../lib/git.js';
 import { canonicalPath } from '../lib/canonical-path.js';
 import { createLogger } from '../lib/logger.js';
 import { RepositoryNotFoundError } from '../lib/errors.js';
@@ -28,7 +28,7 @@ const logger = createLogger('service:repository-manager');
 const DEFAULT_SHARED_GROUP = 'agent-console-users';
 
 /**
- * Timeout for the multi-user `.git/` config apply. The chain is local-only
+ * Timeout for the multi-user git-directory config apply. The chain is local-only
  * (no network, no remote fetch); 30s is generous even for a very large
  * `.git/` tree.
  */
@@ -64,13 +64,14 @@ function getSharedGroupName(): string {
  */
 export function buildManualFallbackCommands(
   repoPath: string,
+  gitDir: string,
   sharedGroup: string,
 ): string[] {
   return [
     `sudo -u agentconsole bash -lc 'cd ${repoPath} && git config core.sharedRepository group'`,
-    `sudo find ${repoPath}/.git -type d -exec chmod g+rwxs {} +`,
-    `sudo chmod -R g+rw ${repoPath}/.git`,
-    `sudo chgrp -R ${sharedGroup} ${repoPath}/.git`,
+    `sudo find ${gitDir} -type d -exec chmod g+rwxs {} +`,
+    `sudo chmod -R g+rw ${gitDir}`,
+    `sudo chgrp -R ${sharedGroup} ${gitDir}`,
   ];
 }
 
@@ -347,11 +348,11 @@ export class RepositoryManager {
       throw new Error(`Path does not exist: ${absolutePath}`);
     }
 
-    // Check if it's a git repository
-    const gitDir = path.join(absolutePath, '.git');
-    try {
-      await access(gitDir);
-    } catch {
+    // Check if it's a git repository. `resolveGitDir` is the single writer of
+    // "where is the git directory": `<path>/.git` for a non-bare repository,
+    // the path itself for a bare one (which has no `.git` entry).
+    const resolved = await resolveGitDir(absolutePath);
+    if (resolved === null) {
       throw new Error(`Not a git repository: ${absolutePath}`);
     }
 
@@ -366,12 +367,12 @@ export class RepositoryManager {
       }
     }
 
-    // In multi-user mode, ensure the source repo's `.git/` is configured so
+    // In multi-user mode, ensure the source repo's git directory is configured so
     // the requesting user (running `git worktree add` via `runAsUser`) can
     // write refs / lock files. Idempotent; failure logs a warning but does
     // not block registration (the operator can still apply the documented
     // manual fallback).
-    await this.applyMultiUserSharedRepoConfig(absolutePath);
+    await this.applyMultiUserSharedRepoConfig(absolutePath, resolved.gitDir);
 
     // In multi-user mode, also bootstrap `safe.directory` into the SERVER's
     // own gitconfig so subsequent server-initiated git operations
@@ -381,6 +382,19 @@ export class RepositoryManager {
     // `username: null` (run as the server itself, writing the server's
     // gitconfig).
     await this.bootstrapSafeDirectoryForServer(absolutePath);
+
+    // A bare clone has no `remote.origin.fetch` (and no tracking refs), which
+    // the ref-only helpers (`listRemoteBranches`, `refreshDefaultBranch`,
+    // `getCommitsBehind` ...) need. Best effort: a failure must not block
+    // registration, the helpers degrade the way they did before this step.
+    if (resolved.bare) {
+      try {
+        const outcome = await ensureOriginFetchRefspec(absolutePath);
+        logger.info({ path: absolutePath, outcome }, 'Bare source repository: origin fetch refspec ensured');
+      } catch (err) {
+        logger.warn({ err, path: absolutePath }, 'Failed to ensure the origin fetch refspec on a bare source repository; continuing with registration');
+      }
+    }
 
     const id = crypto.randomUUID();
     const name = path.basename(absolutePath);
@@ -645,7 +659,8 @@ export class RepositoryManager {
   }
 
   /**
-   * In `AUTH_MODE=multi-user`, configure the source repo's `.git/` so members
+   * In `AUTH_MODE=multi-user`, configure the source repo's git directory (its
+   * `.git/`, or the repository root itself when bare) so members
    * of the shared group (`agent-console-users`) can write refs and lock files
    * when `git worktree add` runs as the requesting user via `runAsUser`.
    * The configuration is the same one previously documented as a manual
@@ -653,11 +668,11 @@ export class RepositoryManager {
    * Group-Writability":
    *
    *   git -C <repo> config core.sharedRepository group
-   *   find <repo>/.git -type d -exec chmod g+rwxs {} +
-   *   chmod -R g+rw <repo>/.git
-   *   chgrp -R <shared-group> <repo>/.git
+   *   find <git-dir> -type d -exec chmod g+rwxs {} +
+   *   chmod -R g+rw <git-dir>
+   *   chgrp -R <shared-group> <git-dir>
    *
-   * Idempotent: skips when `.git/` already has the shared group + group-write
+   * Idempotent: skips when the git directory already has the shared group + group-write
    * + setgid AND `git config --local --get core.sharedRepository` returns
    * `group`. Failure to apply (typically because the server does not own the
    * repo and is not in its group) logs a warning with the manual fallback
@@ -665,15 +680,14 @@ export class RepositoryManager {
    * — the worktree-creation step will surface a clearer error later if the
    * warning was actionable. In `AUTH_MODE=none` (or unset), no-op.
    */
-  private async applyMultiUserSharedRepoConfig(absolutePath: string): Promise<void> {
+  private async applyMultiUserSharedRepoConfig(absolutePath: string, gitDir: string): Promise<void> {
     if (!isMultiUserAuthMode()) {
       return;
     }
 
-    const gitDir = path.join(absolutePath, '.git');
     const sharedGroup = getSharedGroupName();
 
-    // Cheap idempotent-skip probe: when `.git/` already has the shared
+    // Cheap idempotent-skip probe: when the git directory already has the shared
     // group's gid + the group-write + setgid mode bits, AND
     // `core.sharedRepository` is 'group', skip the apply chain. Both halves
     // of the probe are needed -- mode / group can drift independently of
@@ -747,7 +761,7 @@ export class RepositoryManager {
           err,
           repoPath: absolutePath,
           sharedGroup,
-          manualFallback: buildManualFallbackCommands(absolutePath, sharedGroup),
+          manualFallback: buildManualFallbackCommands(absolutePath, gitDir, sharedGroup),
         },
         'Multi-user shared-repo config spawn failed; continuing with registration. ' +
           'Apply the manualFallback commands as an operator if worktree creation later fails.',
@@ -763,7 +777,7 @@ export class RepositoryManager {
           exitCode: result.exitCode,
           timedOut: result.timedOut,
           stderr: result.stderr.trim(),
-          manualFallback: buildManualFallbackCommands(absolutePath, sharedGroup),
+          manualFallback: buildManualFallbackCommands(absolutePath, gitDir, sharedGroup),
         },
         'Multi-user shared-repo config returned non-zero; continuing with registration. ' +
           'Apply the manualFallback commands as an operator if worktree creation later fails.',

@@ -4,7 +4,7 @@ import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
 import type { CleanupRepositoryPayload } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
-import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { JobQueue } from '../../jobs/index.js';
 import { rootLogger } from '../../lib/logger.js';
@@ -179,6 +179,87 @@ describe('RepositoryManager', () => {
       await expect(
         manager.registerRepository('/non-git-dir')
       ).rejects.toThrow('Not a git repository');
+    });
+
+    describe('bare source repository', () => {
+      const BARE_DIR = '/test/bare-source.git';
+      let originalAuthMode: string | undefined;
+
+      beforeEach(() => {
+        originalAuthMode = process.env.AUTH_MODE;
+        // A bare repository has no `.git` entry; the path itself is the git dir.
+        fs.mkdirSync(BARE_DIR, { recursive: true });
+        mockGit.resolveGitDir.mockImplementation(async (repoPath: string) =>
+          repoPath === BARE_DIR ? { gitDir: BARE_DIR, bare: true } : null,
+        );
+      });
+
+      afterEach(() => {
+        // Restore the default `resolveGitDir` / `ensureOriginFetchRefspec` mocks:
+        // the overrides above would otherwise leak into every later test.
+        resetGitMocks();
+        if (originalAuthMode === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it('registers a bare path (no `.git` entry) and ensures its origin fetch refspec exactly once', async () => {
+        delete process.env.AUTH_MODE;
+        const manager = await getRepositoryManager();
+
+        const repo = await manager.registerRepository(BARE_DIR);
+
+        expect(repo.path).toBe(BARE_DIR);
+        expect(mockGit.ensureOriginFetchRefspec).toHaveBeenCalledTimes(1);
+        expect(mockGit.ensureOriginFetchRefspec).toHaveBeenCalledWith(BARE_DIR);
+      });
+
+      it('does not touch the refspec of a NON-bare repository', async () => {
+        resetGitMocks(); // back to the default: `<path>/.git` exists -> non-bare
+        const manager = await getRepositoryManager();
+        await manager.registerRepository(TEST_REPO_DIR);
+        expect(mockGit.ensureOriginFetchRefspec).not.toHaveBeenCalled();
+      });
+
+      it('a failure of the refspec step does not block registration', async () => {
+        delete process.env.AUTH_MODE;
+        mockGit.ensureOriginFetchRefspec.mockImplementation(() => Promise.reject(new Error('config write denied')));
+        const manager = await getRepositoryManager();
+
+        const repo = await manager.registerRepository(BARE_DIR);
+
+        expect(repo.path).toBe(BARE_DIR);
+        expect((await repositoryRepository.findAll()).map((r) => r.path)).toContain(BARE_DIR);
+      });
+
+      it('a non-git directory still fails with the unchanged message', async () => {
+        const manager = await getRepositoryManager();
+        fs.mkdirSync('/not-a-repo', { recursive: true });
+        await expect(manager.registerRepository('/not-a-repo')).rejects.toThrow('Not a git repository: /not-a-repo');
+      });
+
+      it('multi-user shared config targets the bare directory itself, not <path>/.git', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const manager = await getRepositoryManager();
+
+        await manager.registerRepository(BARE_DIR);
+
+        const apply = runAsUserMock.calls.find((c) => c.command.includes('chgrp -R '));
+        expect(apply).toBeDefined();
+        expect(apply!.command).toContain(`git -C '${BARE_DIR}' config core.sharedRepository group`);
+        expect(apply!.command).toContain(`find '${BARE_DIR}' -type d -exec chmod g+rwxs {} +`);
+        expect(apply!.command).toContain(`chmod -R g+rw '${BARE_DIR}'`);
+        expect(apply!.command).toContain(`chgrp -R 'agent-console-users' '${BARE_DIR}'`);
+        expect(apply!.command).not.toContain(`${BARE_DIR}/.git`);
+      });
+
+      it('the manual fallback commands target the given git directory', () => {
+        const fallback = buildManualFallbackCommands(BARE_DIR, BARE_DIR, 'agent-console-users');
+        expect(fallback).toContain(`sudo chgrp -R agent-console-users ${BARE_DIR}`);
+        expect(fallback.some((c) => c.includes(`${BARE_DIR}/.git`))).toBe(false);
+      });
     });
 
     it('should throw error for duplicate registration', async () => {
@@ -458,7 +539,7 @@ describe('RepositoryManager', () => {
         // present in the docs section is in the output. This pins the
         // contract the production WARN log delivers without depending on
         // pino-internal log-capture plumbing.
-        const fallback = buildManualFallbackCommands(TEST_REPO_DIR, 'agent-console-users');
+        const fallback = buildManualFallbackCommands(TEST_REPO_DIR, `${TEST_REPO_DIR}/.git`, 'agent-console-users');
         expect(fallback.length).toBe(4);
         expect(fallback.some((c) => c.includes('git config core.sharedRepository group'))).toBe(true);
         expect(fallback.some((c) => c.includes('chmod g+rwxs'))).toBe(true);
@@ -491,7 +572,7 @@ describe('RepositoryManager', () => {
           );
 
           // The fallback helper also threads the override through.
-          const fallback = buildManualFallbackCommands(TEST_REPO_DIR, 'custom-shared-group');
+          const fallback = buildManualFallbackCommands(TEST_REPO_DIR, `${TEST_REPO_DIR}/.git`, 'custom-shared-group');
           expect(fallback.some((c) => c.includes('chgrp -R custom-shared-group'))).toBe(true);
         } finally {
           if (originalGroup === undefined) {

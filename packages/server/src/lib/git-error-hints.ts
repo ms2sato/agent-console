@@ -14,12 +14,12 @@ const WORKTREE_ADD_PERMISSION_PATTERN = /cannot lock ref[\s\S]*Permission denied
  */
 export function augmentWorktreeAddPermissionError(
   message: string,
-  opts: { multiUser: boolean; repoPath: string },
+  opts: { multiUser: boolean; repoPath: string; gitDir: string },
 ): string {
   if (!opts.multiUser || !WORKTREE_ADD_PERMISSION_PATTERN.test(message)) {
     return message;
   }
-  const gitDir = shellEscape(`${opts.repoPath}/.git`);
+  const gitDir = shellEscape(opts.gitDir);
   const repo = shellEscape(opts.repoPath);
   const hint = [
     WORKTREE_ADD_PERMISSION_HINT_HEADER,
@@ -28,7 +28,7 @@ export function augmentWorktreeAddPermissionError(
     '     Fix (as root): scripts/add-multiuser-user.sh <username>',
     '     Then log in again: group membership is resolved at login, so retrying from the same open session still fails.',
     '',
-    `2. The repository's .git directory lacks group-write and setgid bits.`,
+    `2. The repository's git directory lacks group-write and setgid bits.`,
     `     Verify: ls -ld ${gitDir}   (expect: drwxrws---, group 'agent-console-users')`,
     `     Fix (as root): chmod -R g+rwX,g+s ${gitDir}`,
     '',
