@@ -175,7 +175,7 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
     const onOpenChange = mock(() => {});
     await renderWithRouterAndContext({ onOpenChange });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
 
     // Assert synchronously (before resolving/flushing the mocked fetch promise).
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -192,7 +192,7 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
     const sessionStopTasks = createMockSessionStopTasks();
     await renderWithRouterAndContext({ sessionId: 'paused-1', sessionTitle: 'Paused Title' }, sessionStopTasks);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
 
     expect(sessionStopTasks.addTask).toHaveBeenCalledWith({
       sessionId: 'paused-1',
@@ -228,7 +228,7 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
       </RealSessionStopTasksProvider>
     );
 
-    const button = screen.getByRole('button', { name: 'Stop Session' });
+    const button = screen.getByRole('button', { name: 'End Session' });
     fireEvent.click(button);
     fireEvent.click(button);
 
@@ -242,7 +242,7 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
     const sessionStopTasks = createMockSessionStopTasks();
     await renderWithRouterAndContext({}, sessionStopTasks);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
 
     rejectDeleteSession?.(new Error('Network error'));
 
@@ -265,7 +265,7 @@ describe('EndSessionDialog navigation timing', () => {
   it('does not navigate before the request resolves, navigates to / once after', async () => {
     const { router } = await renderAt();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
 
     // Request is in flight: still on the session page.
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -280,7 +280,7 @@ describe('EndSessionDialog navigation timing', () => {
     const sessionStopTasks = createMockSessionStopTasks();
     const { router } = await renderAt(sessionStopTasks);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
     rejectDeleteSession?.(new Error('Server error'));
 
     await waitFor(() => {
@@ -299,7 +299,7 @@ describe('EndSessionDialog / End Session for paused and primary-worktree session
       </SessionStopTasksContext.Provider>
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
 
     expect(mockFetch).not.toHaveBeenCalled();
   });

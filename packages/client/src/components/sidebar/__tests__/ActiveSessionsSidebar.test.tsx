@@ -1142,7 +1142,7 @@ describe('ActiveSessionsSidebar', () => {
       });
 
       expect(onResumeSession).not.toHaveBeenCalled();
-      const confirm = await screen.findByRole('button', { name: 'Stop Session' });
+      const confirm = await screen.findByRole('button', { name: 'End Session' });
       await act(async () => {
         fireEvent.click(confirm);
       });

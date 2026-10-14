@@ -295,7 +295,7 @@ describe('SessionSettings', () => {
       });
       const confirm = screen
         .getAllByRole('button')
-        .find((btn) => btn.textContent === 'Stop Session' && btn.className.includes('btn-danger'));
+        .find((btn) => btn.textContent === 'End Session' && btn.className.includes('btn-danger'));
       expect(confirm).toBeTruthy();
       await act(async () => {
         fireEvent.click(confirm!);

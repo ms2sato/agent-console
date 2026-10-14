@@ -901,7 +901,7 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
     (t) => t.worktreePath === worktree.path && t.status === 'deleting'
   );
   const { getTask: getStopTask, removeTask: removeStopTask } = useSessionStopTasksContext();
-  const stopTask = session ? getStopTask(session.id) : undefined;
+  const stopTask = endableSession ? getStopTask(endableSession.id) : undefined;
 
   const restoreSessionMutation = useMutation({
     mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),

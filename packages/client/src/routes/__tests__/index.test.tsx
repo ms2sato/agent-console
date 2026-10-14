@@ -1322,7 +1322,7 @@ describe('WorktreeRow / End Session button', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'End' }));
     });
-    const confirm = await screen.findByRole('button', { name: 'Stop Session' });
+    const confirm = await screen.findByRole('button', { name: 'End Session' });
     await act(async () => {
       fireEvent.click(confirm);
     });
@@ -1338,12 +1338,41 @@ describe('WorktreeRow / End Session button', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'End' }));
     });
-    const confirm = await screen.findByRole('button', { name: 'Stop Session' });
+    const confirm = await screen.findByRole('button', { name: 'End Session' });
     await act(async () => {
       fireEvent.click(confirm);
     });
 
     expect(stopTasks.addTask).toHaveBeenCalledWith({ sessionId: 'paused-1', action: 'stop', sessionTitle: 'Paused Session' });
+  });
+
+  it('paused row: a stop task in flight for the paused session shows the Stopping indicator', async () => {
+    const stopTasks = createMockSessionStopTasks({
+      tasks: [{ sessionId: 'paused-1', action: 'stop', status: 'pending', error: null }],
+      getTask: mock((sessionId: string) =>
+        sessionId === 'paused-1' ? { sessionId, action: 'stop' as const, status: 'pending' as const, error: null } : undefined,
+      ),
+    });
+    await renderRow({ pausedSession: worktreeSession({ id: 'paused-1', title: 'Paused Session' }) }, stopTasks);
+
+    expect(screen.getByText('Stopping...')).toBeTruthy();
+  });
+
+  it('paused row: a failed End shows the error with a Dismiss control that clears it', async () => {
+    const removeTask = mock(() => {});
+    const failed = { sessionId: 'paused-1', action: 'stop' as const, status: 'failed' as const, error: 'delete failed' };
+    const stopTasks = createMockSessionStopTasks({
+      tasks: [failed],
+      getTask: mock((sessionId: string) => (sessionId === 'paused-1' ? failed : undefined)),
+      removeTask,
+    });
+    await renderRow({ pausedSession: worktreeSession({ id: 'paused-1', title: 'Paused Session' }) }, stopTasks);
+
+    expect(screen.getByText('delete failed')).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    });
+    expect(removeTask).toHaveBeenCalledWith('paused-1');
   });
 
   it('primary-worktree row (isMain) with a session: End is shown while Delete stays hidden', async () => {
