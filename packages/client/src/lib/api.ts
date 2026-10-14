@@ -378,8 +378,7 @@ export async function resumeSession(sessionId: string): Promise<Session> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to resume session');
   }
-  const data = await res.json() as { session: Session };
-  return data.session;
+  return v.parse(SessionResponseSchema, await res.json()).session;
 }
 
 
@@ -469,7 +468,7 @@ export async function registerRepository(request: CreateRepositoryRequest): Prom
   if (!res.ok) {
     await handleApiError(res, 'Failed to register repository');
   }
-  return res.json() as Promise<CreateRepositoryResponse>;
+  return v.parse(RepositoryResponseSchema, await res.json());
 }
 
 /**
@@ -548,7 +547,7 @@ export async function updateRepository(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update repository');
   }
-  return res.json() as Promise<UpdateRepositoryResponse>;
+  return v.parse(RepositoryResponseSchema, await res.json());
 }
 
 /**
@@ -714,7 +713,7 @@ export async function registerAgent(request: CreateAgentRequest): Promise<AgentR
   if (!res.ok) {
     await handleApiError(res, 'Failed to register agent');
   }
-  return res.json() as Promise<AgentResponse>;
+  return v.parse(AgentResponseSchema, await res.json());
 }
 
 export async function updateAgent(
@@ -728,7 +727,7 @@ export async function updateAgent(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update agent');
   }
-  return res.json() as Promise<AgentResponse>;
+  return v.parse(AgentResponseSchema, await res.json());
 }
 
 export async function unregisterAgent(agentId: string): Promise<void> {

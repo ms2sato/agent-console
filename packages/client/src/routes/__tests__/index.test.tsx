@@ -162,7 +162,19 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
   if (method === 'POST' && /\/api\/sessions\/[^/]+\/resume$/.test(url)) {
     const sessionId = url.match(/\/api\/sessions\/([^/]+)\/resume$/)?.[1] ?? '';
     resumeSessionCalls.push(sessionId);
-    return new Response(JSON.stringify({ session: { id: sessionId } }), {
+    return new Response(JSON.stringify({
+      session: {
+        id: sessionId,
+        type: 'quick',
+        locationPath: `/tmp/${sessionId}`,
+        status: 'active',
+        activationState: 'running',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        isShared: false,
+        recoveryState: 'healthy',
+      },
+    }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
