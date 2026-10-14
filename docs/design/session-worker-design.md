@@ -68,70 +68,24 @@ type AgentActivityState =
 type SessionStatus = 'active' | 'inactive';
 ```
 
-### Session Types (packages/shared)
+### Session, Worker and Repository Types (packages/shared)
 
-```typescript
-// ========== Session ==========
+These types are derived from the wire schemas in `packages/shared/src/schemas/app-server-message.ts` with `v.InferOutput`; the schema is the single writer. A field is added, changed or removed in the schema entry only (the field's doc comment sits there too), and there is no hand-written interface to keep in step. Because the schemas are `v.strictObject`, the derived type and what the server may send are the same set by construction.
 
-interface SessionBase {
-  id: string;
-  locationPath: string;      // Working directory (always required)
-  status: SessionStatus;
-  createdAt: string;
-  workers: Worker[];         // ordered by creation request; initial worker first
-}
+| Type | Shape |
+|------|-------|
+| `Session` | `WorktreeSession \| QuickSession`, discriminated on `type`; both extend `SessionBase` (`id`, `locationPath`, `status`, `activationState`, `createdAt`, `workers`, plus optional title / prompt / parent / owner fields) |
+| `WorktreeSession` | `SessionBase` + `repositoryId`, `repositoryName`, `worktreeId`, `isMainWorktree` |
+| `QuickSession` | `SessionBase` only (no repository or worktree fields) |
+| `Worker` | `AgentWorker \| TerminalWorker \| GitDiffWorker \| EmbeddedAgentWorker`, discriminated on `type`; each extends `WorkerBase` (`id`, `name`, `createdAt`) |
+| `AgentWorker` | `agentId` (references `AgentDefinition.id`), `activated` |
+| `TerminalWorker` | `activated` |
+| `GitDiffWorker` | `baseCommit` (comparison base commit hash, calculated at creation) |
+| `EmbeddedAgentWorker` | `embeddedAgentId`, `activated`, and the compaction / model parameter fields documented on the schema |
+| `WorkerActivityInfo` | `sessionId`, `workerId`, `activityState` |
+| `Repository` | repository record as broadcast, including `orchestratorSessionIds` and `clonedSourceRepoPath` |
 
-interface WorktreeSession extends SessionBase {
-  type: 'worktree';
-  repositoryId: string;
-  worktreeId: string;        // Worktree identifier (e.g., path or branch)
-}
-
-interface QuickSession extends SessionBase {
-  type: 'quick';
-  // No repositoryId or worktreeId
-}
-
-type Session = WorktreeSession | QuickSession;
-```
-
-### Worker Types (packages/shared)
-
-```typescript
-// ========== Worker ==========
-
-interface WorkerBase {
-  id: string;
-  name: string;
-  createdAt: string;
-}
-
-interface AgentWorker extends WorkerBase {
-  type: 'agent';
-  agentId: string;  // References AgentDefinition.id (e.g., 'claude-code-builtin')
-}
-
-interface TerminalWorker extends WorkerBase {
-  type: 'terminal';
-}
-
-interface GitDiffWorker extends WorkerBase {
-  type: 'git-diff';
-  baseCommit: string;  // Comparison base commit hash (calculated at creation)
-}
-
-// Future worker types
-interface MarkdownWorker extends WorkerBase {
-  type: 'markdown';
-  filePath: string;  // File to preview
-}
-
-// Current implementation
-type Worker = AgentWorker | TerminalWorker | GitDiffWorker;
-
-// Future (extensible)
-// type Worker = AgentWorker | TerminalWorker | GitDiffWorker | MarkdownWorker | ...;
-```
+`PausedSession`, `RunningSession`, `CreateSessionResponse` and `CreateWorkerResponse` are small compositions of these and live in the same schema file. A future worker kind (for example a Markdown preview worker carrying a `filePath`) is added as a new variant schema in the `WorkerSchema` union.
 
 Note: `agentId` references an `AgentDefinition` which contains the command to run (e.g., `claude`), activity detection patterns, and continue args (e.g., `['-c']`).
 
@@ -508,7 +462,7 @@ The pre-worker JSON session format and its in-code migration (`OldPersistedSessi
 `GitDiffWorker` was originally sketched here as a hypothetical future worker type; it has since been implemented and is now part of the current `Worker` union (see the table above). The snippet below shows the actual shape, which followed the same extension steps listed above:
 
 ```typescript
-// Type (packages/shared/src/types/worker.ts)
+// Type (derived from GitDiffWorkerSchema, packages/shared/src/schemas/app-server-message.ts)
 interface GitDiffWorker extends WorkerBase {
   type: 'git-diff';
   baseCommit: string;  // Comparison base commit hash (calculated at creation)
