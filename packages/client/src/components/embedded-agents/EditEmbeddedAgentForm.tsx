@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { UpdateEmbeddedAgentRequest } from '@agent-console/shared';
+import type { UpdateEmbeddedAgentRequest, EmbeddedAgentWindowObservations } from '@agent-console/shared';
 import { updateEmbeddedAgent } from '../../lib/api';
 import { embeddedAgentKeys } from '../../lib/query-keys';
 import {
@@ -15,6 +15,8 @@ import {
 export interface EditEmbeddedAgentFormProps {
   embeddedAgentId: string;
   initialData: EmbeddedAgentFormData;
+  /** What running workers observed about the declared context window; shown as a hint under that field. */
+  windowObservations?: EmbeddedAgentWindowObservations;
   onSuccess: () => void;
   onCancel: () => void;
 }
@@ -29,6 +31,7 @@ export interface EditEmbeddedAgentFormProps {
 export function EditEmbeddedAgentForm({
   embeddedAgentId,
   initialData,
+  windowObservations,
   onSuccess,
   onCancel,
 }: EditEmbeddedAgentFormProps) {
@@ -92,6 +95,7 @@ export function EditEmbeddedAgentForm({
       onSubmit={handleSubmit}
       onCancel={onCancel}
       isPending={updateMutation.isPending}
+      windowObservations={windowObservations}
       error={error}
     />
   );

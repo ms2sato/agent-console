@@ -96,6 +96,33 @@ const initialData: EmbeddedAgentFormData = {
   instructions: [],
 };
 
+describe('EditEmbeddedAgentForm / window observations hint', () => {
+  it('shows what running workers observed under the context window field', () => {
+    renderEditEmbeddedAgentForm({
+      embeddedAgentId: 'embedded-1',
+      initialData: { ...initialData, contextWindowTokensInput: '32000' },
+      windowObservations: { providerStated: { tokens: 8000, observedAt: '2026-10-14T00:00:00.000Z' } },
+      onSuccess: () => {},
+      onCancel: () => {},
+    });
+
+    expect(
+      screen.getByText("A worker on this definition observed the provider's limit as 8,000 on 2026-10-14."),
+    ).toBeTruthy();
+  });
+
+  it('shows no hint when nothing was observed', () => {
+    renderEditEmbeddedAgentForm({
+      embeddedAgentId: 'embedded-1',
+      initialData,
+      onSuccess: () => {},
+      onCancel: () => {},
+    });
+
+    expect(screen.queryByTestId('window-observations-notice')).toBeNull();
+  });
+});
+
 describe('EditEmbeddedAgentForm', () => {
   it('PATCHes the entered data to /api/embedded-agents/:id and calls onSuccess', async () => {
     const user = userEvent.setup();

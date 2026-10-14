@@ -130,6 +130,10 @@ A work session tied to a directory location, containing one or more workers.
 - **Aliases:** Work session
 - **See:** [Core concepts in session-worker-design.md](design/session-worker-design.md#key-concepts)
 
+### windowObservations (embedded-agent)
+**Implemented (Issue [#2078](https://github.com/ms2sato/agent-console/issues/2078)).** An optional field on the served `EmbeddedAgentDefinition` carrying what running workers have observed about the definition's declared `contextWindowTokens`: `{ providerStated?: { tokens, observedAt }, apparentClamp?: { observedAt } }`. The two kinds are never merged into one "real window" (a provider-stated limit is the provider's number, an apparent clamp is the console's inference and carries no number); each keeps only its latest reading. It is composed at the serving edge from a server-side, in-memory register keyed by definition id (single writer: `WindowObservationRegister`, fed by `EmbeddedAgentWorkerService` only for workers whose effective window is the definition's own declaration, i.e. without a model override), never persisted, cleared when the definition's `contextWindowTokens` is PATCHed, and carries no worker or session identifiers on the wire. Changes ride the existing `embedded-agent-updated` broadcast; the edit form shows it as a hint under the field and the definitions list as a badge, as a fact for any viewer (action stays creator-gated).
+- **See:** [Window-declaration drift on the definition in embedded-agent-worker.md](design/embedded-agent-worker.md#window-declaration-drift-on-the-definition-issue-1508)
+
 ### Worker
 A work unit within a session (agent, terminal, diff viewer, etc.).
 - **See:** [Core concepts in session-worker-design.md](design/session-worker-design.md#key-concepts)

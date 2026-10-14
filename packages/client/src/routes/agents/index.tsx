@@ -16,6 +16,8 @@ import {
   EditEmbeddedAgentForm,
   EmbeddedAgentDeleteDialog,
   canManageEmbeddedAgent,
+  WindowObservationsNotice,
+  describeWindowObservations,
   findReferencingWorkers,
   formatCompactionThresholdInput,
   type EmbeddedAgentWorkerReference,
@@ -337,6 +339,7 @@ function EmbeddedAgentsSection() {
               <EditEmbeddedAgentForm
                 key={embeddedAgent.id}
                 embeddedAgentId={embeddedAgent.id}
+                windowObservations={embeddedAgent.windowObservations}
                 initialData={{
                   name: embeddedAgent.name,
                   description: embeddedAgent.description ?? '',
@@ -431,6 +434,15 @@ function EmbeddedAgentCard({ embeddedAgent, canManage, onEdit, onDelete, isDelet
                 built-in
               </span>
             )}
+            {embeddedAgent.windowObservations && (
+              <span
+                data-testid="window-drift-badge"
+                title={describeWindowObservations(embeddedAgent.windowObservations).join(' ')}
+                className="text-xs px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded"
+              >
+                window drift
+              </span>
+            )}
           </div>
 
           <div className="text-sm text-gray-400 font-mono mb-2">
@@ -441,6 +453,13 @@ function EmbeddedAgentCard({ embeddedAgent, canManage, onEdit, onDelete, isDelet
           {embeddedAgent.description && (
             <p className="text-sm text-gray-500 mb-2">{embeddedAgent.description}</p>
           )}
+
+          {/* A fact, not a control: the viewer who cannot edit sees it too. */}
+          <WindowObservationsNotice
+            observations={embeddedAgent.windowObservations}
+            readOnlyNote={canManage ? undefined : "Only this definition's creator can change its declared window."}
+            className="text-xs text-amber-400 mb-2"
+          />
         </div>
 
         <div className="flex gap-2 shrink-0">

@@ -6,9 +6,11 @@ import {
   EMBEDDED_AGENT_TOOL_NAMES,
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
   type EmbeddedAgentToolName,
+  type EmbeddedAgentWindowObservations,
 } from '@agent-console/shared';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
+import { WindowObservationsNotice } from './WindowObservationsNotice';
 import { isPositiveInteger, POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-integer';
 import { ContextWindowTokensSchema } from '../../schemas/worktree-form';
 
@@ -192,6 +194,8 @@ export interface EmbeddedAgentFormProps {
   onCancel: () => void;
   isPending: boolean;
   error?: string | null;
+  /** Edit mode: what running workers observed about the declared context window (a fact shown under the field). */
+  windowObservations?: EmbeddedAgentWindowObservations;
 }
 
 export function EmbeddedAgentForm({
@@ -201,6 +205,7 @@ export function EmbeddedAgentForm({
   onCancel,
   isPending,
   error,
+  windowObservations,
 }: EmbeddedAgentFormProps) {
   const {
     register,
@@ -331,6 +336,7 @@ export function EmbeddedAgentForm({
               the compaction threshold; leave empty to show raw token counts with no gauge and
               disable automatic compaction.
             </p>
+            <WindowObservationsNotice observations={windowObservations} />
           </FormField>
 
           <FormField label="Compaction Threshold % (optional)" error={errors.compactionThresholdInput}>
