@@ -599,6 +599,12 @@ const ArtifactCreatedSchema = v.strictObject({
   artifactId: v.string(),
 });
 
+const ArtifactUpdatedSchema = v.strictObject({
+  type: v.literal('artifact-updated'),
+  sessionId: v.string(),
+  artifactId: v.string(),
+});
+
 const ArtifactDeletedSchema = v.strictObject({
   type: v.literal('artifact-deleted'),
   sessionId: v.string(),
@@ -677,6 +683,7 @@ export const AppServerMessageSchema = v.variant('type', [
   MemoUpdatedSchema,
   ReviewQueueUpdatedSchema,
   ArtifactCreatedSchema,
+  ArtifactUpdatedSchema,
   ArtifactDeletedSchema,
   BookmarkCreatedSchema,
   BookmarkDeletedSchema,

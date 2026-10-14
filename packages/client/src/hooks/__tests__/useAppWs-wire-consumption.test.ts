@@ -223,6 +223,10 @@ const CASES: Record<AppServerMessage['type'], WireCase> = {
     frame: { type: 'artifact-created', sessionId: 'session-1', artifactId: 'artifact-1' },
     expects: { callback: 'onArtifactCreated', args: ['session-1', 'artifact-1'] },
   },
+  'artifact-updated': {
+    frame: { type: 'artifact-updated', sessionId: 'session-1', artifactId: 'artifact-1' },
+    expects: { callback: 'onArtifactUpdated', args: ['session-1', 'artifact-1'] },
+  },
   'artifact-deleted': {
     frame: { type: 'artifact-deleted', sessionId: 'session-1', artifactId: 'artifact-1' },
     expects: { callback: 'onArtifactDeleted', args: ['session-1', 'artifact-1'] },

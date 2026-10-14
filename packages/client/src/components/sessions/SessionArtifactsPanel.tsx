@@ -73,6 +73,8 @@ export function SessionArtifactsPanel({ sessionId, isExpanded, onToggleExpanded,
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-slate-500">
                 {formatTimestamp(new Date(artifact.createdAt).getTime())}
+                {artifact.updatedAt !== null &&
+                  ` · Updated ${formatTimestamp(new Date(artifact.updatedAt).getTime())}`}
               </span>
               <a
                 href={`/artifacts/${artifact.id}`}

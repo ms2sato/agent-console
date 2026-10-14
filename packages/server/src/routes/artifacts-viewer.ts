@@ -94,7 +94,14 @@ function escapeHtmlAttribute(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function buildShellHtml(params: { artifactId: string; title: string; ownerUsername: string; viewerToken: string }): string {
+function buildShellHtml(params: {
+  artifactId: string;
+  title: string;
+  ownerUsername: string;
+  /** ISO 8601 time of the latest in-place update, or `null` when never updated (no line is rendered). */
+  updatedAt: string | null;
+  viewerToken: string;
+}): string {
   // Two nested contexts, both must be encoded, in this order: the id is a
   // URL path segment (encodeURIComponent first -- `routes/artifacts.ts`'s
   // redirect-target construction does the same), and the resulting string
@@ -110,6 +117,12 @@ function buildShellHtml(params: { artifactId: string; title: string; ownerUserna
   const escapedToken = escapeHtmlAttribute(encodeURIComponent(params.viewerToken));
   const escapedTitle = escapeHtmlAttribute(params.title);
   const escapedOwner = escapeHtmlAttribute(params.ownerUsername);
+  // Text node outside the frame, escaped exactly like the title; rendered only
+  // after an update (docs/design/html-artifacts.md section 5.4).
+  const updatedLine =
+    params.updatedAt === null
+      ? ''
+      : `\n<p class="updated">Updated <time datetime="${escapeHtmlAttribute(params.updatedAt)}">${escapeHtmlAttribute(params.updatedAt)}</time></p>`;
   return `<!doctype html>
 <html>
 <head>
@@ -119,14 +132,14 @@ function buildShellHtml(params: { artifactId: string; title: string; ownerUserna
   body { display: flex; flex-direction: column; }
   header { padding: 0.5rem 1rem; border-bottom: 1px solid #ddd; }
   h1 { font-size: 1.1rem; margin: 0 0 0.25rem 0; }
-  .owner { font-size: 0.85rem; color: #555; margin: 0; }
+  .owner, .updated { font-size: 0.85rem; color: #555; margin: 0; }
   iframe { flex: 1; border: 0; width: 100%; }
 </style>
 </head>
 <body>
 <header>
 <h1>${escapedTitle}</h1>
-<p class="owner">Created by ${escapedOwner}</p>
+<p class="owner">Created by ${escapedOwner}</p>${updatedLine}
 </header>
 <iframe sandbox="allow-scripts" src="/api/artifacts/${escapedId}?vt=${escapedToken}" width="100%" height="100%" frameborder="0"></iframe>
 </body>
@@ -156,7 +169,7 @@ const artifactsViewer = new Hono<AppBindings>()
     const viewerToken = mintArtifactViewerToken(id);
 
     return c.html(
-      buildShellHtml({ artifactId: id, title: artifact.title, ownerUsername, viewerToken }),
+      buildShellHtml({ artifactId: id, title: artifact.title, ownerUsername, updatedAt: artifact.updatedAt, viewerToken }),
       200,
       {
         'Content-Security-Policy': ARTIFACT_SHELL_CSP,

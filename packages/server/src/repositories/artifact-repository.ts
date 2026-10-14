@@ -19,6 +19,14 @@ export interface CreateArtifactParams {
   sourceSessionId: string | null;
 }
 
+/** Parameters for replacing an existing artifact's content (docs/design/html-artifacts.md section 5.4). */
+export interface UpdateArtifactParams {
+  /** The new raw HTML bytes -- persisted to disk, never stored in the table. */
+  content: string;
+  /** Replaces the stored title only when passed; otherwise the stored title is kept. */
+  title?: string;
+}
+
 /**
  * Server-internal artifact record: the wire `Artifact` summary plus
  * `userId`, the owning user's id. `userId` MUST NEVER be forwarded into a
@@ -76,6 +84,17 @@ export interface ArtifactRepository {
    * check.
    */
   findByUserIdAndSourceSessionId(userId: string, sessionId: string): Promise<Artifact[]>;
+
+  /**
+   * Replace an artifact's content in place (same id, same URL): checks the
+   * row first (a missing row returns `null` and the file is NOT touched),
+   * replaces the file atomically (`replaceArtifactFile`), then sets
+   * `size_bytes`, `updated_at` (now, ISO 8601) and, only when `title` is
+   * passed, `title`. A title-less update keeps the stored title -- it is
+   * never re-derived from the new document (docs/design/html-artifacts.md
+   * section 5.4). Returns the updated record, or `null` when no row matched.
+   */
+  update(id: string, params: UpdateArtifactParams): Promise<ArtifactRecord | null>;
 
   /**
    * Delete an artifact: removes the metadata row and the on-disk HTML file

@@ -68,7 +68,7 @@ function routeFetchByPanel(): void {
       return Promise.resolve(
         jsonResponse({
           artifacts: [
-            { id: 'artifact-1', title: ARTIFACT_TITLE, createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+            { id: 'artifact-1', title: ARTIFACT_TITLE, createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
           ],
         })
       );
@@ -126,7 +126,7 @@ function routeFetchDeferred(): { resolveAll: () => void } {
           resolve(
             jsonResponse({
               artifacts: [
-                { id: 'artifact-1', title: ARTIFACT_TITLE, createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+                { id: 'artifact-1', title: ARTIFACT_TITLE, createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
               ],
             })
           );

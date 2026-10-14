@@ -40,6 +40,7 @@ import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import {
   emitArtifactCreated,
+  emitArtifactUpdated,
   emitArtifactDeleted,
   emitBookmarkCreated,
   emitBookmarkDeleted,
@@ -334,11 +335,8 @@ function describeSessionForNotification(session: Session): string {
  * @internal Exported for testing.
  */
 export function resolveArtifactTitle(content: string, titleParam: string | undefined): string {
-  const trimmedParam = titleParam?.trim();
-  if (trimmedParam) {
-    const stripped = stripHtmlTagsAndCollapseWhitespace(trimmedParam);
-    if (stripped) return truncateTitle(stripped);
-  }
+  const fromParam = sanitizeArtifactTitleParam(titleParam);
+  if (fromParam) return fromParam;
 
   const titleMatch = HTML_TITLE_TAG_RE.exec(content);
   if (titleMatch) {
@@ -353,6 +351,22 @@ export function resolveArtifactTitle(content: string, titleParam: string | undef
   }
 
   return 'Untitled';
+}
+
+/**
+ * The explicit-title half of {@link resolveArtifactTitle}: the passed title
+ * made plain text (markup stripped, whitespace collapsed, length capped), or
+ * `undefined` when none was passed OR it is empty once sanitized. A caller
+ * that must NEVER derive a title from the document (`update_html_artifact`
+ * keeps the stored title instead) uses this directly.
+ *
+ * @internal Exported for testing.
+ */
+export function sanitizeArtifactTitleParam(titleParam: string | undefined): string | undefined {
+  const trimmedParam = titleParam?.trim();
+  if (!trimmedParam) return undefined;
+  const stripped = stripHtmlTagsAndCollapseWhitespace(trimmedParam);
+  return stripped ? truncateTitle(stripped) : undefined;
 }
 
 /**
@@ -2505,6 +2519,106 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
   );
 
+  // ---------- Tool: update_html_artifact ----------
+
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
+  mcpServer.tool(
+    'update_html_artifact',
+    'Replace the content of a previously created HTML artifact in place: the id and URL stay the same, the viewer ' +
+      'shows an "Updated <time>" line, and only the artifact\'s owner may update it. ' +
+      `Content is capped at ${MAX_ARTIFACT_CONTENT_BYTES} bytes (5 MiB), measured on the raw content string.`,
+    {
+      artifactId: z.string().describe('The id of the artifact to update, as returned by create_html_artifact.'),
+      content: z.string().min(1, 'Content is required').describe(
+        'The new HTML document content (max 5 MiB, measured as raw UTF-8 bytes). Served byte-verbatim.',
+      ),
+      title: z.string().optional().describe(
+        'Optional new display title. When omitted, or empty once sanitized (for example whitespace only), the ' +
+          'stored title is KEPT -- it is never re-derived from the new document. Markup is stripped and the result is capped at ' +
+          `${MAX_TITLE_LENGTH} characters; titles are always plain text.`,
+      ),
+      sessionId: z.string().optional().describe(
+        "The calling session's ID, used to resolve that session's owner (session.createdBy) for the ownership " +
+          'check. Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
+      ),
+    },
+    async ({ artifactId, content, title, sessionId: requestedSessionId }) => {
+      const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'update_html_artifact');
+      if (!self.ok) return errorResult(self.error);
+      const sessionId = self.sessionId;
+
+      try {
+        const contentByteLength = Buffer.byteLength(content, 'utf-8');
+        if (contentByteLength > MAX_ARTIFACT_CONTENT_BYTES) {
+          return errorResult(
+            `Content exceeds the maximum artifact size of ${MAX_ARTIFACT_CONTENT_BYTES} bytes (5 MiB); ` +
+              `received ${contentByteLength} bytes`,
+          );
+        }
+
+        // Same layering as delete_html_artifact below: the ownership
+        // comparison derives from session.createdBy, NEVER from
+        // getMcpCallerIdentity(), which is used ONLY for checkCallerOwnsSession.
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; updating an artifact from an ownerless (legacy) session is not possible`,
+          );
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'update_html_artifact' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const existing = await artifactRepository.findById(artifactId);
+        if (!existing) {
+          return errorResult(`Artifact not found: ${artifactId}`);
+        }
+        if (existing.userId !== session.createdBy) {
+          return errorResult(
+            `You do not own this artifact (${artifactId}); only the owner can update it`,
+          );
+        }
+
+        // Title: unchanged unless passed (and non-empty once sanitized); never
+        // re-derived from the new document, so no `resolveArtifactTitle` here.
+        const newTitle = sanitizeArtifactTitleParam(title);
+        const artifact = await artifactRepository.update(artifactId, {
+          content,
+          ...(newTitle !== undefined ? { title: newTitle } : {}),
+        });
+        if (!artifact) {
+          // Deleted between the existence check and the update (race).
+          return errorResult(`Artifact not found: ${artifactId}`);
+        }
+
+        logger.info(
+          { artifactId, sessionId, userId: session.createdBy, sizeBytes: artifact.sizeBytes },
+          'HTML artifact updated',
+        );
+
+        // Owning-session resolution + fallback rationale: see
+        // lib/artifact-bookmark-triggers.ts's module doc comment.
+        emitArtifactUpdated(broadcastToApp, artifact, artifactId, sessionId);
+
+        return textResult(buildArtifactToolResult(artifact.id, serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, artifactId, sessionId }, 'update_html_artifact failed');
+        return errorResult(message);
+      }
+    },
+  );
+
   // ---------- Tool: delete_html_artifact ----------
 
   // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
@@ -2512,7 +2626,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'delete_html_artifact',
     'Permanently delete a previously created HTML artifact. This is irreversible: any URL already shared for ' +
       "this artifact will stop working. To change the content behind an already-shared URL, delete and " +
-      're-create is NOT equivalent (the URL changes); an in-place update is not available yet.',
+      're-create is NOT equivalent (the URL changes); use update_html_artifact to replace the content under the same URL.',
     {
       artifactId: z.string().describe('The id of the artifact to delete, as returned by create_html_artifact.'),
       sessionId: z.string().optional().describe(

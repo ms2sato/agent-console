@@ -165,6 +165,32 @@ describe('Client-Server Boundary: artifact/bookmark realtime refresh triggers', 
     expect(parsed.output.artifactId).toBe(data.artifactId);
   });
 
+  it('artifact-updated: real MCP call -> real broadcastToApp -> wire -> AppServerMessageSchema.safeParse', async () => {
+    const { sessionId } = await createOwnedSession(1520010, 'trigger-owner-u');
+    const createResponse = await callTool(app, mcpSessionId, 'create_html_artifact', { content: '<html></html>', sessionId }, nextId++);
+    const { artifactId } = parseToolResult(createResponse) as { artifactId: string };
+    capturedBroadcasts.length = 0; // Only interested in the update trigger below.
+
+    const response = await callTool(
+      app,
+      mcpSessionId,
+      'update_html_artifact',
+      { artifactId, content: '<html><body>v2</body></html>', sessionId },
+      nextId++,
+    );
+    expect(response.result?.isError).toBeUndefined();
+
+    expect(capturedBroadcasts).toHaveLength(1);
+    const wirePayload = simulateWireTransmission(capturedBroadcasts[0]);
+    const parsed = v.safeParse(AppServerMessageSchema, wirePayload);
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw new Error(JSON.stringify(parsed.issues.map((i) => i.message)));
+    if (parsed.output.type !== 'artifact-updated') throw new Error(`Expected artifact-updated, got: ${parsed.output.type}`);
+    expect(parsed.output.sessionId).toBe(sessionId);
+    expect(parsed.output.artifactId).toBe(artifactId);
+  });
+
   it('artifact-deleted: real MCP call -> real broadcastToApp -> wire -> AppServerMessageSchema.safeParse', async () => {
     const { sessionId } = await createOwnedSession(1520002, 'trigger-owner-b');
     const createResponse = await callTool(app, mcpSessionId, 'create_html_artifact', { content: '<html></html>', sessionId }, nextId++);

@@ -166,7 +166,7 @@ ALTER TABLE artifacts ADD COLUMN updated_at TEXT
 
 **The boundary is untouched** (section 3, the CSP, the viewer token, P6′): an update changes the bytes of the response and nothing else — the headers and the origin stay what they were. The serving route already answers with `Cache-Control: no-store`, so a replaced file is not hidden behind a cached copy.
 
-Implementation: Issue #2076 (its PR is the one that finishes #1372).
+Implementation: Issue #2076 (its PR is the one that finishes #1372). **Status: implemented** (migration v49 adds the column above; `update_html_artifact` replaces the file through write-to-temp-then-rename in the same per-user directory; `artifact-updated` is the trigger-only realtime message; the viewer shell, the history list and the session panel show "Updated <time>" when `updatedAt` is non-null).
 
 ## 6. Surfaces — one MCP tool, two callers, no builtin variant
 

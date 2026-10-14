@@ -19,6 +19,7 @@ export const SESSION_CLAIMING_TOOLS = [
   'write_review_annotations',
   'clear_review_annotations',
   'create_html_artifact',
+  'update_html_artifact',
   'delete_html_artifact',
   'create_bookmark',
   'delete_bookmark',

@@ -11,11 +11,13 @@ import {
   toEmbeddedAgentRow,
   toEmbeddedAgentDefinition,
   toBookmark,
+  toArtifact,
+  toArtifactRecord,
   DataIntegrityError,
   assertNever,
 } from '../mappers.js';
 import type { LegacySessionRow, LegacyAgentRow } from '../mappers.js';
-import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow } from '../schema.js';
+import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow, ArtifactRow } from '../schema.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type {
   PersistedAgentWorker,
@@ -2444,6 +2446,37 @@ describe('mappers', () => {
       const row = buildBookmarkRow({ origin: 'mystery' });
       expect(() => toBookmark(row)).toThrow(DataIntegrityError);
       expect(() => toBookmark(row)).toThrow(/origin \(unexpected value: mystery\)/);
+    });
+  });
+
+  describe('toArtifact / toArtifactRecord', () => {
+    const row: ArtifactRow = {
+      id: 'artifact-1',
+      user_id: 'user-1',
+      title: 'Doc',
+      created_at: '2026-01-01T00:00:00.000Z',
+      size_bytes: 10,
+      updated_at: null,
+      source_session_id: 'session-1',
+    };
+
+    it('maps a never-updated row to updatedAt: null', () => {
+      expect(toArtifact(row)).toEqual({
+        id: 'artifact-1',
+        title: 'Doc',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        sizeBytes: 10,
+        updatedAt: null,
+      });
+    });
+
+    it('maps updated_at to updatedAt, and keeps userId / sourceSessionId on the record only', () => {
+      const record = toArtifactRecord({ ...row, updated_at: '2026-02-02T00:00:00.000Z' });
+
+      expect(record.updatedAt).toBe('2026-02-02T00:00:00.000Z');
+      expect(record.userId).toBe('user-1');
+      expect(record.sourceSessionId).toBe('session-1');
+      expect('userId' in toArtifact(row)).toBe(false);
     });
   });
 });

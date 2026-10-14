@@ -75,7 +75,7 @@ describe('SessionArtifactsPanel', () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         artifacts: [
-          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
         ],
       })
     );
@@ -91,11 +91,28 @@ describe('SessionArtifactsPanel', () => {
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
+  it('shows "Updated <time>" for an updated artifact and nothing extra for a never-updated one', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        artifacts: [
+          { id: 'artifact-u', title: 'Updated Doc', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 10, updatedAt: '2026-08-17T00:00:00.000Z' },
+          { id: 'artifact-n', title: 'Plain Doc', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 10, updatedAt: null },
+        ],
+      })
+    );
+
+    await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText('Updated Doc')).toBeTruthy());
+    expect(screen.getAllByText(/Updated \d|· Updated/)).toHaveLength(1);
+    expect(screen.getByText('Plain Doc').parentElement!.textContent).not.toContain('Updated');
+  });
+
   it('collapses to a header row without a body, and can be re-expanded', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         artifacts: [
-          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
         ],
       })
     );
@@ -120,7 +137,7 @@ describe('SessionArtifactsPanel', () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         artifacts: [
-          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
         ],
       })
     );

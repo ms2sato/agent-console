@@ -45,7 +45,7 @@ import { InterSessionMessageService } from '../../services/inter-session-message
 import { SingleUserMode } from '../../services/user-mode.js';
 import { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import { SqliteEmbeddedAgentRepository } from '../../repositories/sqlite-embedded-agent-repository.js';
-import { createMcpApp, resolveArtifactTitle, buildArtifactToolResult } from '../mcp-server.js';
+import { createMcpApp, resolveArtifactTitle, sanitizeArtifactTitleParam, buildArtifactToolResult } from '../mcp-server.js';
 import { McpTokenRegistry, type McpAuthMode } from '../mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
@@ -480,6 +480,7 @@ describe('create_html_artifact', () => {
         findById: artifactRepository.findById.bind(artifactRepository),
         findByUserId: artifactRepository.findByUserId.bind(artifactRepository),
         findByUserIdAndSourceSessionId: artifactRepository.findByUserIdAndSourceSessionId.bind(artifactRepository),
+        update: artifactRepository.update.bind(artifactRepository),
         delete: artifactRepository.delete.bind(artifactRepository),
       };
       const mcpApp = createMcpApp({
@@ -517,6 +518,19 @@ describe('create_html_artifact', () => {
 });
 
 // ---------- Pure-function unit tests (not module-singleton-coupled) ----------
+
+describe('sanitizeArtifactTitleParam (the explicit-title half; never derives from a document)', () => {
+  it('returns undefined when no title was passed, or it is empty/whitespace-only/markup-only', () => {
+    expect(sanitizeArtifactTitleParam(undefined)).toBeUndefined();
+    expect(sanitizeArtifactTitleParam('')).toBeUndefined();
+    expect(sanitizeArtifactTitleParam('   ')).toBeUndefined();
+    expect(sanitizeArtifactTitleParam('<b></b>')).toBeUndefined();
+  });
+
+  it('returns the title as plain text: markup stripped and whitespace collapsed', () => {
+    expect(sanitizeArtifactTitleParam('  <b>Hello</b>   world ')).toBe('Hello world');
+  });
+});
 
 describe('resolveArtifactTitle (title resolution chain)', () => {
   it('uses the explicit title param when given, even if the document has a <title>', () => {

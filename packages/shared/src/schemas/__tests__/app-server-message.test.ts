@@ -791,6 +791,21 @@ describe('AppServerMessageSchema', () => {
     });
   });
 
+  describe('artifact-updated', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'artifact-updated', sessionId: 'session-1', artifactId: 'artifact-1' });
+      expect(output.type).toBe('artifact-updated');
+    });
+
+    it('should reject a payload carrying a content field (trigger-only, like artifact-created)', () => {
+      expectInvalid({ type: 'artifact-updated', sessionId: 'session-1', artifactId: 'artifact-1', content: '<p>leaked</p>' });
+    });
+
+    it('should reject a payload missing the owning sessionId', () => {
+      expectInvalid({ type: 'artifact-updated', artifactId: 'artifact-1' });
+    });
+  });
+
   describe('artifact-deleted', () => {
     it('should accept valid payload', () => {
       const output = expectValid({ type: 'artifact-deleted', sessionId: 'session-1', artifactId: 'artifact-1' });

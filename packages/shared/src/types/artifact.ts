@@ -13,4 +13,11 @@ export interface Artifact {
   title: string;
   createdAt: string;
   sizeBytes: number;
+  /**
+   * Time of the latest in-place content update (ISO 8601), or `null` when
+   * the artifact has never been updated. Always present on the wire
+   * (required-nullable) because the server always sends it. See
+   * docs/design/html-artifacts.md section 5.4.
+   */
+  updatedAt: string | null;
 }

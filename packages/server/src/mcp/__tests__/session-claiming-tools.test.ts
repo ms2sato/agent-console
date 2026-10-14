@@ -67,6 +67,11 @@ describe('SESSION_CLAIMING_TOOLS registry', () => {
     });
   });
 
+  it('lists update_html_artifact, and its registration calls the gate under that name', () => {
+    expect(SESSION_CLAIMING_TOOLS).toContain('update_html_artifact');
+    expect(claiming.map((b) => b.name)).toContain('update_html_artifact');
+  });
+
   it('has no duplicate names', () => {
     expect(new Set(SESSION_CLAIMING_TOOLS).size).toBe(SESSION_CLAIMING_TOOLS.length);
   });

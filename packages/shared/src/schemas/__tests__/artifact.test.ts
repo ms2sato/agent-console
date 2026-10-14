@@ -13,6 +13,7 @@ describe('ArtifactSchema', () => {
       title: 'My Dashboard',
       createdAt: '2026-08-16T00:00:00.000Z',
       sizeBytes: 1234,
+      updatedAt: null,
     };
 
     const result = v.safeParse(ArtifactSchema, artifact);
@@ -20,6 +21,16 @@ describe('ArtifactSchema', () => {
     if (result.success) {
       expect(result.output).toEqual(artifact);
     }
+  });
+
+  it('accepts updatedAt as null (never updated) and as an ISO string, and rejects a missing or non-string updatedAt', () => {
+    const base = { id: 'artifact-1', title: 'T', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1 };
+
+    expect(v.safeParse(ArtifactSchema, { ...base, updatedAt: null }).success).toBe(true);
+    expect(v.safeParse(ArtifactSchema, { ...base, updatedAt: '2026-08-17T00:00:00.000Z' }).success).toBe(true);
+    // Required-nullable: the server always sends it, so an absent key is a drift to catch.
+    expect(v.safeParse(ArtifactSchema, base).success).toBe(false);
+    expect(v.safeParse(ArtifactSchema, { ...base, updatedAt: 123 }).success).toBe(false);
   });
 
   it('rejects a missing required field', () => {
@@ -58,6 +69,7 @@ describe('ArtifactSchema', () => {
       title: 'My Dashboard',
       createdAt: '2026-08-16T00:00:00.000Z',
       sizeBytes: 1234,
+      updatedAt: null,
     });
     expect(result.success).toBe(false);
   });
@@ -68,6 +80,7 @@ describe('ArtifactSchema', () => {
       title: '',
       createdAt: '2026-08-16T00:00:00.000Z',
       sizeBytes: 1234,
+      updatedAt: null,
     });
     expect(result.success).toBe(false);
   });
@@ -78,6 +91,7 @@ describe('ArtifactSchema', () => {
       title: 'My Dashboard',
       createdAt: '2026-08-16T00:00:00.000Z',
       sizeBytes: 1234,
+      updatedAt: null,
       content: '<html></html>',
     });
     expect(result.success).toBe(false);
@@ -90,8 +104,8 @@ describe('ArtifactSchema', () => {
 describe('ArtifactsListResponseSchema', () => {
   it('accepts a well-formed { artifacts: [...] } response', () => {
     const artifacts: Artifact[] = [
-      { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
-      { id: 'artifact-2', title: 'Report', createdAt: '2026-08-15T00:00:00.000Z', sizeBytes: 42 },
+      { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
+      { id: 'artifact-2', title: 'Report', createdAt: '2026-08-15T00:00:00.000Z', sizeBytes: 42, updatedAt: null },
     ];
 
     const result = v.safeParse(ArtifactsListResponseSchema, { artifacts });

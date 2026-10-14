@@ -9,7 +9,7 @@
  * (`.claude/rules/testing.md` Anti-Pattern #2; see the parallel note in
  * `lib/__tests__/artifact-storage.test.ts`).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Kysely } from 'kysely';
 import * as path from 'path';
 import * as os from 'os';
@@ -18,6 +18,33 @@ import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteArtifactRepository } from '../sqlite-artifact-repository.js';
 import { readArtifactFile } from '../../lib/artifact-storage.js';
+
+/**
+ * Wrap a Kysely query builder so that, whatever chain is built from it, the
+ * final `executeTakeFirst()` runs the real query, then `afterQuery`, and
+ * resolves the (now stale) row the query saw.
+ */
+function staleAfter<T extends object>(builder: T, afterQuery: () => Promise<void>): T {
+  return new Proxy(builder, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === 'executeTakeFirst') {
+        return async () => {
+          const row = await (value as () => Promise<unknown>).call(target);
+          await afterQuery();
+          return row;
+        };
+      }
+      if (typeof value === 'function') {
+        return (...args: unknown[]) => {
+          const next = value.apply(target, args);
+          return typeof next === 'object' && next !== null ? staleAfter(next, afterQuery) : next;
+        };
+      }
+      return value;
+    },
+  });
+}
 
 describe('SqliteArtifactRepository', () => {
   const originalHome = process.env.AGENT_CONSOLE_HOME;
@@ -78,6 +105,7 @@ describe('SqliteArtifactRepository', () => {
         title: 'My Dashboard',
         createdAt: artifact.createdAt,
         sizeBytes: Buffer.byteLength('<html><body>hi</body></html>', 'utf-8'),
+        updatedAt: null,
         sourceSessionId: 'session-1',
       });
       // `create`/`findById` return the server-internal ArtifactRecord (wire
@@ -86,7 +114,7 @@ describe('SqliteArtifactRepository', () => {
       // `content`/`sourceSessionId` still never leak; `userId` is NOT part
       // of the wire `Artifact` type and must never be serialized into an
       // HTTP response (see packages/shared/src/types/artifact.ts).
-      expect(Object.keys(artifact).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'sourceSessionId', 'title', 'userId']);
+      expect(Object.keys(artifact).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'sourceSessionId', 'title', 'updatedAt', 'userId']);
 
       const written = await readArtifactFile('user-1', 'artifact-1');
       expect(written).toBe('<html><body>hi</body></html>');
@@ -320,6 +348,144 @@ describe('SqliteArtifactRepository', () => {
 
     it('returns false for a non-existent id, and does not throw', async () => {
       await expect(repository.delete('never-existed')).resolves.toBe(false);
+    });
+  });
+
+  describe('update', () => {
+    const original = '<html><head><title>Doc</title></head><body>v1</body></html>';
+
+    async function seed(id = 'artifact-u1') {
+      return repository.create({ id, userId: 'user-1', title: 'Doc', content: original, sourceSessionId: 'session-1' });
+    }
+
+    it('is null before and set after: updatedAt, sizeBytes and the file all change; createdAt and sourceSessionId do not', async () => {
+      const created = await seed();
+      expect(created.updatedAt).toBeNull();
+      const longer = original + '<p>more bytes</p>';
+
+      const updated = await repository.update('artifact-u1', { content: longer });
+
+      expect(updated).not.toBeNull();
+      expect(updated!.updatedAt).not.toBeNull();
+      expect(updated!.sizeBytes).toBe(Buffer.byteLength(longer, 'utf-8'));
+      expect(updated!.createdAt).toBe(created.createdAt);
+      expect(updated!.sourceSessionId).toBe('session-1');
+      expect(await readArtifactFile('user-1', 'artifact-u1')).toBe(longer);
+      expect((await repository.findById('artifact-u1'))!.updatedAt).toBe(updated!.updatedAt);
+    });
+
+    it('a title-less update keeps the stored title (never re-derived from the new document)', async () => {
+      await seed();
+
+      const updated = await repository.update('artifact-u1', {
+        content: '<html><head><title>A Different Title</title></head></html>',
+      });
+
+      expect(updated!.title).toBe('Doc');
+    });
+
+    it('replaces the title only when one is passed', async () => {
+      await seed();
+
+      const updated = await repository.update('artifact-u1', { content: '<p>v2</p>', title: 'Renamed' });
+
+      expect(updated!.title).toBe('Renamed');
+    });
+
+    it('a second update advances updatedAt', async () => {
+      await seed();
+      const first = await repository.update('artifact-u1', { content: '<p>v2</p>' });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const second = await repository.update('artifact-u1', { content: '<p>v3</p>' });
+
+      expect(new Date(second!.updatedAt!).getTime()).toBeGreaterThan(new Date(first!.updatedAt!).getTime());
+    });
+
+    it('returns null for an unknown id and does NOT touch the file system', async () => {
+      const result = await repository.update('never-existed', { content: '<p>x</p>' });
+
+      expect(result).toBeNull();
+      expect(await readArtifactFile('user-1', 'never-existed')).toBeNull();
+    });
+
+    it('listing reads updatedAt through the same mapper (null for never-updated, a value after)', async () => {
+      await seed('artifact-u2');
+      await seed('artifact-u3');
+      await repository.update('artifact-u3', { content: '<p>changed</p>' });
+
+      const listed = await repository.findByUserId('user-1');
+
+      expect(listed.find((a) => a.id === 'artifact-u2')!.updatedAt).toBeNull();
+      expect(listed.find((a) => a.id === 'artifact-u3')!.updatedAt).not.toBeNull();
+      expect(Object.keys(listed[0]).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'title', 'updatedAt']);
+    });
+
+    it('removes the file it just wrote and returns null when the row vanishes between the existence check and the UPDATE', async () => {
+      await seed();
+      const originalSelectFrom = db.selectFrom.bind(db);
+      const spy = spyOn(db, 'selectFrom');
+      // Simulate the race: the repository's own existence check runs for real,
+      // then the artifact is deleted (row and file) before the check's result
+      // is handed back, so update() proceeds on a stale `user_id`.
+      spy.mockImplementationOnce((table) => {
+        const builder = originalSelectFrom(table);
+        return staleAfter(builder, async () => {
+          await repository.delete('artifact-u1');
+        });
+      });
+
+      try {
+        const result = await repository.update('artifact-u1', { content: '<p>orphan candidate</p>' });
+
+        expect(result).toBeNull();
+        expect(await repository.findById('artifact-u1')).toBeNull();
+        expect(await readArtifactFile('user-1', 'artifact-u1')).toBeNull();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('restores the previous bytes and leaves the row unchanged when the metadata UPDATE fails, rethrowing the original error', async () => {
+      await seed();
+      const spy = spyOn(db, 'updateTable').mockImplementationOnce(() => {
+        throw new Error('boom');
+      });
+
+      try {
+        await expect(repository.update('artifact-u1', { content: '<p>new bytes</p>', title: 'New' })).rejects.toThrow('boom');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(await readArtifactFile('user-1', 'artifact-u1')).toBe(original);
+      const row = await repository.findById('artifact-u1');
+      expect(row!.updatedAt).toBeNull();
+      expect(row!.sizeBytes).toBe(Buffer.byteLength(original, 'utf-8'));
+      expect(row!.title).toBe('Doc');
+    });
+
+    it('still rejects with the original error when restoring the previous bytes also fails', async () => {
+      await seed();
+      const writeSpy = spyOn(Bun, 'write');
+      const updateSpy = spyOn(db, 'updateTable').mockImplementationOnce(() => {
+        // The compensation's temp-file write is the next Bun.write after the
+        // replace has already succeeded: make that one fail.
+        writeSpy.mockImplementationOnce(async () => {
+          throw new Error('restore failed');
+        });
+        throw new Error('boom');
+      });
+
+      try {
+        await expect(repository.update('artifact-u1', { content: '<p>new bytes</p>' })).rejects.toThrow('boom');
+      } finally {
+        updateSpy.mockRestore();
+        writeSpy.mockRestore();
+      }
+
+      // The restore failed, so the new bytes remain: the failure is only
+      // best-effort logged, never surfaced over the original error.
+      expect(await readArtifactFile('user-1', 'artifact-u1')).toBe('<p>new bytes</p>');
     });
   });
 });

@@ -572,8 +572,14 @@ export interface ArtifactsTable {
   title: string;
   /** Creation timestamp as ISO 8601 string */
   created_at: string;
-  /** Size of the stored HTML file in bytes */
+  /** Size of the stored HTML file in bytes (rewritten on update) */
   size_bytes: number;
+  /**
+   * Time of the latest in-place content update as ISO 8601 string. `null`
+   * means never updated; stays `null` on create (docs/design/html-artifacts.md
+   * section 5.4).
+   */
+  updated_at: string | null;
   /**
    * Provenance only -- the session that created this artifact. Nullable,
    * and NEVER used for lookup: an artifact outlives its source session.

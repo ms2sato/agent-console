@@ -115,6 +115,23 @@ describe('Client-Server Boundary: GET /api/artifacts', () => {
     expect(typeof result[0].sizeBytes).toBe('number');
   });
 
+  it('round-trips updatedAt through the real wire parse: null for a never-updated artifact, the stored time after an update', async () => {
+    // `updatedAt` is required-nullable on the wire schema: dropping it from
+    // `ArtifactSchema` makes the strict parse inside `fetchArtifacts()` throw.
+    const neverUpdatedId = randomUUID();
+    const updatedId = randomUUID();
+    for (const [id, title] of [[neverUpdatedId, 'Never updated'], [updatedId, 'Updated once']] as const) {
+      await repository.create({ id, userId: TEST_AUTH_USER.id, title, content: '<p>v1</p>', sourceSessionId: null });
+    }
+    const updated = await repository.update(updatedId, { content: '<p>v2, longer</p>' });
+
+    const result = await fetchArtifacts();
+
+    expect(result.find((a) => a.id === neverUpdatedId)?.updatedAt).toBeNull();
+    expect(result.find((a) => a.id === updatedId)?.updatedAt).toBe(updated!.updatedAt!);
+    expect(result.find((a) => a.id === updatedId)?.sizeBytes).toBe(Buffer.byteLength('<p>v2, longer</p>', 'utf-8'));
+  });
+
   it('returns an empty array (boundary value) when the caller has no artifacts', async () => {
     const result = await fetchArtifacts();
     expect(result).toEqual([]);

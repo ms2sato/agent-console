@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 48;
+export const LATEST_SCHEMA_VERSION = 49;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -455,6 +455,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 48) {
     await migrateToV48(database);
+  }
+
+  if (currentVersion < 49) {
+    await migrateToV49(database);
   }
 }
 
@@ -3107,6 +3111,38 @@ export async function migrateToV48(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 48`.execute(database);
 
   logger.info('Migration to v48 completed');
+}
+
+/**
+ * Migration v49: Add the nullable `updated_at` column to `artifacts` -- the
+ * "Updated <time>" signal of an in-place artifact update
+ * (docs/design/html-artifacts.md section 5.4).
+ *
+ * `NULL` means "never updated"; it stays `NULL` on create. No default, no
+ * backfill: existing rows read `NULL`. `size_bytes` (existing column) is
+ * rewritten on update, so no DDL for it.
+ *
+ * Owner-approved DDL:
+ * ```sql
+ * ALTER TABLE artifacts ADD COLUMN updated_at TEXT;
+ * PRAGMA user_version = 49;
+ * ```
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV49(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v49: Adding updated_at column to artifacts');
+
+  try {
+    await sql`ALTER TABLE artifacts ADD COLUMN updated_at TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column updated_at already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 49`.execute(database);
+
+  logger.info('Migration to v49 completed');
 }
 
 /**

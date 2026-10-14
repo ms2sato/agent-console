@@ -170,6 +170,30 @@ describe('Artifact routes', () => {
       expect(body).toBe(payload);
     });
 
+    it('after an in-place update serves the NEW bytes at the same URL with the same CSP and headers', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'Versioned',
+        content: '<p>old bytes</p>',
+        sourceSessionId: null,
+      });
+      const app = buildApp(repository, OWNER);
+      const headers = { 'Sec-Fetch-Dest': 'iframe' };
+      const beforeRes = await app.request(`/api/artifacts/${created.id}`, { headers });
+      expect(await beforeRes.text()).toBe('<p>old bytes</p>');
+
+      await repository.update(created.id, { content: '<p>new bytes, differing</p>' });
+
+      const res = await app.request(`/api/artifacts/${created.id}`, { headers });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('<p>new bytes, differing</p>');
+      expect(res.headers.get('Content-Security-Policy')).toBe(ARTIFACT_SERVING_CSP);
+      expect(res.headers.get('Content-Security-Policy')).toBe(beforeRes.headers.get('Content-Security-Policy'));
+      expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+      expect(res.headers.get('Content-Type')).toBe('text/html; charset=utf-8');
+    });
+
     it('returns 404 for a nonexistent artifact id', async () => {
       const app = buildApp(repository, OWNER);
       const res = await app.request('/api/artifacts/does-not-exist', {

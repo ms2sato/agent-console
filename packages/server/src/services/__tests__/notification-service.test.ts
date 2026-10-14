@@ -57,6 +57,7 @@ function makeArtifact(overrides: Partial<Artifact> & { id: string }): Artifact {
     title: overrides.title ?? `Artifact ${overrides.id}`,
     createdAt: overrides.createdAt ?? '2026-08-18T00:00:00.000Z',
     sizeBytes: overrides.sizeBytes ?? 100,
+    updatedAt: overrides.updatedAt ?? null,
   };
 }
 

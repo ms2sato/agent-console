@@ -23,6 +23,7 @@ import { describe, it, expect, mock } from 'bun:test';
 import type { AppServerMessage } from '@agent-console/shared';
 import {
   emitArtifactCreated,
+  emitArtifactUpdated,
   emitArtifactDeleted,
   emitBookmarkCreated,
   emitBookmarkDeleted,
@@ -145,5 +146,32 @@ describe('artifact-bookmark-triggers', () => {
 
       expect(mockBroadcastToApp).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('emitArtifactUpdated', () => {
+  it('broadcasts the artifact-updated wire shape for the OWNING session, ignoring a differing fallback', () => {
+    const broadcast = mock((_msg: AppServerMessage) => {});
+
+    emitArtifactUpdated(broadcast, { sourceSessionId: 'owning-session' }, 'artifact-1', 'calling-session');
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith({ type: 'artifact-updated', sessionId: 'owning-session', artifactId: 'artifact-1' });
+  });
+
+  it('falls back to the calling session only when the record has no owning session', () => {
+    const broadcast = mock((_msg: AppServerMessage) => {});
+
+    emitArtifactUpdated(broadcast, { sourceSessionId: null }, 'artifact-1', 'calling-session');
+
+    expect(broadcast).toHaveBeenCalledWith({ type: 'artifact-updated', sessionId: 'calling-session', artifactId: 'artifact-1' });
+  });
+
+  it('skips the broadcast entirely when there is neither an owning session nor a fallback', () => {
+    const broadcast = mock((_msg: AppServerMessage) => {});
+
+    emitArtifactUpdated(broadcast, { sourceSessionId: null }, 'artifact-1');
+
+    expect(broadcast).not.toHaveBeenCalled();
   });
 });
