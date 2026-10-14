@@ -46,6 +46,58 @@ const validSdkDefinition = {
   updatedAt: '2026-01-01T00:00:00Z',
 };
 
+describe('EmbeddedAgentDefinitionSchema / windowObservations', () => {
+  it('parses a definition without windowObservations as absent (no key, no default)', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, validDefinition);
+    expect(result.success).toBe(true);
+    if (result.success) expect('windowObservations' in result.output).toBe(false);
+  });
+
+  it('parses both kinds, each independently optional', () => {
+    const both = {
+      providerStated: { tokens: 131072, observedAt: '2026-10-14T00:00:00.000Z' },
+      apparentClamp: { observedAt: '2026-10-14T00:00:01.000Z' },
+    };
+    for (const windowObservations of [both, { providerStated: both.providerStated }, { apparentClamp: both.apparentClamp }, {}]) {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, { ...validDefinition, windowObservations });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it('rejects worker or session identifiers and any unknown key (strict objects)', () => {
+    const withExtra = (windowObservations: unknown) =>
+      v.safeParse(EmbeddedAgentDefinitionSchema, { ...validDefinition, windowObservations }).success;
+    expect(withExtra({ apparentClamp: { observedAt: 't', workerId: 'w-1' } })).toBe(false);
+    expect(withExtra({ providerStated: { tokens: 1, observedAt: 't', sessionId: 's-1' } })).toBe(false);
+    expect(withExtra({ merged: { tokens: 1 } })).toBe(false);
+  });
+
+  it('rejects a non-positive or non-integer provider-stated token count', () => {
+    for (const tokens of [0, -5, 1.5]) {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validDefinition,
+        windowObservations: { providerStated: { tokens, observedAt: 't' } },
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
+  it('parses on the claude-sdk arm too (the field lives in the shared base fields)', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      id: 'sdk-1',
+      name: 'SDK',
+      engine: 'claude-sdk',
+      provider: { model: 'claude-sonnet-5' },
+      isBuiltIn: false,
+      createdBy: 'user-1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      windowObservations: { apparentClamp: { observedAt: '2026-10-14T00:00:00.000Z' } },
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
 describe('EmbeddedAgentDefinitionSchema', () => {
   it('accepts a valid full definition', () => {
     const result = v.safeParse(EmbeddedAgentDefinitionSchema, validDefinition);

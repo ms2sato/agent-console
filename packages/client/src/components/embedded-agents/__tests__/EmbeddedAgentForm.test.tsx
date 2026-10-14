@@ -34,6 +34,29 @@ function renderEmbeddedAgentForm(props: Partial<React.ComponentProps<typeof Embe
   };
 }
 
+describe('EmbeddedAgentForm / windowObservations hint', () => {
+  it('renders the observed facts under the Context Window Tokens field', () => {
+    renderEmbeddedAgentForm({
+      mode: 'edit',
+      windowObservations: {
+        providerStated: { tokens: 65536, observedAt: '2026-10-14T00:00:00.000Z' },
+        apparentClamp: { observedAt: '2026-10-13T00:00:00.000Z' },
+      },
+    });
+
+    expect(
+      screen.getByText("A worker on this definition observed the provider's limit as 65,536 on 2026-10-14."),
+    ).toBeTruthy();
+    expect(screen.getByText('Readings appear clamped since 2026-10-13.')).toBeTruthy();
+  });
+
+  it('renders no hint when no observation is passed (the default state)', () => {
+    renderEmbeddedAgentForm({ mode: 'edit' });
+
+    expect(screen.queryByTestId('window-observations-notice')).toBeNull();
+  });
+});
+
 describe('EmbeddedAgentForm', () => {
   describe('create mode', () => {
     it('should render form with empty fields', () => {

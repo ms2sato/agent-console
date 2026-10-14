@@ -1749,9 +1749,10 @@ describe('SessionManager', () => {
     });
 
     it('forwards a worker\'s window reading to the embeddedAgentManager register (window-drift feed wiring)', async () => {
-      // Mutation measured: dropping `recordWindowObservation` from the
-      // EmbeddedAgentWorkerService construction in session-manager.ts leaves
-      // the manager's register unfed -- the spy below is never called.
+      // Mutation measured: replacing the `recordWindowObservation` dep in
+      // the EmbeddedAgentWorkerService construction in session-manager.ts
+      // with a no-op fails this test (this test only; the spy is never
+      // called) -- the manager's register would be left unfed.
       const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
       let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
