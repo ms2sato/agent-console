@@ -15,8 +15,9 @@ import { repositoryKeys } from '../../lib/query-keys';
 import { useAuth } from '../../lib/auth';
 import { CreatorBadge, useCreatorBadgeVisible } from '../sessions/CreatorBadge';
 import { logger } from '../../lib/logger';
-import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon, RefreshIcon, FlagIcon } from '../Icons';
+import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon, RefreshIcon, FlagIcon, StopIcon } from '../Icons';
 import { ConfirmDialog } from '../ui/confirm-dialog';
+import { EndSessionDialog } from '../sessions/EndSessionDialog';
 import { Spinner } from '../ui/Spinner';
 import { ActivityIndicator } from './ActivityIndicator';
 import type { SessionWithActivity } from '../../hooks/useActiveSessionsWithActivity';
@@ -488,9 +489,11 @@ interface PausedSessionItemProps {
   session: Session;
   collapsed: boolean;
   onClick: () => void;
+  /** Opens the End Session confirmation; only offered in the expanded row. */
+  onEnd: () => void;
 }
 
-function PausedSessionItem({ session, collapsed, onClick }: PausedSessionItemProps) {
+function PausedSessionItem({ session, collapsed, onClick, onEnd }: PausedSessionItemProps) {
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
   const isOrphaned = session.recoveryState === 'orphaned';
 
@@ -511,27 +514,41 @@ function PausedSessionItem({ session, collapsed, onClick }: PausedSessionItemPro
   }
 
   return (
-    <button
-      onClick={onClick}
-      className="w-full p-3 text-left hover:bg-slate-800 transition-colors"
-      title={isOrphaned ? `${tooltip} (Unrecoverable)` : tooltip}
-    >
-      <div className="flex items-start gap-2">
-        {isOrphaned ? (
-          <AlertCircleIcon className="w-3 h-3 text-red-400 shrink-0 mt-1.5" />
-        ) : (
-          <span className="inline-block w-2 h-2 rounded-full bg-gray-600 shrink-0 mt-1.5" />
-        )}
-        <div className="min-w-0 flex-1">
-          <div className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-400'}`}>
-            {primary}
-          </div>
-          <div className={`text-xs truncate ${isOrphaned ? 'text-red-400' : 'text-gray-600'}`}>
-            {isOrphaned ? 'Unrecoverable' : secondary}
+    <div className="flex items-stretch hover:bg-slate-800 transition-colors">
+      <button
+        onClick={onClick}
+        className="flex-1 min-w-0 p-3 text-left"
+        title={isOrphaned ? `${tooltip} (Unrecoverable)` : tooltip}
+      >
+        <div className="flex items-start gap-2">
+          {isOrphaned ? (
+            <AlertCircleIcon className="w-3 h-3 text-red-400 shrink-0 mt-1.5" />
+          ) : (
+            <span className="inline-block w-2 h-2 rounded-full bg-gray-600 shrink-0 mt-1.5" />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-400'}`}>
+              {primary}
+            </div>
+            <div className={`text-xs truncate ${isOrphaned ? 'text-red-400' : 'text-gray-600'}`}>
+              {isOrphaned ? 'Unrecoverable' : secondary}
+            </div>
           </div>
         </div>
-      </div>
-    </button>
+      </button>
+      <button
+        type="button"
+        aria-label={`End session ${primary}`}
+        title="End session"
+        onClick={(e) => {
+          e.stopPropagation();
+          onEnd();
+        }}
+        className="shrink-0 px-3 text-gray-500 hover:text-red-400"
+      >
+        <StopIcon className="w-3.5 h-3.5" />
+      </button>
+    </div>
   );
 }
 
@@ -555,6 +572,7 @@ export function ActiveSessionsSidebar({
   const { sharedAccountsAvailable } = useAuth();
   const [isResizing, setIsResizing] = useState(false);
   const [pausedExpanded, setPausedExpanded] = useState(false);
+  const [endingPausedSession, setEndingPausedSession] = useState<Session | null>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   // Repository data, needed only to know each repository's currently
@@ -997,6 +1015,7 @@ export function ActiveSessionsSidebar({
                           session={session}
                           collapsed={collapsed}
                           onClick={() => handlePausedSessionClick(session.id)}
+                          onEnd={() => setEndingPausedSession(session)}
                         />
                       ))}
                 </div>
@@ -1005,6 +1024,16 @@ export function ActiveSessionsSidebar({
           </>
         )}
       </div>
+
+      {/* One dialog for the selected paused session, rendered once rather than inside each row */}
+      {endingPausedSession && (
+        <EndSessionDialog
+          open
+          onOpenChange={(open) => !open && setEndingPausedSession(null)}
+          sessionId={endingPausedSession.id}
+          sessionTitle={endingPausedSession.title}
+        />
+      )}
 
       {/* Resize handle - only shown when expanded */}
       {!collapsed && !hideResizeHandle && (

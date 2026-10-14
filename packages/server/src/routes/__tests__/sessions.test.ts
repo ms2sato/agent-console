@@ -181,6 +181,50 @@ describe('Sessions API - Pause/Resume', () => {
   });
 
   // ===========================================================================
+  // DELETE /api/sessions/:id (End Session)
+  // ===========================================================================
+
+  describe('DELETE /api/sessions/:id', () => {
+    it('should end a live worktree session', async () => {
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(sessionManager.getSession(session.id)).toBeUndefined();
+    });
+
+    it('should end a paused session, which exists only in persistence', async () => {
+      const session = await sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      const pauseRes = await app.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+      expect(pauseRes.status).toBe(200);
+
+      const res = await app.request(`/api/sessions/${session.id}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(await sessionManager.getSessionRepository().findById(session.id)).toBeNull();
+    });
+
+    it('should return 404 when no live or persisted session exists', async () => {
+      const res = await app.request('/api/sessions/non-existent-id', { method: 'DELETE' });
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ===========================================================================
   // POST /api/sessions/:id/resume
   // ===========================================================================
 
