@@ -274,6 +274,9 @@ export type DeleteSessionRequest = v.InferOutput<typeof DeleteSessionRequestSche
 /**
  * Schema for the `{ session }` response of `GET /api/sessions/:id`. A live
  * session and a paused (persisted) one both travel as a `SessionSchema` row.
+ *
+ * A REST envelope, not a `/ws/app` message: it lives here rather than beside
+ * `SessionSchema` because `app-server-message.ts` is the `/ws/app` protocol file.
  */
 export const SessionResponseSchema = v.strictObject({
   session: SessionSchema,

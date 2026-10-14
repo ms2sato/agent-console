@@ -271,7 +271,9 @@ describe('Client-Server Boundary: strict response schemas on the pass-1 and pass
   });
 
   it('fetchGitHubIssue: the real body parses, and an extra field is rejected', async () => {
-    // `fetchGitHubIssue` is not a createTestContext option; the route reads it from the context object.
+    // Recorded proxy: the `gh` CLI call is substituted by assigning `fetchGitHubIssue` on the
+    // context object (it is not a createTestContext option; the route reads it from there).
+    // Still real: the route, its JSON serialization, the fetch bridge and the client schema parse.
     ctx.fetchGitHubIssue = () =>
       Promise.resolve({
         org: 'owner',
@@ -307,6 +309,9 @@ describe('Client-Server Boundary: strict response schemas on the pass-1 and pass
   });
 
   it('fetchSessionPrLink: the real body parses, and an extra field is rejected', async () => {
+    // Recorded proxy: the `gh pr view` lookup is substituted on the context object (no
+    // createTestContext option exists). Still real: the route, `getOrgRepoFromPath` via the
+    // git mock, JSON serialization, the fetch bridge and the client schema parse.
     ctx.fetchPullRequestUrl = () => Promise.resolve('https://github.com/owner/repo/pull/9');
 
     const result = await fetchSessionPrLink(worktreeSessionId);
