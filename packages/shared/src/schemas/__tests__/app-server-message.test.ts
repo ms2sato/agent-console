@@ -35,6 +35,13 @@ import type {
 // rather than a silent change to every consumer. `Assert<Equals<...>>` is
 // the form that fails under drift; a `declare const x: never` form would
 // type-check under it.
+//
+// Measured reach (`tsc` diagnostics, control clean first): adding a field to
+// `SessionBaseSchema` fails `_SessionBaseKeys`, `_WorktreeSessionKeys` and
+// `_QuickSessionKeys` (each flags the unexpected key); renaming
+// `GitDiffWorkerSchema`'s `baseCommit` fails `_GitDiffWorkerKeys` (plus the
+// TS2561 at the one consumer that read the old name); changing
+// `QuickSessionSchema`'s `type` literal fails `_SessionNarrowsOnType`.
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type WorkerBaseKeys = 'id' | 'name' | 'createdAt';
 export type _WorkerBaseKeys = Assert<Equals<keyof WorkerBase, WorkerBaseKeys>>;
