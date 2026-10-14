@@ -10,9 +10,27 @@ import {
   SessionSchema,
   WorkerActivityInfoSchema,
   RepositorySchema,
+  WorktreeSessionSchema,
+  QuickSessionSchema,
   WorktreeSchema,
   type AppServerMessage,
 } from '../app-server-message';
+import type { Session, WorktreeSession, QuickSession } from '../../types/session';
+import type { Worker, EmbeddedAgentWorker } from '../../types/worker';
+import type { WorkerActivityInfo } from '../../types/session';
+import type { Repository } from '../../types/repository';
+
+// Parity pins: each hand-written entity type must equal what its schema
+// derives. `Assert<Equals<...>>` fails `tsc` (TS2344) under drift; a
+// `declare const x: never` form would type-check under it.
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _SessionParity = Assert<Equals<Session, v.InferOutput<typeof SessionSchema>>>;
+export type _WorktreeSessionParity = Assert<Equals<WorktreeSession, v.InferOutput<typeof WorktreeSessionSchema>>>;
+export type _QuickSessionParity = Assert<Equals<QuickSession, v.InferOutput<typeof QuickSessionSchema>>>;
+export type _WorkerParity = Assert<Equals<Worker, v.InferOutput<typeof WorkerSchema>>>;
+export type _EmbeddedAgentWorkerParity = Assert<Equals<EmbeddedAgentWorker, v.InferOutput<typeof EmbeddedAgentWorkerSchema>>>;
+export type _WorkerActivityInfoParity = Assert<Equals<WorkerActivityInfo, v.InferOutput<typeof WorkerActivityInfoSchema>>>;
+export type _RepositoryParity = Assert<Equals<Repository, v.InferOutput<typeof RepositorySchema>>>;
 
 // Helper to assert valid parse
 function expectValid(data: unknown) {

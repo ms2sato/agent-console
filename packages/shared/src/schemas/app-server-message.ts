@@ -10,7 +10,7 @@ const AgentActivityStateSchema = v.picklist(['active', 'idle', 'asking', 'unknow
 
 // === Worker schemas ===
 
-const WorkerBaseSchema = v.strictObject({
+export const WorkerBaseSchema = v.strictObject({
   id: v.string(),
   name: v.string(),
   createdAt: v.string(),
@@ -84,7 +84,7 @@ export const WorkerSchema = v.union([
 
 // === Session schemas ===
 
-const SessionBaseSchema = v.strictObject({
+export const SessionBaseSchema = v.strictObject({
   id: v.string(),
   locationPath: v.string(),
   status: SessionStatusSchema,
@@ -104,7 +104,7 @@ const SessionBaseSchema = v.strictObject({
   recoveryState: v.picklist(['healthy', 'orphaned']),
 });
 
-const WorktreeSessionSchema = v.strictObject({
+export const WorktreeSessionSchema = v.strictObject({
   ...SessionBaseSchema.entries,
   type: v.literal('worktree'),
   repositoryId: v.string(),
@@ -113,7 +113,7 @@ const WorktreeSessionSchema = v.strictObject({
   isMainWorktree: v.boolean(),
 });
 
-const QuickSessionSchema = v.strictObject({
+export const QuickSessionSchema = v.strictObject({
   ...SessionBaseSchema.entries,
   type: v.literal('quick'),
 });
