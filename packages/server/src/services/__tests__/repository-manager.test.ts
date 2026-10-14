@@ -324,7 +324,7 @@ describe('RepositoryManager', () => {
 
       it('the manual fallback commands target the given git directory', () => {
         const fallback = buildManualFallbackCommands(BARE_DIR, BARE_DIR, 'agent-console-users');
-        expect(fallback).toContain(`sudo chgrp -R agent-console-users ${BARE_DIR}`);
+        expect(fallback).toContain(`sudo chgrp -R agent-console-users '${BARE_DIR}'`);
         expect(fallback.some((c) => c.includes(`${BARE_DIR}/.git`))).toBe(false);
       });
     });
@@ -614,6 +614,17 @@ describe('RepositoryManager', () => {
         expect(fallback.some((c) => c.includes('chmod g+rwxs'))).toBe(true);
         expect(fallback.some((c) => c.includes('chmod -R g+rw'))).toBe(true);
         expect(fallback.some((c) => c.includes('chgrp -R agent-console-users'))).toBe(true);
+      });
+
+      it('quotes a git directory containing a space or shell metacharacters in the manual fallback commands', () => {
+        const gitDir = '/srv/my repo$;x.git';
+        const fallback = buildManualFallbackCommands(gitDir, gitDir, 'agent-console-users');
+        const quoted = `'${gitDir}'`;
+        expect(fallback).toContain(`sudo find ${quoted} -type d -exec chmod g+rwxs {} +`);
+        expect(fallback).toContain(`sudo chmod -R g+rw ${quoted}`);
+        expect(fallback).toContain(`sudo chgrp -R agent-console-users ${quoted}`);
+        // The first command takes the repository path, not the git directory.
+        expect(fallback.slice(1).some((c) => c.includes(` ${gitDir}`))).toBe(false);
       });
 
       it('honours AGENT_CONSOLE_SERVICE_GROUP override for the chgrp target group', async () => {
