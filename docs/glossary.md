@@ -728,7 +728,7 @@ This glossary is canonical. When the following changes are introduced, the gloss
 
 - New design doc (`docs/design/`) introducing a new domain concept
 - New type, DB schema field, or API endpoint name representing a domain concept
-- Existing design doc's Terminology section is added, renamed, or revised
+- Existing design doc's Terminology section is added, renamed, or revised (CI-enforced by `bun run check:glossary-terms`, which also checks glossary self-consistency; the other triggers remain a manual check)
 - New rule / skill / narrative referring to a project-wide concept
 
 If a term in the codebase or documentation does not appear here, either it is a drift to fix or a missing entry to add — both belong in the same PR that surfaced the gap.
