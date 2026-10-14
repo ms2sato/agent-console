@@ -187,8 +187,10 @@ describe('RepositoryManager', () => {
 
       beforeEach(() => {
         originalAuthMode = process.env.AUTH_MODE;
-        // A bare repository has no `.git` entry; the path itself is the git dir.
-        fs.mkdirSync(BARE_DIR, { recursive: true });
+        // A bare repository has no `.git` entry; the path itself is the git dir,
+        // shaped like one: a `HEAD` file and an `objects` directory at its root.
+        fs.mkdirSync(path.join(BARE_DIR, 'objects'), { recursive: true });
+        fs.writeFileSync(path.join(BARE_DIR, 'HEAD'), 'ref: refs/heads/main\n');
         mockGit.resolveGitDir.mockImplementation(async (repoPath: string) =>
           repoPath === BARE_DIR ? { gitDir: BARE_DIR, bare: true } : null,
         );
@@ -247,6 +249,33 @@ describe('RepositoryManager', () => {
         const manager = await getRepositoryManager();
         await manager.registerRepository(TEST_REPO_DIR);
         expect(mockGit.assertOriginFetchRefspec).not.toHaveBeenCalled();
+      });
+
+      it('a path that is not shaped like a repository is refused with NO safe.directory bootstrap and no runAsUser at all', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        fs.mkdirSync('/plain-dir', { recursive: true });
+        const manager = await getRepositoryManager();
+
+        await expect(manager.registerRepository('/plain-dir')).rejects.toThrow('Not a git repository: /plain-dir');
+
+        // Polarity: without the shape pre-check the bootstrap IS recorded (and
+        // `/plain-dir` would sit in the server's global safe.directory list).
+        expect(runAsUserMock.calls).toEqual([]);
+      });
+
+      it('a directory with only HEAD and objects/ passes the shape check, is trusted, and is then refused by resolveGitDir', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const FAKE = '/test/fake-bare';
+        fs.mkdirSync(path.join(FAKE, 'objects'), { recursive: true });
+        fs.writeFileSync(path.join(FAKE, 'HEAD'), 'ref: refs/heads/main\n');
+        mockGit.resolveGitDir.mockImplementation(async () => null);
+        const manager = await getRepositoryManager();
+
+        await expect(manager.registerRepository(FAKE)).rejects.toThrow(`Not a git repository: ${FAKE}`);
+
+        // The shape check is deliberately permissive: the bootstrap ran, and git
+        // (`resolveGitDir`) still has the final say.
+        expect(runAsUserMock.calls.some((c) => c.command.includes('safe.directory'))).toBe(true);
       });
 
       it('ORDER pin: the server-side safe.directory bootstrap runs before resolveGitDir and before the shared-config probe/apply', async () => {

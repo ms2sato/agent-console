@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { access, lstat } from 'fs/promises';
+import { access, lstat, stat } from 'fs/promises';
 import * as path from 'path';
 import type { Kysely } from 'kysely';
 import type { CleanupRepositoryPayload, Repository } from '@agent-console/shared';
@@ -364,8 +364,15 @@ export class RepositoryManager {
       throw new Error(`Path does not exist: ${absolutePath}`);
     }
 
+    // Cheap read-only shape check BEFORE anything is trusted: a path that is not
+    // even shaped like a repository must not be appended to the server's global
+    // `safe.directory` list below (pure fs, no git call, no `runAsUser`).
+    if (!(await this.hasGitRepositoryShape(absolutePath))) {
+      throw new Error(`Not a git repository: ${absolutePath}`);
+    }
+
     // In multi-user mode, bootstrap `safe.directory` into the SERVER's own
-    // gitconfig FIRST, so every server-run git call that follows (the
+    // gitconfig, so every server-run git call that follows (the
     // `resolveGitDir` probe, the shared-config `git config` probe, later
     // `listWorktrees` / `fetch` ...) against a source repo cloned by a different
     // OS user does not hit `dubious ownership`. This is the server's own
@@ -441,6 +448,32 @@ export class RepositoryManager {
     await this.lifecycleCallbacks?.onRepositoryCreated(repository);
 
     return repository;
+  }
+
+  /**
+   * Whether `absolutePath` is shaped like a git repository: a non-bare
+   * checkout has a `.git` entry (directory, or file for a linked worktree); a
+   * bare repository has a `HEAD` file AND an `objects` directory at its root.
+   * Pure filesystem, deliberately NOT a git invocation: it gates the
+   * server-side `safe.directory` bootstrap, which must not run for an
+   * arbitrary existing path. `resolveGitDir` still has the final say.
+   */
+  private async hasGitRepositoryShape(absolutePath: string): Promise<boolean> {
+    try {
+      await access(path.join(absolutePath, '.git'));
+      return true;
+    } catch {
+      // not a non-bare checkout; fall through to the bare shape
+    }
+    try {
+      const [head, objects] = await Promise.all([
+        stat(path.join(absolutePath, 'HEAD')),
+        stat(path.join(absolutePath, 'objects')),
+      ]);
+      return head.isFile() && objects.isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   /**
