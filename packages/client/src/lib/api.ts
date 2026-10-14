@@ -8,14 +8,12 @@ import type {
   CreateWorkerResponse,
   CreateSessionRequest,
   CreateRepositoryRequest,
-  AgentDefinition,
   CreateAgentRequest,
   UpdateAgentRequest,
   EmbeddedAgentDefinition,
   CreateEmbeddedAgentRequest,
   UpdateEmbeddedAgentRequest,
   SessionsValidationResponse,
-  GitHubIssueSummary,
   Job,
   JobsResponse,
   JobStats,
@@ -52,6 +50,13 @@ import {
   WorktreesResponseSchema,
   BranchesResponseSchema,
   AgentResponseSchema,
+  SessionResponseSchema,
+  RepositoriesResponseSchema,
+  BranchCommitsResponseSchema,
+  GitHubIssueResponseSchema,
+  AgentsResponseSchema,
+  SessionPrLinkResponseSchema,
+  RemoteBranchStatusSchema,
   MessageTemplatesResponseSchema,
   SkillsResponseSchema,
   CurrentUserResponseSchema,
@@ -65,6 +70,11 @@ import type {
   WorkersResponse,
   RepositoryResponse,
   BranchesResponse,
+  RepositoriesResponse,
+  BranchCommitsResponse,
+  GitHubIssueResponse,
+  AgentsResponse,
+  SessionPrLinkResponse,
   AgentResponse,
   SkillsResponse,
   MessageTemplatesResponse,
@@ -152,7 +162,7 @@ export async function getSession(sessionId: string): Promise<Session | null> {
     if (!res.ok) {
       await handleApiError(res, 'Failed to get session');
     }
-    const data = (await res.json()) as { session: Session };
+    const data = v.parse(SessionResponseSchema, await res.json());
     return data.session;
   } catch (error) {
     // Network error - server is likely down
@@ -434,10 +444,6 @@ export async function updateSessionMetadata(
   return res.json() as Promise<UpdateSessionMetadataResponse>;
 }
 
-export interface RepositoriesResponse {
-  repositories: Repository[];
-}
-
 export interface CreateRepositoryResponse {
   repository: Repository;
 }
@@ -447,7 +453,7 @@ export async function fetchRepositories(): Promise<RepositoriesResponse> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch repositories');
   }
-  return res.json();
+  return v.parse(RepositoriesResponseSchema, await res.json());
 }
 
 export async function fetchRepository(repositoryId: string): Promise<RepositoryResponse> {
@@ -573,19 +579,7 @@ export async function fetchSessionBranches(sessionId: string): Promise<BranchesR
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch session branches');
   }
-  return res.json() as Promise<BranchesResponse>;
-}
-
-export interface CommitInfo {
-  hash: string;
-  shortHash: string;
-  message: string;
-  author: string;
-  date: string;
-}
-
-export interface BranchCommitsResponse {
-  commits: CommitInfo[];
+  return v.parse(BranchesResponseSchema, await res.json());
 }
 
 export async function fetchBranchCommits(sessionId: string, baseRef: string): Promise<BranchCommitsResponse> {
@@ -596,7 +590,7 @@ export async function fetchBranchCommits(sessionId: string, baseRef: string): Pr
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch branch commits');
   }
-  return res.json() as Promise<BranchCommitsResponse>;
+  return v.parse(BranchCommitsResponseSchema, await res.json());
 }
 
 /**
@@ -637,10 +631,6 @@ export async function createWorktreeAsync(
   return res.json() as Promise<CreateWorktreeAsyncResponse>;
 }
 
-export interface GitHubIssueResponse {
-  issue: GitHubIssueSummary;
-}
-
 export async function fetchGitHubIssue(
   repositoryId: string,
   reference: string
@@ -652,7 +642,7 @@ export async function fetchGitHubIssue(
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch GitHub issue');
   }
-  return res.json() as Promise<GitHubIssueResponse>;
+  return v.parse(GitHubIssueResponseSchema, await res.json());
 }
 
 /**
@@ -703,16 +693,12 @@ export async function deleteWorktreeAsync(
   return res.json();
 }
 
-export interface AgentsResponse {
-  agents: AgentDefinition[];
-}
-
 export async function fetchAgents(): Promise<AgentsResponse> {
   const res = await api.agents.$get();
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch agents');
   }
-  return res.json();
+  return v.parse(AgentsResponseSchema, await res.json());
 }
 
 export async function fetchAgent(agentId: string): Promise<AgentResponse> {
@@ -1017,18 +1003,12 @@ export async function updateSessionMemo(sessionId: string, content: string): Pro
 // Session PR Link
 // ===========================================================================
 
-export interface SessionPrLinkResponse {
-  prUrl: string | null;
-  branchName: string;
-  orgRepo: string | null;
-}
-
 export async function fetchSessionPrLink(sessionId: string): Promise<SessionPrLinkResponse> {
   const res = await api.sessions[':sessionId']['pr-link'].$get({ param: { sessionId } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch session PR link');
   }
-  return res.json() as Promise<SessionPrLinkResponse>;
+  return v.parse(SessionPrLinkResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -1045,7 +1025,7 @@ export async function getRemoteBranchStatus(
   if (!res.ok) {
     await handleApiError(res, 'Failed to get remote branch status');
   }
-  return res.json() as Promise<RemoteBranchStatus>;
+  return v.parse(RemoteBranchStatusSchema, await res.json());
 }
 
 // ===========================================================================

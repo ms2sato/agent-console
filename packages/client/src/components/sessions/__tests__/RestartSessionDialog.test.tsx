@@ -3,6 +3,7 @@ import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RestartSessionDialog, type RestartSessionDialogProps } from '../RestartSessionDialog';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -27,10 +28,11 @@ const mockAgentsResponse = {
 const mockSessionResponse = {
   session: {
     id: 'session-1',
+    type: 'quick',
     workers: [
-      { id: 'worker-1', type: 'agent', agentId: 'claude-code', name: 'Claude Code' },
+      { id: 'worker-1', type: 'agent', agentId: 'claude-code', name: 'Claude Code', createdAt: '2026-01-01T00:00:00Z', activated: true },
     ],
-    status: 'running',
+    status: 'active',
     createdAt: '2026-01-01T00:00:00Z',
   },
 };
@@ -43,7 +45,7 @@ function createMockResponse(body: unknown) {
   return {
     ok: true,
     status: 200,
-    json: () => Promise.resolve(body),
+    json: () => Promise.resolve(completeWireBody(body)),
   } as unknown as Response;
 }
 
@@ -607,6 +609,11 @@ describe('RestartSessionDialog', () => {
       type: 'embedded-agent',
       embeddedAgentId: 'embedded-1',
       name: 'Local GPT worker',
+      createdAt: '2026-01-01T00:00:00Z',
+      activated: true,
+      autoCompaction: false,
+      reasoningEffort: null,
+      hasParameterOverride: false,
     };
 
     const twoEmbeddedAgentsResponse = {
@@ -632,8 +639,9 @@ describe('RestartSessionDialog', () => {
           return Promise.resolve(createMockResponse({
             session: {
               id: 'session-1',
+              type: 'quick',
               workers: [embeddedWorker],
-              status: 'running',
+              status: 'active',
               createdAt: '2026-01-01T00:00:00Z',
             },
           }));

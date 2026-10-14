@@ -9,6 +9,7 @@ import {
   parseAskingPatternsWithValidation,
   type AgentFormData,
 } from '../AgentForm';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -100,12 +101,12 @@ describe('AgentForm', () => {
 
     it('should populate the Base Agent select with agents from useAgents (hooks/useAgents.ts)', async () => {
       mockFetch.mockImplementation(() =>
-        Promise.resolve(new Response(JSON.stringify({
+        Promise.resolve(new Response(JSON.stringify(completeWireBody({
           agents: [
             { id: 'claude-code', name: 'Claude Code', isBuiltIn: true },
             { id: 'custom-agent', name: 'Custom Agent', isBuiltIn: false },
           ],
-        }), {
+        })), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }))
@@ -388,12 +389,12 @@ describe('AgentForm', () => {
 
     it('should exclude the agent being edited from the Base Agent select options', async () => {
       mockFetch.mockImplementation(() =>
-        Promise.resolve(new Response(JSON.stringify({
+        Promise.resolve(new Response(JSON.stringify(completeWireBody({
           agents: [
             { id: 'existing-agent-id', name: 'Existing Agent', isBuiltIn: false },
             { id: 'other-agent', name: 'Other Agent', isBuiltIn: false },
           ],
-        }), {
+        })), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }))

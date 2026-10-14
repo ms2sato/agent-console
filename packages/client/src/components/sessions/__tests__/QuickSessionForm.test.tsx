@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QuickSessionForm } from '../QuickSessionForm';
 import { _reset as resetAuth } from '../../../lib/auth';
 import { waitForAbsent } from '../../../test/waitForAbsent';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -35,7 +36,7 @@ function createMockResponse(body: unknown) {
   return {
     ok: true,
     status: 200,
-    json: () => Promise.resolve(body),
+    json: () => Promise.resolve(completeWireBody(body)),
   } as unknown as Response;
 }
 

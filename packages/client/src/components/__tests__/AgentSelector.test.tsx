@@ -7,6 +7,7 @@ import {
   UnifiedAgentSelector,
 } from '../AgentSelector';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
+import { completeWireBody } from '../../test/wire-fixtures';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -36,7 +37,7 @@ function createMockResponse(body: unknown) {
   return {
     ok: true,
     status: 200,
-    json: () => Promise.resolve(body),
+    json: () => Promise.resolve(completeWireBody(body)),
   } as unknown as Response;
 }
 

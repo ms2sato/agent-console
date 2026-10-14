@@ -11,6 +11,7 @@ import {
   resolveActiveEmbeddedContextWindowTokens,
 } from '../../SessionPage'
 import * as useAppWsModule from '../../../../hooks/useAppWs'
+import { completeWireBody } from '../../../../test/wire-fixtures'
 
 // --- useAppWsEvent spy ---
 //
@@ -77,7 +78,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    return new Response(JSON.stringify({ session: getSessionResponse }), {
+    return new Response(JSON.stringify(completeWireBody({ session: getSessionResponse })), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })

@@ -261,3 +261,10 @@ export const AgentResponseSchema = v.strictObject({
 });
 
 export type AgentResponse = v.InferOutput<typeof AgentResponseSchema>;
+
+/** Schema for the `{ agents }` response of `GET /api/agents`. */
+export const AgentsResponseSchema = v.strictObject({
+  agents: v.array(AgentDefinitionSchema),
+});
+
+export type AgentsResponse = v.InferOutput<typeof AgentsResponseSchema>;

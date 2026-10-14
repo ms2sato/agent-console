@@ -29,6 +29,7 @@ import { useSessionStopTasks, type UseSessionStopTasksReturn } from '../../hooks
 import * as useAppWsModule from '../../hooks/useAppWs';
 import * as capabilitiesModule from '../../lib/capabilities';
 import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../lib/auth';
+import { completeWireBody } from '../../test/wire-fixtures';
 
 // --- Module-level spies (test-instance scoped via mockRestore in afterEach) ---
 //
@@ -98,7 +99,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
 
   // GET /api/repositories
   if (method === 'GET' && /\/api\/repositories(\?|$)/.test(url)) {
-    return new Response(JSON.stringify({ repositories: fetchResponses.repositories }), {
+    return new Response(JSON.stringify(completeWireBody({ repositories: fetchResponses.repositories })), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });

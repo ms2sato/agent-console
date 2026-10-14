@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AgentParameterCapabilitiesByKind } from '@agent-console/shared';
 import { AgentParameterFields } from '../AgentParameterFields';
 import { agentKeys, embeddedAgentKeys } from '../../../lib/query-keys';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -19,7 +20,7 @@ afterEach(() => {
 });
 
 function createMockResponse(body: unknown) {
-  return new Response(JSON.stringify(body), { status: 200 });
+  return new Response(JSON.stringify(completeWireBody(body)), { status: 200 });
 }
 
 function resolveUrl(input: unknown): string {

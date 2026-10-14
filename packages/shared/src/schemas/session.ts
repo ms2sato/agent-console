@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { SessionSchema } from './app-server-message.js';
 
 /**
  * Schema for creating a worktree session
@@ -269,3 +270,16 @@ export type CreateSessionRequest = v.InferOutput<typeof CreateSessionRequestSche
 export type UpdateSessionRequest = v.InferOutput<typeof UpdateSessionRequestSchema>;
 export type UpdateSessionMemoRequest = v.InferOutput<typeof UpdateSessionMemoRequestSchema>;
 export type DeleteSessionRequest = v.InferOutput<typeof DeleteSessionRequestSchema>;
+
+/**
+ * Schema for the `{ session }` response of `GET /api/sessions/:id`. A live
+ * session and a paused (persisted) one both travel as a `SessionSchema` row.
+ *
+ * A REST envelope, not a `/ws/app` message: it lives here rather than beside
+ * `SessionSchema` because `app-server-message.ts` is the `/ws/app` protocol file.
+ */
+export const SessionResponseSchema = v.strictObject({
+  session: SessionSchema,
+});
+
+export type SessionResponse = v.InferOutput<typeof SessionResponseSchema>;

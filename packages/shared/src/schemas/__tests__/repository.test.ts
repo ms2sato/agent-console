@@ -5,6 +5,11 @@ import {
   RepositoryResponseSchema,
   WorktreesResponseSchema,
   BranchesResponseSchema,
+  RepositoriesResponseSchema,
+  BranchCommitsResponseSchema,
+  CommitInfoSchema,
+  GitHubIssueResponseSchema,
+  SessionPrLinkResponseSchema,
   CreateRepositoryRequestSchema,
   CloneRepositoryRequestSchema,
   CreateWorktreeRequestSchema,
@@ -1279,5 +1284,52 @@ describe('response schemas (pass 1)', () => {
     expect(v.safeParse(BranchesResponseSchema, { local: ['a'], remote: ['origin/a'], defaultBranch: 'a' }).success).toBe(true);
     expect(v.safeParse(BranchesResponseSchema, { local: [], remote: [] }).success).toBe(false);
     expect(v.safeParse(BranchesResponseSchema, { local: [], remote: [], defaultBranch: null, extra: 1 }).success).toBe(false);
+  });
+});
+
+describe('read-response envelopes (#1367 pass 2)', () => {
+  const repository = {
+    id: 'repo-1',
+    name: 'repo',
+    path: '/repo',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    orchestratorSessionIds: [],
+    clonedSourceRepoPath: null,
+  };
+  const commit = { hash: 'abc123', shortHash: 'abc', message: 'm', author: 'a', date: '2026-01-01 00:00:00 +0000' };
+  const issue = { org: 'o', repo: 'r', number: 1, title: 'T', body: 'B', url: 'https://github.com/o/r/issues/1' };
+
+  it('RepositoriesResponseSchema accepts an empty list and rejects a malformed element and an extra key', () => {
+    expect(v.safeParse(RepositoriesResponseSchema, { repositories: [] }).success).toBe(true);
+    expect(v.safeParse(RepositoriesResponseSchema, { repositories: [repository] }).success).toBe(true);
+    expect(v.safeParse(RepositoriesResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(RepositoriesResponseSchema, { repositories: [{ id: 'x' }] }).success).toBe(false);
+    expect(v.safeParse(RepositoriesResponseSchema, { repositories: [], extra: 1 }).success).toBe(false);
+  });
+
+  it('BranchCommitsResponseSchema accepts an empty list and is strict at the element level', () => {
+    expect(v.safeParse(BranchCommitsResponseSchema, { commits: [] }).success).toBe(true);
+    expect(v.safeParse(BranchCommitsResponseSchema, { commits: [commit] }).success).toBe(true);
+    const { date: _date, ...withoutDate } = commit;
+    expect(v.safeParse(CommitInfoSchema, withoutDate).success).toBe(false);
+    expect(v.safeParse(CommitInfoSchema, { ...commit, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(BranchCommitsResponseSchema, { commits: [withoutDate] }).success).toBe(false);
+    expect(v.safeParse(BranchCommitsResponseSchema, { commits: [], extra: 1 }).success).toBe(false);
+  });
+
+  it('GitHubIssueResponseSchema composes the issue summary and is strict', () => {
+    expect(v.safeParse(GitHubIssueResponseSchema, { issue }).success).toBe(true);
+    expect(v.safeParse(GitHubIssueResponseSchema, { issue: { ...issue, suggestedBranch: 'b' } }).success).toBe(true);
+    expect(v.safeParse(GitHubIssueResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(GitHubIssueResponseSchema, { issue: { org: 'o' } }).success).toBe(false);
+    expect(v.safeParse(GitHubIssueResponseSchema, { issue, extra: 1 }).success).toBe(false);
+  });
+
+  it('SessionPrLinkResponseSchema allows null prUrl and orgRepo only, and is strict', () => {
+    expect(v.safeParse(SessionPrLinkResponseSchema, { prUrl: null, branchName: 'b', orgRepo: null }).success).toBe(true);
+    expect(v.safeParse(SessionPrLinkResponseSchema, { prUrl: 'https://x/pull/1', branchName: 'b', orgRepo: 'o/r' }).success).toBe(true);
+    expect(v.safeParse(SessionPrLinkResponseSchema, { prUrl: null, branchName: null, orgRepo: null }).success).toBe(false);
+    expect(v.safeParse(SessionPrLinkResponseSchema, { prUrl: null, orgRepo: null }).success).toBe(false);
+    expect(v.safeParse(SessionPrLinkResponseSchema, { prUrl: null, branchName: 'b', orgRepo: null, extra: 1 }).success).toBe(false);
   });
 });

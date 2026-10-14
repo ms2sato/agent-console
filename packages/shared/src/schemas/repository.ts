@@ -424,6 +424,11 @@ export const RepositoryResponseSchema = v.strictObject({
   repository: RepositorySchema,
 });
 
+/** Schema for `GET /api/repositories`'s response. */
+export const RepositoriesResponseSchema = v.strictObject({
+  repositories: v.array(RepositorySchema),
+});
+
 /**
  * What the server process observed about a repository's directory when it
  * listed the repository's worktrees.
@@ -450,6 +455,37 @@ export const BranchesResponseSchema = v.strictObject({
   defaultBranch: v.nullable(v.string()),
 });
 
+/** One commit of `GET /api/sessions/:id/commits`; the field set is pinned by `getBranchCommits` in the server's git library. */
+export const CommitInfoSchema = v.strictObject({
+  hash: v.string(),
+  shortHash: v.string(),
+  message: v.string(),
+  author: v.string(),
+  date: v.string(),
+});
+
+/** Schema for `GET /api/sessions/:id/commits`'s response. */
+export const BranchCommitsResponseSchema = v.strictObject({
+  commits: v.array(CommitInfoSchema),
+});
+
+/** Schema for `POST /api/repositories/:id/github-issue`'s response. */
+export const GitHubIssueResponseSchema = v.strictObject({
+  issue: GitHubIssueSummarySchema,
+});
+
+/** Schema for `GET /api/sessions/:id/pr-link`'s response. */
+export const SessionPrLinkResponseSchema = v.strictObject({
+  prUrl: v.nullable(v.string()),
+  branchName: v.string(),
+  orgRepo: v.nullable(v.string()),
+});
+
+export type RepositoriesResponse = v.InferOutput<typeof RepositoriesResponseSchema>;
+export type CommitInfo = v.InferOutput<typeof CommitInfoSchema>;
+export type BranchCommitsResponse = v.InferOutput<typeof BranchCommitsResponseSchema>;
+export type GitHubIssueResponse = v.InferOutput<typeof GitHubIssueResponseSchema>;
+export type SessionPrLinkResponse = v.InferOutput<typeof SessionPrLinkResponseSchema>;
 export type RepositoryResponse = v.InferOutput<typeof RepositoryResponseSchema>;
 export type RepositoryPathStatus = v.InferOutput<typeof RepositoryPathStatusSchema>;
 export type WorktreesResponse = v.InferOutput<typeof WorktreesResponseSchema>;

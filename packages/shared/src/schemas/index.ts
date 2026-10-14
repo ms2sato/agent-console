@@ -85,6 +85,8 @@ export {
   type AgentDefinition,
   AgentResponseSchema,
   type AgentResponse,
+  AgentsResponseSchema,
+  type AgentsResponse,
 } from './agent.js';
 
 // Worker schemas
@@ -137,6 +139,7 @@ export {
   UpdateSessionRequestSchema,
   UpdateSessionMemoRequestSchema,
   DeleteSessionRequestSchema,
+  SessionResponseSchema,
   RestoreInfoMessageSchema,
   branchNamePattern,
   branchNameErrorMessage,
@@ -146,6 +149,7 @@ export {
   type UpdateSessionRequest,
   type UpdateSessionMemoRequest,
   type DeleteSessionRequest,
+  type SessionResponse,
 } from './session.js';
 
 // Repository schemas
@@ -190,6 +194,16 @@ export {
   RepositoryPathStatusSchema,
   WorktreesResponseSchema,
   BranchesResponseSchema,
+  RepositoriesResponseSchema,
+  CommitInfoSchema,
+  BranchCommitsResponseSchema,
+  GitHubIssueResponseSchema,
+  SessionPrLinkResponseSchema,
+  type RepositoriesResponse,
+  type CommitInfo,
+  type BranchCommitsResponse,
+  type GitHubIssueResponse,
+  type SessionPrLinkResponse,
   type RepositoryResponse,
   type RepositoryPathStatus,
   type WorktreesResponse,

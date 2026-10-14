@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
 import { waitFor, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useResolvedAgentId } from '../useAgents';
+import { completeWireBody } from '../../test/wire-fixtures';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -26,7 +27,7 @@ function createMockResponse(body: unknown) {
   return {
     ok: true,
     status: 200,
-    json: () => Promise.resolve(body),
+    json: () => Promise.resolve(completeWireBody(body)),
   } as unknown as Response;
 }
 
