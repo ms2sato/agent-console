@@ -108,6 +108,15 @@ describe('detectRowLinks', () => {
       expect(links.has(1)).toBe(false);
     });
 
+    it('(d2) does not join when the next row starts with a non-URL, non-space character', () => {
+      // \S+ would swallow these, so only the continuation-start guard keeps the href short.
+      for (const next of ['│ box', '"quoted"', '<tag>']) {
+        const links = detectRowLinks([row(0, r0, false, true), row(1, next)]);
+        expect(links.get(0)).toEqual([{ start: 4, end: r0.length, href: r0.slice(4) }]);
+        expect(links.has(1)).toBe(false);
+      }
+    });
+
     it('(e) does not join when row 1 ends in sentence punctuation at the last column', () => {
       const dotted = 'see https://example.com/a.';
       const links = detectRowLinks([row(0, dotted, false, true), row(1, 'next')]);
@@ -130,10 +139,13 @@ describe('detectRowLinks', () => {
       expect(links.get(1)).toEqual([{ start: 0, end: next.length, href: next }]);
     });
 
-    it('does not join a row that merely ends in a partial scheme', () => {
-      // 'ht' + 'tps://x.y' would synthesise a URL if rows were glued blindly.
-      const links = detectRowLinks([row(0, 'abcht', false, true), row(1, 'tps://x.y')]);
-      expect(links.size).toBe(0);
+    it('does not synthesise a URL from a row that ends in a partial scheme', () => {
+      // Row 1 has an earlier, closed URL and then ends in 'ht'; blind gluing of 'ht' + 'tps://x.y'
+      // would create a new link whose row-1 range starts inside the prose.
+      const first = 'see https://a.b/c ht';
+      const links = detectRowLinks([row(0, first, false, true), row(1, 'tps://x.y/z')]);
+      expect(links.get(0)).toEqual([{ start: 4, end: 17, href: 'https://a.b/c' }]);
+      expect(links.has(1)).toBe(false);
     });
   });
 
