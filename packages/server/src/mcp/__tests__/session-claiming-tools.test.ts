@@ -150,6 +150,15 @@ describe('sessionId-taking tools: the converse of the registry', () => {
     });
   });
 
+  it('the exemptions are exactly the two team-visible reads, each with a final reason (none is waiting on a decision)', () => {
+    expect(SESSION_ID_TAKING_UNGATED_TOOLS.map((e) => e.tool).sort()).toEqual(['get_session_status', 'list_timers']);
+    const stillOpen = SESSION_ID_TAKING_UNGATED_TOOLS.filter((e) => /decid|pending/i.test(e.reason)).map((e) => e.tool);
+    expect(stillOpen).toEqual([]);
+    // A WRITE never belongs on this list: no exempt tool is a registered writer of session state.
+    expect(SESSION_ID_TAKING_UNGATED_TOOLS.map((e) => e.tool)).not.toContain('write_memo');
+    expect(SESSION_ID_TAKING_UNGATED_TOOLS.map((e) => e.tool)).not.toContain('close_session');
+  });
+
   it('every exemption states a reason', () => {
     const blank = SESSION_ID_TAKING_UNGATED_TOOLS.filter((e) => e.reason.trim().length === 0).map((e) => e.tool);
     expect(blank).toEqual([]);
