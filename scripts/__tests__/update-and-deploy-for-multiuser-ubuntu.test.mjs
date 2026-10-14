@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '..', 'update-and-deploy-for-multiuser-ubuntu.sh');
@@ -303,5 +305,317 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: V5/V6 windows (#2043)', () 
     const header = scriptText.split('\n').slice(0, 130).join('\n');
     expect(header).toContain('AGENT_CONSOLE_HEALTH_ATTEMPTS');
     expect(header.indexOf('AGENT_CONSOLE_PORT')).toBeLessThan(header.indexOf('AGENT_CONSOLE_HEALTH_ATTEMPTS'));
+  });
+});
+
+// Pinned-SHA build (Issue #2090, phase 1 of #919; docs/design/deploy-build-flow.md
+// section 6): the deploy archives ONE resolved commit into a per-deploy build
+// directory and builds/copies from there. Two layers, as above: static pins on
+// this script's text for the ordering that cannot be run unelevated, and a
+// behavioural run of the real script file with a stand-in `sudo` first on PATH
+// (it drops `-u <user> [--]` and execs the rest, and REFUSES every root-level
+// invocation, so nothing real can be elevated or installed).
+describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA build via git archive (Issue #2090) -- static pins', () => {
+  const scriptText = readFileSync(SCRIPT, 'utf-8');
+  const idxOf = (needle) => {
+    const i = scriptText.indexOf(needle);
+    expect(i).toBeGreaterThan(-1);
+    return i;
+  };
+  const DEPLOY_SHA_LINE =
+    'DEPLOY_SHA="${AGENT_CONSOLE_DEPLOY_SHA:-$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse origin/main)}"';
+  const GUARD = 'cat-file -e "${DEPLOY_SHA}^{commit}"';
+  const ARCHIVE_LINE =
+    "sudo -u \"${SERVICE_USER}\" bash -c 'set -o pipefail; git -C \"$1\" archive \"$2\" | tar -x -C \"$3\"' _ \"${SRC}\" \"${DEPLOY_SHA}\" \"${BUILD_DIR}\"";
+
+  it('resolves DEPLOY_SHA once from AGENT_CONSOLE_DEPLOY_SHA, defaulting to origin/main of the source repo', () => {
+    expect(scriptText.split(DEPLOY_SHA_LINE).length - 1).toBe(1);
+  });
+
+  it('the cat-file commit guard comes before the build directory is created, with the documented error and exit 1', () => {
+    expect(idxOf(GUARD)).toBeLessThan(idxOf('mktemp -d "${DATA_ROOT}/build.XXXXXX"'));
+    expect(scriptText).toContain(
+      'echo "Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ${SRC}" >&2\n  exit 1',
+    );
+  });
+
+  it('DEPLOY_SHA is normalized to the full commit SHA after the guard and before the build directory and the printed line', () => {
+    const norm = idxOf('DEPLOY_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse "${DEPLOY_SHA}^{commit}")"');
+    expect(norm).toBeGreaterThan(idxOf(GUARD));
+    expect(norm).toBeLessThan(idxOf('echo "    DEPLOY_SHA: ${DEPLOY_SHA}"'));
+    expect(norm).toBeLessThan(idxOf('mktemp -d "${DATA_ROOT}/build.XXXXXX"'));
+  });
+
+  it('the pre-check prints DEPLOY_SHA and its subject, not HEAD', () => {
+    expect(scriptText).toContain('echo "    DEPLOY_SHA: ${DEPLOY_SHA}"');
+    expect(scriptText).toContain('git -C "${SRC}" log --oneline -1 "${DEPLOY_SHA}"');
+  });
+
+  it('the archive step runs as the service user with `set -o pipefail` INSIDE the shell that owns the pipe', () => {
+    expect(scriptText).toContain(ARCHIVE_LINE);
+    // bash, not dash: Ubuntu 22.04's dash has no pipefail.
+    expect(scriptText).not.toMatch(/(?<![a-z])sh -c 'set -o pipefail/);
+  });
+
+  it('the EXIT trap is registered after the build dir exists and before the archive line', () => {
+    const mk = idxOf('BUILD_DIR="$(sudo -u "${SERVICE_USER}" mktemp -d');
+    const trap = idxOf('trap remove_build_dir EXIT');
+    expect(trap).toBeGreaterThan(mk);
+    expect(trap).toBeLessThan(idxOf(ARCHIVE_LINE));
+  });
+
+  it('installs with --frozen-lockfile, builds, and rsyncs from BUILD_DIR (never from SRC)', () => {
+    const install = idxOf('cd -- "$1" && bun install --frozen-lockfile\n\' _ "${BUILD_DIR}"');
+    const build = idxOf('cd -- "$1" && NODE_ENV=production bun run build\n\' _ "${BUILD_DIR}"');
+    const rsync = idxOf('"${BUILD_DIR}/" "${DST}/"');
+    expect(idxOf(ARCHIVE_LINE)).toBeLessThan(install);
+    expect(install).toBeLessThan(build);
+    expect(build).toBeLessThan(rsync);
+    expect(scriptText).not.toContain('"${SRC}/" "${DST}/"');
+    expect(scriptText).not.toMatch(/^\s*cd -- "\$1" && bun install\n/m);
+  });
+
+  it('the build dir is removed explicitly after the rsync and BEFORE the V0 call, and the removal clears its own state', () => {
+    const rsync = idxOf('"${BUILD_DIR}/" "${DST}/"');
+    const call = idxOf('\nremove_build_dir\n');
+    const v0 = idxOf('verify_check "V0 data-root-ownership"');
+    expect(call).toBeGreaterThan(rsync);
+    expect(call).toBeLessThan(v0);
+    // Cleared state is what keeps the EXIT trap from running a second removal.
+    expect(scriptText).toContain('    BUILD_DIR=""\n  fi\n}');
+  });
+
+  it('the marker printf receives DEPLOY_SHA', () => {
+    expect(scriptText).toContain('"$3/.deploy-sha"\' _ "${DEPLOY_SHA}" "${DEPLOYED_AT}" "${DST}"');
+  });
+
+  it('both HEAD re-checks are gone, and HEAD is never read as the deployed revision', () => {
+    expect(scriptText).not.toContain('source HEAD changed during build');
+    expect(scriptText).not.toContain('source HEAD changed during deploy');
+    expect(scriptText).not.toContain('rev-parse HEAD');
+    expect(scriptText).not.toContain('DEPLOYED_SHA');
+  });
+
+  it('the header documents AGENT_CONSOLE_DEPLOY_SHA with its origin/main default', () => {
+    const header = scriptText.split('\n').slice(0, 130).join('\n');
+    // The env-var table row (the Steps list also names the variable, so a
+    // bare substring would be satisfied without the table row).
+    expect(header).toMatch(/^#   AGENT_CONSOLE_DEPLOY_SHA {5,}\S/m);
+    expect(header).toMatch(/Default: origin\/main of the source repo/);
+  });
+});
+
+// Behavioural: the production archive pipeline text, extracted from the script
+// and run with a producer that dies AFTER emitting a complete, valid tar. GNU
+// tar exits 0 on that stream, so only the inner `set -o pipefail` makes the
+// step fail; the variant with it stripped is the polarity control.
+describe('update-and-deploy-for-multiuser-ubuntu.sh: the archive pipeline fails when `git archive` fails (Issue #2090)', () => {
+  const scriptText = readFileSync(SCRIPT, 'utf-8');
+  const m = scriptText.match(/bash -c '(set -o pipefail; git -C "\$1" archive "\$2" \| tar -x -C "\$3")' _ "\$\{SRC\}"/);
+
+  function runPipeline(inner, producerFails) {
+    const root = mkdtempSync(join(tmpdir(), 'archive-pipe-'));
+    const bin = join(root, 'bin');
+    const payload = join(root, 'payload');
+    const out = join(root, 'out');
+    mkdirSync(bin);
+    mkdirSync(payload);
+    mkdirSync(out);
+    writeFileSync(join(payload, 'a.txt'), 'a\n');
+    // A stand-in `git` whose `archive` emits a complete tar, then exits as told.
+    writeFileSync(
+      join(bin, 'git'),
+      `#!/bin/bash\ntar -c -f - -C "${payload}" a.txt\nexit ${producerFails ? 1 : 0}\n`,
+    );
+    chmodSync(join(bin, 'git'), 0o755);
+    const r = spawnSync('bash', ['-c', inner, '_', 'unused-src', 'unused-sha', out], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      encoding: 'utf8',
+    });
+    return { status: r.status, extracted: existsSync(join(out, 'a.txt')) };
+  }
+
+  it('the pipeline text was found in the script', () => {
+    expect(m).not.toBeNull();
+  });
+
+  it('exits 0 when git archive succeeds (positive control: the harness extracts)', () => {
+    const r = runPipeline(m[1], false);
+    expect(r).toEqual({ status: 0, extracted: true });
+  });
+
+  it('exits non-zero when git archive fails after a valid stream', () => {
+    expect(runPipeline(m[1], true).status).not.toBe(0);
+  });
+
+  it('polarity control: the same pipeline WITHOUT pipefail masks the failure with tar\'s 0', () => {
+    const stripped = m[1].replace('set -o pipefail; ', '');
+    expect(stripped).not.toBe(m[1]);
+    expect(runPipeline(stripped, true).status).toBe(0);
+  });
+});
+
+// Behavioural: the real script file, past the SHA guard and through the
+// rsync, against a scratch repository. `sudo` is a stand-in on PATH that logs
+// every call, drops `-u <user> [--]` and execs the rest, short-circuits the two
+// bun steps (install/build: no network, no toolchain), and exits 99 on any
+// root-level call -- the script's step 5 (`sudo install ...` into /usr/local)
+// -- so nothing outside the temp tree can be written.
+describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against a scratch repository (Issue #2090)', () => {
+  function makeHarness() {
+    const root = mkdtempSync(join(tmpdir(), 'deploy-sha-'));
+    const dataRoot = join(root, 'data');
+    const src = join(dataRoot, 'source-repos', 'agent-console');
+    const dst = join(root, 'deploy-target');
+    const bin = join(root, 'bin');
+    const log = join(root, 'fake-sudo.log');
+    mkdirSync(src, { recursive: true });
+    mkdirSync(dst);
+    mkdirSync(bin);
+    // Hermetic git, inline: this file is plain Node (.mjs) and cannot import
+    // scratch-git.ts (the single writer of this pattern for TS callers).
+    const gitCfg = join(root, 'gitconfig');
+    writeFileSync(gitCfg, '[commit]\n\tgpgsign = false\n[user]\n\tname = t\n\temail = t@example.com\n[init]\n\tdefaultBranch = main\n');
+    const baseEnv = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v === undefined || k.startsWith('GIT_') || k.startsWith('AGENT_CONSOLE_')) continue;
+      baseEnv[k] = v;
+    }
+    baseEnv.GIT_CONFIG_GLOBAL = gitCfg;
+    baseEnv.GIT_CONFIG_NOSYSTEM = '1';
+    const git = (...args) => {
+      const r = spawnSync('git', ['-C', src, ...args], { env: baseEnv, encoding: 'utf8' });
+      expect(r.status).toBe(0);
+      return r.stdout.trim();
+    };
+    git('init', '-q');
+    writeFileSync(join(src, 'tracked.txt'), 'tracked\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'first');
+    const firstSha = git('rev-parse', 'HEAD');
+    // origin/main is the FIRST commit; HEAD moves on, so a HEAD read is distinguishable.
+    git('update-ref', 'refs/remotes/origin/main', firstSha);
+    writeFileSync(join(src, 'later.txt'), 'later\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'second');
+    const headSha = git('rev-parse', 'HEAD');
+    writeFileSync(join(src, 'dirty.txt'), 'untracked working-tree file\n');
+
+    writeFileSync(
+      join(bin, 'sudo'),
+      [
+        '#!/bin/bash',
+        'echo "sudo $*" >> "$FAKE_SUDO_LOG"',
+        'if [ "$1" != "-u" ]; then',
+        '  echo "ROOT-LEVEL: $*" >> "$FAKE_SUDO_LOG"',
+        '  for d in "$AGENT_CONSOLE_DATA_ROOT"/build.*; do [ -e "$d" ] && echo "BUILD_DIR_PRESENT: $d" >> "$FAKE_SUDO_LOG"; done',
+        '  exit 99',
+        'fi',
+        'shift 2',
+        '[ "${1:-}" = "--" ] && shift',
+        'if [ "${1:-}" = "bash" ] && [ "${2:-}" = "-lc" ] && [[ "${3:-}" == *bun* ]]; then',
+        '  echo "BUN-STEP: $(ls -A "$5" | tr "\\n" " ")" >> "$FAKE_SUDO_LOG"',
+        '  [ -n "${FAKE_BUN_FAIL:-}" ] && exit 77',
+        '  exit 0',
+        'fi',
+        'exec "$@"',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(join(bin, 'sudo'), 0o755);
+
+    const run = (extraEnv = {}) => {
+      const r = spawnSync('bash', [SCRIPT], {
+        env: {
+          ...baseEnv,
+          PATH: `${bin}:${process.env.PATH}`,
+          AGENT_CONSOLE_DATA_ROOT: dataRoot,
+          AGENT_CONSOLE_DEPLOY_TARGET_DIR: dst,
+          AGENT_CONSOLE_SERVICE_USER: 'svc',
+          FAKE_SUDO_LOG: log,
+          ...extraEnv,
+        },
+        encoding: 'utf8',
+        timeout: 60000,
+      });
+      return {
+        status: r.status,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        log: existsSync(log) ? readFileSync(log, 'utf8') : '',
+        buildDirs: readdirSync(dataRoot).filter((n) => n.startsWith('build.')),
+      };
+    };
+    return { run, src, dst, firstSha, headSha };
+  }
+
+  const GUARD_ERROR = 'Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ';
+
+  it('an unknown override SHA exits 1 with the guard error before any build directory or install step', () => {
+    const h = makeHarness();
+    const r = h.run({ AGENT_CONSOLE_DEPLOY_SHA: '0'.repeat(40) });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(`${GUARD_ERROR}${h.src}`);
+    expect(r.log).not.toContain('mktemp');
+    expect(r.log).not.toContain('BUN-STEP');
+    expect(r.buildDirs).toEqual([]);
+    expect(readdirSync(h.dst)).toEqual([]);
+  });
+
+  it('with no override and no resolvable origin/main it ends in the same error, not a silent set -e exit', () => {
+    const h = makeHarness();
+    spawnSync('git', ['-C', h.src, 'update-ref', '-d', 'refs/remotes/origin/main'], {
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' },
+    });
+    const r = h.run();
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(`${GUARD_ERROR}${h.src}`);
+    expect(r.log).not.toContain('mktemp');
+    expect(r.buildDirs).toEqual([]);
+  });
+
+  it('an install failure leaves no build directory behind (the EXIT trap) and the archive held the committed tree only', () => {
+    const h = makeHarness();
+    const r = h.run({ AGENT_CONSOLE_DEPLOY_SHA: h.headSha, FAKE_BUN_FAIL: '1' });
+    expect(r.status).toBe(77);
+    const bunStep = r.log.split('\n').find((l) => l.startsWith('BUN-STEP:')) ?? '';
+    expect(bunStep).toContain('tracked.txt');
+    expect(bunStep).toContain('later.txt');
+    expect(bunStep).not.toContain('dirty.txt');
+    expect(r.buildDirs).toEqual([]);
+    expect(readdirSync(h.dst)).toEqual([]);
+  });
+
+  it('the default is origin/main (not HEAD): that tree is copied, the marker records it, and the build dir is already gone before step 5', () => {
+    const h = makeHarness();
+    const r = h.run();
+    // Stops at step 5's root-level `sudo install`, by design of the stand-in.
+    expect(r.status).toBe(99);
+    expect(r.stdout).toContain(`DEPLOY_SHA: ${h.firstSha}`);
+    expect(r.log).toContain('ROOT-LEVEL: install');
+    expect(r.log).not.toContain('BUILD_DIR_PRESENT');
+    expect(readdirSync(h.dst).sort()).toEqual(['.deploy-sha', 'tracked.txt']);
+    expect(readFileSync(join(h.dst, '.deploy-sha'), 'utf8').split('\n')[0]).toBe(h.firstSha);
+    expect(r.buildDirs).toEqual([]);
+  });
+
+  it('a branch name or short SHA override is recorded as the full 40-char SHA', () => {
+    const h = makeHarness();
+    for (const override of ['main', h.firstSha.slice(0, 8)]) {
+      const r = h.run({ AGENT_CONSOLE_DEPLOY_SHA: override });
+      expect(r.status).toBe(99);
+      const line1 = readFileSync(join(h.dst, '.deploy-sha'), 'utf8').split('\n')[0];
+      expect(line1).toMatch(/^[0-9a-f]{40}$/);
+      expect(line1).toBe(override === 'main' ? h.headSha : h.firstSha);
+      expect(r.stdout).toContain(`DEPLOY_SHA: ${line1}`);
+    }
+  });
+
+  it('an explicit override wins over origin/main', () => {
+    const h = makeHarness();
+    const r = h.run({ AGENT_CONSOLE_DEPLOY_SHA: h.headSha });
+    expect(r.status).toBe(99);
+    expect(readFileSync(join(h.dst, '.deploy-sha'), 'utf8').split('\n')[0]).toBe(h.headSha);
+    expect(existsSync(join(h.dst, 'later.txt'))).toBe(true);
   });
 });

@@ -55,7 +55,12 @@
 #      NOT EXERCISED (the image pins bun at the unified path)
 #   5. cp -a /src -> the shared source-repos dir, as the service user
 #   6. update-and-deploy-for-multiuser-ubuntu.sh as `deployer` (uid != 0, so
-#      the script's own per-step self-elevation is what runs); expect exit 0
+#      the script's own per-step self-elevation is what runs); expect exit 0.
+#      The driver pins AGENT_CONSOLE_DEPLOY_SHA to the source copy's HEAD and
+#      expects /api/config deployedSha and .deploy-sha line 1 to equal that
+#      requested SHA (never the marker the deploy itself wrote)
+#  6b. polarity: AGENT_CONSOLE_DEPLOY_SHA=0000... must exit 1 at the guard,
+#      leave .deploy-sha byte-identical, and print no `==> systemctl restart`
 #   7. the deploy script's OWN post-deploy verification screen (Issue #1717:
 #      V0 data-root-ownership, V1 unit-env-drift, V2 entry-path-readable, V3
 #      mainpid-identity, V4 unit-active, V5 health, V6 journal-digest; V0
@@ -145,7 +150,11 @@
 #      once, unmodified, before this stand-in existed (the first tier-3 run
 #      of this arm, back when the shim was still live). Polarity:
 #      with the pre-fix (af8fed78) bare-`bun` start script injected into
-#      the rsynced package.json, deploy #7 must exit 1 (V0-V5 PASS, V6 FAIL
+#      the source copy's package.json -- committed in the source copy
+#      (commit_source_edit, origin/main follows) because the deploy builds a
+#      `git archive` of a commit, not the working tree, so an uncommitted
+#      edit would never reach the build; the restore is committed the same
+#      way, and neither deploy pins a SHA (default path) -- deploy #7 must exit 1 (V0-V5 PASS, V6 FAIL
 #      naming the EMBEDDED_AGENT_BUN_PATH warning, restart still happens)
 #      and `readlink /proc/<child-pid>/exe` of the dist/index.js process
 #      (MainPID's own child, not MainPID itself -- MainPID's own
@@ -162,6 +171,10 @@
 #      AC_TIER3_ELEVATE) against the real bundle -> READABLE; (2) the same
 #      call against a chmod 000 copy -> UNREADABLE, exit 1; (3) root with an
 #      empty prefix against the real bundle -> pass
+#   8b. `bun install --frozen-lockfile` in the source copy, as the service
+#      user: since the pinned-SHA deploy the source repo no longer receives
+#      node_modules from a deploy (it installs in a throwaway build dir),
+#      and step 9's smokes import workspace packages from it
 #   9. check-embedded-agent-elevation.ts as agentconsole:agent-console-users
 #      (expect 0, Assertion 2 OK), as agentconsole with the WRONG primary gid
 #      (expect exactly 2 naming User= and Group=, no FAIL line -- the
@@ -426,8 +439,12 @@ run_setup() {
 
 copy_source() {
   step_start "5. cp -a /src -> ${SRC} (as agentconsole)"
-  expect "source-repo copy as the service user (cp -a + git rev-parse HEAD)" \
-    cexec --user agentconsole "$SERVICE" sh -c "cp -a /src '${SRC}' && git -C '${SRC}' rev-parse HEAD"
+  # The deploy script's default (no AGENT_CONSOLE_DEPLOY_SHA) is origin/main of
+  # this repository, which the copied checkout does not have; point it at HEAD
+  # so every later deploy in this driver that passes no SHA resolves the same
+  # commit run_deploy pins explicitly.
+  expect "source-repo copy as the service user (cp -a + origin/main ref at HEAD + git rev-parse HEAD)" \
+    cexec --user agentconsole "$SERVICE" sh -c "cp -a /src '${SRC}' && git -C '${SRC}' update-ref refs/remotes/origin/main HEAD && git -C '${SRC}' rev-parse HEAD"
   cexec --user root "$SERVICE" stat -c '  %U:%G %a %n' "$SRC" "$SRC/scripts"
   step_end copy_source
 }
@@ -442,9 +459,28 @@ run_deploy() {
   step_start "6. update-and-deploy-for-multiuser-ubuntu.sh as deployer (uid != 0: per-step self-elevation)"
   cexec --user deployer "$SERVICE" id | sed 's/^/  id: /'
   local rc=0
+  # The driver CHOOSES the SHA to deploy and passes it explicitly: the copied
+  # repository in the container has no origin/main of its own (copy_source
+  # points one at HEAD only so the later default-path deploys resolve), and a
+  # pinned SHA is what lets the checks below compare against a value the
+  # deploy did not write. Read as the source's owner (the copy is not
+  # root's), once, before the deploy.
+  local want_sha
+  want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
+  echo "  requested AGENT_CONSOLE_DEPLOY_SHA: ${want_sha}"
   DEPLOY_OUT="$(mktemp)"
-  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh 2>&1 | tee "$DEPLOY_OUT" || rc=${PIPESTATUS[0]}
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh 2>&1 | tee "$DEPLOY_OUT" || rc=${PIPESTATUS[0]}
   check "deploy script as deployer exits 0" "$rc"
+  # The requested SHA, compared with what the running server and the marker
+  # report -- never with a value the deploy computed. A deploy that built any
+  # other tree (or wrote the marker from anything but the pinned SHA) fails here.
+  local cfg_now marker_sha
+  cfg_now="$(cexec --user root "$SERVICE" curl -sS -m 5 http://localhost:8080/api/config || true)"
+  expect "deploy #1: /api/config deployedSha equals the SHA the driver requested" \
+    grep -qF "\"deployedSha\":\"${want_sha}\"" <<<"$cfg_now"
+  marker_sha="$(cexec --user root "$SERVICE" head -n 1 "${DEPLOY_TARGET}/.deploy-sha" | tr -d '\r' || true)"
+  expect "deploy #1: .deploy-sha line 1 equals the SHA the driver requested" \
+    test "$marker_sha" = "$want_sha"
   # The shipping-path form of #1690 case (1): the script's own readability
   # gate ran with a NON-EMPTY elevation prefix (the caller is not root) and
   # returned READABLE, or the script would have exited 1 before the restart.
@@ -453,6 +489,28 @@ run_deploy() {
     && grep -q '==> systemctl restart' "$DEPLOY_OUT"; } || rc=$?
   check "deploy's own #1690 gate ran as a non-root caller and reached the restart (shipping-path form of case 1)" "$rc"
   step_end deploy_as_deployer
+}
+
+# --- 6b. unresolvable SHA: the deploy refuses before touching anything -------
+
+unknown_sha_arm() {
+  step_start "6b. polarity: AGENT_CONSOLE_DEPLOY_SHA=0000... -> exit 1 at the guard, production untouched"
+  local zero_sha="0000000000000000000000000000000000000000"
+  local out before after rc=0
+  out="$(mktemp)"
+  before="$(cexec --user root "$SERVICE" sha256sum "${DEPLOY_TARGET}/.deploy-sha" | tr -d '\r')"
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$zero_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  expect "unknown SHA: the deploy exits 1" test "$rc" -eq 1
+  expect "unknown SHA: the guard error line is printed" \
+    grep -qF "Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ${SRC}" "$out"
+  after="$(cexec --user root "$SERVICE" sha256sum "${DEPLOY_TARGET}/.deploy-sha" | tr -d '\r')"
+  expect ".deploy-sha is byte-identical before and after the refused deploy" test "$before" = "$after"
+  rc=0
+  grep -q '==> systemctl restart' "$out" || rc=$?
+  expect "unknown SHA: no '==> systemctl restart' line in the output (the unit was never restarted)" test "$rc" -eq 1
+  sed 's/^/  /' "$out"
+  rm -f "$out"
+  step_end unknown_sha
 }
 
 # The seven checks of the deploy script's post-deploy verification (Issue
@@ -860,6 +918,18 @@ console.log("NOTIFICATION_STATUS=" + (notif ? notif.status : "MISSING"));'
 SED_TO_PRE_FIX_START='s|^\([[:space:]]*\)"start":.*|\1"start": "NODE_ENV=production bun dist/index.js",|'
 SED_TO_FIXED_START='s|^\([[:space:]]*\)"start":.*|\1"start": "NODE_ENV=production \\"$npm_execpath\\" dist/index.js",|'
 
+# commit_source_edit <message>: commit the source copy's tracked working-tree
+# edits as the service user and point origin/main at the new HEAD. The deploy
+# archives a commit (origin/main by default), never the working tree, so an
+# edit made to ${SRC} only reaches a deploy once it is committed here.
+# GIT_CONFIG_GLOBAL=/dev/null keeps the commit independent of any global git
+# config (signing, hooks path); --no-verify skips repository hooks.
+commit_source_edit() {
+  local msg="$1"
+  cexec --user agentconsole -w "$SRC" -e GIT_CONFIG_GLOBAL=/dev/null "$SERVICE" \
+    sh -c 'git -C "$1" -c user.name=tier3 -c user.email=tier3@local commit -q --no-verify -am "$2" && git -C "$1" update-ref refs/remotes/origin/main HEAD' _ "$SRC" "$msg"
+}
+
 # Read-only diagnostics for the #1776 polarity apparatus, added after a
 # tier-3 run showed the polarity deploy did NOT reproduce the defect in
 # this container (the child's exe read as the unified bun even under the
@@ -1041,6 +1111,18 @@ path_first_bun_arm() {
   printf '%s\n' "$SED_TO_PRE_FIX_START" | cexec --user agentconsole -w "$SRC" "$SERVICE" sed -i -f - -- "$pkg"
   cexec --user agentconsole -w "$SRC" "$SERVICE" grep -F '"start":' "$pkg" | sed 's/^/  injected: /'
 
+  # The deploy builds a `git archive` of a commit, never the working tree, so
+  # the injection is committed in the source copy and origin/main follows it;
+  # deploy #7 then archives it through the deploy's default path.
+  expect "7e: the pre-fix injection committed in the source copy (origin/main follows)" \
+    commit_source_edit "tier3: inject the pre-fix start line"
+  # Presence control: the commit deploy #7 will archive really holds the
+  # pre-fix start line.
+  local injected_pkg
+  injected_pkg="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" show "origin/main:${pkg}" | tr -d '\r' || true)"
+  expect "7e: origin/main:${pkg} carries the pre-fix start line" \
+    grep -qF '"start": "NODE_ENV=production bun dist/index.js",' <<<"$injected_pkg"
+
   echo "  --- deploy #7 (polarity: expect V0-V5 PASS, V6 FAIL naming the warning, exit 1 -- restart still happens) ---"
   out="$(mktemp)"
   rc=0
@@ -1092,6 +1174,12 @@ path_first_bun_arm() {
   cexec --user agentconsole -w "$SRC" "$SERVICE" grep -qF '"start": "NODE_ENV=production \"$npm_execpath\" dist/index.js",' "$pkg" && restored=1
   check "7e: the start line was restored byte-for-byte to the fixed form" "$(( 1 - restored ))"
   cexec --user agentconsole -w "$SRC" "$SERVICE" grep -F '"start":' "$pkg" | sed 's/^/  restored: /'
+  expect "7e: the restore committed in the source copy (origin/main follows), so deploy #8 archives the fixed tree" \
+    commit_source_edit "tier3: restore the fixed start line"
+  local restored_pkg
+  restored_pkg="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" show "origin/main:${pkg}" | tr -d '\r' || true)"
+  expect "7e: origin/main:${pkg} carries the fixed start line again" \
+    grep -qF '"start": "NODE_ENV=production \"$npm_execpath\" dist/index.js",' <<<"$restored_pkg"
 
   echo "  --- setup --force re-run: step 6b now takes its COPY branch (the service-user bun exists) ---"
   out="$(mktemp)"
@@ -1176,6 +1264,19 @@ helper_cases() {
 
   rm -f "$err"
   step_end helper_cases
+}
+
+# --- 8b. the smokes' own dependency install --------------------------------
+
+install_source_deps() {
+  step_start "8b. bun install --frozen-lockfile in ${SRC} as agentconsole (the smokes provision their own node_modules)"
+  # Since the pinned-SHA deploy the source repo no longer receives
+  # node_modules from a deploy (the deploy installs in a throwaway build
+  # directory), so the smokes, which import workspace packages from ${SRC},
+  # provision their own. `bun` resolves the way the smokes themselves run it.
+  expect "bun install --frozen-lockfile in the source copy as the service user" \
+    cexec --user agentconsole -w "$SRC" "$SERVICE" bun install --frozen-lockfile
+  step_end install_source_deps
 }
 
 # --- 9. the elevation smoke ------------------------------------------------
@@ -1282,12 +1383,14 @@ main() {
   run_setup
   copy_source
   run_deploy
+  unknown_sha_arm
   post_deploy_checks
   drift_arm
   ownership_polarity_arm
   restart_survival_arm
   path_first_bun_arm
   helper_cases
+  install_source_deps
   run_smokes
   footprint
 

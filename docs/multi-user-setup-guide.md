@@ -579,10 +579,22 @@ AGENT_CONSOLE_SERVICE_USER=ac-svc \
 ```
 
 The full list of override env vars is documented in the script's top comment.
-The script does not perform `git pull` itself -- sync the source-repo at
-`${AGENT_CONSOLE_DATA_ROOT}/source-repos/agent-console` to the intended
-commit before invoking, and confirm via the printed HEAD line in the
-script's `==> Pre-check` step before the build proceeds.
+The script builds from a pinned commit, not from the source-repo's working
+tree: it `git archive`s the commit into a per-deploy build directory and
+installs, builds and copies from there. It does not fetch itself, so update
+the source-repo's remote-tracking refs first, then run the script:
+
+```bash
+git -C ${AGENT_CONSOLE_DATA_ROOT}/source-repos/agent-console fetch origin
+scripts/update-and-deploy-for-multiuser-ubuntu.sh
+# or pin an exact commit instead of origin/main:
+AGENT_CONSOLE_DEPLOY_SHA=<sha> scripts/update-and-deploy-for-multiuser-ubuntu.sh
+```
+
+Confirm the commit via the printed `DEPLOY_SHA` line (and its subject) in the
+script's `==> Pre-check` step before the build proceeds. An unknown SHA, or an
+`origin/main` that does not resolve, stops the script with exit 1 before
+anything is built or changed.
 
 ### The post-deploy screen and its exit code
 
@@ -1637,7 +1649,9 @@ Run the smokes after every deploy that touches a privilege-elevation code path
 `scripts/setup-multiuser-for-ubuntu.sh`). Unit tests cover the inner-command
 string shape, but only an on-host smoke can confirm what env the elevated
 user actually sees -- which depends on distro `sudo` defaults, sudoers
-config, and the target user's login shell init.
+config, and the target user's login shell init. Run the smokes from a checkout
+that has had `bun install`: the deploy builds in a throwaway directory, so the
+source repo is no longer installed by the deploy.
 
 Prerequisite for the unprivileged-user readability checks referenced below
 (both `scripts/update-and-deploy-for-multiuser-ubuntu.sh`'s own automatic
