@@ -35,7 +35,7 @@ describe('API route mounting', () => {
 
   it('should mount embedded-agents route at /api/embedded-agents', async () => {
     app = await createTestApp({
-      embeddedAgentManager: { getAllEmbeddedAgents: () => [] } as Pick<EmbeddedAgentManager, 'getAllEmbeddedAgents'> as EmbeddedAgentManager,
+      embeddedAgentManager: { getAllServedEmbeddedAgents: () => [] } as Pick<EmbeddedAgentManager, 'getAllServedEmbeddedAgents'> as EmbeddedAgentManager,
     });
     const res = await app.request('/api/embedded-agents');
 

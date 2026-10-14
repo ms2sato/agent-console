@@ -13,3 +13,8 @@ export {
 } from './findReferencingWorkers';
 export { canManageEmbeddedAgent } from './canManageEmbeddedAgent';
 export { EmbeddedAgentDeleteDialog, type EmbeddedAgentDeleteDialogProps } from './EmbeddedAgentDeleteDialog';
+export {
+  WindowObservationsNotice,
+  describeWindowObservations,
+  type WindowObservationsNoticeProps,
+} from './WindowObservationsNotice';

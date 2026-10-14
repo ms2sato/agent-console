@@ -117,6 +117,7 @@ export {
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
   EmbeddedAgentProviderSchema,
   EmbeddedAgentDefinitionSchema,
+  EmbeddedAgentWindowObservationsSchema,
   CreateEmbeddedAgentRequestSchema,
   UpdateEmbeddedAgentRequestSchema,
   EmbeddedAgentCommandSchema,

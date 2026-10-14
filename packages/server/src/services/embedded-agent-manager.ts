@@ -14,6 +14,7 @@ import type { EmbeddedAgentRepository } from '../repositories/embedded-agent-rep
 import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-agent-repository.js';
 import { claudeSdkAgent, CLAUDE_SDK_AGENT_ID } from './embedded-agents/claude-sdk-builtin.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
+import { WindowObservationRegister, type WindowObservation } from './embedded-agent-window-observations.js';
 
 const logger = createLogger('embedded-agent-manager');
 
@@ -42,6 +43,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
   private lifecycleCallbacks: EmbeddedAgentLifecycleCallbacks | null = null;
   private repository: EmbeddedAgentRepository;
   private jobQueue: JobQueue | null = null;
+  private readonly windowObservations = new WindowObservationRegister();
 
   /**
    * Create an EmbeddedAgentManager instance with async initialization.
@@ -114,6 +116,41 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
     return this.embeddedAgents.get(id);
   }
 
+  /**
+   * The definition as it is SERVED to clients: the stored definition plus the
+   * in-memory `windowObservations` register entry when one exists. Composed
+   * at the serving edge only (REST responses and the lifecycle broadcasts) --
+   * the map, the repository and the agent-surface directory keep the raw
+   * definition, so an observation is never persisted and never reaches a
+   * surface whose schema does not carry it.
+   */
+  toServed(def: EmbeddedAgentDefinition): EmbeddedAgentDefinition {
+    const windowObservations = this.windowObservations.get(def.id);
+    return windowObservations ? { ...def, windowObservations } : def;
+  }
+
+  /** All definitions as served (see {@link toServed}). */
+  getAllServedEmbeddedAgents(): EmbeddedAgentDefinition[] {
+    return this.getAllEmbeddedAgents().map((def) => this.toServed(def));
+  }
+
+  /**
+   * Fold one worker-reported window reading into the definition's register
+   * and, when the visible state changed, broadcast the updated definition on
+   * the existing `embedded-agent-updated` channel. Single feed point for
+   * `EmbeddedAgentWorkerService`; a reading for an unknown definition (deleted
+   * while the worker ran) is dropped.
+   */
+  recordWindowObservation(definitionId: string, observation: WindowObservation): void {
+    const def = this.embeddedAgents.get(definitionId);
+    if (!def) {
+      return;
+    }
+    if (this.windowObservations.record(definitionId, observation, new Date().toISOString())) {
+      this.lifecycleCallbacks?.onEmbeddedAgentUpdated(this.toServed(def));
+    }
+  }
+
   // ---------- AgentSurface<'embedded'> ----------
 
   list(): Extract<AgentDirectoryEntry, { kind: 'embedded' }>[] {
@@ -171,7 +208,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
 
       logger.info({ embeddedAgentId: id, name: def.name, engine: def.engine }, 'Embedded agent created');
 
-      this.lifecycleCallbacks?.onEmbeddedAgentCreated(def);
+      this.lifecycleCallbacks?.onEmbeddedAgentCreated(this.toServed(def));
 
       return def;
     }
@@ -213,7 +250,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
 
     // Callback fires after successful save - clients will receive state update
     // only after database write is confirmed
-    this.lifecycleCallbacks?.onEmbeddedAgentCreated(def);
+    this.lifecycleCallbacks?.onEmbeddedAgentCreated(this.toServed(def));
 
     return def;
   }
@@ -303,7 +340,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
         'Embedded agent updated'
       );
 
-      this.lifecycleCallbacks?.onEmbeddedAgentUpdated(updated);
+      this.finishUpdate(updated, request);
 
       return updated;
     }
@@ -366,9 +403,32 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
 
     // Callback fires after successful save - clients will receive state update
     // only after database write is confirmed
-    this.lifecycleCallbacks?.onEmbeddedAgentUpdated(updated);
+    this.finishUpdate(updated, request);
 
     return updated;
+  }
+
+  /**
+   * Common tail of {@link updateEmbeddedAgent}, shared by both engine
+   * branches (each builds its own `updated`): runs after `repository.save`
+   * and the in-memory set.
+   *
+   * A PATCH that carries `contextWindowTokens` clears the definition's window
+   * observations, keyed on the request carrying the field
+   * (`!== undefined`), so a PATCH of any other field does not clear and an
+   * equal-value PATCH does. Re-asserting the declaration is an explicit
+   * operator statement, so the evidence against the previous one is spent
+   * either way; if it is still true the next observation restores it. Do not
+   * optimise this to a changed-value check. The clear happens BEFORE the
+   * broadcast so the broadcast carries the cleared state.
+   */
+  private finishUpdate(updated: EmbeddedAgentDefinition, request: UpdateEmbeddedAgentRequest): void {
+    if (request.contextWindowTokens !== undefined) {
+      this.windowObservations.clear(updated.id);
+    }
+    // Callback fires after successful save - clients will receive state update
+    // only after database write is confirmed
+    this.lifecycleCallbacks?.onEmbeddedAgentUpdated(this.toServed(updated));
   }
 
   /**
@@ -395,6 +455,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
 
     // Update in-memory map only after successful persistence
     this.embeddedAgents.delete(id);
+    this.windowObservations.clear(id);
 
     logger.info({ embeddedAgentId: id, name: existing.name }, 'Embedded agent deleted');
 

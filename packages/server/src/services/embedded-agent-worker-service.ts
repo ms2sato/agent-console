@@ -72,6 +72,7 @@ import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { serverConfig } from '../lib/server-config.js';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
+import type { WindowObservation } from './embedded-agent-window-observations.js';
 
 const logger = createLogger('embedded-agent-worker-service');
 
@@ -366,6 +367,14 @@ export interface EmbeddedAgentWorkerServiceDeps {
   onSessionUpdated: (session: InternalSession) => void;
   getPathResolver: (session: InternalSession) => SessionDataPathResolver;
   getEmbeddedAgent: (id: string) => EmbeddedAgentDefinition | undefined;
+  /**
+   * Window-declaration drift feed (docs/design/embedded-agent-worker.md,
+   * "Window-declaration drift on the definition"): receives a window reading
+   * observed by a worker whose effective window IS the definition's own
+   * declaration. REQUIRED, not optional -- an optional feed here is exactly a
+   * silent no-op that leaves the register empty with nothing failing.
+   */
+  recordWindowObservation: (definitionId: string, observation: WindowObservation) => void;
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
   mcpTokenRegistry: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>;
   /**
@@ -2539,6 +2548,22 @@ export class EmbeddedAgentWorkerService {
 
     // (a)+(b): append the raw line and fan out.
     this.appendLine(ctx, line);
+
+    // Window-declaration drift: feed the definition's observation register.
+    // Only a worker whose effective window IS the definition's declaration
+    // (`worker.model === null`, the same rule `resolveEffectiveContextWindow`
+    // applies) is evidence about the definition; a worker with a model
+    // override produces evidence about its override and is not recorded.
+    if (ctx.worker.model === null) {
+      if (event.type === 'context-compacted' && event.providerStatedWindowTokens !== undefined) {
+        this.deps.recordWindowObservation(ctx.worker.embeddedAgentId, {
+          kind: 'providerStated',
+          tokens: event.providerStatedWindowTokens,
+        });
+      } else if (event.type === 'context-usage' && event.appearsClamped === true) {
+        this.deps.recordWindowObservation(ctx.worker.embeddedAgentId, { kind: 'apparentClamp' });
+      }
+    }
 
     // (c): side-channel activity state.
     if (event.type === 'state') {

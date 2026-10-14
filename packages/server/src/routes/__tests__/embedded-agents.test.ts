@@ -15,6 +15,10 @@ import {
 
 const embeddedAgentManager = {
   getAllEmbeddedAgents: mock(() => [] as any[]),
+  getAllServedEmbeddedAgents: mock(() => [] as any[]),
+  // The route composes the in-memory window observations at the serving edge;
+  // identity here, the composition itself is covered by the manager tests.
+  toServed: mock((def: any) => def),
   getEmbeddedAgent: mock(() => undefined as any),
   createEmbeddedAgent: mock(() => Promise.resolve({} as any)),
   updateEmbeddedAgent: mock(() => Promise.resolve(undefined as any)),
@@ -55,6 +59,9 @@ describe('Embedded Agents API', () => {
     });
 
     embeddedAgentManager.getAllEmbeddedAgents.mockReset();
+    embeddedAgentManager.getAllServedEmbeddedAgents.mockReset();
+    embeddedAgentManager.toServed.mockReset();
+    embeddedAgentManager.toServed.mockImplementation((def: any) => def);
     embeddedAgentManager.getEmbeddedAgent.mockReset();
     embeddedAgentManager.createEmbeddedAgent.mockReset();
     embeddedAgentManager.updateEmbeddedAgent.mockReset();
@@ -72,8 +79,25 @@ describe('Embedded Agents API', () => {
   // =========================================================================
 
   describe('GET /api/embedded-agents', () => {
+    it('returns the served definitions, windowObservations included when present', async () => {
+      const observed = ownedDefinition({
+        windowObservations: { apparentClamp: { observedAt: '2026-01-01T00:00:00.000Z' } },
+      });
+      embeddedAgentManager.getAllServedEmbeddedAgents.mockReturnValue([observed]);
+
+      const res = await app.request('/api/embedded-agents');
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { embeddedAgents: Array<{ windowObservations?: unknown }> };
+      expect(body.embeddedAgents[0].windowObservations).toEqual({
+        apparentClamp: { observedAt: '2026-01-01T00:00:00.000Z' },
+      });
+      // The raw (stored) list is not what the route serves.
+      expect(embeddedAgentManager.getAllEmbeddedAgents).not.toHaveBeenCalled();
+    });
+
     it('returns an empty list', async () => {
-      embeddedAgentManager.getAllEmbeddedAgents.mockReturnValue([]);
+      embeddedAgentManager.getAllServedEmbeddedAgents.mockReturnValue([]);
 
       const res = await app.request('/api/embedded-agents');
       expect(res.status).toBe(200);
@@ -216,6 +240,24 @@ describe('Embedded Agents API', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as { embeddedAgent: { name: string } };
       expect(body.embeddedAgent.name).toBe('Renamed');
+    });
+
+    it('serves the updated definition through toServed (windowObservations composed onto the response)', async () => {
+      embeddedAgentManager.getEmbeddedAgent.mockReturnValue(ownedDefinition());
+      embeddedAgentManager.updateEmbeddedAgent.mockReturnValue(Promise.resolve(ownedDefinition()));
+      embeddedAgentManager.toServed.mockImplementation((def: any) => ({
+        ...def,
+        windowObservations: { providerStated: { tokens: 128000, observedAt: '2026-01-01T00:00:00.000Z' } },
+      }));
+
+      const res = await app.request('/api/embedded-agents/def-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+
+      const body = (await res.json()) as { embeddedAgent: { windowObservations?: { providerStated?: { tokens: number } } } };
+      expect(body.embeddedAgent.windowObservations?.providerStated?.tokens).toBe(128000);
     });
 
     it('returns 403 when the requester is not the creator', async () => {

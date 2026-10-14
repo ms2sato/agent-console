@@ -148,6 +148,74 @@ describe('AgentsPage / EmbeddedAgentsSection', () => {
     expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
   });
 
+  it('window drift: a viewer who cannot manage sees the badge and the fact with a read-only note, and no action control', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser({ id: 'viewer-1', username: 'viewer', homeDir: '/home/viewer' });
+    embeddedAgentsResponse = {
+      embeddedAgents: [
+        makeEmbeddedAgent({
+          createdBy: 'someone-else',
+          windowObservations: { providerStated: { tokens: 8000, observedAt: '2026-10-14T00:00:00.000Z' } },
+        }),
+      ],
+    };
+
+    await renderAgentsPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('window-drift-badge')).toBeTruthy();
+    });
+    expect(
+      screen.getByText("A worker on this definition observed the provider's limit as 8,000 on 2026-10-14."),
+    ).toBeTruthy();
+    expect(screen.getByText("Only this definition's creator can change its declared window.")).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  });
+
+  it('window drift: the creator sees the badge, no read-only note, and the hint inside the edit form', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser({ id: 'creator-1', username: 'creator', homeDir: '/home/creator' });
+    embeddedAgentsResponse = {
+      embeddedAgents: [
+        makeEmbeddedAgent({
+          createdBy: 'creator-1',
+          windowObservations: { apparentClamp: { observedAt: '2026-10-13T00:00:00.000Z' } },
+        }),
+      ],
+    };
+
+    await renderAgentsPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('window-drift-badge')).toBeTruthy();
+    });
+    expect(screen.queryByText("Only this definition's creator can change its declared window.")).toBeNull();
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Edit' }));
+
+    await waitFor(() => {
+      // The edit form replaces the card while editing; the hint sits under the field.
+      expect(screen.getByText('Readings appear clamped since 2026-10-13.')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('window-drift-badge')).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByText(/Context Window Tokens/)).toBeTruthy();
+    });
+  });
+
+  it('window drift: no badge and no notice in the default state (nothing observed)', async () => {
+    embeddedAgentsResponse = { embeddedAgents: [makeEmbeddedAgent()] };
+
+    await renderAgentsPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('Ollama qwen3')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('window-drift-badge')).toBeNull();
+    expect(screen.queryByTestId('window-observations-notice')).toBeNull();
+  });
+
   it('(c) shows Edit/Delete when the viewer can manage the definition (multi-user, matching creator)', async () => {
     setAuthMode('multi-user');
     setCurrentUser({ id: 'creator-1', username: 'creator', homeDir: '/home/creator' });

@@ -14,7 +14,7 @@ const embeddedAgents = new Hono<AppBindings>()
   // List all embedded-agent definitions (shared resource, any authenticated user)
   .get('/', async (c) => {
     const { embeddedAgentManager } = c.get('appContext');
-    const embeddedAgentList = embeddedAgentManager.getAllEmbeddedAgents();
+    const embeddedAgentList = embeddedAgentManager.getAllServedEmbeddedAgents();
     return c.json({ embeddedAgents: embeddedAgentList });
   })
   // Create a new embedded-agent definition
@@ -26,7 +26,7 @@ const embeddedAgents = new Hono<AppBindings>()
     // createdBy is set server-side from the authenticated user, never from body.
     const embeddedAgent = await embeddedAgentManager.createEmbeddedAgent(body, authUser.id);
 
-    return c.json({ embeddedAgent }, 201);
+    return c.json({ embeddedAgent: embeddedAgentManager.toServed(embeddedAgent) }, 201);
   })
   // Update an embedded-agent definition (creator only)
   .patch('/:id', vValidator(UpdateEmbeddedAgentRequestSchema), async (c) => {
@@ -52,7 +52,7 @@ const embeddedAgents = new Hono<AppBindings>()
       throw new NotFoundError('Embedded agent');
     }
 
-    return c.json({ embeddedAgent });
+    return c.json({ embeddedAgent: embeddedAgentManager.toServed(embeddedAgent) });
   })
   // Delete an embedded-agent definition (creator only)
   .delete('/:id', async (c) => {

@@ -285,6 +285,7 @@ function setup(opts?: {
     persistSession: (async () => {}) as never,
     getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()),
     getEmbeddedAgent: () => opts?.definition ?? SDK_DEFINITION,
+    recordWindowObservation: () => {},
     resolveSpawnUsername: async () => USERNAME,
     resolveDisableClaudeAiConnectors: async () => false,
     mcpTokenRegistry: { mint: (() => 'mcp-token') as never, revokeByWorker: (() => {}) as never },

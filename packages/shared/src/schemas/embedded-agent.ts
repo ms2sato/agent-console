@@ -162,6 +162,21 @@ export const EmbeddedAgentCompactionConfigSchema = v.strictObject({
 });
 
 /**
+ * Window-declaration observations carried on a served definition (see
+ * `EmbeddedAgentWindowObservations`). Two independent optional kinds, never
+ * merged; no worker or session identifiers on the wire.
+ */
+export const EmbeddedAgentWindowObservationsSchema = v.strictObject({
+  providerStated: v.optional(
+    v.strictObject({
+      tokens: v.pipe(v.number(), v.integer(), v.minValue(1)),
+      observedAt: v.string(),
+    }),
+  ),
+  apparentClamp: v.optional(v.strictObject({ observedAt: v.string() })),
+});
+
+/**
  * Fields shared by both `engine` arms of {@link EmbeddedAgentDefinitionSchema}.
  * Spread into each arm rather than composed via intersection, since
  * `v.variant` requires each member to be a plain object schema exposing the
@@ -177,6 +192,7 @@ const EmbeddedAgentDefinitionBaseFields = {
   instructions: v.optional(InstructionsListSchema),
   contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   compaction: v.optional(EmbeddedAgentCompactionConfigSchema),
+  windowObservations: v.optional(EmbeddedAgentWindowObservationsSchema),
   isBuiltIn: v.boolean(),
   createdBy: v.string(),
   createdAt: v.string(),
