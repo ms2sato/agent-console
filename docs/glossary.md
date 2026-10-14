@@ -175,6 +175,7 @@ The `Kysely<Database>` handle a database write runs on. By default it is the sha
 
 ### PersonalSession
 A session created and owned by an authenticated user, running with that user's OS identity.
+- **Aliases:** Personal session (spaced spelling used in the design docs)
 - **Contrast:** [SharedSession](#sharedsession)
 - **See:** [Multi-user terminology in multi-user-shared-setup.md](design/multi-user-shared-setup.md#terminology)
 
@@ -185,6 +186,7 @@ A session tied only to a directory path, without repository or worktree manageme
 
 ### SharedSession
 A session running under a shared account OS identity, accessible to all authenticated users.
+- **Aliases:** Shared session (spaced spelling used in the design docs)
 - **Contrast:** [PersonalSession](#personalsession)
 - **Identifier:** `Session.isShared: boolean` (boolean discriminator on the wire, server-derived via `SharedAccountRegistry.isSharedUserId(createdBy)`)
 - **Entry points:** the optional `shared: boolean` request field on `POST /api/sessions` and on `POST /api/repositories/:id/worktrees` (in `CreateWorktreeBaseSchema`, so all three worktree-creation modes — prompt / custom / existing — accept it). Both endpoints resolve ownership identically ([created_by](#created_by) = shared account's `users.id`, [initiated_by](#initiated_by) = authenticated user) and fail 400 when the shared account registry is disabled. Each endpoint has a "Create as shared session" UI checkbox gated on `sharedAccountsAvailable` (see [Shared Account Set](#shared-account-set)). For the worktree endpoint, the whole creation pipeline runs as the shared account. MCP `delegate_to_worktree` deliberately has no `shared` parameter — a shared parent session already yields shared worktree sessions via `created_by` inheritance.
@@ -481,6 +483,10 @@ The logical status of a session: 'active' or 'inactive'.
 - **See:** [Session status in session-worker-design.md](design/session-worker-design.md#type-definitions)
 
 ## Multi-User Identity
+
+### Server operator
+The person who installs, configures, and starts the Agent Console server, and is responsible for the sudoers configuration and repository setup. Distinct from the [Service User](#service-user) (the OS account the server process runs as) and from an [authenticated user](#authenticated-user) (a server operator is also one when they use the browser UI).
+- **See:** [Multi-user terminology in multi-user-shared-setup.md](design/multi-user-shared-setup.md#terminology)
 
 ### assignee
 Delegate target user identifier introduced in PR #682 (`delegate_to_worktree.assignee`).
