@@ -55,7 +55,12 @@
 #      NOT EXERCISED (the image pins bun at the unified path)
 #   5. cp -a /src -> the shared source-repos dir, as the service user
 #   6. update-and-deploy-for-multiuser-ubuntu.sh as `deployer` (uid != 0, so
-#      the script's own per-step self-elevation is what runs); expect exit 0
+#      the script's own per-step self-elevation is what runs); expect exit 0.
+#      The driver pins AGENT_CONSOLE_DEPLOY_SHA to the source copy's HEAD and
+#      expects /api/config deployedSha and .deploy-sha line 1 to equal that
+#      requested SHA (never the marker the deploy itself wrote)
+#  6b. polarity: AGENT_CONSOLE_DEPLOY_SHA=0000... must exit 1 at the guard,
+#      leave .deploy-sha byte-identical, and print no `==> systemctl restart`
 #   7. the deploy script's OWN post-deploy verification screen (Issue #1717:
 #      V0 data-root-ownership, V1 unit-env-drift, V2 entry-path-readable, V3
 #      mainpid-identity, V4 unit-active, V5 health, V6 journal-digest; V0
@@ -426,8 +431,12 @@ run_setup() {
 
 copy_source() {
   step_start "5. cp -a /src -> ${SRC} (as agentconsole)"
-  expect "source-repo copy as the service user (cp -a + git rev-parse HEAD)" \
-    cexec --user agentconsole "$SERVICE" sh -c "cp -a /src '${SRC}' && git -C '${SRC}' rev-parse HEAD"
+  # The deploy script's default (no AGENT_CONSOLE_DEPLOY_SHA) is origin/main of
+  # this repository, which the copied checkout does not have; point it at HEAD
+  # so every later deploy in this driver that passes no SHA resolves the same
+  # commit run_deploy pins explicitly.
+  expect "source-repo copy as the service user (cp -a + origin/main ref at HEAD + git rev-parse HEAD)" \
+    cexec --user agentconsole "$SERVICE" sh -c "cp -a /src '${SRC}' && git -C '${SRC}' update-ref refs/remotes/origin/main HEAD && git -C '${SRC}' rev-parse HEAD"
   cexec --user root "$SERVICE" stat -c '  %U:%G %a %n' "$SRC" "$SRC/scripts"
   step_end copy_source
 }
@@ -442,9 +451,28 @@ run_deploy() {
   step_start "6. update-and-deploy-for-multiuser-ubuntu.sh as deployer (uid != 0: per-step self-elevation)"
   cexec --user deployer "$SERVICE" id | sed 's/^/  id: /'
   local rc=0
+  # The driver CHOOSES the SHA to deploy and passes it explicitly: the copied
+  # repository in the container has no origin/main of its own (copy_source
+  # points one at HEAD only so the later default-path deploys resolve), and a
+  # pinned SHA is what lets the checks below compare against a value the
+  # deploy did not write. Read as the source's owner (the copy is not
+  # root's), once, before the deploy.
+  local want_sha
+  want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
+  echo "  requested AGENT_CONSOLE_DEPLOY_SHA: ${want_sha}"
   DEPLOY_OUT="$(mktemp)"
-  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh 2>&1 | tee "$DEPLOY_OUT" || rc=${PIPESTATUS[0]}
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh 2>&1 | tee "$DEPLOY_OUT" || rc=${PIPESTATUS[0]}
   check "deploy script as deployer exits 0" "$rc"
+  # The requested SHA, compared with what the running server and the marker
+  # report -- never with a value the deploy computed. A deploy that built any
+  # other tree (or wrote the marker from anything but the pinned SHA) fails here.
+  local cfg_now marker_sha
+  cfg_now="$(cexec --user root "$SERVICE" curl -sS -m 5 http://localhost:8080/api/config || true)"
+  expect "deploy #1: /api/config deployedSha equals the SHA the driver requested" \
+    grep -qF "\"deployedSha\":\"${want_sha}\"" <<<"$cfg_now"
+  marker_sha="$(cexec --user root "$SERVICE" head -n 1 "${DEPLOY_TARGET}/.deploy-sha" | tr -d '\r' || true)"
+  expect "deploy #1: .deploy-sha line 1 equals the SHA the driver requested" \
+    test "$marker_sha" = "$want_sha"
   # The shipping-path form of #1690 case (1): the script's own readability
   # gate ran with a NON-EMPTY elevation prefix (the caller is not root) and
   # returned READABLE, or the script would have exited 1 before the restart.
@@ -453,6 +481,28 @@ run_deploy() {
     && grep -q '==> systemctl restart' "$DEPLOY_OUT"; } || rc=$?
   check "deploy's own #1690 gate ran as a non-root caller and reached the restart (shipping-path form of case 1)" "$rc"
   step_end deploy_as_deployer
+}
+
+# --- 6b. unresolvable SHA: the deploy refuses before touching anything -------
+
+unknown_sha_arm() {
+  step_start "6b. polarity: AGENT_CONSOLE_DEPLOY_SHA=0000... -> exit 1 at the guard, production untouched"
+  local zero_sha="0000000000000000000000000000000000000000"
+  local out before after rc=0
+  out="$(mktemp)"
+  before="$(cexec --user root "$SERVICE" sha256sum "${DEPLOY_TARGET}/.deploy-sha" | tr -d '\r')"
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$zero_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  expect "unknown SHA: the deploy exits 1" test "$rc" -eq 1
+  expect "unknown SHA: the guard error line is printed" \
+    grep -qF "Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ${SRC}" "$out"
+  after="$(cexec --user root "$SERVICE" sha256sum "${DEPLOY_TARGET}/.deploy-sha" | tr -d '\r')"
+  expect ".deploy-sha is byte-identical before and after the refused deploy" test "$before" = "$after"
+  rc=0
+  grep -q '==> systemctl restart' "$out" || rc=$?
+  expect "unknown SHA: no '==> systemctl restart' line in the output (the unit was never restarted)" test "$rc" -eq 1
+  sed 's/^/  /' "$out"
+  rm -f "$out"
+  step_end unknown_sha
 }
 
 # The seven checks of the deploy script's post-deploy verification (Issue
@@ -1282,6 +1332,7 @@ main() {
   run_setup
   copy_source
   run_deploy
+  unknown_sha_arm
   post_deploy_checks
   drift_arm
   ownership_polarity_arm

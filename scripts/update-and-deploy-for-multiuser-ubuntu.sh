@@ -7,23 +7,25 @@
 # source updates (the typical orchestrator-driven update cycle).
 #
 # Steps:
-#   1. Pre-check: print the source-repo HEAD so the operator confirms the
-#      build will use the intended commit. (The orchestrator is responsible
-#      for syncing the source-repo to the target ref before invoking this
-#      script; this script does NOT git pull on its own.) The HEAD SHA is
-#      also captured here for the deployed-commit marker (step 5) and
-#      re-verified unchanged after build and after rsync, aborting before
-#      either the deploy or the marker write on a mismatch -- a concurrent
-#      push to the source repo mid-deploy must not produce a marker that
-#      records a revision rsync never actually copied.
-#   2. bun install (all deps) @ source-repo so build tooling is present.
-#   3. NODE_ENV=production bun run build @ source-repo.
-#   4. rsync source-repo -> deploy target (excludes node_modules + .git).
+#   1. Pre-check: resolve the commit to deploy ONCE -- AGENT_CONSOLE_DEPLOY_SHA
+#      when set, else origin/main of the source repo -- and fail with exit 1
+#      before anything is built if it does not resolve to a commit in the
+#      source repo. Print the SHA and its subject so the operator confirms
+#      the build will use the intended commit. This script does NOT fetch:
+#      the operator runs `git -C <source-repo> fetch origin` first. Every
+#      later step builds that one SHA, so the deployed-commit marker (step 5)
+#      records exactly what was built and copied.
+#   2. `git archive` that SHA into a fresh per-deploy build directory under
+#      the data root (removed on every exit path, and explicitly before the
+#      V0 data-root-ownership check), then bun install --frozen-lockfile
+#      there so build tooling is present.
+#   3. NODE_ENV=production bun run build @ build dir.
+#   4. rsync build dir -> deploy target (excludes node_modules + .git).
 #   5. Write the deployed-commit marker (.deploy-sha) into the deploy target,
-#      using the SHA captured in step 1 (not a fresh read at this point).
+#      using the SHA resolved in step 1.
 #   6. Copy dist/embedded-agent.js (+ .map) from the deploy target -- the
-#      point where the SHA-recheck above has already verified it's correct,
-#      not a second independent read from the source repo -- to a unified,
+#      tree rsync just produced from the pinned SHA, not a second
+#      independent read from the source repo -- to a unified,
 #      world-traversable location every elevation-target OS user can reach
 #      (see the "embedded-agent entry path" comment at UNIFIED_ENTRY_PATH
 #      below). Unconditional on every deploy, no hash/mtime gate.
@@ -78,8 +80,14 @@
 #                                    Default: agentconsole
 #   AGENT_CONSOLE_DATA_ROOT          Shared data root.
 #                                    Default: /var/lib/agent-console
-#   AGENT_CONSOLE_APP_SOURCE_DIR     Build source directory.
+#   AGENT_CONSOLE_APP_SOURCE_DIR     Source repository the commit is read from
+#                                    (never built in place).
 #                                    Default: ${AGENT_CONSOLE_DATA_ROOT}/source-repos/agent-console
+#   AGENT_CONSOLE_DEPLOY_SHA         Commit to deploy (any rev that resolves in
+#                                    the source repo; always recorded as the
+#                                    full commit SHA).
+#                                    Default: origin/main of the source repo
+#                                    (the script does not fetch it)
 #   AGENT_CONSOLE_DEPLOY_TARGET_DIR  rsync deploy target.
 #                                    Default: /home/${AGENT_CONSOLE_SERVICE_USER}/agent-console
 #   AGENT_CONSOLE_SERVICE_NAME       systemd unit to restart.
@@ -272,64 +280,89 @@ HEALTH_ATTEMPTS="$(normalize_attempts "${AGENT_CONSOLE_HEALTH_ATTEMPTS:-}" 60)"
 echo "    AGENT_CONSOLE_HEALTH_ATTEMPTS (V5 polls, 1 s apart): ${HEALTH_ATTEMPTS}"
 echo ""
 
-echo "==> Pre-check: source-repo HEAD"
-sudo -u "${SERVICE_USER}" -- git -C "${SRC}" log --oneline -1
+echo "==> Pre-check: commit to deploy"
+# Resolved ONCE; everything below builds this exact tree, so the marker can
+# only record what was built and copied. `set -e` does not fire inside the
+# `||` list, so a failing rev-parse in the default expansion ends in the same
+# error message as an unresolvable override instead of a silent exit.
+DEPLOY_SHA="${AGENT_CONSOLE_DEPLOY_SHA:-$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse origin/main)}" || DEPLOY_SHA=""
+# Early guard, before any build directory exists: an unknown SHA or an
+# unresolvable origin/main stops here with nothing created or changed.
+if [ -z "${DEPLOY_SHA}" ] || ! sudo -u "${SERVICE_USER}" -- git -C "${SRC}" cat-file -e "${DEPLOY_SHA}^{commit}"; then
+  echo "Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ${SRC}" >&2
+  exit 1
+fi
+# Normalize to the full commit SHA so a branch, tag or short override still
+# yields a marker and /api/config deployedSha that are SHAs. Cannot fail after
+# the guard above; the same `||` style keeps a failure on the guard's message.
+DEPLOY_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse "${DEPLOY_SHA}^{commit}")" || {
+  echo "Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ${SRC}" >&2
+  exit 1
+}
+echo "    DEPLOY_SHA: ${DEPLOY_SHA}"
+sudo -u "${SERVICE_USER}" -- git -C "${SRC}" log --oneline -1 "${DEPLOY_SHA}"
 
-# Captured BEFORE build/rsync and re-verified after each, so the marker
-# never records a revision other than the one actually built and copied
-# (a concurrent push to the source repo mid-deploy would otherwise leave
-# the marker pointing at a SHA rsync never saw).
-DEPLOYED_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse HEAD)"
+# Per-deploy build directory under the data root, owned by the service user
+# (mktemp -d makes it 0700). Removed on every exit path by the EXIT trap, and
+# explicitly right after the rsync below so V0 (which scans the data root)
+# never sees it. Setting BUILD_DIR empty after the explicit removal makes the
+# trap a no-op, so it never runs twice.
+BUILD_DIR="$(sudo -u "${SERVICE_USER}" mktemp -d "${DATA_ROOT}/build.XXXXXX")"
+remove_build_dir() {
+  if [ -n "${BUILD_DIR:-}" ]; then
+    sudo -u "${SERVICE_USER}" rm -rf -- "${BUILD_DIR}" || echo "Warning: could not remove build directory ${BUILD_DIR}" >&2
+    BUILD_DIR=""
+  fi
+}
+trap remove_build_dir EXIT
 
 echo ""
-echo "==> 1/6 bun install (all deps, build needs dev tooling) @ source-repo"
+echo "==> git archive ${DEPLOY_SHA} -> build dir"
+# bash, not sh: the inner pipefail is what makes a failing `git archive` fail
+# the step (otherwise tar's exit 0 masks it); Ubuntu 22.04's dash (0.5.11)
+# has no pipefail, so a dash-run equivalent of this step is not portable here.
+sudo -u "${SERVICE_USER}" bash -c 'set -o pipefail; git -C "$1" archive "$2" | tar -x -C "$3"' _ "${SRC}" "${DEPLOY_SHA}" "${BUILD_DIR}"
+
+echo ""
+echo "==> 1/6 bun install --frozen-lockfile (all deps, build needs dev tooling) @ build dir"
 sudo -u "${SERVICE_USER}" bash -lc '
   export PATH=$HOME/.bun/bin:$PATH
-  cd -- "$1" && bun install
-' _ "${SRC}"
+  cd -- "$1" && bun install --frozen-lockfile
+' _ "${BUILD_DIR}"
 
 echo ""
-echo "==> 2/6 NODE_ENV=production bun run build @ source-repo"
+echo "==> 2/6 NODE_ENV=production bun run build @ build dir"
 sudo -u "${SERVICE_USER}" bash -lc '
   export PATH=$HOME/.bun/bin:$PATH
   cd -- "$1" && NODE_ENV=production bun run build
-' _ "${SRC}"
-
-CURRENT_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse HEAD)"
-if [ "${CURRENT_SHA}" != "${DEPLOYED_SHA}" ]; then
-  echo "Error: source HEAD changed during build (${DEPLOYED_SHA} -> ${CURRENT_SHA}). Aborting before deploy." >&2
-  exit 1
-fi
+' _ "${BUILD_DIR}"
 
 echo ""
-echo "==> 3/6 rsync source-repo -> deploy target (excludes node_modules, .git)"
+echo "==> 3/6 rsync build dir -> deploy target (excludes node_modules, .git)"
 sudo -u "${SERVICE_USER}" rsync -a --delete \
   --exclude=node_modules \
   --exclude='.git' \
-  "${SRC}/" "${DST}/"
+  "${BUILD_DIR}/" "${DST}/"
 
-CURRENT_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse HEAD)"
-if [ "${CURRENT_SHA}" != "${DEPLOYED_SHA}" ]; then
-  echo "Error: source HEAD changed during deploy (${DEPLOYED_SHA} -> ${CURRENT_SHA}). Aborting before marker write." >&2
-  exit 1
-fi
+# Explicit removal BEFORE V0: the 0700 build directory must not be what
+# V0's data-root scan sees. The EXIT trap stays as the failure-path net.
+remove_build_dir
 
 echo ""
 echo "==> 4/6 write deployed-commit marker (.deploy-sha)"
 # Written into the deploy target (not the source) so it survives the next
-# rsync --delete; rewritten fresh every deploy. Uses the SHA captured at the
-# top of this script (DEPLOYED_SHA), not a fresh read here -- the
-# HEAD-unchanged checks above are what make that captured value trustworthy
-# at this point.
+# rsync --delete; rewritten fresh every deploy. Uses the SHA resolved at the
+# top of this script (DEPLOY_SHA): the tree that was archived, built and
+# copied is that SHA by construction, so nothing needs re-checking.
 DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-sudo -u "${SERVICE_USER}" bash -lc 'printf "%s\n%s\n" "$1" "$2" > "$3/.deploy-sha"' _ "${DEPLOYED_SHA}" "${DEPLOYED_AT}" "${DST}"
+sudo -u "${SERVICE_USER}" bash -lc 'printf "%s\n%s\n" "$1" "$2" > "$3/.deploy-sha"' _ "${DEPLOY_SHA}" "${DEPLOYED_AT}" "${DST}"
 
 echo ""
 echo "==> 5/6 copy dist/embedded-agent.js (+ .map) to unified entry path"
-# Source is the DEPLOY TARGET, post-rsync, post-SHA-recheck (the point where
-# the check above has already verified it's the intended revision) -- not a
-# second independent read from the source repo, folded in immediately after
-# the marker write above rather than opening a new independent race window.
+# Source is the DEPLOY TARGET, post-rsync (the tree built from the pinned
+# SHA) -- not a second independent read from the source repo, folded in
+# immediately after the marker write above rather than opening a new
+# independent race window.
 # Copied unconditionally on every deploy (matches rsync -a's own semantics
 # and the .deploy-sha marker's own "rewritten fresh every deploy"
 # precedent) -- no hash/mtime gate. Run as root (plain sudo, no -u) so this

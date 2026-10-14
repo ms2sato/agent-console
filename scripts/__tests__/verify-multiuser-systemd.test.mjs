@@ -325,7 +325,7 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
 
   it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> restart_survival_arm -> path_first_bun_arm -> helper_cases -> run_smokes', () => {
     expect(driver).toContain(
-      '  run_deploy\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  path_first_bun_arm\n  helper_cases\n  run_smokes\n',
+      '  run_deploy\n  unknown_sha_arm\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  path_first_bun_arm\n  helper_cases\n  run_smokes\n',
     );
     expect(driver).toMatch(/^drift_arm\(\) \{/m);
     expect(driver).toMatch(/^ownership_polarity_arm\(\) \{/m);
@@ -423,9 +423,9 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
     // between `-w "$SRC"` and `"$SERVICE"` -- the one deliberately-wrong
     // override that distinguishes "the live unit wins" from the pre-#1761
     // behaviour; the regex tolerates that one optional segment.
-    const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" (?:-e AGENT_CONSOLE_PORT=9999 )?"\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
-    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5/#5b/#5c (ownership_polarity_arm) + #6 (restart_survival_arm) + #7/#8 (path_first_bun_arm, #1776).
-    expect(deployCalls).toHaveLength(10);
+    const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" (?:-e AGENT_CONSOLE_(?:PORT=9999|DEPLOY_SHA=\S+) )?"\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
+    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5/#5b/#5c (ownership_polarity_arm) + #6 (restart_survival_arm) + #7/#8 (path_first_bun_arm, #1776) + the pinned-SHA polarity deploy (unknown_sha_arm).
+    expect(deployCalls).toHaveLength(11);
     for (const c of deployCalls) expect(c).toContain('--user deployer ');
   });
 
@@ -1009,5 +1009,53 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
     expect(symlinkCheckI).toBeGreaterThan(-1);
     expect(aliceProvisionI).toBeGreaterThan(symlinkCheckI);
     expect(shimWriteI).toBeGreaterThan(symlinkCheckI);
+  });
+});
+
+// Pinned-SHA deploy (Issue #2090): the driver CHOOSES the SHA and compares the
+// running server and the marker against it, never against a value the deploy
+// wrote; one polarity deploy proves an unresolvable SHA is refused untouched.
+describe('verify-multiuser-systemd.sh: deploy #1 pins AGENT_CONSOLE_DEPLOY_SHA and checks it (Issue #2090)', () => {
+  const driver = readFileSync(DRIVER, 'utf-8');
+  const fn = (name, next) => {
+    const a = driver.indexOf(`${name}() {`);
+    expect(a).toBeGreaterThan(-1);
+    const b = driver.indexOf(next, a);
+    expect(b).toBeGreaterThan(a);
+    return driver.slice(a, b);
+  };
+
+  it('run_deploy reads the SHA from the source copy and passes it to the deploy as AGENT_CONSOLE_DEPLOY_SHA', () => {
+    const body = fn('run_deploy', '\n# The seven checks');
+    expect(body).toContain('git -C "$SRC" rev-parse HEAD');
+    expect(body).toContain('-e AGENT_CONSOLE_DEPLOY_SHA="$want_sha"');
+    expect(body.indexOf('rev-parse HEAD')).toBeLessThan(body.indexOf('-e AGENT_CONSOLE_DEPLOY_SHA='));
+  });
+
+  it('run_deploy expects /api/config deployedSha and .deploy-sha line 1 to equal the REQUESTED sha', () => {
+    const body = fn('run_deploy', '\n# The seven checks');
+    expect(body).toContain('"\\"deployedSha\\":\\"${want_sha}\\""');
+    expect(body).toContain('head -n 1 "${DEPLOY_TARGET}/.deploy-sha"');
+    expect(body).toContain('test "$marker_sha" = "$want_sha"');
+    // The comparison value is never read back from the deploy's own output.
+    expect(body).not.toMatch(/want_sha=.*DEPLOY_OUT/);
+  });
+
+  it('copy_source points origin/main at HEAD so the later default-path deploys resolve', () => {
+    const body = fn('copy_source', '\n# --- 6.');
+    expect(body).toContain('update-ref refs/remotes/origin/main HEAD');
+  });
+
+  it('unknown_sha_arm deploys the all-zero SHA and expects exit 1, the guard line, an unchanged marker and no restart line', () => {
+    const body = fn('unknown_sha_arm', '\n# The seven checks');
+    expect(body).toContain('-e AGENT_CONSOLE_DEPLOY_SHA="$zero_sha"');
+    expect(body).toContain('local zero_sha="0000000000000000000000000000000000000000"');
+    // Exit code 1, read straight after the deploy invocation.
+    expect(body).toMatch(/update-and-deploy-for-multiuser-ubuntu\.sh >"\$out" 2>&1 \|\| rc=\$\?\n  expect "[^"]*" test "\$rc" -eq 1/);
+    expect(body).toContain('Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ${SRC}');
+    expect(body).toContain('sha256sum "${DEPLOY_TARGET}/.deploy-sha"');
+    expect(body).toContain('test "$before" = "$after"');
+    // No restart line: grep must come back 1 (no match), asserted as such.
+    expect(body).toMatch(/rc=0\n  grep -q '==> systemctl restart' "\$out" \|\| rc=\$\?\n  expect "[^"]*" test "\$rc" -eq 1/);
   });
 });

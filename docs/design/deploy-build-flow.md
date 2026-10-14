@@ -18,6 +18,8 @@ Claims are read at `origin/main` **`9408c731`** and cited as `file:line` there. 
 
 ### 1.1 `scripts/update-and-deploy-for-multiuser-ubuntu.sh`
 
+(This table inventories the script as it was BEFORE the Issue #2090 change; line numbers refer to that revision. Section 6 describes the shipped flow.)
+
 | Step (line) | Reads the working tree? | Refs only? | Writes where | If the source were bare |
 |---|---|---|---|---|
 | `SRC` = `${DATA_ROOT}/source-repos/agent-console` or `AGENT_CONSOLE_APP_SOURCE_DIR` (`:118`) | no | no | nothing | n/a |
@@ -167,9 +169,14 @@ Consequences beyond this review: on a bare source repository, **`bun install` fa
 
 **Recommendation: keep the whole-tree copy in phase 1; treat the manifest as a separate, later step.** Phase 1's goal is to decouple from the source working tree and pin the SHA; the manifest changes what is installed in production (606 packages to 1, lockfile and `bunfig.toml` semantics) and deserves its own decision, which is a runtime-behaviour change independent of the decoupling. The trade is stated above: a manifest gives a 25 MB target and no stray files, at the price that every new runtime read must be listed. **The test that would catch a missing entry:** the tier-3 verification (`scripts/verify-multiuser-systemd.sh`) after a manifest deploy (V4 unit active, V5 health and `/api/config.deployedSha`), plus a unit test over the manifest constant asserting it covers section 2.2's table; neither exists today because there is no manifest.
 
-## 6. Recommendation for phase 1: a diff sketch (not applied)
+## 6. Recommendation for phase 1: a diff sketch (applied in Issue #2090)
 
-The change to `scripts/update-and-deploy-for-multiuser-ubuntu.sh` is **owner-gated**. Sketch, with the minimum new moving parts:
+The change to `scripts/update-and-deploy-for-multiuser-ubuntu.sh` was **owner-gated** (approved 2026-10-14) and is now applied. The sketch below is the design as proposed; the shipped script differs from it in four recorded ways:
+
+1. **Explicit build-directory removal before V0.** The `trap` alone would leave the `0700` build directory in the data root while V0 (data-root ownership) scans it, so the script also removes it right after the rsync succeeds and clears its own state so the `trap` does not run a second time. The `trap` stays as the failure-path net.
+2. **The archive pipeline runs under `bash -c` with an inner `set -o pipefail`**, not `sh -c`: without it `tar`'s exit 0 masks a failing `git archive`, and Ubuntu 22.04's `dash` (0.5.11) has no `pipefail` (0.5.12 added it).
+3. **The SHA guard and the `rev-parse` default end in one error message.** A failing `rev-parse origin/main` in the default expansion would otherwise exit silently under `set -e`.
+4. **`DEPLOY_SHA` is normalized to the full commit SHA after the guard** (`rev-parse "${DEPLOY_SHA}^{commit}"`), so a branch, tag or short override still yields a marker and `/api/config.deployedSha` that are full SHAs.
 
 ```diff
 -DEPLOYED_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse HEAD)"
