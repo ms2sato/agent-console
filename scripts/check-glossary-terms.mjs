@@ -238,8 +238,8 @@ export function checkGlossaryConsistency(entries, glossaryRel) {
   }
   for (const e of entries) {
     for (const a of e.aliases) {
-      if (a.key === e.headingKey) continue; // self-alias (case/quote variant of its own heading)
       const owner = firstByHeading.get(a.key);
+      // `owner !== e` exempts a self-alias (a case/quote variant of the entry's own heading).
       if (owner && owner !== e) {
         violations.push({
           file: glossaryRel,
