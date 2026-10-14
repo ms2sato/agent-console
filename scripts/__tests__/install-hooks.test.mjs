@@ -463,10 +463,11 @@ describe('scripts/install-hooks.mjs on a bare repository (Issue #2091)', () => {
   // the same reason as the linked-worktree case above.
   //
   // Mutations measured when this block was written (each restored):
-  // - detecting bareness via the cwd instead of the common dir -> (a), (b), (d)
-  //   fail (exit 1, "source missing" with the bare dir's parent in the path)
-  //   and so does (c)'s source-shape assertion; (c)'s git-behaviour assertions
-  //   do NOT depend on the script (they pin the facts the rule relies on);
+  // - detecting bareness via the cwd instead of the common dir -> (a) is the
+  //   PRIMARY catch (exit 1, "source missing" with the bare dir's parent in the
+  //   path), with (b) and (d) failing alongside it; (c)'s source-shape
+  //   assertion is the SECONDARY catch, and (c)'s git-behaviour assertions do
+  //   NOT depend on the script (they pin the facts the rule relies on);
   // - allowing the symlink attempt on a bare repo -> (a), (b), (d) fail (the
   //   hook would be a symlink to the ephemeral worktree).
   let root;
