@@ -384,7 +384,7 @@ describe('useAppWsEvent wire consumption (fully populated derived entities)', ()
 
   it('session-created: a fully populated worktree session with an embedded-agent worker reaches onSessionCreated unchanged', () => {
     const onSessionCreated = mock(() => {});
-    renderHook(() => useAppWsEvent({ onSessionCreated } as unknown as UseAppWsEventOptions));
+    renderHook(() => useAppWsEvent({ onSessionCreated }));
     const ws = MockWebSocket.getLastInstance();
 
     act(() => {
@@ -411,7 +411,7 @@ describe('useAppWsEvent wire consumption (fully populated derived entities)', ()
       sharedAccountUsername: null,
       clonedSourceRepoPath: '/repos/repo',
     };
-    renderHook(() => useAppWsEvent({ onRepositoryCreated } as unknown as UseAppWsEventOptions));
+    renderHook(() => useAppWsEvent({ onRepositoryCreated }));
     const ws = MockWebSocket.getLastInstance();
 
     act(() => {
