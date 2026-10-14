@@ -13,6 +13,9 @@ import {
   setMcpServerPermissions,
   fetchRepositories,
   registerRepository,
+  updateRepository,
+  registerAgent,
+  updateAgent,
   unregisterRepository,
   fetchRepository,
   fetchWorkers,
@@ -570,7 +573,16 @@ describe('API Client', () => {
 
   describe('registerRepository', () => {
     it('should register repository successfully', async () => {
-      const mockRepo = { repository: { id: '1', name: 'repo', path: '/path' } };
+      const mockRepo = {
+        repository: {
+          id: '1',
+          name: 'repo',
+          path: '/path',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          orchestratorSessionIds: [],
+          clonedSourceRepoPath: null,
+        },
+      };
       mockFetch.mockResolvedValue(createMockResponse(mockRepo));
 
       const result = await registerRepository({ path: '/path/to/repo' });
@@ -921,6 +933,7 @@ describe('API Client', () => {
           name: 'New Agent',
           commandTemplate: 'new-cmd {{prompt}}',
           isBuiltIn: false,
+          createdAt: '2026-01-01T00:00:00.000Z',
           capabilities: {
             supportsContinue: false,
             supportsHeadlessMode: false,
@@ -958,7 +971,14 @@ describe('API Client', () => {
     it('should update agent successfully', async () => {
       const { updateAgent } = await import('../api');
       const mockAgent = {
-        agent: { id: 'agent-1', name: 'Updated Agent', command: 'cmd', isBuiltIn: false },
+        agent: {
+          id: 'agent-1',
+          name: 'Updated Agent',
+          commandTemplate: 'cmd {{prompt}}',
+          isBuiltIn: false,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+        },
       };
       mockFetch.mockResolvedValue(createMockResponse(mockAgent));
 
@@ -1761,6 +1781,70 @@ describe('API Client', () => {
       const body = { prUrl: 'https://github.com/o/r/pull/3', branchName: 'feat/x', orgRepo: null };
       mockFetch.mockResolvedValue(createMockResponse(body));
       expect(await fetchSessionPrLink('s1')).toEqual(body);
+    });
+  });
+  // #1367 pass 3a: five write/action fetchers parse a strict wire schema (resume, register/update
+  // agent, register/update repository). A malformed or extended body must throw, not be cast through.
+  describe('strict response parsing (pass 3a)', () => {
+    const repository = {
+      id: 'repo-1',
+      name: 'repo',
+      path: '/repo',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      orchestratorSessionIds: [],
+      clonedSourceRepoPath: null,
+    };
+    const agent = {
+      id: 'a1',
+      name: 'Agent',
+      isBuiltIn: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      commandTemplate: 'run {{prompt}}',
+      capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+    };
+    const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>, string]> = [
+      ['resumeSession', async () => ({ session: await resumeSession('s1') }), { session: validQuickSession }, 'session'],
+      [
+        'registerAgent',
+        async () => registerAgent({ name: 'Agent', commandTemplate: 'run {{prompt}}' }),
+        { agent },
+        'agent',
+      ],
+      ['updateAgent', async () => updateAgent('a1', { name: 'Agent' }), { agent }, 'agent'],
+      [
+        'registerRepository',
+        async () => registerRepository({ path: '/repo' }),
+        { repository },
+        'repository',
+      ],
+      [
+        'updateRepository',
+        async () => updateRepository('repo-1', { description: 'd' }),
+        { repository },
+        'repository',
+      ],
+    ];
+
+    it.each(cases)('%s resolves with a valid body', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse(valid));
+      expect(await call()).toEqual(valid);
+    });
+
+    it.each(cases)('%s throws on a body with an unknown extra field', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse({ ...valid, extra: true }));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it.each(cases)('%s throws when a required key is missing', async (_name, call, valid, requiredKey) => {
+      const { [requiredKey]: _dropped, ...rest } = valid;
+      mockFetch.mockResolvedValue(createMockResponse(rest));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it.each(cases)('%s throws when the nested record has a wrongly-typed field', async (_name, call, valid, requiredKey) => {
+      const nested = valid[requiredKey] as Record<string, unknown>;
+      mockFetch.mockResolvedValue(createMockResponse({ [requiredKey]: { ...nested, id: 42 } }));
+      await expect(call()).rejects.toThrow();
     });
   });
 });
