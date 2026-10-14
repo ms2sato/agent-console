@@ -23,7 +23,7 @@
  * a glossary `### ` heading, of a comma-separated value on an
  * `- **Aliases:**` line, or of a backticked identifier inside a heading.
  * Normalisation: strip backticks and surrounding quotes, cut a heading at
- * ` -- ` / ` (`, trim, lowercase. Matching is exact, never substring.
+ * ` — ` (em dash) / ` -- ` / ` (`, trim, lowercase. Matching is exact, never substring.
  *
  * Exit codes:
  *   0 = clean
@@ -77,14 +77,14 @@ export const ALLOWLISTED_TERMS = [
 
 /**
  * Normalise a term or heading for matching: strip backticks, strip
- * surrounding quotes, cut at ` -- ` (em dash) / ` (`, trim, lowercase.
+ * surrounding quotes, cut at ` — ` (em dash) / ` -- ` / ` (`, trim, lowercase.
  *
  * @param {string} text
  * @returns {string}
  */
 export function normalizeTerm(text) {
   let t = text.replace(/`/g, '');
-  const cut = t.search(/ — | \(/);
+  const cut = t.search(/ — | -- | \(/);
   if (cut !== -1) t = t.slice(0, cut);
   t = t.trim();
   t = t.replace(/^["'“”‘’]+|["'“”‘’]+$/g, '');

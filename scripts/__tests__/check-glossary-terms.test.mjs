@@ -61,6 +61,13 @@ describe('checkGlossaryTerms: class A (Terminology terms)', () => {
     ]);
   });
 
+  it('treats an ASCII ` -- ` in a glossary heading as a separator, like an em dash', () => {
+    // Mutation: drop `-- ` from the separator pattern in normalizeTerm -> the Foo bullet becomes a violation.
+    glossary('### Foo -- the first thing\nText.');
+    designDoc('d', '## Terminology\n\n- **Foo**: defined by the ASCII-dash heading.\n');
+    expect(run().violations).toEqual([]);
+  });
+
   it('matches the Terminology heading exactly: bullets under `## Terminology notes` are ignored', () => {
     // Mutation: `/^## Terminology\s*$/` -> `/^## Terminology/` makes the Ghost bullet a violation.
     glossary('### Alpha\nAn alpha.');

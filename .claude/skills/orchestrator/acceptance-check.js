@@ -565,7 +565,7 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
         '  2. For each identifier, grep `docs/glossary.md` for the term.',
         '  3. Missing entries → request the agent add them in this PR before merge (drift-handling tree, step 1 / 2).',
         '  4. Renamed/drifted variants → update `Aliases` field of the existing entry.',
-        'Trigger 5 (a design doc `## Terminology` section) and glossary self-consistency are CI-enforced by `bun run check:glossary-terms`; the manual grep remains for the other triggers.',
+        '`bun run check:glossary-terms` enforces in CI only that every `## Terminology` term name of a design doc is defined in the glossary, plus glossary self-consistency. It does not compare definitions: check manually that a revised Terminology definition matches its glossary entry, and keep the manual grep for the other triggers.',
         'If the PR does not introduce any new domain concept (e.g., bug fix, refactor with no naming change, test-only PR), it is acceptable to answer "N/A — PR scope does not introduce new domain concepts" with a one-line justification.',
       ].join('\n  '),
       insufficient: '"Glossary looks fine" (without listing introduced identifiers and grepping each)',
