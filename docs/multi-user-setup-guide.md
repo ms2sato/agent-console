@@ -1649,7 +1649,9 @@ Run the smokes after every deploy that touches a privilege-elevation code path
 `scripts/setup-multiuser-for-ubuntu.sh`). Unit tests cover the inner-command
 string shape, but only an on-host smoke can confirm what env the elevated
 user actually sees -- which depends on distro `sudo` defaults, sudoers
-config, and the target user's login shell init.
+config, and the target user's login shell init. Run the smokes from a checkout
+that has had `bun install`: the deploy builds in a throwaway directory, so the
+source repo is no longer installed by the deploy.
 
 Prerequisite for the unprivileged-user readability checks referenced below
 (both `scripts/update-and-deploy-for-multiuser-ubuntu.sh`'s own automatic

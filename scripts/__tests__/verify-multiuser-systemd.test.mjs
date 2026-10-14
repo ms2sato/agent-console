@@ -325,7 +325,7 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
 
   it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> restart_survival_arm -> path_first_bun_arm -> helper_cases -> run_smokes', () => {
     expect(driver).toContain(
-      '  run_deploy\n  unknown_sha_arm\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  path_first_bun_arm\n  helper_cases\n  run_smokes\n',
+      '  run_deploy\n  unknown_sha_arm\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  path_first_bun_arm\n  helper_cases\n  install_source_deps\n  run_smokes\n',
     );
     expect(driver).toMatch(/^drift_arm\(\) \{/m);
     expect(driver).toMatch(/^ownership_polarity_arm\(\) \{/m);
@@ -1039,6 +1039,45 @@ describe('verify-multiuser-systemd.sh: deploy #1 pins AGENT_CONSOLE_DEPLOY_SHA a
     expect(body).toContain('test "$marker_sha" = "$want_sha"');
     // The comparison value is never read back from the deploy's own output.
     expect(body).not.toMatch(/want_sha=.*DEPLOY_OUT/);
+  });
+
+  it('commit_source_edit commits as the service user with a hermetic git config and points origin/main at the new HEAD', () => {
+    const body = fn('commit_source_edit', '\n# Read-only diagnostics');
+    expect(body).toContain('--user agentconsole');
+    expect(body).toContain('-e GIT_CONFIG_GLOBAL=/dev/null');
+    expect(body).toContain('commit -q --no-verify -am "$2"');
+    expect(body).toContain('update-ref refs/remotes/origin/main HEAD');
+    expect(body.indexOf('commit -q')).toBeLessThan(body.indexOf('update-ref'));
+  });
+
+  it('7e commits the pre-fix injection after its sed and the restore after its sed, each with a presence control, and pins no SHA on deploy #7 or #8', () => {
+    const body = fn('path_first_bun_arm', '\n# --- 8.');
+    const sedInject = body.indexOf('"$SED_TO_PRE_FIX_START" | cexec');
+    const commitInject = body.indexOf('commit_source_edit "tier3: inject the pre-fix start line"');
+    const presenceInject = body.indexOf("grep -qF '\"start\": \"NODE_ENV=production bun dist/index.js\",' <<<\"$injected_pkg\"");
+    const deploy7 = body.indexOf('--- deploy #7');
+    const sedRestore = body.indexOf('"$SED_TO_FIXED_START" | cexec');
+    const commitRestore = body.indexOf('commit_source_edit "tier3: restore the fixed start line"');
+    const presenceRestore = body.indexOf('<<<"$restored_pkg"');
+    const deploy8 = body.indexOf('--- deploy #8');
+    expect(sedInject).toBeGreaterThan(-1);
+    expect(commitInject).toBeGreaterThan(sedInject);
+    expect(presenceInject).toBeGreaterThan(commitInject);
+    expect(deploy7).toBeGreaterThan(presenceInject);
+    expect(sedRestore).toBeGreaterThan(deploy7);
+    expect(commitRestore).toBeGreaterThan(sedRestore);
+    expect(presenceRestore).toBeGreaterThan(commitRestore);
+    expect(deploy8).toBeGreaterThan(presenceRestore);
+    expect(body).toContain('show "origin/main:${pkg}"');
+    expect(body).not.toContain('AGENT_CONSOLE_DEPLOY_SHA');
+    expect(body).not.toContain('stash create');
+  });
+
+  it('the smokes get their own frozen-lockfile install in the source copy, before run_smokes in main', () => {
+    const body = fn('install_source_deps', '\n# --- 9.');
+    expect(body).toContain('cexec --user agentconsole -w "$SRC" "$SERVICE" bun install --frozen-lockfile');
+    expect(body.indexOf('expect ')).toBeGreaterThan(-1);
+    expect(driver.indexOf('  install_source_deps\n  run_smokes\n')).toBeGreaterThan(driver.indexOf('  path_first_bun_arm\n'));
   });
 
   it('copy_source points origin/main at HEAD so the later default-path deploys resolve', () => {
