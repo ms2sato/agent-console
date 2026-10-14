@@ -132,6 +132,32 @@ function styleKey(cell: IBufferCell): string {
   ].join(':');
 }
 
+export interface ExtractRowOptions {
+  /**
+   * Keep the row's trailing default-style blanks instead of trimming them.
+   * Pass true for a row whose NEXT buffer line is a soft-wrap continuation
+   * (`isWrapped`): such a row was written through its last column, so its
+   * trailing blanks are content (the space at a wrap point), and trimming them
+   * makes a copy of the joined line glue two words together. Only a row that
+   * ends a logical line may be trimmed.
+   */
+  keepTrailingWhitespace?: boolean;
+}
+
+/**
+ * The options for the row at absolute index `y`: single writer of the rule that
+ * a row followed by a soft-wrap continuation keeps its trailing blanks. The
+ * headless buffer is the oracle (no `cols` arithmetic). A row whose successor is
+ * not in `buffer` (the last line of the buffer) is a row that ends a logical
+ * line as far as this buffer can tell, so it is trimmed as before.
+ */
+export function wrapContinuationOptions(
+  buffer: { getLine(y: number): { isWrapped: boolean } | undefined },
+  y: number,
+): ExtractRowOptions {
+  return { keepTrailingWhitespace: buffer.getLine(y + 1)?.isWrapped === true };
+}
+
 /**
  * Extract one buffer line into a TerminalRow. Consecutive cells with identical
  * style merge into a single segment. Width-0 cells (the trailing half of a
@@ -142,9 +168,11 @@ export function extractRow(
   cols: number,
   nullCell: IBufferCell,
   key: number,
+  opts: ExtractRowOptions = {},
 ): TerminalRow {
-  const segments = walkCells(line, cols, nullCell, -1);
-  trimTrailingDefaultWhitespace(segments);
+  const keep = opts.keepTrailingWhitespace === true;
+  const segments = walkCells(line, keep ? writtenColumnCount(line, cols, nullCell) : cols, nullCell, -1);
+  if (!keep) trimTrailingDefaultWhitespace(segments);
 
   // Keep at least one (empty) segment so the row box renders its line height.
   if (segments.length === 0) {
@@ -169,18 +197,41 @@ export function extractRowWithCursor(
   nullCell: IBufferCell,
   key: number,
   cursorX: number,
+  opts: ExtractRowOptions = {},
 ): TerminalRow {
-  const segments = walkCells(line, cols, nullCell, cursorX);
+  const keep = opts.keepTrailingWhitespace === true;
+  const limit = keep ? Math.max(writtenColumnCount(line, cols, nullCell), cursorX + 1) : cols;
+  const segments = walkCells(line, limit, nullCell, cursorX);
   // Trim trailing default-style blanks like extractRow, but protect the cursor
   // segment (and everything up to it): the cursor commonly sits on a blank cell
   // just after the text, so only whitespace strictly AFTER the cursor is trimmed.
   const cursorIndex = segments.findIndex((s) => s.style === CURSOR_STYLE);
   const protectedCount = cursorIndex === -1 ? 0 : cursorIndex + 1;
-  trimTrailingDefaultWhitespace(segments, protectedCount);
+  if (!keep) trimTrailingDefaultWhitespace(segments, protectedCount);
   if (segments.length === 0) {
     segments.push({ text: '', style: null });
   }
   return { key, segments, isWrapped: line.isWrapped, links: [] };
+}
+
+/**
+ * How many leading columns of `line` hold written content: `cols` minus the
+ * trailing run of EMPTY cells (`getChars() === ''`, never written). A written
+ * space is not empty (`getChars() === ' '`), so the space that ends a full row
+ * before a soft wrap is kept; but when a two-column character starts with one
+ * column left, xterm wraps the character and leaves that last cell empty
+ * (measured: chars `''`, code 0, width 1), and that filler must not be copied
+ * as a space (`abcdefghi界` would paste as `abcdefghi 界`). Used only for a
+ * row that keeps its trailing blanks.
+ */
+function writtenColumnCount(line: IBufferLine, cols: number, nullCell: IBufferCell): number {
+  let count = cols;
+  while (count > 0) {
+    const cell = line.getCell(count - 1, nullCell);
+    if (!cell || cell.getChars() !== '' || cell.getWidth() === 0) break;
+    count--;
+  }
+  return count;
 }
 
 /**

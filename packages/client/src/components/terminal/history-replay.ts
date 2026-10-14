@@ -1,5 +1,5 @@
 import { Terminal } from '@xterm/headless';
-import { extractRow, type TerminalRow } from './buffer-to-rows';
+import { extractRow, wrapContinuationOptions, type TerminalRow } from './buffer-to-rows';
 import { detectAndAssignLinks } from './row-pipeline';
 
 /**
@@ -78,7 +78,7 @@ function extractSettledRows(buffer: ReplayBuffer, cols: number): TerminalRow[] {
     const line = buffer.getLine(y);
     rows.push(
       line
-        ? extractRow(line, cols, nullCell, y)
+        ? extractRow(line, cols, nullCell, y, wrapContinuationOptions(buffer, y))
         : { key: y, segments: [{ text: '', style: null }], isWrapped: false, links: [] },
     );
   }
