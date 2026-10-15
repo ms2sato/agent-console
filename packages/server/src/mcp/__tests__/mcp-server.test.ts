@@ -1359,6 +1359,26 @@ describe('MCP Server Tools', () => {
   // get_session_status
   // ===========================================================================
 
+  describe('to-do tools registration', () => {
+    it('advertises create_todo and list_todos in tools/list', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      const listBody = (await listRes.json()) as { result?: { tools?: Array<{ name: string }> } };
+      const names = (listBody.result?.tools ?? []).map((t) => t.name);
+
+      expect(names).toContain('create_todo');
+      expect(names).toContain('list_todos');
+      expect(names).toContain('get_session_status');
+    });
+  });
+
   describe('get_session_status', () => {
     it('states that it describes workers, not processes, and points at list_processes for a missing exit notice', async () => {
       const listRes = await app.request('/mcp', {
