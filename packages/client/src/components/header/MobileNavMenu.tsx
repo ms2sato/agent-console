@@ -1,12 +1,13 @@
 import { useEffect } from 'react';
 import { Link, useLocation } from '@tanstack/react-router';
+import { TodoCountBadge } from './TodoCountBadge';
 
 interface MobileNavMenuProps {
   open: boolean;
   onClose: () => void;
 }
 
-/** Mobile navigation dropdown for Jobs, Agents, Artifacts, Repositories, and Settings links. */
+/** Mobile navigation dropdown for To-do, Jobs, Agents, Artifacts, Repositories, and Settings links. */
 export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
   const location = useLocation();
 
@@ -32,6 +33,16 @@ export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
         aria-label="Main navigation"
         className="absolute right-2 top-full z-40 mt-1 w-48 bg-slate-800 border border-slate-700 rounded-lg shadow-lg py-1"
       >
+        <NavMenuItem
+          to="/todos"
+          active={isActive('/todos')}
+          onClick={onClose}
+        >
+          <span className="flex items-center gap-1.5">
+            To-do
+            <TodoCountBadge />
+          </span>
+        </NavMenuItem>
         <NavMenuItem
           to="/jobs"
           active={isActive('/jobs')}

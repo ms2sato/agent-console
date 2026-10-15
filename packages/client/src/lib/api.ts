@@ -41,6 +41,9 @@ import type {
   Todo,
   TodoStatus,
   TodoScope,
+  CreateTodoRequest,
+  UpdateTodoRequest,
+  UsersListResponse,
   SetMcpServerPermissionsRequest,
   ListSharedAccountsResponse,
 } from '@agent-console/shared';
@@ -68,6 +71,8 @@ import {
   BookmarksListResponseSchema,
   BookmarkSchema,
   TodosListResponseSchema,
+  TodoResponseSchema,
+  UsersListResponseSchema,
   ListSharedAccountsResponseSchema,
 } from '@agent-console/shared';
 import type {
@@ -1475,4 +1480,58 @@ export async function fetchTodos(filter: FetchTodosFilter = {}): Promise<Todo[]>
   }
   const parsed = v.parse(TodosListResponseSchema, await res.json());
   return parsed.todos;
+}
+
+/**
+ * The write calls below return the server-composed item, parsed strictly. A
+ * caller refetches the lists afterwards instead of patching a cache from this
+ * return value (N1).
+ */
+export async function createTodo(request: CreateTodoRequest): Promise<Todo> {
+  const res = await api.todos.$post({ json: request });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to create to-do item');
+  }
+  return v.parse(TodoResponseSchema, await res.json()).todo;
+}
+
+export async function updateTodo(id: string, patch: UpdateTodoRequest): Promise<Todo> {
+  const res = await api.todos[':id'].$patch({ param: { id }, json: patch });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update to-do item');
+  }
+  return v.parse(TodoResponseSchema, await res.json()).todo;
+}
+
+/** `text` is required by the server when the item is a question. */
+export async function resolveTodo(id: string, text?: string): Promise<Todo> {
+  const res = await api.todos[':id'].resolve.$post({ param: { id }, json: { text } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to resolve to-do item');
+  }
+  return v.parse(TodoResponseSchema, await res.json()).todo;
+}
+
+export async function dismissTodo(id: string): Promise<Todo> {
+  const res = await api.todos[':id'].dismiss.$post({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to dismiss to-do item');
+  }
+  return v.parse(TodoResponseSchema, await res.json()).todo;
+}
+
+export async function deleteTodo(id: string): Promise<void> {
+  const res = await api.todos[':id'].$delete({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to delete to-do item');
+  }
+}
+
+/** The member directory (id and username only) that backs the assignee pickers. */
+export async function fetchUsers(): Promise<UsersListResponse['users']> {
+  const res = await api.users.$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch users');
+  }
+  return v.parse(UsersListResponseSchema, await res.json()).users;
 }

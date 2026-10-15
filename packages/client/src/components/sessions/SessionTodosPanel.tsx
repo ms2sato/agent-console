@@ -1,11 +1,8 @@
 import { useState } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type { Todo } from '@agent-console/shared';
 import { useSessionTodos } from './hooks/useSessionTodos';
 import { AccordionSectionBody } from './AccordionSectionBody';
-import { UntrustedLink, untrustedUrlTransform } from '../ui/UntrustedMarkdownLink';
-import { MarkdownCodeBlock } from '../ui/MarkdownCodeBlock';
+import { TodoBodyMarkdown } from '../todos/TodoBodyMarkdown';
 import { useSessionTerminalRun } from './SessionTerminalRunContext';
 import { RunCommandDialog } from './RunCommandDialog';
 
@@ -47,24 +44,7 @@ function TodoItem({
       </div>
       {todo.body !== '' && (
         <div className="mt-1 text-sm text-gray-300 break-words">
-          <Markdown
-            remarkPlugins={[remarkGfm]}
-            urlTransform={untrustedUrlTransform}
-            components={{
-              a: ({ href, children }) => (
-                <UntrustedLink href={href} tabIndex={isExpanded ? undefined : -1}>
-                  {children}
-                </UntrustedLink>
-              ),
-              pre: ({ children }) => (
-                <MarkdownCodeBlock tabIndex={isExpanded ? undefined : -1} onRun={onRun}>
-                  {children}
-                </MarkdownCodeBlock>
-              ),
-            }}
-          >
-            {todo.body}
-          </Markdown>
+          <TodoBodyMarkdown body={todo.body} focusable={isExpanded} onRun={onRun} />
         </div>
       )}
       {todo.resolutionText && (

@@ -5,6 +5,7 @@ import { renderWithRouter } from '../../../test/renderWithRouter';
 import { setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 import {
   JobsNavLink,
+  TodosNavLink,
   AgentsNavLink,
   ArtifactsNavLink,
   RepositoriesNavLink,
@@ -28,9 +29,30 @@ function jsonResponse(data: unknown, status = 200): Response {
 let reviewQueueResponse: unknown = [];
 let validateSessionsResponse: unknown = { hasIssues: false, results: [] };
 let logoutCalled = false;
+let todosResponse: unknown = { todos: [] };
+
+const baseTodo = {
+  kind: 'action',
+  scope: 'global',
+  title: 'Run the migration',
+  body: '',
+  sessionId: null,
+  createdBy: { userId: 'user-me' },
+  assigneeUserId: null,
+  status: 'open',
+  resolutionText: null,
+  resolvedByUserId: null,
+  resolvedAt: null,
+  createdAt: '2026-10-15T00:00:00.000Z',
+  updatedAt: '2026-10-15T00:00:00.000Z',
+};
 
 const mockFetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
   const url = input instanceof Request ? input.url : String(input);
+
+  if (url.includes('/api/todos')) {
+    return jsonResponse(todosResponse);
+  }
 
   if (url.includes('/review-queue')) {
     return jsonResponse(reviewQueueResponse);
@@ -53,6 +75,7 @@ beforeEach(() => {
   reviewQueueResponse = [];
   validateSessionsResponse = { hasIssues: false, results: [] };
   logoutCalled = false;
+  todosResponse = { todos: [] };
   resetAuth();
 });
 
@@ -60,6 +83,36 @@ afterEach(() => {
   cleanup();
   globalThis.fetch = originalFetch;
   mockFetch.mockClear();
+});
+
+describe('TodosNavLink', () => {
+  it('links to /todos with the label "To-do"', async () => {
+    await renderWithRouter(<TodosNavLink />);
+    const link = screen.getByText('To-do').closest('a');
+    expect(link?.getAttribute('href')).toBe('/todos');
+  });
+
+  it('is active on /todos and inactive elsewhere', async () => {
+    await renderWithRouter(<TodosNavLink />, '/todos');
+    expect(screen.getByText('To-do').closest('a')?.className).toContain('bg-white/10');
+    cleanup();
+    await renderWithRouter(<TodosNavLink />, '/jobs');
+    expect(screen.getByText('To-do').closest('a')?.className).not.toContain('bg-white/10');
+  });
+
+  it('shows the number of open items assigned to the current user', async () => {
+    setCurrentUser({ id: 'user-me', username: 'me', homeDir: '/home/me' });
+    todosResponse = {
+      todos: [
+        { ...baseTodo, id: 'a', assigneeUserId: 'user-me' },
+        { ...baseTodo, id: 'b', assigneeUserId: 'user-me' },
+      ],
+    };
+    await renderWithRouter(<TodosNavLink />);
+    await waitFor(() => {
+      expect(screen.getByLabelText('2 open to-do items assigned to you')).toBeTruthy();
+    });
+  });
 });
 
 describe('JobsNavLink', () => {

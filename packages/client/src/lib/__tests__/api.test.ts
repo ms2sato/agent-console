@@ -36,6 +36,12 @@ import {
   openInVSCode,
   fetchArtifacts,
   fetchTodos,
+  createTodo,
+  updateTodo,
+  resolveTodo,
+  dismissTodo,
+  deleteTodo,
+  fetchUsers,
   deleteArtifact,
   fetchNotifications,
   markNotificationsSeen,
@@ -1558,6 +1564,131 @@ describe('API Client', () => {
       mockFetch.mockResolvedValue(createMockResponse({}, { status: 500, ok: false }));
 
       await expect(fetchTodos()).rejects.toThrow('Failed to fetch to-do items');
+    });
+  });
+
+  describe('to-do write calls and the user directory', () => {
+    const wireTodo = {
+      id: 'todo-1',
+      kind: 'action',
+      scope: 'global',
+      title: 'Run the migration',
+      body: '',
+      sessionId: null,
+      createdBy: { userId: 'user-1' },
+      assigneeUserId: null,
+      status: 'open',
+      resolutionText: null,
+      resolvedByUserId: null,
+      resolvedAt: null,
+      createdAt: '2026-10-15T00:00:00.000Z',
+      updatedAt: '2026-10-15T00:00:00.000Z',
+    };
+
+    function serverRefusal(status: number, error: string) {
+      return {
+        ok: false,
+        status,
+        statusText: 'Error',
+        json: mock(() => Promise.resolve({ error })),
+      } as unknown as Response;
+    }
+
+    it('createTodo POSTs the request and returns the parsed item', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }, { status: 201 }));
+
+      const result = await createTodo({ kind: 'action', title: 'Run the migration', body: '' });
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(await getLastFetchBody()).toEqual({ kind: 'action', title: 'Run the migration', body: '' });
+      expect(result).toEqual(wireTodo);
+    });
+
+    it('updateTodo PATCHes the item with a null assignee that clears the assignment', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
+
+      await updateTodo('todo-1', { assigneeUserId: null });
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos/todo-1');
+      expect(getLastFetchMethod()).toBe('PATCH');
+      expect(await getLastFetchBody()).toEqual({ assigneeUserId: null });
+    });
+
+    it('resolveTodo POSTs the text to the resolve path', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
+
+      await resolveTodo('todo-1', 'done it');
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos/todo-1/resolve');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(await getLastFetchBody()).toEqual({ text: 'done it' });
+    });
+
+    it('dismissTodo POSTs to the dismiss path', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
+
+      await dismissTodo('todo-1');
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos/todo-1/dismiss');
+      expect(getLastFetchMethod()).toBe('POST');
+    });
+
+    it('deleteTodo sends DELETE to the item path', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+
+      await deleteTodo('todo-1');
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos/todo-1');
+      expect(getLastFetchMethod()).toBe('DELETE');
+    });
+
+    it('a single-item response with a dropped field fails the strict parse', async () => {
+      const { resolutionText: _dropped, ...withoutResolutionText } = wireTodo;
+      mockFetch.mockResolvedValue(createMockResponse({ todo: withoutResolutionText }));
+
+      await expect(dismissTodo('todo-1')).rejects.toThrow();
+    });
+
+    it('a single-item response with an unknown field fails the strict parse', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: { ...wireTodo, extra: 1 } }));
+
+      await expect(resolveTodo('todo-1', 'x')).rejects.toThrow();
+    });
+
+    it.each([
+      ['createTodo', () => createTodo({ kind: 'action', title: 't', body: '' }), 400],
+      ['updateTodo', () => updateTodo('todo-1', { scope: 'session' }), 400],
+      ['resolveTodo', () => resolveTodo('todo-1'), 400],
+      ['dismissTodo', () => dismissTodo('todo-1'), 409],
+      ['deleteTodo', () => deleteTodo('todo-1'), 404],
+    ] as const)('%s surfaces the server error message on a refusal', async (_name, call, status) => {
+      mockFetch.mockResolvedValue(serverRefusal(status, 'The server said no'));
+
+      await expect(call()).rejects.toThrow('The server said no');
+    });
+
+    it('fetchUsers GETs the directory and returns the parsed users', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ users: [{ id: 'user-1', username: 'alice' }] }));
+
+      const result = await fetchUsers();
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/users');
+      expect(result).toEqual([{ id: 'user-1', username: 'alice' }]);
+    });
+
+    it('fetchUsers rejects an entry carrying an extra field (the directory is id and username only)', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ users: [{ id: 'user-1', username: 'alice', homeDir: '/home/alice' }] }),
+      );
+
+      await expect(fetchUsers()).rejects.toThrow();
+    });
+
+    it('fetchUsers throws the fallback message on failure', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({}, { status: 500, ok: false }));
+
+      await expect(fetchUsers()).rejects.toThrow('Failed to fetch users');
     });
   });
 

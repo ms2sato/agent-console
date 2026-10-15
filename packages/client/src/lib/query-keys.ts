@@ -1,4 +1,4 @@
-import type { FetchJobsParams } from './api';
+import type { FetchJobsParams, FetchTodosFilter } from './api';
 
 /**
  * Centralized query key factories for TanStack Query.
@@ -140,6 +140,15 @@ export const todoKeys = {
   root: () => ['todos'] as const,
   /** To-do items of a single session (every scope, every status) */
   listBySession: (sessionId: string) => ['todos', 'list', sessionId] as const,
+  /** To-do items under a server-side filter (the global page and the nav badge) */
+  list: (filters: FetchTodosFilter) => ['todos', 'filtered', filters] as const,
+  /** Prefix of every `list(filters)` key, for invalidating them all at once */
+  listRoot: () => ['todos', 'filtered'] as const,
+} as const;
+
+export const userKeys = {
+  /** The member directory */
+  list: () => ['users', 'list'] as const,
 } as const;
 
 // Note: distinct from `notificationKeys` above, which is the unrelated
