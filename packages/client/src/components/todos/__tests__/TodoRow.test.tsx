@@ -2,6 +2,7 @@ import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { screen, cleanup, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
 import { TodoRow } from '../TodoRow';
 
@@ -219,7 +220,7 @@ describe('TodoRow', () => {
       const dialog = await screen.findByRole('alertdialog');
       await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
 
-      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      await waitForAbsent(() => screen.queryByRole('alertdialog'));
       expect(api.writes()).toHaveLength(0);
     });
 

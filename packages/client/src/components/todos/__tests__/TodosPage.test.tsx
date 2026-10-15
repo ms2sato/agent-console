@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'bun:test';
 import { screen, cleanup, waitFor, within, act } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import { setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
@@ -143,7 +144,7 @@ describe('TodosPage', () => {
 
       await user.selectOptions(screen.getByLabelText('Assignee filter'), 'unassigned');
 
-      await waitFor(() => expect(screen.queryByText('Bob has this')).toBeNull());
+      await waitForAbsent(() => screen.queryByText('Bob has this'));
       expect(screen.getByText('Nobody has this')).toBeTruthy();
       expect(lastListSearch().has('assignee')).toBe(false);
     });
@@ -159,7 +160,7 @@ describe('TodosPage', () => {
 
       await user.selectOptions(screen.getByLabelText('Session filter'), 'alpha-session-id');
 
-      await waitFor(() => expect(screen.queryByText('In beta')).toBeNull());
+      await waitForAbsent(() => screen.queryByText('In beta'));
       expect(screen.getByText('In alpha')).toBeTruthy();
       expect(screen.queryByText('Sessionless')).toBeNull();
     });
@@ -300,7 +301,7 @@ describe('TodosPage', () => {
         ws.simulateMessage(JSON.stringify({ type: 'session-deleted', sessionId: 'session-1' }));
       });
 
-      await waitFor(() => expect(screen.queryByText('Doomed with its session')).toBeNull());
+      await waitForAbsent(() => screen.queryByText('Doomed with its session'));
     });
   });
 });
