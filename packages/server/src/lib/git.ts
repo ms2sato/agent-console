@@ -1036,13 +1036,16 @@ export async function exportRepoTreeAtRef(
   const readCapped = async (): Promise<Uint8Array> => {
     const chunks: Uint8Array[] = [];
     let total = 0;
-    for await (const chunk of archive.stdout) {
-      total += chunk.byteLength;
+    const reader = archive.stdout.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
       if (total > maxBytes) {
         killArchive();
         throw new GitError(`git archive output exceeds ${maxBytes} bytes`, -1, 'ArchiveTooLarge');
       }
-      chunks.push(chunk);
+      chunks.push(value);
     }
     const all = new Uint8Array(total);
     let offset = 0;
