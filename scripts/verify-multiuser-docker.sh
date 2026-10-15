@@ -43,7 +43,9 @@
 #      SECOND user's (bob's) worktree creation into alice's bare repository,
 #      the phase-3 behaviour (no main worktree, no session at the bare path)
 #      and a negative control (group-write removed -> bob's creation must
-#      not produce a worktree) are asserted. Numbered 11b so that nothing
+#      not produce a worktree) are asserted, plus the upstream HEAD pin, the
+#      bare directory's owner (alice) and a failed-clone retry arm (no partial
+#      directory left, same name cloneable again). Numbered 11b so that nothing
 #      else is renumbered.
 #
 # --smokes additionally runs seven real-host smoke scripts
@@ -1436,6 +1438,11 @@ echo "=== 11b. bare source repositories: clone path + second-user worktree (#209
 # plus a NEGATIVE CONTROL: a third bare clone with the group-write bit
 # removed, where bob's creation must NOT produce a worktree (without it, (b)
 # cannot be told apart from "any user can write anything").
+# Three further assertions: the upstream's HEAD is pinned to refs/heads/main
+# (so the origin/HEAD assertion is meaningful), the bare clone's directory is
+# owned by alice (the requesting user), and a RETRY arm (a deliberately failing
+# bare clone leaves no directory behind, and the same name can then be cloned
+# again successfully).
 #
 # The upstream is the check-7 repository, re-served over git:// by a detached
 # `git daemon` INSIDE the container (root, loopback only), so the real clone
@@ -1444,7 +1451,7 @@ echo "=== 11b. bare source repositories: clone path + second-user worktree (#209
 # in its own pid file and the daemon is stopped by that pid (stop_gitd_2094,
 # also called from cleanup()).
 #
-# Fixed clone names (bare-2094 / nonbare-2094 / bare-2094-neg): a re-run
+# Fixed clone names (bare-2094 / nonbare-2094 / bare-2094-neg / bare-2094-retry): a re-run
 # against a --keep'd container gets 409 name conflicts, recorded as FAILs
 # with the response body printed -- never a skip.
 #
@@ -1657,7 +1664,23 @@ if [ "$s11b_daemon_present_rc" -eq 0 ] && [ "$s11b_safedir_rc" -eq 0 ]; then
   fi
   check "check-7 repository re-cloned bare under ${S11B_GITD_ROOT} as the git:// upstream" "$s11b_upstream_rc"
 fi
+# Fixture pin. The check-7 repository's HEAD is detached by earlier checks
+# (several branches share one commit), so a bare clone of it has no
+# resolvable remote HEAD and `git remote set-head -a` cannot create
+# refs/remotes/origin/HEAD in the clones made from it. Pinning the upstream's
+# HEAD to refs/heads/main is what makes the origin/HEAD assertion below
+# meaningful.
+s11b_pin_rc=1
 if [ "$s11b_upstream_rc" -eq 0 ]; then
+  compose exec -T --user root agent-console \
+    git -C "${S11B_GITD_ROOT}/upstream.git" symbolic-ref HEAD refs/heads/main >"$S11B_OUT" 2>&1
+  s11b_pin_rc=$?
+  if [ "$s11b_pin_rc" -ne 0 ]; then
+    echo "  symbolic-ref output: $(tr -d '\r' < "$S11B_OUT")"
+  fi
+  check "git:// upstream HEAD is pinned to refs/heads/main" "$s11b_pin_rc"
+fi
+if [ "$s11b_upstream_rc" -eq 0 ] && [ "$s11b_pin_rc" -eq 0 ]; then
   compose exec -T --user root agent-console sh -c "
     git daemon --base-path='${S11B_GITD_ROOT}' --export-all --reuseaddr \
       --listen=127.0.0.1 --port=9418 --pid-file='${GITD_2094_PID_FILE}' --detach
@@ -1741,6 +1764,14 @@ if [ -n "$S11B_BARE_PATH" ]; then
   echo "  bare: stat group -> ${s11b_val}"
   s11b_ok=1; [ "$s11b_val" = "agent-console-users" ] && s11b_ok=0
   check "bare: repository directory group is agent-console-users" "$s11b_ok"
+
+  # The server reserves the clone target as the requesting user, so the
+  # directory -- which for a bare repository IS the git dir -- belongs to the
+  # user who cloned (alice), not to the service user.
+  s11b_val="$(s11b_root stat -c '%U' "$S11B_BARE_PATH")"
+  echo "  bare: stat owner -> ${s11b_val}"
+  s11b_ok=1; [ "$s11b_val" = "alice" ] && s11b_ok=0
+  check "bare: repository directory is owned by alice (the requesting user)" "$s11b_ok"
 else
   echo "  DIAGNOSTIC: no bare repository path; recording explicit FAILs for its on-disk sub-checks instead of skipping."
   check "bare: git rev-parse --is-bare-repository = true" 1
@@ -1749,6 +1780,7 @@ else
   check "bare: core.sharedRepository = group" 1
   check "bare: every directory is group-writable and setgid (find -perm -g+ws finds none lacking)" 1
   check "bare: repository directory group is agent-console-users" 1
+  check "bare: repository directory is owned by alice (the requesting user)" 1
 fi
 if [ -n "$S11B_CTRL_PATH" ]; then
   s11b_val="$(s11b_rootgit "$S11B_CTRL_PATH" rev-parse --is-bare-repository)"
@@ -1869,6 +1901,59 @@ else
   check "negative control: bob's creation is accepted (202); the failure arrives asynchronously" 1
   check "negative control: bob's worktree NEVER appears in the list within 30s (group-write removed)" 1
   check "negative control: <repo>/worktrees has no entry" 1
+fi
+
+# --- RETRY ARM: a failed bare clone leaves nothing behind, so the name is reusable ---
+# Placed after the negative control (and before the daemon is stopped, which
+# the valid second clone needs): it shares no state with the arms above, and
+# the fixed name bare-2094-retry keeps a --keep'd re-run's 409 visible like the
+# other clone names. A deliberately failing bare clone (nothing is served at
+# the URL) must reach status `failed`, the partial-clone cleanup must remove
+# the target directory, and a SECOND clone with the same name and a valid URL
+# must then be accepted (202, not 409) and succeed.
+S11B_RETRY_NAME="bare-2094-retry"
+S11B_RETRY_BAD_URL="git://127.0.0.1/does-not-exist.git"
+s11b_retry_dir=""
+[ -n "$S11B_BARE_PATH" ] && s11b_retry_dir="$(dirname "$S11B_BARE_PATH")/${S11B_RETRY_NAME}"
+if [ "$S11B_DAEMON_OK" -eq 0 ] && [ -n "$s11b_retry_dir" ]; then
+  s11b_retry_code="$(curl -s -o "$S11B_RESP" -w '%{http_code}' -b "$S11B_ALICE_JAR" -c "$S11B_ALICE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/clone" \
+    -H 'Content-Type: application/json' \
+    -d "{\"url\":\"${S11B_RETRY_BAD_URL}\",\"name\":\"${S11B_RETRY_NAME}\",\"bare\":true}")"
+  echo "  POST /api/repositories/clone (retry arm, failing, url=${S11B_RETRY_BAD_URL}) -> HTTP ${s11b_retry_code}"
+  s11b_retry_job="$(s11b_json_str jobId "$S11B_RESP")"
+  s11b_ok=1; [ "$s11b_retry_code" = "202" ] && [ -n "$s11b_retry_job" ] && s11b_ok=0
+  if [ "$s11b_ok" -ne 0 ]; then echo "  response body: $(cat "$S11B_RESP")"; fi
+  check "retry: the failing bare clone request is accepted (202 + jobId)" "$s11b_ok"
+
+  s11b_retry_status=""
+  if [ -n "$s11b_retry_job" ]; then
+    for s11b_i in $(seq 1 60); do
+      sleep 1
+      curl -s -o "$S11B_RESP" -b "$S11B_ALICE_JAR" "${BASE_URL}/api/repositories/clone/${s11b_retry_job}" >/dev/null
+      s11b_retry_status="$(s11b_json_str status "$S11B_RESP")"
+      if [ "$s11b_retry_status" = "succeeded" ] || [ "$s11b_retry_status" = "failed" ]; then break; fi
+    done
+    echo "  retry: failing clone job ${s11b_retry_job} -> status=${s11b_retry_status:-<none>} after ${s11b_i}s"
+    # Printed once for the record: the job's error message.
+    echo "  retry: failed clone job response (full): $(cat "$S11B_RESP")"
+  fi
+  s11b_ok=1; [ "$s11b_retry_status" = "failed" ] && s11b_ok=0
+  check "retry: the failing bare clone job reaches status failed within 60s" "$s11b_ok"
+
+  s11b_retry_exists="$(s11b_root sh -c 'if [ -e "$1" ]; then echo exists; else echo absent; fi' _ "$s11b_retry_dir")"
+  echo "  retry: ${s11b_retry_dir} -> ${s11b_retry_exists}"
+  s11b_ok=1; [ "$s11b_retry_exists" = "absent" ] && s11b_ok=0
+  check "retry: the failed clone's target directory does not exist (partial-clone cleanup)" "$s11b_ok"
+
+  s11b_clone "retry (same name, valid url)" "$S11B_RETRY_NAME" ',"bare":true'
+else
+  echo "  DIAGNOSTIC: the git:// server or the bare repository path is missing; recording explicit FAILs for the retry arm instead of skipping."
+  check "retry: the failing bare clone request is accepted (202 + jobId)" 1
+  check "retry: the failing bare clone job reaches status failed within 60s" 1
+  check "retry: the failed clone's target directory does not exist (partial-clone cleanup)" 1
+  check "retry (same name, valid url): clone request accepted (202 + jobId)" 1
+  check "retry (same name, valid url): clone job succeeded" 1
 fi
 
 stop_gitd_2094
