@@ -149,9 +149,12 @@ RUN cd dist && bun install
 # Issue #830: in multi-user mode, the data root lives at /var/lib/agent-console
 # owned agentconsole:agent-console-users mode 2775 (setgid + group-writable)
 # so per-user PTYs can traverse into worktrees. The bootstrap script does
-# this on a real host; here we replicate it inline.
+# this on a real host; here we replicate it inline, including the
+# `source-repos` directory (same owner, group and 2775 mode as the setup
+# script gives it): clones are reserved as the requesting user, so the
+# directory must already be group-writable and setgid; the server never shapes it.
 ENV AGENT_CONSOLE_HOME=/var/lib/agent-console
-RUN install -d -o agentconsole -g agent-console-users -m 2775 "${AGENT_CONSOLE_HOME}" \
+RUN install -d -o agentconsole -g agent-console-users -m 2775 "${AGENT_CONSOLE_HOME}" "${AGENT_CONSOLE_HOME}/source-repos" \
  && chown -R agentconsole:agent-console-users /app/dist
 
 # --- Workspace copy for scripts/verify-multiuser-docker.sh --smokes (Issue #1619) ---

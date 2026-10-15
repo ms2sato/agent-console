@@ -40,6 +40,10 @@ import type {
 } from '../repository-clone-service.js';
 import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
 
+const MKDIR_PREFIX = 'LC_ALL=C mkdir -- ';
+// The clone chain is delivered over stdin to `sh -s`; `command` never carries it.
+const CLONE_COMMAND = 'sh -s';
+
 /**
  * Capture-and-respond fake for `runAsUser`. Default response: success
  * (exitCode 0, empty stdout/stderr). Per-test scenarios can replace the
@@ -47,6 +51,29 @@ import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
  */
 function createRunAsUserMock() {
   const calls: RunAsUserOpts[] = [];
+  // The target-directory reservation is a `LC_ALL=C mkdir -- '<dir>'` call; it is routed
+  // to `reservation` so tests that replace `responder` for the clone step
+  // keep a faithful reservation. The default behaves like mkdir(2) without
+  // `-p` on the memfs volume: exit 0, or exit 1 with a `File exists` stderr.
+  const reservation = {
+    fn: async (opts: RunAsUserOpts): Promise<RunAsUserResult> => {
+      const dir = opts.command.slice(MKDIR_PREFIX.length).replace(/^'|'$/g, '');
+      try {
+        await fsPromises.mkdir(dir);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      } catch (err: unknown) {
+        if ((err as { code?: string }).code === 'EEXIST') {
+          return {
+            stdout: '',
+            stderr: `mkdir: cannot create directory '${dir}': File exists`,
+            exitCode: 1,
+            timedOut: false,
+          };
+        }
+        throw err;
+      }
+    },
+  };
   const responder = {
     fn: async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
       stdout: '',
@@ -57,9 +84,9 @@ function createRunAsUserMock() {
   };
   const runAsUserImpl: RunAsUserFn = ((opts: RunAsUserOpts, _spawn?: unknown) => {
     calls.push(opts);
-    return responder.fn(opts);
+    return opts.command.startsWith(MKDIR_PREFIX) ? reservation.fn(opts) : responder.fn(opts);
   }) as RunAsUserFn;
-  return { calls, runAsUserImpl, responder };
+  return { calls, runAsUserImpl, responder, reservation };
 }
 
 function createRegistrarMock() {
@@ -246,12 +273,13 @@ describe('repository-clone-service', () => {
       expect(state?.repositoryId).toBe('mock-repo-id');
       expect(state?.error).toBeUndefined();
 
-      // Spawn invocation:
-      expect(runAs.calls).toHaveLength(1);
-      const call = runAs.calls[0];
-      expect(call.command).toContain('git clone --config core.sharedRepository=group');
-      expect(call.command).toContain("'https://github.com/org/repo.git'");
-      expect(call.command).toContain(path.join(sourceReposDir, 'repo'));
+      // Spawn invocations: the reservation, then the clone.
+      expect(runAs.calls).toHaveLength(2);
+      const call = runAs.calls[1];
+      expect(call.command).toBe(CLONE_COMMAND);
+      expect(call.stdin).toContain('git clone --config core.sharedRepository=group');
+      expect(call.stdin).toContain("'https://github.com/org/repo.git'");
+      expect(call.stdin).toContain(path.join(sourceReposDir, 'repo'));
       expect(call.cwd).toBe(sourceReposDir);
       expect(call.username).toBe(null);
       expect(call.preserveEnv).toEqual([
@@ -284,7 +312,9 @@ describe('repository-clone-service', () => {
       await waitForJobTerminal(service, jobId);
 
       const expectedTarget = path.join(sourceReposDir, 'my-clone');
-      expect(runAs.calls[0].command).toContain(expectedTarget);
+      expect(runAs.calls[0].command).toBe(`LC_ALL=C mkdir -- '${expectedTarget}'`);
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain(expectedTarget);
       expect(registrar.calls[0].repoPath).toBe(expectedTarget);
     });
   });
@@ -348,7 +378,7 @@ describe('repository-clone-service', () => {
     });
   });
 
-  describe('enqueueClone -- name conflict (no spawn)', () => {
+  describe('enqueueClone -- name conflict (reservation only, no clone)', () => {
     it('throws CloneNameConflictError when the target dir already exists', async () => {
       const runAs = createRunAsUserMock();
       const registrar = createRegistrarMock();
@@ -367,7 +397,9 @@ describe('repository-clone-service', () => {
           requestUser: null,
         }),
       ).rejects.toBeInstanceOf(CloneNameConflictError);
-      expect(runAs.calls).toHaveLength(0);
+      // Only the failed reservation ran; no clone followed.
+      expect(runAs.calls).toHaveLength(1);
+      expect(runAs.calls[0].command.startsWith('LC_ALL=C mkdir -- ')).toBe(true);
       expect(registrar.calls).toHaveLength(0);
     });
   });
@@ -392,9 +424,11 @@ describe('repository-clone-service', () => {
       // The service does not itself decide whether to elevate; that is the
       // runAsUser helper's job (covered by its own tests). What this service
       // owes is correct argument propagation:
-      expect(runAs.calls).toHaveLength(1);
+      expect(runAs.calls).toHaveLength(2);
       expect(runAs.calls[0].username).toBe('alice');
-      expect(runAs.calls[0].command).toContain('git clone --config core.sharedRepository=group');
+      expect(runAs.calls[1].username).toBe('alice');
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain('git clone --config core.sharedRepository=group');
     });
   });
 
@@ -445,11 +479,12 @@ describe('repository-clone-service', () => {
       });
       await waitForJobTerminal(service, jobId);
 
-      expect(runAs.calls).toHaveLength(1);
-      expect(runAs.calls[0].command).toContain('--bare');
-      expect(runAs.calls[0].command).toContain('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
+      expect(runAs.calls).toHaveLength(2);
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain('--bare');
+      expect(runAs.calls[1].stdin).toContain('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
       // The directory name carries no .git suffix.
-      expect(runAs.calls[0].command).toContain(`'${path.join(sourceReposDir, 'repo')}'`);
+      expect(runAs.calls[1].stdin).toContain(`'${path.join(sourceReposDir, 'repo')}'`);
     });
 
     it('control, default request: the command is identical to the pre-bare one', async () => {
@@ -467,10 +502,11 @@ describe('repository-clone-service', () => {
       });
       await waitForJobTerminal(service, jobId);
 
-      expect(runAs.calls[0].command).toBe(
-        `git clone --config core.sharedRepository=group 'https://github.com/org/repo.git' '${path.join(sourceReposDir, 'repo')}'`,
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toBe(
+        `git clone --config core.sharedRepository=group 'https://github.com/org/repo.git' '${path.join(sourceReposDir, 'repo')}'\n`,
       );
-      expect(runAs.calls[0].command).not.toContain('--bare');
+      expect(runAs.calls[1].stdin).not.toContain('--bare');
     });
 
     it('bare clone whose command exits non-zero fails the job and removes the partial directory', async () => {
@@ -494,10 +530,11 @@ describe('repository-clone-service', () => {
       expect(registrar.calls).toHaveLength(0);
       // Cleanup ran for the bare clone's directory (same helper the regular
       // clone failure path uses; the mock runner records its recursive-remove call).
-      expect(runAs.calls).toHaveLength(2);
-      expect(runAs.calls[0].command).toContain('--bare');
-      expect(runAs.calls[1].command).toContain(path.join(sourceReposDir, 'repo'));
-      expect(runAs.calls[1].command).not.toContain('git clone');
+      expect(runAs.calls).toHaveLength(3);
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain('--bare');
+      expect(runAs.calls[2].command).toContain(path.join(sourceReposDir, 'repo'));
+      expect(runAs.calls[2].command).not.toContain('git clone');
     });
   });
 
@@ -591,7 +628,7 @@ describe('repository-clone-service', () => {
       // post-condition lstat ENOENT assertion can verify cleanup happened
       // via the helper.
       runAs.responder.fn = async (opts) => {
-        if (opts.command.startsWith('git clone')) {
+        if (opts.command === CLONE_COMMAND) {
           await fsPromises.mkdir(targetDir, { recursive: true });
           await fsPromises.writeFile(path.join(targetDir, 'partial-marker'), 'x');
           return {
@@ -624,12 +661,13 @@ describe('repository-clone-service', () => {
       expect(state?.status).toBe(CLONE_JOB_STATUS.FAILED);
       // The cleanup MUST have rm'd the partial dir.
       await expect(fsPromises.lstat(targetDir)).rejects.toMatchObject({ code: 'ENOENT' });
-      // Two calls: the clone and the helper's rm. The helper passes the
-      // null username through; the real `runAsUser` would short-circuit
-      // elevation, but the mock just captures the shape.
-      expect(runAs.calls).toHaveLength(2);
-      expect(runAs.calls[0].command).toContain('git clone');
-      const rmCall = runAs.calls[1];
+      // Three calls: the reservation, the clone and the helper's rm. The helper
+      // passes the null username through; the real `runAsUser` would
+      // short-circuit elevation, but the mock just captures the shape.
+      expect(runAs.calls).toHaveLength(3);
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain('git clone');
+      const rmCall = runAs.calls[2];
       expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
       expect(rmCall.command).toContain(`'${targetDir}'`);
       expect(rmCall.cwd).toBe('/');
@@ -645,7 +683,7 @@ describe('repository-clone-service', () => {
       const targetDir = path.join(sourceReposDir, 'repo');
       const runAs = createRunAsUserMock();
       runAs.responder.fn = async (opts) => {
-        if (opts.command.startsWith('git clone')) {
+        if (opts.command === CLONE_COMMAND) {
           await fsPromises.mkdir(targetDir, { recursive: true });
           await fsPromises.writeFile(path.join(targetDir, 'partial-marker'), 'x');
           return {
@@ -678,33 +716,32 @@ describe('repository-clone-service', () => {
       expect(state?.status).toBe(CLONE_JOB_STATUS.FAILED);
       await expect(fsPromises.lstat(targetDir)).rejects.toMatchObject({ code: 'ENOENT' });
 
-      // Both the clone and the rm-as-user calls must have happened, both
-      // targeting `alice`.
-      expect(runAs.calls).toHaveLength(2);
-      const cloneCall = runAs.calls[0];
-      expect(cloneCall.command.startsWith('git clone')).toBe(true);
+      // The reservation, the clone and the rm-as-user calls must all have
+      // happened, all targeting `alice`.
+      expect(runAs.calls).toHaveLength(3);
+      expect(runAs.calls[0].command.startsWith('LC_ALL=C mkdir -- ')).toBe(true);
+      expect(runAs.calls[0].username).toBe('alice');
+      const cloneCall = runAs.calls[1];
+      expect(cloneCall.command).toBe(CLONE_COMMAND);
+      expect(String(cloneCall.stdin).startsWith('git clone')).toBe(true);
       expect(cloneCall.username).toBe('alice');
-      const rmCall = runAs.calls[1];
+      const rmCall = runAs.calls[2];
       expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
       expect(rmCall.command).toContain(`'${targetDir}'`);
       expect(rmCall.cwd).toBe('/');
       expect(rmCall.username).toBe('alice');
     });
 
-    it('delegates to rmRecursiveAsUser with null username when the clone spawn throws, even with requestUser set', async () => {
+    it('delegates to rmRecursiveAsUser with the requesting user when the clone spawn throws', async () => {
       // Spawn-level failure (e.g., sudo missing) means git clone never
-      // started, so `targetDir` only holds the empty server-owned
-      // reservation from `mkdir(targetDir)` -- no user-owned files were
-      // created. The cleanup passes `null` to the helper so the rm runs as
-      // the server process (which owns the empty reservation) and does NOT
-      // re-hit the same sudo failure that broke the clone. In production
-      // the real `runAsUser` short-circuits the `null` username to a direct
-      // exec; the mock here just captures the shape.
+      // started, so `targetDir` only holds the empty reservation, which the
+      // requesting user made and owns. The cleanup runs as that user like
+      // every other failure path.
       process.env.AUTH_MODE = 'multi-user';
       const targetDir = path.join(sourceReposDir, 'repo');
       const runAs = createRunAsUserMock();
       runAs.responder.fn = async (opts) => {
-        if (opts.command.startsWith('git clone')) {
+        if (opts.command === CLONE_COMMAND) {
           throw new Error('spawn sudo ENOENT');
         }
         if (opts.command.startsWith('rm -rf --')) {
@@ -728,16 +765,153 @@ describe('repository-clone-service', () => {
 
       const state = service.getJob(jobId);
       expect(state?.status).toBe(CLONE_JOB_STATUS.FAILED);
-      // Two calls: the failing clone (with alice) and the helper's rm
-      // (with null, NOT alice -- the spawn-throw rationale).
-      expect(runAs.calls).toHaveLength(2);
-      expect(runAs.calls[0].command.startsWith('git clone')).toBe(true);
-      expect(runAs.calls[0].username).toBe('alice');
-      const rmCall = runAs.calls[1];
+      // Three calls: the reservation, the failing clone and the helper's rm,
+      // all as alice.
+      expect(runAs.calls).toHaveLength(3);
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(String(runAs.calls[1].stdin).startsWith('git clone')).toBe(true);
+      expect(runAs.calls[1].username).toBe('alice');
+      const rmCall = runAs.calls[2];
       expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
       expect(rmCall.cwd).toBe('/');
-      expect(rmCall.username).toBe(null);
+      expect(rmCall.username).toBe('alice');
       await expect(fsPromises.lstat(targetDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+
+  describe('enqueueClone -- target reservation runs as the requesting user', () => {
+    const targetDir = () => path.join(sourceReposDir, 'repo');
+    const request = (requestUser: string | null) => ({
+      url: 'https://github.com/org/repo.git',
+      requestUser,
+    });
+    const build = (runAs: ReturnType<typeof createRunAsUserMock>) =>
+      new RepositoryCloneService({
+        sourceReposDir,
+        registrar: createRegistrarMock().registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+    it('the reservation is calls[0]: requesting user, plain mkdir without -p, cwd = source-repos', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const runAs = createRunAsUserMock();
+      const service = build(runAs);
+
+      const jobId = await service.enqueueClone(request('alice'));
+      await waitForJobTerminal(service, jobId);
+
+      expect(runAs.calls[0].username).toBe('alice');
+      expect(runAs.calls[0].command).toBe(`LC_ALL=C mkdir -- '${targetDir()}'`);
+      expect(runAs.calls[0].command).not.toContain(' -p');
+      expect(runAs.calls[0].cwd).toBe(sourceReposDir);
+      expect(runAs.calls[0].timeoutMs).toBeGreaterThan(0);
+      service.dispose();
+    });
+
+    it('happy path: calls are [mkdir, clone] in that order', async () => {
+      const runAs = createRunAsUserMock();
+      const service = build(runAs);
+
+      const jobId = await service.enqueueClone(request('alice'));
+      await waitForJobTerminal(service, jobId);
+
+      expect(
+        runAs.calls.map((c) => (c.command.startsWith(MKDIR_PREFIX) ? 'mkdir' : c.command === CLONE_COMMAND ? 'git' : 'other')),
+      ).toEqual(['mkdir', 'git']);
+      service.dispose();
+    });
+
+    it('exit non-zero with "File exists" -> CloneNameConflictError and no clone call follows', async () => {
+      const runAs = createRunAsUserMock();
+      runAs.reservation.fn = async () => ({
+        stdout: '',
+        stderr: `mkdir: cannot create directory '${targetDir()}': File exists`,
+        exitCode: 1,
+        timedOut: false,
+      });
+      const service = build(runAs);
+
+      const error = await service.enqueueClone(request('alice')).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CloneNameConflictError);
+      expect((error as Error).message).toBe(`Target directory already exists: ${targetDir()}`);
+      expect(runAs.calls).toHaveLength(1);
+      service.dispose();
+    });
+
+    it('"Permission denied" -> CloneValidationError naming the 2775 contract; only the mkdir ran', async () => {
+      const runAs = createRunAsUserMock();
+      const stderr = `mkdir: cannot create directory '${targetDir()}': Permission denied`;
+      runAs.reservation.fn = async () => ({ stdout: '', stderr, exitCode: 1, timedOut: false });
+      const service = build(runAs);
+
+      const error = await service.enqueueClone(request('alice')).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CloneValidationError);
+      expect((error as Error).message).toContain(
+        "source-repos directory must be group-writable with the setgid bit (mode 2775, group agent-console-users); run the setup script's drift check",
+      );
+      expect((error as Error).message).toContain(stderr);
+      expect(runAs.calls).toHaveLength(1);
+      service.dispose();
+    });
+
+    it('another non-zero exit -> CloneValidationError("Could not reserve target directory: <stderr>")', async () => {
+      const runAs = createRunAsUserMock();
+      runAs.reservation.fn = async () => ({
+        stdout: '',
+        stderr: 'mkdir: cannot create directory: No space left on device',
+        exitCode: 1,
+        timedOut: false,
+      });
+      const service = build(runAs);
+
+      const error = await service.enqueueClone(request('alice')).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CloneValidationError);
+      expect((error as Error).message).toBe(
+        'Could not reserve target directory: mkdir: cannot create directory: No space left on device',
+      );
+      expect(runAs.calls).toHaveLength(1);
+      service.dispose();
+    });
+
+    it('reservation timeout -> CloneValidationError, nothing to clean', async () => {
+      const runAs = createRunAsUserMock();
+      runAs.reservation.fn = async () => ({ stdout: '', stderr: '', exitCode: 137, timedOut: true });
+      const service = build(runAs);
+
+      await expect(service.enqueueClone(request('alice'))).rejects.toBeInstanceOf(CloneValidationError);
+      expect(runAs.calls).toHaveLength(1);
+      service.dispose();
+    });
+
+    it('reservation spawn throw -> CloneValidationError and no cleanup call (the directory was never made)', async () => {
+      const runAs = createRunAsUserMock();
+      runAs.reservation.fn = async () => {
+        throw new Error('spawn sudo ENOENT');
+      };
+      const service = build(runAs);
+
+      const error = await service.enqueueClone(request('alice')).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CloneValidationError);
+      expect((error as Error).message).toContain('spawn sudo ENOENT');
+      expect(runAs.calls).toHaveLength(1);
+      expect(runAs.calls.some((c) => c.command.startsWith('rm '))).toBe(false);
+      service.dispose();
+    });
+
+    it('requestUser null (single-user): calls[0].username is null and the same mkdir command is used', async () => {
+      const runAs = createRunAsUserMock();
+      const service = build(runAs);
+
+      const jobId = await service.enqueueClone(request(null));
+      await waitForJobTerminal(service, jobId);
+
+      expect(runAs.calls[0].username).toBe(null);
+      expect(runAs.calls[0].command).toBe(`LC_ALL=C mkdir -- '${targetDir()}'`);
+      service.dispose();
     });
   });
 
