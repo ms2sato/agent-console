@@ -219,7 +219,10 @@ export class CloneNameConflictError extends Error {
  * would fail with "Cannot determine remote HEAD", and the clone itself
  * succeeded, so the step is skipped and the clone is kept, the same shape the
  * non-bare arm leaves (it becomes usable after the first push and fetch). A
- * real `set-head` failure on a populated clone still fails the command. The
+ * real `set-head` failure on a populated clone still fails the command, and so
+ * does a failure of the ref inspection itself, because the assignment carries
+ * the command substitution's status through the `&&` chain (a bare
+ * `[ -n "$(...)" ]` would test only the empty output and swallow it). The
  * refspec contains `*`, `+` and `:`, hence the quoting.
  *
  * @internal Exported for testing.
@@ -233,8 +236,8 @@ export function buildCloneCommand(opts: { url: string; targetDir: string; bare?:
   const refspec = shellEscape('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
   return (
     `git clone --bare --config core.sharedRepository=group --config ${refspec} ${url} ${dir}` +
-    ` && if [ -n "$(git -C ${dir} for-each-ref --count=1 refs/remotes/origin)" ]; then` +
-    ` git -C ${dir} remote set-head origin -a; fi`
+    ` && origin_refs=$(git -C ${dir} for-each-ref --count=1 refs/remotes/origin)` +
+    ` && if [ -n "$origin_refs" ]; then git -C ${dir} remote set-head origin -a; fi`
   );
 }
 

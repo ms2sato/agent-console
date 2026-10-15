@@ -415,7 +415,8 @@ describe('repository-clone-service', () => {
         "git clone --bare --config core.sharedRepository=group " +
           "--config 'remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*' " +
           "'https://github.com/org/repo.git' '/srv/source-repos/repo' " +
-          "&& if [ -n \"$(git -C '/srv/source-repos/repo' for-each-ref --count=1 refs/remotes/origin)\" ]; " +
+          "&& origin_refs=$(git -C '/srv/source-repos/repo' for-each-ref --count=1 refs/remotes/origin) " +
+          "&& if [ -n \"$origin_refs\" ]; " +
           "then git -C '/srv/source-repos/repo' remote set-head origin -a; fi",
       );
       expect(command.includes('\n')).toBe(false);

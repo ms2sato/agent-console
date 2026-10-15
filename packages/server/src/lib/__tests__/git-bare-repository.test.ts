@@ -648,6 +648,12 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
       expect((await shell(trailingFragment(target), root)).code).not.toBe(0);
     });
 
+    it('(iii) the ref inspection itself fails (the directory is not a repository): the fragment exits non-zero', async () => {
+      const notARepo = join(root, 'gate-not-a-repo');
+      expect((await shell(`mkdir -p '${notARepo}'`, root)).code).toBe(0);
+      expect((await shell(trailingFragment(notARepo), root)).code).not.toBe(0);
+    });
+
     it('(ii) an empty bare clone: the fragment exits zero', async () => {
       const emptyUpstream = await createScratchGitRepo({ parentDir: root, name: 'gate-empty-upstream-', initialCommit: false });
       try {
