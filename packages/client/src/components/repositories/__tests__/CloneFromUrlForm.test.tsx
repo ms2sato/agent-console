@@ -263,6 +263,53 @@ describe('CloneFromUrlForm', () => {
     });
   });
 
+  describe('bare option', () => {
+    const BARE_LABEL = 'Bare repository (no working tree; sessions run only on worktrees)';
+
+    async function submitWith(opts: { checkBare: boolean }) {
+      const { calls } = installScriptedFetch({
+        pollResponses: [{ jobId: 'job-1', status: 'cloning' }],
+      });
+      const user = userEvent.setup();
+      await renderWithQuery(<CloneFromUrlForm onSuccess={mock(() => {})} onCancel={mock(() => {})} />);
+
+      await user.type(
+        screen.getByPlaceholderText(/https:\/\/github\.com/),
+        'git@github.com:org/repo.git'
+      );
+      if (opts.checkBare) {
+        await user.click(screen.getByLabelText(BARE_LABEL));
+      }
+      await user.click(screen.getByText('Clone & Register'));
+
+      await waitFor(() => {
+        expect(calls.find((c) => c.init?.method === 'POST')).toBeTruthy();
+      });
+      const postCall = calls.find((c) => c.init?.method === 'POST')!;
+      return JSON.parse(postCall.init!.body as string) as Record<string, unknown>;
+    }
+
+    it('renders the bare checkbox unchecked by default', async () => {
+      installScriptedFetch({ pollResponses: [{ jobId: 'job-1', status: 'cloning' }] });
+      await renderWithQuery(<CloneFromUrlForm onSuccess={mock(() => {})} onCancel={mock(() => {})} />);
+
+      const checkbox = screen.getByLabelText(BARE_LABEL) as HTMLInputElement;
+      expect(checkbox.type).toBe('checkbox');
+      expect(checkbox.checked).toBe(false);
+    });
+
+    it('omits the bare key entirely from the payload when unchecked', async () => {
+      const payload = await submitWith({ checkBare: false });
+      expect('bare' in payload).toBe(false);
+      expect(payload).toEqual({ url: 'git@github.com:org/repo.git' });
+    });
+
+    it('sends bare: true when checked, leaving other fields unchanged', async () => {
+      const payload = await submitWith({ checkBare: true });
+      expect(payload).toEqual({ url: 'git@github.com:org/repo.git', bare: true });
+    });
+  });
+
   describe('cancel', () => {
     it('calls onCancel when the cancel button is clicked', async () => {
       const onSuccess = mock(() => {});

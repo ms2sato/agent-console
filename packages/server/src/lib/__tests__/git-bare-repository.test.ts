@@ -22,6 +22,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
 import { createScratchGitRepo, type ScratchGitRepo } from '../../__tests__/utils/scratch-git.js';
+import { buildCloneCommand } from '../../services/repository-clone-service.js';
 
 const GIT_TS = join(dirname(fileURLToPath(import.meta.url)), '..', 'git.ts');
 const WORKTREE_SERVICE_TS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'services', 'worktree-service.ts');
@@ -477,5 +478,192 @@ describe('readTemplateFileNoFollow (worktree-service) on a real filesystem', () 
     const fifo = join(root, 'a-fifo');
     expect(await Bun.spawn(['mkfifo', fifo]).exited).toBe(0);
     expect(await readIn(fifo)).toEqual({ kind: 'skipped', reason: 'non-regular' });
+  });
+});
+
+describe('buildCloneCommand (repository-clone-service) run for real against a scratch upstream', () => {
+  // Proxy, recorded: the service's URL validation rejects file:// URLs, so the
+  // composition is exercised through the exported builder with `sh -c` (what
+  // runAsUser executes), not through enqueueClone. Everything downstream of the
+  // command string is production-real: real git, real clone, real helpers.
+  let root: string;
+  let own: ScratchGitRepo;
+
+  const shell = async (command: string, cwd: string): Promise<{ code: number; out: string; err: string }> => {
+    const proc = Bun.spawn(['sh', '-c', command], { cwd, env: own.env, stdout: 'pipe', stderr: 'pipe' });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, out: out.trim(), err: err.trim() };
+  };
+
+  async function inLib<T>(dir: string, body: string): Promise<T> {
+    const script = `
+      import * as lib from ${JSON.stringify(GIT_TS)};
+      const dir = process.argv[1];
+      const result = await (async () => { ${body} })();
+      console.log(JSON.stringify(result));
+    `;
+    const proc = Bun.spawn(['bun', '-e', script, dir], { cwd: dir, env: own.env, stdout: 'pipe', stderr: 'pipe' });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    if ((await proc.exited) !== 0) throw new Error(`child failed: ${err.trim()}`);
+    return JSON.parse(out.trim().split('\n').pop()!) as T;
+  }
+
+  beforeAll(async () => {
+    await assertRealFs('git-bare-repository.test.ts buildCloneCommand setup');
+    root = await mkdtemp(join(tmpdir(), 'git-bare-clone-command-'));
+    own = await createScratchGitRepo({ parentDir: root, name: 'upstream-' });
+    await own.git(['branch', 'feature']);
+  });
+
+  afterAll(async () => {
+    if (own) await own.cleanup();
+    if (root) await rm(root, { recursive: true, force: true });
+  });
+
+  it('bare: the command leaves a repository whose refspec check, default-branch refresh and remote listing all work', async () => {
+    const target = join(root, 'bare-target');
+    const result = await shell(buildCloneCommand({ url: own.dir, targetDir: target, bare: true }), root);
+    expect(result.code).toBe(0);
+
+    const state = await inLib<{ refspec: string; refreshed: string; remote: string[] }>(
+      target,
+      `
+      const refspec = await lib.assertOriginFetchRefspec(dir);
+      const refreshed = await lib.refreshDefaultBranch(dir).then((b) => b, () => 'threw');
+      const remote = await lib.listRemoteBranches(dir);
+      return { refspec, refreshed, remote };
+      `,
+    );
+    expect(state.refspec).toBe('present');
+    expect(state.refreshed).toBe('main');
+    expect(state.remote).toContain('origin/main');
+    expect(state.remote).toContain('origin/feature');
+  });
+
+  it('polarity, both layers: a plain bare clone has no refspec and refreshDefaultBranch fails; the command cut before set-head has the refspec but no origin/HEAD; the full command has origin/HEAD and the tracking refs', async () => {
+    type Observed = { refspec: string; remoteBefore: string[]; refreshed: string };
+    const observe = (dir: string) =>
+      inLib<Observed>(
+        dir,
+        `
+        const refspec = await lib.assertOriginFetchRefspec(dir);
+        const remoteBefore = await lib.listRemoteBranches(dir);
+        const refreshed = await lib.refreshDefaultBranch(dir).then((b) => b, () => 'threw');
+        return { refspec, remoteBefore, refreshed };
+        `,
+      );
+    const hasOriginHead = async (dir: string) => (await shell('git symbolic-ref -q refs/remotes/origin/HEAD', dir)).code === 0;
+
+    // (a) what `git clone --bare` alone leaves: the failure the set-head step and the refspec exist to prevent.
+    const plain = join(root, 'bare-plain');
+    expect((await shell(`git clone --bare '${own.dir}' '${plain}'`, root)).code).toBe(0);
+    const plainState = await observe(plain);
+    expect(plainState.refspec).toBe('missing');
+    expect(plainState.remoteBefore).toEqual([]);
+    expect(plainState.refreshed).toBe('threw');
+
+    // (b) the builder's command cut before the set-head step: refspec present, but no origin/HEAD.
+    const full = buildCloneCommand({ url: own.dir, targetDir: join(root, 'bare-cut'), bare: true });
+    const cut = join(root, 'bare-cut');
+    expect((await shell(full.slice(0, full.indexOf(' && ')), root)).code).toBe(0);
+    expect(await hasOriginHead(cut)).toBe(false);
+    // Measured with this git: the refspec given at clone time already makes the
+    // clone itself write the tracking refs, so no separate fetch is needed;
+    // what only the set-head step adds is origin/HEAD.
+    expect((await shell('git branch -r', cut)).out).toContain('origin/main');
+
+    // (c) the full command: tracking refs and origin/HEAD exist immediately.
+    const target = join(root, 'bare-full');
+    expect((await shell(buildCloneCommand({ url: own.dir, targetDir: target, bare: true }), root)).code).toBe(0);
+    expect(await hasOriginHead(target)).toBe(true);
+    const trackingRefs = (await shell('git branch -r', target)).out;
+    expect(trackingRefs).toContain('origin/main');
+    expect(trackingRefs).toContain('origin/feature');
+    const fullState = await observe(target);
+    expect(fullState.refspec).toBe('present');
+    expect(fullState.remoteBefore).toContain('origin/main');
+    expect(fullState.remoteBefore).toContain('origin/feature');
+    expect(fullState.refreshed).toBe('main');
+  });
+
+  it('control, non-bare: the default command makes an ordinary clone with a working tree and the refspec', async () => {
+    const target = join(root, 'nonbare-target');
+    const result = await shell(buildCloneCommand({ url: own.dir, targetDir: target }), root);
+    expect(result.code).toBe(0);
+    expect((await shell('git rev-parse --is-bare-repository', target)).out).toBe('false');
+    expect(await inLib<string>(target, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
+  });
+
+  it('a failing step fails the whole command (non-zero), so the service cleans the directory up', async () => {
+    const target = join(root, 'bare-bad-url');
+    const result = await shell(buildCloneCommand({ url: join(root, 'does-not-exist'), targetDir: target, bare: true }), root);
+    expect(result.code).not.toBe(0);
+  });
+
+  describe('empty upstream (no commits, so no remote-tracking refs after the clone)', () => {
+    let empty: ScratchGitRepo;
+    const hasOriginHead = async (dir: string) => (await shell('git symbolic-ref -q refs/remotes/origin/HEAD', dir)).code === 0;
+    const defaultBranchOf = (dir: string) => inLib<string | null>(dir, 'return await lib.getDefaultBranch(dir);');
+
+    beforeAll(async () => {
+      empty = await createScratchGitRepo({ parentDir: root, name: 'empty-upstream-', initialCommit: false });
+    });
+
+    afterAll(async () => {
+      if (empty) await empty.cleanup();
+    });
+
+    it('bare: the clone is kept and registers as the non-bare clone does, and becomes fully usable after the first commit and a fetch', async () => {
+      const target = join(root, 'bare-empty');
+      const result = await shell(buildCloneCommand({ url: empty.dir, targetDir: target, bare: true }), root);
+      expect(result.code).toBe(0);
+      expect((await shell('git rev-parse --is-bare-repository', target)).out).toBe('true');
+      expect(await inLib<string>(target, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
+      expect(await hasOriginHead(target)).toBe(false);
+      expect(await defaultBranchOf(target)).toBeNull();
+
+      // Control, same upstream: the non-bare command also succeeds and also has no default branch.
+      const control = join(root, 'nonbare-empty');
+      expect((await shell(buildCloneCommand({ url: empty.dir, targetDir: control }), root)).code).toBe(0);
+      expect(await defaultBranchOf(control)).toBeNull();
+
+      // Recovery: this is what justifies keeping the clone.
+      await empty.git(['commit', '--allow-empty', '-q', '-m', 'first']);
+      expect((await shell('git fetch -q origin', target)).code).toBe(0);
+      expect(await inLib<string>(target, 'return await lib.refreshDefaultBranch(dir);')).toBe('main');
+      expect(await hasOriginHead(target)).toBe(true);
+    });
+  });
+
+  describe('gate polarity: the set-head step is skipped only when there are no tracking refs, a real failure still fails', () => {
+    const trailingFragment = (targetDir: string): string => {
+      const full = buildCloneCommand({ url: own.dir, targetDir, bare: true });
+      return full.slice(full.indexOf(' && ') + 4);
+    };
+
+    it('(i) a populated bare clone whose origin url no longer resolves: the fragment exits non-zero', async () => {
+      const target = join(root, 'bare-gate-populated');
+      expect((await shell(buildCloneCommand({ url: own.dir, targetDir: target, bare: true }), root)).code).toBe(0);
+      expect((await shell(`git remote set-url origin '${join(root, 'does-not-exist')}'`, target)).code).toBe(0);
+      expect((await shell(trailingFragment(target), root)).code).not.toBe(0);
+    });
+
+    it('(iii) the ref inspection itself fails (the directory is not a repository): the fragment exits non-zero', async () => {
+      const notARepo = join(root, 'gate-not-a-repo');
+      expect((await shell(`mkdir -p '${notARepo}'`, root)).code).toBe(0);
+      expect((await shell(trailingFragment(notARepo), root)).code).not.toBe(0);
+    });
+
+    it('(ii) an empty bare clone: the fragment exits zero', async () => {
+      const emptyUpstream = await createScratchGitRepo({ parentDir: root, name: 'gate-empty-upstream-', initialCommit: false });
+      try {
+        const target = join(root, 'bare-gate-empty');
+        const full = buildCloneCommand({ url: emptyUpstream.dir, targetDir: target, bare: true });
+        expect((await shell(full.slice(0, full.indexOf(' && ')), root)).code).toBe(0);
+        expect((await shell(full.slice(full.indexOf(' && ') + 4), root)).code).toBe(0);
+      } finally {
+        await emptyUpstream.cleanup();
+      }
+    });
   });
 });
