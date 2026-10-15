@@ -1,4 +1,4 @@
-import { promises as fsPromises } from 'fs';
+import { constants as fsConstants, promises as fsPromises } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { Worktree, HookCommandResult } from '@agent-console/shared';
@@ -207,6 +207,47 @@ const directFsSink: TemplateFileSink = {
   },
 };
 
+/** Result of reading one template file without following a symlink at its path. */
+export type TemplateFileRead =
+  | { kind: 'content'; content: string }
+  | { kind: 'skipped'; reason: 'symlink' | 'non-regular' };
+
+/**
+ * Read a template file's text, refusing to follow a symlink at `filePath` and
+ * refusing anything that is not a regular file.
+ *
+ * The directory listing's entry type can be stale by the time the file is
+ * opened (in multi-user mode the source working tree is group-writable, so
+ * another member can swap a file for a symlink in between). `O_NOFOLLOW` makes
+ * the open itself fail with `ELOOP` for a symlink, and `fstat` on the opened
+ * handle rejects a FIFO, device or directory. `O_NONBLOCK` keeps opening a FIFO
+ * from waiting for a writer; it has no effect on a regular file. `O_NOFOLLOW`
+ * governs only the final path component: a symlinked parent directory is not
+ * caught here.
+ */
+export async function readTemplateFileNoFollow(filePath: string): Promise<TemplateFileRead> {
+  let handle: Awaited<ReturnType<typeof fsPromises.open>>;
+  try {
+    handle = await fsPromises.open(
+      filePath,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ELOOP') {
+      return { kind: 'skipped', reason: 'symlink' };
+    }
+    throw error;
+  }
+  try {
+    if (!(await handle.stat()).isFile()) {
+      return { kind: 'skipped', reason: 'non-regular' };
+    }
+    return { kind: 'content', content: await fsPromises.readFile(handle, 'utf-8') };
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Copy template files to worktree with variable substitution.
  *
@@ -248,8 +289,12 @@ async function copyTemplateFiles(
         await copyRecursive(srcPath, destPath);
       } else {
         // Read, substitute, and write
-        const content = await fsPromises.readFile(srcPath, 'utf-8');
-        const substituted = substituteVariables(content, vars);
+        const read = await readTemplateFileNoFollow(srcPath);
+        if (read.kind === 'skipped') {
+          logger.warn({ srcPath, reason: read.reason }, 'template entry is not a regular file; skipped');
+          continue;
+        }
+        const substituted = substituteVariables(read.content, vars);
 
         // Ensure parent directory exists
         const destParent = path.dirname(destPath);

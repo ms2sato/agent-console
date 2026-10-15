@@ -25,6 +25,7 @@ import { isErrnoException } from './type-guards.js';
 import { isValidSlug } from './session-data-path.js';
 import { createLogger } from './logger.js';
 import { raceWithTimeout } from './race-with-timeout.js';
+import { canonicalPath } from './canonical-path.js';
 
 const logger = createLogger('git');
 
@@ -922,6 +923,21 @@ export async function resolveGitDir(
 }
 
 /**
+ * Whether `dir` IS the root of a bare repository (its git directory), as
+ * opposed to a linked worktree of one.
+ *
+ * `resolveGitDir` reports the COMMON dir's bareness, so inside a linked
+ * worktree of a bare repository it says `bare: true` with `gitDir` = the bare
+ * repository. A bare-only check would therefore wrongly include those
+ * worktrees; the equality of the git directory with `dir` is what separates the
+ * bare root (nothing to run in) from a worktree (a normal place for a session).
+ */
+export async function isBareRepositoryRoot(dir: string): Promise<boolean> {
+  const resolved = await resolveGitDir(dir);
+  return resolved !== null && resolved.bare && (await canonicalPath(resolved.gitDir)) === (await canonicalPath(dir));
+}
+
+/**
  * Whether a repository's `origin` carries the fetch refspec the ref-only
  * helpers (`listRemoteBranches`, `refreshDefaultBranch`, `getCommitsBehind` ...)
  * rely on. READ-ONLY: it never writes into the repository.
@@ -977,20 +993,32 @@ export async function readRepoFileAtRef(
 }
 
 /**
+ * Largest `git archive` output `exportRepoTreeAtRef` accepts. Templates are
+ * kilobytes; the cap keeps a repository that pushes a huge tree under the
+ * template path from being buffered whole into the server's memory.
+ */
+export const MAX_TEMPLATE_ARCHIVE_BYTES = 16 * 1024 * 1024;
+
+/**
  * Export the tree at `relPath` of `ref` into `destDir` (which must exist), as
  * `git archive` piped into `tar -x` through an in-memory buffer: two separate
  * spawns, no shell, both exit codes checked. Returns `<destDir>/<relPath>`, or
  * `null` when `relPath` does not exist at `ref`.
  *
+ * The archive is read chunk by chunk and `git archive` is killed as soon as the
+ * running total passes `opts.maxBytes` (default `MAX_TEMPLATE_ARCHIVE_BYTES`).
+ *
  * @throws GitError for any other failure of either process (including an
- *   unresolvable `ref`).
+ *   unresolvable `ref` and an archive over the byte cap).
  */
 export async function exportRepoTreeAtRef(
   repoPath: string,
   ref: string,
   relPath: string,
   destDir: string,
+  opts: { maxBytes?: number } = {},
 ): Promise<string | null> {
+  const maxBytes = opts.maxBytes ?? MAX_TEMPLATE_ARCHIVE_BYTES;
   const archive = Bun.spawn(['git', 'archive', '--format=tar', ref, '--', relPath], {
     cwd: repoPath,
     // The "absent path" verdict below is read from git's stderr text.
@@ -998,15 +1026,37 @@ export async function exportRepoTreeAtRef(
     stdout: 'pipe',
     stderr: 'pipe',
   });
+  const killArchive = () => {
+    try {
+      archive.kill();
+    } catch {
+      // Process may have already exited.
+    }
+  };
+  const readCapped = async (): Promise<Uint8Array> => {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for await (const chunk of archive.stdout) {
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        killArchive();
+        throw new GitError(`git archive output exceeds ${maxBytes} bytes`, -1, 'ArchiveTooLarge');
+      }
+      chunks.push(chunk);
+    }
+    const all = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      all.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return all;
+  };
   const [tarBytes, archiveStderr, archiveExit] = await raceWithTimeout(
-    Promise.all([new Response(archive.stdout).arrayBuffer(), new Response(archive.stderr).text(), archive.exited]),
+    Promise.all([readCapped(), new Response(archive.stderr).text(), archive.exited]),
     DEFAULT_GIT_TIMEOUT_MS,
     () => {
-      try {
-        archive.kill();
-      } catch {
-        // Process may have already exited.
-      }
+      killArchive();
       return new GitError(`git archive timed out after ${DEFAULT_GIT_TIMEOUT_MS}ms`, -1, 'Timeout');
     },
   );
@@ -1020,7 +1070,7 @@ export async function exportRepoTreeAtRef(
   }
 
   const extract = Bun.spawn(['tar', '-x', '-C', destDir], {
-    stdin: new Uint8Array(tarBytes),
+    stdin: tarBytes,
     stdout: 'ignore',
     stderr: 'pipe',
   });

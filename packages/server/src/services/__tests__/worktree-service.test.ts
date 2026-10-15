@@ -1518,6 +1518,32 @@ detached
         expect(leftoverTemplateTempDirs()).toEqual([]);
       });
 
+      it('a template file that turns into a symlink between listing and open (ELOOP) is skipped: not created, not reported, the rest still copied', async () => {
+        makeBare();
+        scriptExport({ 'a.txt': 'swapped', 'b.txt': 'kept' });
+        const realOpen = fs.promises.open.bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+        const spy = spyOn(fs.promises, 'open').mockImplementation(((...args: unknown[]) => {
+          if (String(args[0]).endsWith('/a.txt')) {
+            return Promise.reject(Object.assign(new Error('ELOOP: too many symbolic links'), { code: 'ELOOP' }));
+          }
+          return realOpen(...args);
+        }) as unknown as typeof fs.promises.open);
+
+        let result;
+        try {
+          const WorktreeService = await getWorktreeService();
+          const service = new WorktreeService({ worktreeRepository: mockRepo, runAsUserImpl: runAsUserMock.runAsUserImpl });
+          result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toEqual(['b.txt']);
+        expect(fs.existsSync(`${result.worktreePath}/a.txt`)).toBe(false);
+        expect(fs.readFileSync(`${result.worktreePath}/b.txt`, 'utf-8')).toBe('kept');
+      });
+
       it('non-bare control: reads <repo>/.agent-console directly and never exports', async () => {
         fs.mkdirSync('/repo/.agent-console', { recursive: true });
         fs.writeFileSync('/repo/.agent-console/CLAUDE.md', 'hello world');

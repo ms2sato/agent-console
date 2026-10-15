@@ -68,6 +68,7 @@ import { RepositoryNotFoundError, ValidationError } from '../lib/errors.js';
 import type { UserMode, assertSpawnCwdExists } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
+  isBareRepositoryRoot,
   resolveGitDir,
 } from '../lib/git.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
@@ -129,6 +130,9 @@ export interface WebSocketCallbacks {
 }
 
 const logger = createLogger('session-manager');
+
+const BARE_SOURCE_REPOSITORY_MESSAGE =
+  'a bare source repository has no working tree; open a session on a worktree';
 
 // Re-export worker types for consumers that need them
 export type { InternalWorker, InternalPtyWorker } from './worker-types.js';
@@ -1398,13 +1402,17 @@ export class SessionManager {
           (await canonicalPath(request.locationPath)) === (await canonicalPath(repoInfo.path)) &&
           (await resolveGitDir(repoInfo.path))?.bare
         ) {
-          throw new ValidationError(
-            'a bare source repository has no working tree; open a session on a worktree',
-          );
+          throw new ValidationError(BARE_SOURCE_REPOSITORY_MESSAGE);
         }
         return registerSession('repository', slug);
       });
     } else {
+      // The repository-session branch above compares against the registered
+      // path; a quick session has no repository to compare with, so the
+      // directory itself is asked whether it is a bare repository's root.
+      if (await isBareRepositoryRoot(request.locationPath)) {
+        throw new ValidationError(BARE_SOURCE_REPOSITORY_MESSAGE);
+      }
       internalSession = registerSession('quick', null);
     }
 

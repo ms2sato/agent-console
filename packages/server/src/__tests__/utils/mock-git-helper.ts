@@ -89,6 +89,9 @@ export const mockGit = {
   // repo as a directory containing `.git` (memfs) registers as before; a bare
   // repository is a per-test override: `mockResolvedValueOnce({ gitDir, bare: true })`.
   resolveGitDir: mock(defaultResolveGitDir) as Mock<typeof defaultResolveGitDir>,
+  // True only for the root of a bare repository (a linked worktree of one is
+  // false); a per-test override decides which paths are bare roots.
+  isBareRepositoryRoot: mock(() => Promise.resolve(false)) as Mock<(dir: string) => Promise<boolean>>,
   assertOriginFetchRefspec: mock(() => Promise.resolve('present' as const)) as Mock<
     (repoPath: string) => Promise<'no-remote' | 'present' | 'missing'>
   >,
@@ -155,6 +158,7 @@ export function resetGitMocks(): void {
   mockGit.getOrgRepoFromPath.mockReset();
   mockGit.deriveRepositorySlug.mockReset();
   mockGit.resolveGitDir.mockReset();
+  mockGit.isBareRepositoryRoot.mockReset();
   mockGit.assertOriginFetchRefspec.mockReset();
   mockGit.resolveSourceReadRef.mockReset();
   mockGit.readRepoFileAtRef.mockReset();
@@ -196,6 +200,7 @@ export function resetGitMocks(): void {
   mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/repo'));
   mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('owner/repo'));
   mockGit.resolveGitDir.mockImplementation(defaultResolveGitDir);
+  mockGit.isBareRepositoryRoot.mockImplementation(() => Promise.resolve(false));
   mockGit.assertOriginFetchRefspec.mockImplementation(() => Promise.resolve('present' as const));
   mockGit.resolveSourceReadRef.mockImplementation(() => Promise.resolve('HEAD'));
   mockGit.readRepoFileAtRef.mockImplementation(() => Promise.resolve(null));

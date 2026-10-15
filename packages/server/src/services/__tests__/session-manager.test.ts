@@ -8983,6 +8983,63 @@ describe('SessionManager', () => {
       expect(mockGit.resolveGitDir).not.toHaveBeenCalled();
     });
   });
+
+  describe('quick session at a bare repository root', () => {
+    const BARE_DIR = '/test/quick/bare-repo';
+    const LINKED_WORKTREE_DIR = '/test/quick/bare-repo-wt';
+    const NON_BARE_DIR = '/test/quick/plain-repo';
+    const PLAIN_DIR = '/test/quick/plain-dir';
+    const BARE_MESSAGE = 'a bare source repository has no working tree; open a session on a worktree';
+
+    beforeEach(() => {
+      for (const dir of [BARE_DIR, LINKED_WORKTREE_DIR, NON_BARE_DIR, PLAIN_DIR]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      // Only the bare repository's own root is a bare root; its linked worktree,
+      // an ordinary repository and a plain directory are not.
+      mockGit.isBareRepositoryRoot.mockImplementation(async (dir: string) => dir === BARE_DIR);
+    });
+
+    function quickRequest(locationPath: string): CreateSessionRequest {
+      return { type: 'quick', locationPath, agentId: 'claude-code' };
+    }
+
+    it('refuses a quick session located at a bare repository root (400) and persists nothing', async () => {
+      const manager = await getSessionManager();
+
+      const error = await manager.createSession(quickRequest(BARE_DIR)).then(() => null, (e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).message).toBe(BARE_MESSAGE);
+      expect((error as ValidationError).statusCode).toBe(400);
+      expect(await manager.getSessionRepository().findAll()).toHaveLength(0);
+    });
+
+    it('accepts a quick session in a linked worktree of that bare repository', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession(quickRequest(LINKED_WORKTREE_DIR));
+
+      expect(session.type).toBe('quick');
+      expect(session.locationPath).toBe(LINKED_WORKTREE_DIR);
+    });
+
+    it('accepts a quick session at a non-bare repository root', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession(quickRequest(NON_BARE_DIR));
+
+      expect(session.locationPath).toBe(NON_BARE_DIR);
+    });
+
+    it('accepts a quick session in a plain directory', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession(quickRequest(PLAIN_DIR));
+
+      expect(session.locationPath).toBe(PLAIN_DIR);
+    });
+  });
 });
 
 /**

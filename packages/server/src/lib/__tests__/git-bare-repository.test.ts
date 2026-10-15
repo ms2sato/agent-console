@@ -24,6 +24,7 @@ import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
 import { createScratchGitRepo, type ScratchGitRepo } from '../../__tests__/utils/scratch-git.js';
 
 const GIT_TS = join(dirname(fileURLToPath(import.meta.url)), '..', 'git.ts');
+const WORKTREE_SERVICE_TS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'services', 'worktree-service.ts');
 
 let scratch: ScratchGitRepo;
 
@@ -110,6 +111,30 @@ describe('resolveGitDir / assertOriginFetchRefspec on real repositories', () => 
     it('a directory that is not a git repository: null', async () => {
       const plain = await mkdtemp(join(root, 'plain-'));
       expect(await resolveIn(plain)).toBeNull();
+    });
+  });
+
+  describe('isBareRepositoryRoot', () => {
+    const rootIn = (dir: string) => inChild<boolean>(dir, 'return await lib.isBareRepositoryRoot(dir);');
+
+    it('the root of a bare repository: true', async () => {
+      expect(await rootIn(bare)).toBe(true);
+    });
+
+    it('a linked worktree of a bare repository: false (resolveGitDir says bare=true there; only the root equality tells them apart)', async () => {
+      expect(await inChild<{ gitDir: string; bare: boolean } | null>(bareWt, 'return await lib.resolveGitDir(dir);')).toEqual({
+        gitDir: bare,
+        bare: true,
+      });
+      expect(await rootIn(bareWt)).toBe(false);
+    });
+
+    it('the root of a non-bare repository: false', async () => {
+      expect(await rootIn(nonBare)).toBe(false);
+    });
+
+    it('a directory that is not a git repository: false', async () => {
+      expect(await rootIn(await mkdtemp(join(root, 'plain-root-')))).toBe(false);
     });
   });
 
@@ -330,6 +355,20 @@ describe('source reads through the object store (readRepoFileAtRef / exportRepoT
       }
     });
 
+    it('bare: an archive larger than maxBytes is a GitError naming the cap, and the default cap exports the same tree (control)', async () => {
+      const capped = await child<{ name: string; message: string } | null>(
+        bare,
+        `try { await lib.exportRepoTreeAtRef(dir, 'HEAD', '.agent-console', extra[0], { maxBytes: 64 }); return null; }
+         catch (e) { return { name: e.name, message: e.message }; }`,
+        [await mkdtemp(join(root, 'export-capped-'))],
+      );
+      expect(capped).toEqual({ name: 'GitError', message: 'git archive output exceeds 64 bytes' });
+
+      const dest = await mkdtemp(join(root, 'export-uncapped-'));
+      const out = await exportTo(bare, 'HEAD', '.agent-console', dest);
+      expect(await snapshot(out!)).toEqual({ top: 'top {{BRANCH}}\n', empty: '', deep: 'deep\n' });
+    });
+
     it('non-bare control: the export is byte-identical to the bare one', async () => {
       const dest = await mkdtemp(join(root, 'export-nonbare-'));
       const out = await exportTo(nonBare, 'HEAD', '.agent-console', dest);
@@ -385,5 +424,58 @@ describe('source reads through the object store (readRepoFileAtRef / exportRepoT
     it('non-bare control: same', async () => {
       expect(await child<string | null>(nonBare, 'return await lib.getRemoteUrl(dir);')).toBe(upstream);
     });
+  });
+});
+
+describe('readTemplateFileNoFollow (worktree-service) on a real filesystem', () => {
+  let root: string;
+
+  /** Run `body` (async JS using `file`) in a fresh bun child importing the REAL worktree-service. */
+  async function readIn(file: string): Promise<unknown> {
+    const script = `
+      import { readTemplateFileNoFollow } from ${JSON.stringify(WORKTREE_SERVICE_TS)};
+      console.log(JSON.stringify(await readTemplateFileNoFollow(process.argv[1])));
+    `;
+    const proc = Bun.spawn(['bun', '-e', script, file], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    if ((await proc.exited) !== 0) throw new Error(`child failed: ${err.trim()}`);
+    return JSON.parse(out.trim().split('\n').pop()!);
+  }
+
+  beforeAll(async () => {
+    await assertRealFs('git-bare-repository.test.ts template-read setup');
+    root = await mkdtemp(join(tmpdir(), 'template-read-'));
+  });
+
+  afterAll(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+  });
+
+  it('a regular file: its content', async () => {
+    const file = join(root, 'regular.md');
+    await writeFile(file, 'hello {{BRANCH}}\n');
+    expect(await readIn(file)).toEqual({ kind: 'content', content: 'hello {{BRANCH}}\n' });
+  });
+
+  it('a symlink to a readable file: skipped as a symlink, and the target content is NOT returned', async () => {
+    const target = join(root, 'secret.txt');
+    await writeFile(target, 'server-only secret\n');
+    const link = join(root, 'link.md');
+    await symlink(target, link);
+    const result = await readIn(link);
+    expect(result).toEqual({ kind: 'skipped', reason: 'symlink' });
+    expect(JSON.stringify(result)).not.toContain('server-only secret');
+  });
+
+  it('a directory: skipped as non-regular', async () => {
+    const dir = join(root, 'a-directory');
+    await mkdir(dir);
+    expect(await readIn(dir)).toEqual({ kind: 'skipped', reason: 'non-regular' });
+  });
+
+  it('a FIFO: skipped as non-regular, without blocking on the missing writer', async () => {
+    const fifo = join(root, 'a-fifo');
+    expect(await Bun.spawn(['mkfifo', fifo]).exited).toBe(0);
+    expect(await readIn(fifo)).toEqual({ kind: 'skipped', reason: 'non-regular' });
   });
 });
