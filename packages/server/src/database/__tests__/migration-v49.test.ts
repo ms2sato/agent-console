@@ -103,7 +103,7 @@ describe('migration v49 (artifacts.updated_at)', () => {
   });
 
   it('a fresh database lands on the latest version with the column present and nullable', async () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(49);
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(49);
     const db = await initializeDatabase(':memory:');
 
     const columns = (await sql.raw<PragmaTableInfoRow>('PRAGMA table_info(artifacts)').execute(db)).rows;

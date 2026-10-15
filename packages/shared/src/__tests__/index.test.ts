@@ -308,4 +308,13 @@ describe('shared index exports', () => {
       '/context',
     ]);
   });
+
+  it('should re-export the to-do closed lists and schemas through the package entry point', async () => {
+    const mod = await import('../index.js');
+
+    expect([...mod.TODO_KINDS]).toEqual(['question', 'action']);
+    expect([...mod.TODO_SCOPES]).toEqual(['session', 'global']);
+    expect(mod.TODO_STATUSES).toContain('withdrawn');
+    expect(mod.TodoSchema).toBeDefined();
+  });
 });

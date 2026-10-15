@@ -45,6 +45,12 @@ const blocks = parseToolBlocks(SOURCE);
 const claiming = blocks.filter((b) => b.body.includes('checkCallerOwnsSession('));
 
 describe('SESSION_CLAIMING_TOOLS registry', () => {
+  it('lists the to-do tools: both take a caller-claimed sessionId and are gated', () => {
+    expect(SESSION_CLAIMING_TOOLS).toContain('create_todo');
+    expect(SESSION_CLAIMING_TOOLS).toContain('list_todos');
+    expect(claiming.map((b) => b.name)).toEqual(expect.arrayContaining(['create_todo', 'list_todos']));
+  });
+
   it('positive control: the parser finds known claiming tools and not a known non-claiming one', () => {
     const allNames = blocks.map((b) => b.name);
     const claimingNames = claiming.map((b) => b.name);

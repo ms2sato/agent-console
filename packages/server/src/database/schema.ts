@@ -21,6 +21,7 @@ export interface Database {
   artifacts: ArtifactsTable;
   user_notification_cursor: UserNotificationCursorTable;
   bookmarks: BookmarksTable;
+  todos: TodosTable;
   repository_orchestrator_sessions: RepositoryOrchestratorSessionsTable;
   mcp_server_permissions: McpServerPermissionsTable;
   mcp_server_path_permissions: McpServerPathPermissionsTable;
@@ -648,6 +649,43 @@ export interface BookmarksTable {
 export type BookmarkRow = Selectable<BookmarksTable>;
 /** Bookmark data for INSERT queries */
 export type NewBookmark = Insertable<BookmarksTable>;
+
+/**
+ * Todos table schema (migration v50; docs/design/human-todo-list.md).
+ * No foreign keys: a row outlives its session. `kind`, `scope` and `status`
+ * are plain TEXT guarded by CHECK constraints; `mappers.ts`'s `toTodo`
+ * narrows them at runtime.
+ */
+export interface TodosTable {
+  /** Primary key - UUID */
+  id: string;
+  kind: string;
+  scope: string;
+  title: string;
+  body: string;
+  /** The item's session: required for scope 'session' and for an agent creator; provenance otherwise. */
+  session_id: string | null;
+  /** Agent creator (the resolution notification's target). Exactly one of this and created_user_id is set. */
+  created_worker_id: string | null;
+  /** Human creator. */
+  created_user_id: string | null;
+  /** Null means anyone on the team. */
+  assignee_user_id: string | null;
+  /** NOT NULL DEFAULT 'open'; insert-optional. */
+  status: Generated<string>;
+  resolution_text: string | null;
+  resolved_by_user_id: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Todo row as returned from SELECT queries */
+export type TodoRow = Selectable<TodosTable>;
+/** Todo data for INSERT queries */
+export type NewTodo = Insertable<TodosTable>;
+/** Todo data for UPDATE queries */
+export type TodoUpdate = Updateable<TodosTable>;
 
 /**
  * Repository-orchestrator-session designation table (migration v41;

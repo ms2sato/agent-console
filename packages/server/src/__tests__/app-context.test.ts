@@ -22,6 +22,7 @@ import { getPtyProvider } from '../lib/pty-provider.js';
 import { serverConfig } from '../lib/server-config.js';
 import type { TerminalPtySpawnRequest } from '../services/user-mode.js';
 import { MockPty, createMockPtyFactory, createMockPtyProvider } from './utils/mock-pty.js';
+import { buildPersistedWorktreeSession } from './utils/build-test-data.js';
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -329,6 +330,34 @@ describe('AppContext', () => {
   });
 
   describe('service wiring', () => {
+    describe('todoRepository reaches session deletion (withdraws open session-scoped items)', () => {
+      const cases: Array<{ name: string; create: () => Promise<AppContext> }> = [
+        { name: 'createTestContext', create: () => createTestContext() },
+        { name: 'createAppContext', create: () => createAppContext({ dbPath: ':memory:' }) },
+      ];
+
+      for (const { name, create } of cases) {
+        it(name, async () => {
+          appContext = await create();
+          await appContext.sessionRepository.save(buildPersistedWorktreeSession({ id: 'doomed' }));
+          const base = {
+            kind: 'action' as const,
+            body: '',
+            sessionId: 'doomed',
+            createdBy: { userId: 'user-1' },
+            assigneeUserId: null,
+          };
+          await appContext.todoRepository.create({ ...base, id: 'session-item', scope: 'session', title: 'a' });
+          await appContext.todoRepository.create({ ...base, id: 'global-item', scope: 'global', title: 'b' });
+
+          expect(await appContext.sessionManager.forceDeleteSession('doomed')).toBe(true);
+
+          expect((await appContext.todoRepository.findById('session-item'))!.status).toBe('withdrawn');
+          expect((await appContext.todoRepository.findById('global-item'))!.status).toBe('open');
+        });
+      }
+    });
+
     it('should wire cross-dependencies between managers', async () => {
       appContext = await createTestContext();
 

@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { useModalDrawerFocus } from '../../hooks/useModalDrawerFocus';
 import { MemoPanel } from './MemoPanel';
+import { SessionTodosPanel } from './SessionTodosPanel';
 import { SessionArtifactsPanel } from './SessionArtifactsPanel';
 import { SessionBookmarksPanel } from './SessionBookmarksPanel';
 import { useSessionSidePanelsState } from './hooks/useSessionSidePanelsState';
@@ -71,6 +72,12 @@ export function SessionSidePanelsDrawer({ sessionId, open, onClose }: SessionSid
           isExpanded={expanded.memo}
           onToggleExpanded={() => toggleSection('memo')}
           onEnsureExpanded={() => expandSection('memo')}
+          compact={false}
+        />
+        <SessionTodosPanel
+          sessionId={sessionId}
+          isExpanded={expanded.todos}
+          onToggleExpanded={() => toggleSection('todos')}
           compact={false}
         />
         <SessionArtifactsPanel

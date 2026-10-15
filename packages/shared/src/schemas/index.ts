@@ -321,6 +321,22 @@ export {
   ALLOWED_BOOKMARK_URL_SCHEMES,
 } from './bookmark.js';
 
+// Todo schemas
+export {
+  TodoSchema,
+  type TodoSchemaOutput,
+  TodosListResponseSchema,
+  type TodosListResponse,
+  TodoResponseSchema,
+  type TodoResponse,
+  CreateTodoRequestSchema,
+  type CreateTodoRequest,
+  UpdateTodoRequestSchema,
+  type UpdateTodoRequest,
+  ResolveTodoRequestSchema,
+  type ResolveTodoRequest,
+} from './todo.js';
+
 // Notification center schemas
 export {
   NotificationItemSchema,

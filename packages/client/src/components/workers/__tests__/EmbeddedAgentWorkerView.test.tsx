@@ -547,6 +547,29 @@ describe('EmbeddedAgentWorkerView', () => {
 
       expect(screen.getByText('Worker Interrupted')).toBeTruthy();
     });
+
+    it('renders the "To-do Resolved" label for a notification kind of internal-todo-resolved', async () => {
+      renderView({ sessionId: 's-notif-5', workerId: 'w-notif-5' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text:
+          '[internal:todo-resolved] timestamp=2026-10-15T00:00:00.000Z todoId=t1 summary="To-do t1 resolved" intent=triage',
+        notification: { kind: 'internal-todo-resolved' },
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('To-do Resolved')).toBeTruthy();
+    });
   });
 
   it('renders an ACTIVATION_FAILED error with a Retry action instead of Dismiss', async () => {

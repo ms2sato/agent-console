@@ -25,6 +25,7 @@ export * from './types/message-template.js';
 export * from './types/message-contracts.js';
 export * from './types/artifact.js';
 export * from './types/bookmark.js';
+export * from './types/todo.js';
 export * from './utils/ndjson-lines.js';
 export * from './utils/agent-capabilities.js';
 export * from './utils/worker-predicates.js';

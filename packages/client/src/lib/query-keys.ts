@@ -135,6 +135,13 @@ export const bookmarkKeys = {
   listBySession: (sessionId: string) => ['bookmarks', 'list', sessionId] as const,
 } as const;
 
+export const todoKeys = {
+  /** Root key for invalidating all to-do queries */
+  root: () => ['todos'] as const,
+  /** To-do items of a single session (every scope, every status) */
+  listBySession: (sessionId: string) => ['todos', 'list', sessionId] as const,
+} as const;
+
 // Note: distinct from `notificationKeys` above, which is the unrelated
 // OUTWARD (Slack) notification status. This is the human-addressed
 // notification center read-model (docs/design/notification-center.md).

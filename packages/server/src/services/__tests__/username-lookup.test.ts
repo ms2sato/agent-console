@@ -30,6 +30,7 @@ function makeStubRepo(users: Record<string, AuthUser | null>): {
       findByIdCalls.push(id);
       return users[id] ?? null;
     },
+    async findByUsername() { return null; },
     async getOsUidById() {
       throw new Error('getOsUidById not used by UsernameLookupService');
     },

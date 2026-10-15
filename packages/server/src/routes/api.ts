@@ -14,6 +14,7 @@ import { skills } from './skills.js';
 import { messageTemplates } from './message-templates.js';
 import { artifacts } from './artifacts.js';
 import { bookmarks } from './bookmarks.js';
+import { todos } from './todos.js';
 import { notifications } from './notifications.js';
 import { sharedAccounts } from './shared-accounts.js';
 import { auth } from './auth.js';
@@ -69,6 +70,7 @@ const api = new Hono<AppBindings>()
   .route('/message-templates', messageTemplates)
   .route('/artifacts', artifacts)
   .route('/bookmarks', bookmarks)
+  .route('/todos', todos)
   .route('/notifications', notifications)
   .route('/shared-accounts', sharedAccounts);
 
