@@ -8892,6 +8892,154 @@ describe('SessionManager', () => {
       );
     });
   });
+
+  describe('worktree session on a bare source repository (no main-worktree session)', () => {
+    const BARE_REPO_DIR = '/test/repos/bare-repo';
+    const BARE_MESSAGE = 'a bare source repository has no working tree; open a session on a worktree';
+
+    beforeEach(() => {
+      // PTY spawn asserts the cwd exists.
+      for (const dir of [BARE_REPO_DIR, `${BARE_REPO_DIR}/worktrees/x`, '/test/worktrees/wt-001-abcd']) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    });
+
+    function envLookupFor(repoPath: string) {
+      return makeRepositoryEnvLookup({ mapping: { 'repo-1': { name: 'bare-repo', path: repoPath } } });
+    }
+
+    function worktreeRequest(locationPath: string): CreateSessionRequest {
+      return {
+        type: 'worktree',
+        locationPath,
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      };
+    }
+
+    function markBare(bare: boolean) {
+      mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => ({
+        gitDir: bare ? repoPath : `${repoPath}/.git`,
+        bare,
+      }));
+    }
+
+    it('bare: a session whose location is the bare directory itself is refused (400) and nothing is persisted', async () => {
+      markBare(true);
+      const manager = await getSessionManager({ repositoryEnvLookup: envLookupFor(BARE_REPO_DIR) });
+
+      const error = await manager.createSession(worktreeRequest(BARE_REPO_DIR)).then(() => null, (e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).message).toBe(BARE_MESSAGE);
+      expect((error as ValidationError).statusCode).toBe(400);
+      expect(await manager.getSessionRepository().findAll()).toHaveLength(0);
+    });
+
+    it('bare: a differently spelled path to the same directory (trailing slash) is refused too', async () => {
+      markBare(true);
+      const manager = await getSessionManager({ repositoryEnvLookup: envLookupFor(BARE_REPO_DIR) });
+
+      await expect(manager.createSession(worktreeRequest(`${BARE_REPO_DIR}/`))).rejects.toThrow(BARE_MESSAGE);
+    });
+
+    it('bare: a linked worktree path is accepted', async () => {
+      markBare(true);
+      const manager = await getSessionManager({ repositoryEnvLookup: envLookupFor(BARE_REPO_DIR) });
+
+      const session = await manager.createSession(worktreeRequest('/test/worktrees/wt-001-abcd'));
+
+      expect(session.type).toBe('worktree');
+      expect(session.locationPath).toBe('/test/worktrees/wt-001-abcd');
+    });
+
+    it('bare: a path merely nested under the bare directory is not the bare directory and is not refused', async () => {
+      markBare(true);
+      const manager = await getSessionManager({ repositoryEnvLookup: envLookupFor(BARE_REPO_DIR) });
+
+      const session = await manager.createSession(worktreeRequest(`${BARE_REPO_DIR}/worktrees/x`));
+
+      expect(session.locationPath).toBe(`${BARE_REPO_DIR}/worktrees/x`);
+    });
+
+    it('non-bare control: a session on the repository path itself (the main worktree) is still accepted', async () => {
+      markBare(false);
+      const manager = await getSessionManager({ repositoryEnvLookup: envLookupFor(BARE_REPO_DIR) });
+
+      const session = await manager.createSession(worktreeRequest(BARE_REPO_DIR));
+
+      expect(session.type).toBe('worktree');
+      expect(session.locationPath).toBe(BARE_REPO_DIR);
+    });
+
+    it('non-bare control: a path different from the repository path never asks git about bareness', async () => {
+      markBare(false);
+      mockGit.resolveGitDir.mockClear();
+      const manager = await getSessionManager({ repositoryEnvLookup: envLookupFor(BARE_REPO_DIR) });
+
+      await manager.createSession(worktreeRequest('/test/worktrees/wt-001-abcd'));
+
+      expect(mockGit.resolveGitDir).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('quick session at a bare repository root', () => {
+    const BARE_DIR = '/test/quick/bare-repo';
+    const LINKED_WORKTREE_DIR = '/test/quick/bare-repo-wt';
+    const NON_BARE_DIR = '/test/quick/plain-repo';
+    const PLAIN_DIR = '/test/quick/plain-dir';
+    const BARE_MESSAGE = 'a bare source repository has no working tree; open a session on a worktree';
+
+    beforeEach(() => {
+      for (const dir of [BARE_DIR, LINKED_WORKTREE_DIR, NON_BARE_DIR, PLAIN_DIR]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      // Only the bare repository's own root is a bare root; its linked worktree,
+      // an ordinary repository and a plain directory are not.
+      mockGit.isBareRepositoryRoot.mockImplementation(async (dir: string) => dir === BARE_DIR);
+    });
+
+    function quickRequest(locationPath: string): CreateSessionRequest {
+      return { type: 'quick', locationPath, agentId: 'claude-code' };
+    }
+
+    it('refuses a quick session located at a bare repository root (400) and persists nothing', async () => {
+      const manager = await getSessionManager();
+
+      const error = await manager.createSession(quickRequest(BARE_DIR)).then(() => null, (e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).message).toBe(BARE_MESSAGE);
+      expect((error as ValidationError).statusCode).toBe(400);
+      expect(await manager.getSessionRepository().findAll()).toHaveLength(0);
+    });
+
+    it('accepts a quick session in a linked worktree of that bare repository', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession(quickRequest(LINKED_WORKTREE_DIR));
+
+      expect(session.type).toBe('quick');
+      expect(session.locationPath).toBe(LINKED_WORKTREE_DIR);
+    });
+
+    it('accepts a quick session at a non-bare repository root', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession(quickRequest(NON_BARE_DIR));
+
+      expect(session.locationPath).toBe(NON_BARE_DIR);
+    });
+
+    it('accepts a quick session in a plain directory', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession(quickRequest(PLAIN_DIR));
+
+      expect(session.locationPath).toBe(PLAIN_DIR);
+    });
+  });
 });
 
 /**

@@ -68,6 +68,8 @@ import { RepositoryNotFoundError, ValidationError } from '../lib/errors.js';
 import type { UserMode, assertSpawnCwdExists } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
+  isBareRepositoryRoot,
+  resolveGitDir,
 } from '../lib/git.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
@@ -77,6 +79,7 @@ import { MemoService } from './memo-service.js';
 import { PtyMessageInjectionService } from './pty-message-injection-service.js';
 import { SessionMetadataService } from './session-metadata-service.js';
 import { createLogger } from '../lib/logger.js';
+import { canonicalPath } from '../lib/canonical-path.js';
 import { WorkerOutputFileManager, type HistoryReadResult, type HistoryRangeResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
@@ -127,6 +130,9 @@ export interface WebSocketCallbacks {
 }
 
 const logger = createLogger('session-manager');
+
+const BARE_SOURCE_REPOSITORY_MESSAGE =
+  'a bare source repository has no working tree; open a session on a worktree';
 
 // Re-export worker types for consumers that need them
 export type { InternalWorker, InternalPtyWorker } from './worker-types.js';
@@ -1386,9 +1392,27 @@ export class SessionManager {
             `session slug ${JSON.stringify(slug)} does not match allowed pattern`
           );
         }
+        // A bare source repository has no working tree: a session located at
+        // the repository path itself would have nothing to run in. The path
+        // comparison runs first so a request for any other location (the
+        // common case) never pays for a git call.
+        const repoInfo = this.repositoryEnvLookup.getRepositoryInfo(request.repositoryId);
+        if (
+          repoInfo !== undefined &&
+          (await canonicalPath(request.locationPath)) === (await canonicalPath(repoInfo.path)) &&
+          (await resolveGitDir(repoInfo.path))?.bare
+        ) {
+          throw new ValidationError(BARE_SOURCE_REPOSITORY_MESSAGE);
+        }
         return registerSession('repository', slug);
       });
     } else {
+      // The repository-session branch above compares against the registered
+      // path; a quick session has no repository to compare with, so the
+      // directory itself is asked whether it is a bare repository's root.
+      if (await isBareRepositoryRoot(request.locationPath)) {
+        throw new ValidationError(BARE_SOURCE_REPOSITORY_MESSAGE);
+      }
       internalSession = registerSession('quick', null);
     }
 

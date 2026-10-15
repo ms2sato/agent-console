@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll, afterEach } from 'bun:test'
 import * as os from 'node:os';
 import type { AgentDefinition } from '@agent-console/shared';
 import { extractPromptFromSpawnCommand } from '../../__tests__/utils/extract-prompt-from-command.js';
+import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 
 // Mock Bun.spawn for agent command execution
 let mockSpawnResult = {
@@ -585,6 +586,120 @@ describe('repository-description-generator', () => {
       expect(result.description).toBeUndefined();
       expect(result.error).toContain('Agent command failed');
       expect(result.error).toContain('claude: not found');
+    });
+  });
+
+  describe('README on a bare repository (read through git, not the file system)', () => {
+    /** Scripted object store: `${ref}:${relPath}` -> content. */
+    let objectStore: Map<string, string>;
+
+    beforeEach(() => {
+      resetGitMocks();
+      objectStore = new Map();
+      mockGit.resolveSourceReadRef.mockImplementation(async () => 'origin/main');
+      mockGit.readRepoFileAtRef.mockImplementation(async (_repo: string, ref: string, rel: string) =>
+        objectStore.get(`${ref}:${rel}`) ?? null,
+      );
+    });
+
+    afterEach(() => {
+      resetGitMocks();
+    });
+
+    function makeBare() {
+      mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => ({ gitDir: repoPath, bare: true }));
+    }
+
+    it('bare: reads the README through readRepoFileAtRef at the resolved ref', async () => {
+      makeBare();
+      objectStore.set('origin/main:README.md', '# Bare Project');
+      setMockSpawnResult('A bare project.');
+
+      const { generateRepositoryDescription } = await getModule();
+      const result = await generateRepositoryDescription({ repositoryPath: '/repo', agent: mockAgent, requestUser: null });
+
+      expect(result.description).toBe('A bare project.');
+      expect(mockGit.readRepoFileAtRef).toHaveBeenCalledWith('/repo', 'origin/main', 'README.md');
+      expect(extractPromptFromSpawnCommand(spawnCalls[0].args[2])).toContain('# Bare Project');
+    });
+
+    it('bare: candidate order is preserved and the first hit wins', async () => {
+      makeBare();
+      objectStore.set('origin/main:README', 'Plain README');
+      objectStore.set('origin/main:README.txt', 'Text README');
+      setMockSpawnResult('A project.');
+
+      const { generateRepositoryDescription } = await getModule();
+      await generateRepositoryDescription({ repositoryPath: '/repo', agent: mockAgent, requestUser: null });
+
+      const asked = mockGit.readRepoFileAtRef.mock.calls.map((c: unknown[]) => c[2]);
+      expect(asked).toEqual(['README.md', 'README']);
+      const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
+      expect(prompt).toContain('Plain README');
+      expect(prompt).not.toContain('Text README');
+    });
+
+    it('bare: no candidate present -> the same no-README error, after trying all four', async () => {
+      makeBare();
+
+      const { generateRepositoryDescription } = await getModule();
+      const result = await generateRepositoryDescription({ repositoryPath: '/repo', agent: mockAgent, requestUser: null });
+
+      expect(result.description).toBeUndefined();
+      expect(result.error).toBe('No README file found in repository');
+      expect(mockGit.readRepoFileAtRef.mock.calls.map((c: unknown[]) => c[2])).toEqual([
+        'README.md',
+        'README',
+        'README.txt',
+        'README.rst',
+      ]);
+    });
+
+    it('bare: an empty README is treated as no README (same as the working-tree path)', async () => {
+      makeBare();
+      objectStore.set('origin/main:README.md', '');
+
+      const { generateRepositoryDescription } = await getModule();
+      const result = await generateRepositoryDescription({ repositoryPath: '/repo', agent: mockAgent, requestUser: null });
+
+      expect(result.error).toBe('No README file found in repository');
+    });
+
+    it('bare: a README file on the file system path is NOT consulted', async () => {
+      makeBare();
+      mockFileContents.set('/repo/README.md', '# From the file system');
+
+      const { generateRepositoryDescription } = await getModule();
+      const result = await generateRepositoryDescription({ repositoryPath: '/repo', agent: mockAgent, requestUser: null });
+
+      expect(result.error).toBe('No README file found in repository');
+    });
+
+    it('non-bare control: reads the working tree and never asks the object store', async () => {
+      // resolveGitDir default (no .git on disk) -> null -> working-tree arm.
+      mockFileContents.set('/repo/README.md', '# From the file system');
+      objectStore.set('origin/main:README.md', '# From the object store');
+      setMockSpawnResult('A project.');
+
+      const { generateRepositoryDescription } = await getModule();
+      await generateRepositoryDescription({ repositoryPath: '/repo', agent: mockAgent, requestUser: null });
+
+      expect(mockGit.readRepoFileAtRef).not.toHaveBeenCalled();
+      const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
+      expect(prompt).toContain('# From the file system');
+      expect(prompt).not.toContain('object store');
+    });
+
+    it('non-bare control: a non-bare resolveGitDir result also uses the working tree', async () => {
+      mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => ({ gitDir: `${repoPath}/.git`, bare: false }));
+      mockFileContents.set('/repo/README.md', '# From the file system');
+      setMockSpawnResult('A project.');
+
+      const { generateRepositoryDescription } = await getModule();
+      const result = await generateRepositoryDescription({ repositoryPath: '/repo', agent: mockAgent, requestUser: null });
+
+      expect(result.description).toBe('A project.');
+      expect(mockGit.readRepoFileAtRef).not.toHaveBeenCalled();
     });
   });
 });

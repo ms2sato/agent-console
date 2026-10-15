@@ -25,6 +25,7 @@ import { isErrnoException } from './type-guards.js';
 import { isValidSlug } from './session-data-path.js';
 import { createLogger } from './logger.js';
 import { raceWithTimeout } from './race-with-timeout.js';
+import { canonicalPath } from './canonical-path.js';
 
 const logger = createLogger('git');
 
@@ -922,6 +923,21 @@ export async function resolveGitDir(
 }
 
 /**
+ * Whether `dir` IS the root of a bare repository (its git directory), as
+ * opposed to a linked worktree of one.
+ *
+ * `resolveGitDir` reports the COMMON dir's bareness, so inside a linked
+ * worktree of a bare repository it says `bare: true` with `gitDir` = the bare
+ * repository. A bare-only check would therefore wrongly include those
+ * worktrees; the equality of the git directory with `dir` is what separates the
+ * bare root (nothing to run in) from a worktree (a normal place for a session).
+ */
+export async function isBareRepositoryRoot(dir: string): Promise<boolean> {
+  const resolved = await resolveGitDir(dir);
+  return resolved !== null && resolved.bare && (await canonicalPath(resolved.gitDir)) === (await canonicalPath(dir));
+}
+
+/**
  * Whether a repository's `origin` carries the fetch refspec the ref-only
  * helpers (`listRemoteBranches`, `refreshDefaultBranch`, `getCommitsBehind` ...)
  * rely on. READ-ONLY: it never writes into the repository.
@@ -942,6 +958,145 @@ export async function assertOriginFetchRefspec(
   if (url === null || url === '') return 'no-remote';
   const existing = await gitSafe(['config', '--get', 'remote.origin.fetch'], repoPath);
   return existing !== null && existing !== '' ? 'present' : 'missing';
+}
+
+/**
+ * The ref source files are read from when a repository has no working tree to
+ * read (`readRepoFileAtRef` / `exportRepoTreeAtRef`).
+ *
+ * On a bare clone `fetch origin` updates `refs/remotes/origin/*` only; the
+ * local `refs/heads/<default>` stays at the commit the clone was made at. So
+ * the fresh tip is `origin/<default>`, and that ref only exists once the fetch
+ * refspec is configured. Without it the only ref that exists is `HEAD`.
+ */
+export async function resolveSourceReadRef(repoPath: string): Promise<string> {
+  if ((await assertOriginFetchRefspec(repoPath)) !== 'present') return 'HEAD';
+  const defaultBranch = await getDefaultBranch(repoPath);
+  return `origin/${defaultBranch ?? 'HEAD'}`;
+}
+
+/**
+ * Read one file's content from the object store at `ref`, without a working
+ * tree. Returns `null` when the path (or the ref) does not exist. The content
+ * is trimmed like every other `git()` result.
+ *
+ * @throws GitError when the path exists but `git show` fails.
+ */
+export async function readRepoFileAtRef(
+  repoPath: string,
+  ref: string,
+  relPath: string,
+): Promise<string | null> {
+  const object = `${ref}:${relPath}`;
+  if ((await gitSafe(['cat-file', '-e', object], repoPath)) === null) return null;
+  return git(['show', object], repoPath);
+}
+
+/**
+ * Largest `git archive` output `exportRepoTreeAtRef` accepts. Templates are
+ * kilobytes; the cap keeps a repository that pushes a huge tree under the
+ * template path from being buffered whole into the server's memory.
+ */
+export const MAX_TEMPLATE_ARCHIVE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Export the tree at `relPath` of `ref` into `destDir` (which must exist), as
+ * `git archive` piped into `tar -x` through an in-memory buffer: two separate
+ * spawns, no shell, both exit codes checked. Returns `<destDir>/<relPath>`, or
+ * `null` when `relPath` does not exist at `ref`.
+ *
+ * The archive is read chunk by chunk and `git archive` is killed as soon as the
+ * running total passes `opts.maxBytes` (default `MAX_TEMPLATE_ARCHIVE_BYTES`).
+ *
+ * @throws GitError for any other failure of either process (including an
+ *   unresolvable `ref` and an archive over the byte cap).
+ */
+export async function exportRepoTreeAtRef(
+  repoPath: string,
+  ref: string,
+  relPath: string,
+  destDir: string,
+  opts: { maxBytes?: number } = {},
+): Promise<string | null> {
+  const maxBytes = opts.maxBytes ?? MAX_TEMPLATE_ARCHIVE_BYTES;
+  const archive = Bun.spawn(['git', 'archive', '--format=tar', ref, '--', relPath], {
+    cwd: repoPath,
+    // The "absent path" verdict below is read from git's stderr text.
+    env: { ...process.env, LC_ALL: 'C' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const killArchive = () => {
+    try {
+      archive.kill();
+    } catch {
+      // Process may have already exited.
+    }
+  };
+  const readCapped = async (): Promise<Uint8Array> => {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    const reader = archive.stdout.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        killArchive();
+        throw new GitError(`git archive output exceeds ${maxBytes} bytes`, -1, 'ArchiveTooLarge');
+      }
+      chunks.push(value);
+    }
+    const all = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      all.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return all;
+  };
+  const [tarBytes, archiveStderr, archiveExit] = await raceWithTimeout(
+    Promise.all([readCapped(), new Response(archive.stderr).text(), archive.exited]),
+    DEFAULT_GIT_TIMEOUT_MS,
+    () => {
+      killArchive();
+      return new GitError(`git archive timed out after ${DEFAULT_GIT_TIMEOUT_MS}ms`, -1, 'Timeout');
+    },
+  );
+  if (archiveExit !== 0) {
+    if (archiveStderr.includes('did not match any files')) return null;
+    throw new GitError(
+      `git archive failed: ${archiveStderr.trim() || `exit code ${archiveExit}`}`,
+      archiveExit,
+      archiveStderr,
+    );
+  }
+
+  const extract = Bun.spawn(['tar', '-x', '-C', destDir], {
+    stdin: tarBytes,
+    stdout: 'ignore',
+    stderr: 'pipe',
+  });
+  const [extractStderr, extractExit] = await raceWithTimeout(
+    Promise.all([new Response(extract.stderr).text(), extract.exited]),
+    DEFAULT_GIT_TIMEOUT_MS,
+    () => {
+      try {
+        extract.kill();
+      } catch {
+        // Process may have already exited.
+      }
+      return new GitError(`tar extract timed out after ${DEFAULT_GIT_TIMEOUT_MS}ms`, -1, 'Timeout');
+    },
+  );
+  if (extractExit !== 0) {
+    throw new GitError(
+      `tar extract failed: ${extractStderr.trim() || `exit code ${extractExit}`}`,
+      extractExit,
+      extractStderr,
+    );
+  }
+  return path.join(destDir, relPath);
 }
 
 /**

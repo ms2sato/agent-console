@@ -11,7 +11,7 @@ import { getRepositoriesDir } from '../lib/config.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
-import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
+import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward, resolveGitDir } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import {
@@ -265,7 +265,11 @@ const worktrees = new Hono<AppBindings>()
     // Both worktreePath and repo.path must be normalized so that string equality is reliable.
     const worktreePath = resolvePath(rawWorktreePath);
     const normalizedRepoPath = resolvePath(repo.path);
-    const isMain = worktreePath === normalizedRepoPath;
+    // A bare repository has no working tree, so its directory is never the
+    // primary worktree; it takes the boundary + ownership checks below and is
+    // refused there. The bareness probe runs only when the paths are equal.
+    const isMain =
+      worktreePath === normalizedRepoPath && !(await resolveGitDir(repo.path))?.bare;
 
     // For non-primary worktrees, enforce boundary check and ownership verification.
     // Primary worktree (repo root) may reside outside the managed worktrees directory,

@@ -992,9 +992,17 @@ chmod -R g+rw <repo-path>
 chgrp -R agent-console-users <repo-path>
 ```
 
-While the main-worktree rule is not yet decided, the dashboard shows no
-"main" row for a bare repository (see `docs/design/source-repo-storage-model.md`
-section 5); sessions are created on linked worktrees as usual.
+A bare repository has no main worktree (decided, option (ii) in
+`docs/design/source-repo-storage-model.md` section 5): the dashboard shows no
+"main" row for it, sessions are created on linked worktrees only, and the server
+refuses the bare directory itself as a session location. Source files the server
+needs (the README for description generation and the repository's
+`.agent-console/` templates) are read through git from the object store at
+`origin/<default branch>`, so they reflect the repository as of its last
+`fetch origin`; a bare repository whose fetch refspec is missing is read at
+`HEAD`. Non-bare repositories are unchanged. A clone-form checkbox that runs
+the four commands above for you is planned (it changes the clone request
+schema) and is not available yet.
 
 ### Manual fallback (operator step)
 
