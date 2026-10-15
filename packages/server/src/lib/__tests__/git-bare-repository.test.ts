@@ -198,6 +198,92 @@ describe('resolveGitDir / assertOriginFetchRefspec on real repositories', () => 
   });
 });
 
+describe('resolveGitDir on repositories owned by another OS user (git ownership check)', () => {
+  // `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` is git's own knob that makes every
+  // repository look foreign-owned, so the ownership check runs for real without
+  // a second OS account. The global config lists `safe.directory` entries ONLY
+  // (the registered repository path, as the production allow-list does), with no
+  // other operator or scratch settings.
+  let root: string;
+  let own: ScratchGitRepo;
+  let nonBare: string;
+  let unlistedNonBare: string;
+  let bare: string;
+  let unlistedBare: string;
+  let bareWt: string;
+
+  const sh = async (args: string[], cwd: string): Promise<string> => {
+    const proc = Bun.spawn(['git', ...args], { cwd, env: own.env, stdout: 'pipe', stderr: 'pipe' });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    if ((await proc.exited) !== 0) throw new Error(`git ${args.join(' ')} failed: ${err.trim()}`);
+    return out.trim();
+  };
+
+  /** Writes a global config that lists exactly `listed` as safe.directory, and returns its path. */
+  async function safeDirectoryConfig(name: string, listed: string[]): Promise<string> {
+    const file = join(root, name);
+    await writeFile(file, ['[safe]', ...listed.map((p) => `\tdirectory = ${p}`), ''].join('\n'), 'utf-8');
+    return file;
+  }
+
+  /** `resolveGitDir(dir)` in a fresh bun child whose git sees every repository as foreign-owned and trusts only `listed`. */
+  async function resolveAsForeign(dir: string, listed: string[]): Promise<{ gitDir: string; bare: boolean } | null> {
+    const config = await safeDirectoryConfig(`safe-${Math.random().toString(36).slice(2)}.gitconfig`, listed);
+    const script = `
+      import * as lib from ${JSON.stringify(GIT_TS)};
+      console.log(JSON.stringify(await lib.resolveGitDir(process.argv[1])));
+    `;
+    const proc = Bun.spawn(['bun', '-e', script, dir], {
+      cwd: dir,
+      env: { ...own.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: '1', GIT_CONFIG_GLOBAL: config },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    if ((await proc.exited) !== 0) throw new Error(`child failed: ${err.trim()}`);
+    return JSON.parse(out.trim().split('\n').pop()!) as { gitDir: string; bare: boolean } | null;
+  }
+
+  beforeAll(async () => {
+    await assertRealFs('git-bare-repository.test.ts foreign-owner setup');
+    root = await mkdtemp(join(tmpdir(), 'git-foreign-owner-'));
+    own = await createScratchGitRepo({ parentDir: root, name: 'upstream-' });
+
+    nonBare = join(root, 'nonbare');
+    unlistedNonBare = join(root, 'nonbare-unlisted');
+    bare = join(root, 'bare.git');
+    unlistedBare = join(root, 'bare-unlisted.git');
+    bareWt = join(root, 'bare-wt');
+    await sh(['clone', '-q', own.dir, nonBare], root);
+    await sh(['clone', '-q', own.dir, unlistedNonBare], root);
+    await sh(['clone', '-q', '--bare', own.dir, bare], root);
+    await sh(['clone', '-q', '--bare', own.dir, unlistedBare], root);
+    await sh(['worktree', 'add', '-q', '--detach', bareWt, 'HEAD'], bare);
+  });
+
+  afterAll(async () => {
+    if (own) await own.cleanup();
+    if (root) await rm(root, { recursive: true, force: true });
+  });
+
+  it('a non-bare repository listed as safe.directory resolves to its .git, bare=false (the probe must not discover from inside the git dir)', async () => {
+    expect(await resolveAsForeign(nonBare, [nonBare])).toEqual({ gitDir: join(nonBare, '.git'), bare: false });
+  });
+
+  it('a bare repository root listed as safe.directory resolves to itself, bare=true (holds with and without the explicit git-dir probe)', async () => {
+    expect(await resolveAsForeign(bare, [bare])).toEqual({ gitDir: bare, bare: true });
+  });
+
+  it('a linked worktree of a bare repository (worktree and bare root listed) resolves to the bare dir, bare=true', async () => {
+    expect(await resolveAsForeign(bareWt, [bareWt, bare])).toEqual({ gitDir: bare, bare: true });
+  });
+
+  it('negative control: repositories that are NOT listed resolve to null, so the ownership check is active in the child', async () => {
+    expect(await resolveAsForeign(unlistedNonBare, [nonBare])).toBeNull();
+    expect(await resolveAsForeign(unlistedBare, [bare])).toBeNull();
+  });
+});
+
 describe('source reads through the object store (readRepoFileAtRef / exportRepoTreeAtRef / resolveSourceReadRef / getRemoteUrl)', () => {
   let root: string;
   let own: ScratchGitRepo; // this describe's own hermetic upstream (the describe above cleans up its scratch config)
