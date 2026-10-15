@@ -208,6 +208,8 @@ docker compose -f docker/docker-compose.verification.yml up --build -d
    that route no longer accepts a `branch` field, and the code path it would
    have exercised was found dead and deleted, not fixed.)
 
+11b. **Bare source repositories: clone path + second-user worktree** (Issue #2094, `docs/design/source-repo-storage-model.md` section 10 item 8; numbered 11b so no existing check is renumbered): the check-7 repository is re-served over `git://` by a detached `git daemon` inside the container (root, loopback only, stopped by its recorded pid), so the real clone path runs offline. `alice` clones it through `POST /api/repositories/clone` with `bare: true` and, as a non-bare control, without. On disk the bare clone must have `remote.origin.fetch` = `+refs/heads/*:refs/remotes/origin/*`, `refs/remotes/origin/HEAD` -> `main`, `core.sharedRepository` = `group`, and every directory group-writable and setgid in group `agent-console-users` (directories only; git keeps loose objects read-only). Then `bob`, a second user who does not own the repository, creates a worktree in each: the worktree and git's administrative directory (`<bare>/worktrees/<id>`, or `<repo>/.git/worktrees/<id>` for the control) must be owned by `bob`, and `git status` as `bob` must succeed without "dubious ownership" -- section 8's question of a second user writing into the owner's bare repository. The phase-3 behaviour is asserted on the real host (the bare repository's worktree list has no `isMain` entry while the control has exactly one; a worktree session at the bare path is refused with 400 "bare source repository has no working tree"). A **negative control** removes the group-write bit from a third bare clone's directories as root: `bob`'s creation must not produce a worktree (it never appears in the list within 30 s and `<repo>/worktrees` stays empty), which is what shows the positive assertions are not "any user can write anything". A missing prerequisite (no `git daemon`, the upstream not reachable, a clone that did not succeed) is recorded as explicit FAILs, never a skip.
+
 ### Real-host smokes inside the container
 
 ```bash
@@ -255,8 +257,9 @@ smoke's stderr tail — never as a pass and never as a silent skip.
 
 **Named by tier, not by residue list** (`.claude/rules/os-environment-coupling.md`
 Discipline 4): this image and its `--smokes` run are **tier 2** — the seven
-real-host smokes, PTY / elevation isolation, uploads, worktrees, and shared
-sessions, needing the `docker` group only, no privilege flag. What tier 2
+real-host smokes, PTY / elevation isolation, uploads, worktrees, shared
+sessions, and bare source repositories (clone path + second-user worktree),
+needing the `docker` group only, no privilege flag. What tier 2
 cannot reach is the systemd unit's own environment (setup script, deploy
 script, unit render + drift detection, `MainPID` identity) — that is
 **tier 3**, the systemd stack below, run on an ephemeral CI runner or a

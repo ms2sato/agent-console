@@ -35,6 +35,16 @@
 #      made by alice over HTTP, renames the branch on disk as shared1 --
 #      proving the fix threads the session's spawn user through, not the
 #      requester's identity (Issue #1622).
+#  11b. (Issue #2094, source-repo-storage-model.md section 10 item 8) bare
+#      source repositories on the real host: a repository is cloned bare
+#      through the real clone path (served over git:// from inside the
+#      container, so the run stays offline) next to a non-bare control, and
+#      the on-disk shape (refspec, origin/HEAD, group-write directories), a
+#      SECOND user's (bob's) worktree creation into alice's bare repository,
+#      the phase-3 behaviour (no main worktree, no session at the bare path)
+#      and a negative control (group-write removed -> bob's creation must
+#      not produce a worktree) are asserted. Numbered 11b so that nothing
+#      else is renumbered.
 #
 # --smokes additionally runs seven real-host smoke scripts
 # (scripts/smoke/*.ts) inside the verification container, as the service
@@ -114,7 +124,22 @@ fi
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
+# Check 11b serves a repository over git:// from inside the container with a
+# detached `git daemon`. The daemon is stopped by the PID it recorded in its
+# own pid file (never by a name match), at the end of the check and again from
+# cleanup() so an early exit does not leave it running in a --keep'd container.
+GITD_2094_PID_FILE="/tmp/git-daemon-2094.pid"
+GITD_2094_STARTED=0
+stop_gitd_2094() {
+  [ "$GITD_2094_STARTED" -eq 1 ] || return 0
+  compose exec -T --user root agent-console sh -c \
+    "if [ -f '${GITD_2094_PID_FILE}' ]; then kill \"\$(cat '${GITD_2094_PID_FILE}')\"; rm -f '${GITD_2094_PID_FILE}'; fi" \
+    >/dev/null 2>&1 || true
+  GITD_2094_STARTED=0
+}
+
 cleanup() {
+  stop_gitd_2094
   if [ "$KEEP" -eq 1 ]; then
     echo "[info] --keep set; container left running at ${BASE_URL}"
   else
@@ -1394,6 +1419,446 @@ fi
 rm -f "$S11_COOKIE_JAR" "$S11_ALICE_LOGIN_RESP" "$S11_OWN_WT_RESP" "$S11_SHARED_WT_RESP" \
   "$S11_WT_LIST_RESP" "$S11_BASELINE" "$S11_AFTER_OWN" "$S11_AFTER_SHARED" "$S11_DB_OUT" \
   "$S11_OWN_DELETE_RESP" "$S11_SHARED_DELETE_RESP" "$S11_PATCH_RESP" "$S11_IDENTITY_OUT"
+
+echo
+echo "=== 11b. bare source repositories: clone path + second-user worktree (#2094) ==="
+# Verifies, on the real Linux filesystem and the real clone path, what the
+# unit suite cannot: that a repository cloned BARE by the phase-3 clone path
+# (docs/design/source-repo-storage-model.md section 10 item 8)
+#   (a) has the on-disk shape the server relies on (fetch refspec, origin/HEAD,
+#       core.sharedRepository=group, group-write + setgid directories);
+#   (b) accepts a worktree created by a SECOND user (bob, not the owner alice)
+#       -- section 8's question: bob's `git worktree add` writes
+#       <bare>/worktrees/<id>/ into alice's repository;
+#   (c) has no main worktree in the API (phase 3) and refuses a session at its
+#       path;
+# each against a non-bare control cloned from the same URL in the same run,
+# plus a NEGATIVE CONTROL: a third bare clone with the group-write bit
+# removed, where bob's creation must NOT produce a worktree (without it, (b)
+# cannot be told apart from "any user can write anything").
+#
+# The upstream is the check-7 repository, re-served over git:// by a detached
+# `git daemon` INSIDE the container (root, loopback only), so the real clone
+# path runs offline. `validateCloneInputs` accepts git:// and rejects http://,
+# which is why this is not a static HTTP server. The daemon's pid is recorded
+# in its own pid file and the daemon is stopped by that pid (stop_gitd_2094,
+# also called from cleanup()).
+#
+# Fixed clone names (bare-2094 / nonbare-2094 / bare-2094-neg): a re-run
+# against a --keep'd container gets 409 name conflicts, recorded as FAILs
+# with the response body printed -- never a skip.
+#
+# Like checks 8-11, a missing prerequisite is recorded as explicit FAILs,
+# never silently skipped.
+S11B_URL="git://127.0.0.1/upstream.git"
+S11B_GITD_ROOT="/srv/gitd"
+S11B_DAEMON_OK=1
+S11B_CLONE_ID=""
+S11B_WT_PATH=""
+S11B_ALICE_JAR="$(mktemp)"
+S11B_BOB_JAR="$(mktemp)"
+S11B_RESP="$(mktemp)"
+S11B_LIST="$(mktemp)"
+S11B_BASELINE="$(mktemp)"
+S11B_AFTER="$(mktemp)"
+S11B_OUT="$(mktemp)"
+
+# First string value of "<key>" in a compact JSON file.
+s11b_json_str() { # s11b_json_str <key> <file>
+  grep -o "\"$1\":\"[^\"]*\"" "$2" | head -n1 | cut -d'"' -f4
+}
+
+# Run a command in the container as root; output only, CRs stripped (callers
+# compare the text, so a failing command shows up as its error text).
+s11b_root() {
+  compose exec -T --user root agent-console "$@" 2>&1 | tr -d '\r'
+}
+
+# git as root against a repository owned by someone else: safe.directory '*'
+# on the command line, otherwise root is refused with "dubious ownership".
+s11b_rootgit() { # s11b_rootgit <repo-path> <git args...>
+  local p="$1"
+  shift
+  s11b_root git -c 'safe.directory=*' -C "$p" "$@"
+}
+
+# Registered repository's path, from GET /api/repositories/:id.
+s11b_repo_path() { # s11b_repo_path <repo-id>
+  curl -s -o "$S11B_OUT" -b "$S11B_ALICE_JAR" "${BASE_URL}/api/repositories/$1" >/dev/null
+  s11b_json_str path "$S11B_OUT"
+}
+
+# Sorted worktree paths of a repository as seen by <jar>'s user.
+s11b_wt_paths() { # s11b_wt_paths <jar> <repo-id> <outfile>
+  curl -s -o "$S11B_LIST" -b "$1" "${BASE_URL}/api/repositories/$2/worktrees" >/dev/null
+  grep -o '"path":"[^"]*"' "$S11B_LIST" | cut -d'"' -f4 | sort > "$3"
+}
+
+# Clone through the real route as alice; sets S11B_CLONE_ID (empty on failure).
+s11b_clone() { # s11b_clone <label> <name> <extra-json-fields: empty or ,"bare":true>
+  local label="$1" name="$2" extra="$3" code job_id status="" i ok
+  S11B_CLONE_ID=""
+  if [ "$S11B_DAEMON_OK" -ne 0 ]; then
+    echo "  DIAGNOSTIC: the git:// server is not usable; recording explicit FAILs for the ${label} clone instead of skipping."
+    check "${label}: clone request accepted (202 + jobId)" 1
+    check "${label}: clone job succeeded" 1
+    return 0
+  fi
+  code="$(curl -s -o "$S11B_RESP" -w '%{http_code}' -b "$S11B_ALICE_JAR" -c "$S11B_ALICE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/clone" \
+    -H 'Content-Type: application/json' \
+    -d "{\"url\":\"${S11B_URL}\",\"name\":\"${name}\"${extra}}")"
+  echo "  POST /api/repositories/clone (${label}, name=${name}${extra}) -> HTTP ${code}"
+  job_id="$(s11b_json_str jobId "$S11B_RESP")"
+  ok=1
+  [ "$code" = "202" ] && [ -n "$job_id" ] && ok=0
+  if [ "$ok" -ne 0 ]; then
+    echo "  response body: $(cat "$S11B_RESP")"
+  fi
+  check "${label}: clone request accepted (202 + jobId)" "$ok"
+  if [ -n "$job_id" ]; then
+    for i in $(seq 1 60); do
+      sleep 1
+      curl -s -o "$S11B_RESP" -b "$S11B_ALICE_JAR" "${BASE_URL}/api/repositories/clone/${job_id}" >/dev/null
+      status="$(s11b_json_str status "$S11B_RESP")"
+      if [ "$status" = "succeeded" ] || [ "$status" = "failed" ]; then break; fi
+    done
+    echo "  clone job ${job_id} (${label}) -> status=${status:-<none>} after ${i}s"
+  fi
+  ok=1
+  [ "$status" = "succeeded" ] && ok=0
+  if [ "$ok" -ne 0 ]; then
+    echo "  clone job response (full): $(cat "$S11B_RESP")"
+  else
+    S11B_CLONE_ID="$(s11b_json_str repositoryId "$S11B_RESP")"
+  fi
+  check "${label}: clone job succeeded" "$ok"
+}
+
+# Bob creates a worktree in a repository registered by alice, and the four
+# assertions of the AC are made on the result: owner, git status without
+# "dubious ownership", the worktree's admin directory location and its owner.
+# Sets S11B_WT_PATH.
+s11b_bob_worktree() { # s11b_bob_worktree <label> <repo-id> <admin-dir-parent> <branch>
+  local label="$1" repo_id="$2" admin_parent="$3" branch="$4" code ok i task_id
+  local wt_owner status_rc admin_dir admin_owner
+  S11B_WT_PATH=""
+  if [ -z "$repo_id" ]; then
+    echo "  DIAGNOSTIC: no repository id for ${label}; recording explicit FAILs for bob's worktree sub-checks instead of skipping."
+    check "${label}: bob's worktree creation accepted (202)" 1
+    check "${label}: bob's worktree appears in the repository's worktree list" 1
+    check "${label}: bob's worktree dir is owned by bob" 1
+    check "${label}: git status as bob exits 0 without 'dubious ownership'" 1
+    check "${label}: bob's worktree admin dir is under ${admin_parent}/ (section 8)" 1
+    check "${label}: bob's worktree admin dir is owned by bob (section 8)" 1
+    return 0
+  fi
+  s11b_wt_paths "$S11B_BOB_JAR" "$repo_id" "$S11B_BASELINE"
+  task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  code="$(curl -s -o "$S11B_RESP" -w '%{http_code}' -b "$S11B_BOB_JAR" -c "$S11B_BOB_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${task_id}\",\"mode\":\"custom\",\"branch\":\"${branch}\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":false}")"
+  echo "  POST /api/repositories/<${label} id>/worktrees as bob (branch=${branch}) -> HTTP ${code}"
+  ok=1
+  [ "$code" = "202" ] && ok=0
+  if [ "$ok" -ne 0 ]; then echo "  response body: $(cat "$S11B_RESP")"; fi
+  check "${label}: bob's worktree creation accepted (202)" "$ok"
+
+  for i in $(seq 1 30); do
+    sleep 1
+    s11b_wt_paths "$S11B_BOB_JAR" "$repo_id" "$S11B_AFTER"
+    S11B_WT_PATH="$(comm -13 "$S11B_BASELINE" "$S11B_AFTER" | head -n1)"
+    if [ -n "$S11B_WT_PATH" ]; then break; fi
+  done
+  ok=1
+  [ -n "$S11B_WT_PATH" ] && ok=0
+  check "${label}: bob's worktree appears in the repository's worktree list" "$ok"
+  if [ -z "$S11B_WT_PATH" ]; then
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  -------------------------------------------------"
+    check "${label}: bob's worktree dir is owned by bob" 1
+    check "${label}: git status as bob exits 0 without 'dubious ownership'" 1
+    check "${label}: bob's worktree admin dir is under ${admin_parent}/ (section 8)" 1
+    check "${label}: bob's worktree admin dir is owned by bob (section 8)" 1
+    return 0
+  fi
+
+  wt_owner="$(s11b_root stat -c '%U' "$S11B_WT_PATH")"
+  echo "  stat ${S11B_WT_PATH} -> owner=${wt_owner}"
+  ok=1
+  [ "$wt_owner" = "bob" ] && ok=0
+  check "${label}: bob's worktree dir is owned by bob" "$ok"
+
+  compose exec -T --user bob agent-console sh -lc "git -C '${S11B_WT_PATH}' status" > "$S11B_OUT" 2>&1
+  status_rc=$?
+  echo "  git status (as bob) exit=${status_rc}; first line: $(head -n1 "$S11B_OUT" | tr -d '\r')"
+  ok=1
+  if [ "$status_rc" -eq 0 ] && ! grep -q 'dubious ownership' "$S11B_OUT"; then ok=0; fi
+  check "${label}: git status as bob exits 0 without 'dubious ownership'" "$ok"
+
+  # Section 8's question: where git put the worktree's administrative
+  # directory (<repo>/worktrees/<id> for a bare repository,
+  # <repo>/.git/worktrees/<id> for a non-bare one), asked of git itself rather
+  # than guessed from the branch name (<id> follows the worktree directory's
+  # basename), and who owns it.
+  admin_dir="$(compose exec -T --user bob agent-console sh -lc "git -C '${S11B_WT_PATH}' rev-parse --absolute-git-dir" 2>/dev/null | tail -n1 | tr -d '\r')"
+  echo "  git rev-parse --absolute-git-dir (as bob) -> ${admin_dir}"
+  ok=1
+  case "$admin_dir" in
+    "${admin_parent}/"?*) ok=0 ;;
+  esac
+  check "${label}: bob's worktree admin dir is under ${admin_parent}/ (section 8)" "$ok"
+  admin_owner="$(s11b_root stat -c '%U' "$admin_dir")"
+  echo "  stat ${admin_dir} -> owner=${admin_owner}"
+  ok=1
+  [ -n "$admin_dir" ] && [ "$admin_owner" = "bob" ] && ok=0
+  check "${label}: bob's worktree admin dir is owned by bob (section 8)" "$ok"
+}
+
+# --- prerequisites: git daemon in the image, upstream, daemon, positive control ---
+# `git daemon` ships in Debian's `git` package as <exec-path>/git-daemon; the
+# image has no `git-daemon-run`. Asked of the image itself rather than assumed.
+compose exec -T agent-console sh -c 'test -x "$(git --exec-path)/git-daemon"' >/dev/null 2>&1
+s11b_daemon_present_rc=$?
+check "git daemon is available in the verification image" "$s11b_daemon_present_rc"
+
+s11b_upstream_rc=1
+s11b_started_rc=1
+s11b_lsremote_rc=1
+if [ "$s11b_daemon_present_rc" -eq 0 ]; then
+  # Root clones the agentconsole-owned check-7 repository, hence the command-
+  # line safe.directory. The daemon serves ONLY this directory
+  # (--base-path + --export-all), on loopback.
+  compose exec -T --user root agent-console sh -c "
+    set -e
+    mkdir -p '${S11B_GITD_ROOT}'
+    rm -f '${GITD_2094_PID_FILE}'
+    git -c 'safe.directory=*' clone -q --bare '${SOURCE_REPO_PATH}' '${S11B_GITD_ROOT}/upstream.git'
+  " >"$S11B_OUT" 2>&1
+  s11b_upstream_rc=$?
+  if [ "$s11b_upstream_rc" -ne 0 ]; then
+    echo "  upstream clone output: $(tr -d '\r' < "$S11B_OUT")"
+  fi
+  check "check-7 repository re-cloned bare under ${S11B_GITD_ROOT} as the git:// upstream" "$s11b_upstream_rc"
+fi
+if [ "$s11b_upstream_rc" -eq 0 ]; then
+  compose exec -T --user root agent-console sh -c "
+    git daemon --base-path='${S11B_GITD_ROOT}' --export-all --reuseaddr \
+      --listen=127.0.0.1 --port=9418 --pid-file='${GITD_2094_PID_FILE}' --detach
+  " >"$S11B_OUT" 2>&1
+  s11b_started_rc=$?
+  if [ "$s11b_started_rc" -eq 0 ]; then GITD_2094_STARTED=1; fi
+  if [ "$s11b_started_rc" -ne 0 ]; then
+    echo "  git daemon output: $(tr -d '\r' < "$S11B_OUT")"
+  fi
+  check "git daemon started on 127.0.0.1:9418" "$s11b_started_rc"
+fi
+if [ "$s11b_started_rc" -eq 0 ]; then
+  # Positive control, before any API call: the upstream is reachable and
+  # advertises main. A few tries because --detach returns before the listener
+  # is necessarily accepting.
+  for _ in $(seq 1 10); do
+    s11b_root git ls-remote "$S11B_URL" > "$S11B_OUT" 2>&1
+    if grep -q 'refs/heads/main' "$S11B_OUT"; then s11b_lsremote_rc=0; break; fi
+    sleep 1
+  done
+  echo "  git ls-remote ${S11B_URL}: $(tr '\n' ' ' < "$S11B_OUT")"
+  check "positive control: git ls-remote ${S11B_URL} advertises refs/heads/main" "$s11b_lsremote_rc"
+fi
+S11B_DAEMON_OK="$s11b_lsremote_rc"
+
+# --- logins ---
+s11b_alice_login="$(curl -s -o /dev/null -w '%{http_code}' -c "$S11B_ALICE_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password"}')"
+s11b_bob_login="$(curl -s -o /dev/null -w '%{http_code}' -c "$S11B_BOB_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob-password"}')"
+echo "  login alice -> HTTP ${s11b_alice_login}; bob -> HTTP ${s11b_bob_login}"
+s11b_login_ok=1
+[ "$s11b_alice_login" = "200" ] && [ "$s11b_bob_login" = "200" ] && s11b_login_ok=0
+check "alice and bob are logged in for check 11b" "$s11b_login_ok"
+
+# --- clones: bare subject, non-bare control ---
+s11b_clone "bare" "bare-2094" ',"bare":true'
+S11B_BARE_ID="$S11B_CLONE_ID"
+s11b_clone "control" "nonbare-2094" ''
+S11B_CTRL_ID="$S11B_CLONE_ID"
+
+S11B_BARE_PATH=""
+S11B_CTRL_PATH=""
+[ -n "$S11B_BARE_ID" ] && S11B_BARE_PATH="$(s11b_repo_path "$S11B_BARE_ID")"
+[ -n "$S11B_CTRL_ID" ] && S11B_CTRL_PATH="$(s11b_repo_path "$S11B_CTRL_ID")"
+echo "  bare repository: id=${S11B_BARE_ID:-<none>} path=${S11B_BARE_PATH:-<none>}"
+echo "  control repository: id=${S11B_CTRL_ID:-<none>} path=${S11B_CTRL_PATH:-<none>}"
+
+# --- on-disk shape ---
+if [ -n "$S11B_BARE_PATH" ]; then
+  s11b_val="$(s11b_rootgit "$S11B_BARE_PATH" rev-parse --is-bare-repository)"
+  echo "  bare: rev-parse --is-bare-repository -> ${s11b_val}"
+  s11b_ok=1; [ "$s11b_val" = "true" ] && s11b_ok=0
+  check "bare: git rev-parse --is-bare-repository = true" "$s11b_ok"
+
+  s11b_val="$(s11b_rootgit "$S11B_BARE_PATH" config remote.origin.fetch)"
+  echo "  bare: remote.origin.fetch -> ${s11b_val}"
+  s11b_ok=1; [ "$s11b_val" = "+refs/heads/*:refs/remotes/origin/*" ] && s11b_ok=0
+  check "bare: remote.origin.fetch = +refs/heads/*:refs/remotes/origin/*" "$s11b_ok"
+
+  s11b_val="$(s11b_rootgit "$S11B_BARE_PATH" symbolic-ref refs/remotes/origin/HEAD)"
+  echo "  bare: symbolic-ref refs/remotes/origin/HEAD -> ${s11b_val}"
+  s11b_ok=1; [ "$s11b_val" = "refs/remotes/origin/main" ] && s11b_ok=0
+  check "bare: refs/remotes/origin/HEAD = refs/remotes/origin/main" "$s11b_ok"
+
+  s11b_val="$(s11b_rootgit "$S11B_BARE_PATH" config core.sharedRepository)"
+  echo "  bare: core.sharedRepository -> ${s11b_val}"
+  s11b_ok=1; [ "$s11b_val" = "group" ] && s11b_ok=0
+  check "bare: core.sharedRepository = group" "$s11b_ok"
+
+  # Directories only: git keeps loose objects read-only, so file modes are
+  # deliberately not asserted.
+  s11b_val="$(s11b_root sh -c 'find "$1" -type d ! -perm -g+ws | wc -l' _ "$S11B_BARE_PATH" | tr -d ' ')"
+  echo "  bare: directories lacking group-write+setgid -> ${s11b_val}"
+  s11b_ok=1; [ "$s11b_val" = "0" ] && s11b_ok=0
+  check "bare: every directory is group-writable and setgid (find -perm -g+ws finds none lacking)" "$s11b_ok"
+
+  s11b_val="$(s11b_root stat -c '%G' "$S11B_BARE_PATH")"
+  echo "  bare: stat group -> ${s11b_val}"
+  s11b_ok=1; [ "$s11b_val" = "agent-console-users" ] && s11b_ok=0
+  check "bare: repository directory group is agent-console-users" "$s11b_ok"
+else
+  echo "  DIAGNOSTIC: no bare repository path; recording explicit FAILs for its on-disk sub-checks instead of skipping."
+  check "bare: git rev-parse --is-bare-repository = true" 1
+  check "bare: remote.origin.fetch = +refs/heads/*:refs/remotes/origin/*" 1
+  check "bare: refs/remotes/origin/HEAD = refs/remotes/origin/main" 1
+  check "bare: core.sharedRepository = group" 1
+  check "bare: every directory is group-writable and setgid (find -perm -g+ws finds none lacking)" 1
+  check "bare: repository directory group is agent-console-users" 1
+fi
+if [ -n "$S11B_CTRL_PATH" ]; then
+  s11b_val="$(s11b_rootgit "$S11B_CTRL_PATH" rev-parse --is-bare-repository)"
+  echo "  control: rev-parse --is-bare-repository -> ${s11b_val}"
+  s11b_ok=1; [ "$s11b_val" = "false" ] && s11b_ok=0
+  check "control: git rev-parse --is-bare-repository = false" "$s11b_ok"
+else
+  echo "  DIAGNOSTIC: no control repository path; recording an explicit FAIL instead of skipping."
+  check "control: git rev-parse --is-bare-repository = false" 1
+fi
+
+# --- bob (second user) creates a worktree in alice's repositories ---
+# Bare: git's admin directory is <bare>/worktrees/<id>; control: <repo>/.git/worktrees/<id>.
+s11b_bob_worktree "bare" "$S11B_BARE_ID" "${S11B_BARE_PATH:-<bare path>}/worktrees" "bob-on-bare"
+s11b_bob_worktree "control" "$S11B_CTRL_ID" "${S11B_CTRL_PATH:-<control path>}/.git/worktrees" "bob-on-control"
+
+# --- phase-3 behaviour on the real host ---
+# The listing must be a real, successful listing (pathStatus ok, a worktrees
+# array) before a zero count of main worktrees means anything.
+if [ -n "$S11B_BARE_ID" ]; then
+  s11b_wt_paths "$S11B_ALICE_JAR" "$S11B_BARE_ID" "$S11B_AFTER"
+  s11b_listing_ok=1
+  grep -q '"worktrees":\[' "$S11B_LIST" && grep -q '"pathStatus":"ok"' "$S11B_LIST" && s11b_listing_ok=0
+  s11b_main_count="$(grep -o '"isMain":true' "$S11B_LIST" | wc -l | tr -d ' ')"
+  echo "  bare: worktree list pathStatus ok / worktrees array present -> rc=${s11b_listing_ok}; isMain:true entries -> ${s11b_main_count}"
+  check "bare: GET worktrees is a successful listing (positive control for the count below)" "$s11b_listing_ok"
+  s11b_ok=1; [ "$s11b_main_count" = "0" ] && s11b_ok=0
+  check "bare: worktree list has NO entry with isMain true (phase 3)" "$s11b_ok"
+else
+  check "bare: GET worktrees is a successful listing (positive control for the count below)" 1
+  check "bare: worktree list has NO entry with isMain true (phase 3)" 1
+fi
+if [ -n "$S11B_CTRL_ID" ]; then
+  s11b_wt_paths "$S11B_ALICE_JAR" "$S11B_CTRL_ID" "$S11B_AFTER"
+  s11b_main_count="$(grep -o '"isMain":true' "$S11B_LIST" | wc -l | tr -d ' ')"
+  echo "  control: isMain:true entries -> ${s11b_main_count}"
+  s11b_ok=1; [ "$s11b_main_count" = "1" ] && s11b_ok=0
+  check "control: worktree list has exactly one entry with isMain true" "$s11b_ok"
+else
+  check "control: worktree list has exactly one entry with isMain true" 1
+fi
+
+# A session at the bare repository's own path is refused with the message
+# session-manager.ts pins. The request is a worktree session whose
+# locationPath is the repository path (CreateWorktreeSessionRequestSchema).
+if [ -n "$S11B_BARE_ID" ] && [ -n "$S11B_BARE_PATH" ]; then
+  s11b_sess_code="$(curl -s -o "$S11B_RESP" -w '%{http_code}' -b "$S11B_ALICE_JAR" -c "$S11B_ALICE_JAR" \
+    -X POST "${BASE_URL}/api/sessions" \
+    -H 'Content-Type: application/json' \
+    -d "{\"type\":\"worktree\",\"repositoryId\":\"${S11B_BARE_ID}\",\"worktreeId\":\"bare-2094\",\"locationPath\":\"${S11B_BARE_PATH}\"}")"
+  echo "  POST /api/sessions (worktree session at the bare path) -> HTTP ${s11b_sess_code}"
+  echo "  response body: $(cat "$S11B_RESP")"
+  s11b_ok=1
+  if [ "$s11b_sess_code" = "400" ] && grep -q 'bare source repository has no working tree' "$S11B_RESP"; then s11b_ok=0; fi
+  check "bare: a session at the bare path is refused (400, 'bare source repository has no working tree')" "$s11b_ok"
+else
+  check "bare: a session at the bare path is refused (400, 'bare source repository has no working tree')" 1
+fi
+
+# --- NEGATIVE CONTROL: group-write removed -> bob's creation must not work ---
+# Without this arm the bare-side assertions above cannot be told apart from
+# "any user can write anything". The third clone is made the same way, then
+# every directory loses its group-write bit (and setgid) as root.
+s11b_clone "negative control" "bare-2094-neg" ',"bare":true'
+S11B_NEG_ID="$S11B_CLONE_ID"
+S11B_NEG_PATH=""
+[ -n "$S11B_NEG_ID" ] && S11B_NEG_PATH="$(s11b_repo_path "$S11B_NEG_ID")"
+echo "  negative-control repository: id=${S11B_NEG_ID:-<none>} path=${S11B_NEG_PATH:-<none>}"
+if [ -n "$S11B_NEG_ID" ] && [ -n "$S11B_NEG_PATH" ]; then
+  s11b_root sh -c 'find "$1" -type d -exec chmod g-ws {} +' _ "$S11B_NEG_PATH" >/dev/null
+  s11b_val="$(s11b_root sh -c 'find "$1" -type d ! -perm -g+ws | wc -l' _ "$S11B_NEG_PATH" | tr -d ' ')"
+  echo "  negative control: directories lacking group-write+setgid after the chmod -> ${s11b_val}"
+  # The instrument must see the removal: a non-zero count here is what makes
+  # the zero count on the bare repository above mean something.
+  s11b_ok=1; [ "$s11b_val" != "0" ] && [ -n "$s11b_val" ] && s11b_ok=0
+  check "negative control: group-write removal took effect (the bare-side find would now count directories)" "$s11b_ok"
+
+  s11b_wt_paths "$S11B_BOB_JAR" "$S11B_NEG_ID" "$S11B_BASELINE"
+  s11b_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  s11b_neg_code="$(curl -s -o "$S11B_RESP" -w '%{http_code}' -b "$S11B_BOB_JAR" -c "$S11B_BOB_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${S11B_NEG_ID}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${s11b_task_id}\",\"mode\":\"custom\",\"branch\":\"bob-on-neg\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":false}")"
+  echo "  POST /api/repositories/<negative id>/worktrees as bob -> HTTP ${s11b_neg_code}"
+  echo "  response body: $(cat "$S11B_RESP")"
+  # The expected failure shape (Architect AC): accepted (202), then the
+  # worktree never appears. Any other synchronous code is reported as its own
+  # FAIL here rather than folded into the absence check below.
+  s11b_ok=1; [ "$s11b_neg_code" = "202" ] && s11b_ok=0
+  check "negative control: bob's creation is accepted (202); the failure arrives asynchronously" "$s11b_ok"
+
+  s11b_appeared=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    s11b_wt_paths "$S11B_BOB_JAR" "$S11B_NEG_ID" "$S11B_AFTER"
+    s11b_appeared="$(comm -13 "$S11B_BASELINE" "$S11B_AFTER" | head -n1)"
+    if [ -n "$s11b_appeared" ]; then break; fi
+  done
+  echo "  negative control: new worktree path after 30s -> '${s11b_appeared}'"
+  s11b_ok=1; [ -z "$s11b_appeared" ] && s11b_ok=0
+  check "negative control: bob's worktree NEVER appears in the list within 30s (group-write removed)" "$s11b_ok"
+
+  s11b_admin_entries="$(s11b_root sh -c 'ls -A "$1/worktrees" 2>/dev/null | wc -l' _ "$S11B_NEG_PATH" | tr -d ' ')"
+  echo "  negative control: entries in ${S11B_NEG_PATH}/worktrees -> ${s11b_admin_entries}"
+  s11b_ok=1; [ "$s11b_admin_entries" = "0" ] && s11b_ok=0
+  check "negative control: <repo>/worktrees has no entry" "$s11b_ok"
+
+  # The error itself, as evidence of WHY nothing appeared (printed, not asserted).
+  echo "  ---- negative control: server log lines naming the branch (last 40 matching) ----"
+  compose logs --tail 400 agent-console 2>&1 | grep -F 'bob-on-neg' | tail -n 40 | sed 's/^/    /' || true
+  echo "  -------------------------------------------------"
+
+  # Leave the repository as the other checks expect to find directories.
+  s11b_root sh -c 'find "$1" -type d -exec chmod g+ws {} +' _ "$S11B_NEG_PATH" >/dev/null || true
+else
+  echo "  DIAGNOSTIC: negative-control clone is missing; recording explicit FAILs for its sub-checks instead of skipping."
+  check "negative control: group-write removal took effect (the bare-side find would now count directories)" 1
+  check "negative control: bob's creation is accepted (202); the failure arrives asynchronously" 1
+  check "negative control: bob's worktree NEVER appears in the list within 30s (group-write removed)" 1
+  check "negative control: <repo>/worktrees has no entry" 1
+fi
+
+stop_gitd_2094
+rm -f "$S11B_ALICE_JAR" "$S11B_BOB_JAR" "$S11B_RESP" "$S11B_LIST" "$S11B_BASELINE" "$S11B_AFTER" "$S11B_OUT"
 
 if [ "$SMOKES" -eq 1 ]; then
   echo
