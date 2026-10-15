@@ -1015,6 +1015,16 @@ fails the clone job and the partially created directory is removed. The `set-hea
 directory name carries no `.git` suffix, and with the box unchecked the clone
 command is unchanged.
 
+A cloned source repository is owned by the user who cloned it, top directory
+included: the clone job first reserves the target directory with a plain
+`mkdir` run as the requesting user, so `source-repos/` must be group-writable
+(`2775`, group `agent-console-users`, as the setup script creates it); on a host
+where it is not, the clone request fails at that step with a message naming this
+requirement, before anything is cloned. The server's auto-apply step runs as the
+service user, so its `chmod`/`chgrp` on a user-owned tree fail with a `WARN` only;
+group-writability of such a repository comes from `core.sharedRepository=group`
+at clone time and its group from the `2775` parent's setgid bit.
+
 **Keeping a bare source repository current.** The server fetches
 `origin/<base>` itself when it creates a worktree, so delegation does not depend
 on a manual sync. To keep the local default branch current as well (it is used
