@@ -976,7 +976,8 @@ git -C ${AGENT_CONSOLE_DATA_ROOT}/source-repos/<name> remote set-head origin -a
 
 `git clone --bare` writes no `remote.origin.fetch` (and no tracking refs), and
 branch listing, the default branch and ahead/behind need them, so the last
-three commands are part of the recipe. Registration **refuses** a bare
+three commands are part of the recipe (line 4 fails on an empty upstream and
+may be skipped until it has a branch). Registration **refuses** a bare
 repository that has an `origin` URL but no `remote.origin.fetch`, and its error
 message quotes those commands; registration itself never writes into the
 repository (the only server-side write is the server's own global
@@ -1010,7 +1011,7 @@ user and as one command line, a clone with the refspec plus `remote set-head`:
 is set at clone time, which makes the clone itself write the `origin/*`
 tracking refs), then `remote set-head origin -a`. The manual recipe above keeps
 its four lines. A non-zero exit from any step
-fails the clone job and the partially created directory is removed. The
+fails the clone job and the partially created directory is removed. The `set-head` step is skipped when the clone has no remote-tracking refs (an empty upstream), so an empty repository registers exactly as a non-bare clone does and becomes usable after its first push and fetch; worktree creation refuses it with the existing empty-repository error until then. The
 directory name carries no `.git` suffix, and with the box unchecked the clone
 command is unchanged.
 

@@ -415,14 +415,15 @@ describe('repository-clone-service', () => {
         "git clone --bare --config core.sharedRepository=group " +
           "--config 'remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*' " +
           "'https://github.com/org/repo.git' '/srv/source-repos/repo' " +
-          "&& git -C '/srv/source-repos/repo' remote set-head origin -a",
+          "&& if [ -n \"$(git -C '/srv/source-repos/repo' for-each-ref --count=1 refs/remotes/origin)\" ]; " +
+          "then git -C '/srv/source-repos/repo' remote set-head origin -a; fi",
       );
       expect(command.includes('\n')).toBe(false);
     });
 
-    it('bare: a single quote in the target is escaped in both places it appears', () => {
+    it('bare: a single quote in the target is escaped in all three places it appears', () => {
       const command = buildCloneCommand({ url, targetDir: "/srv/it's", bare: true });
-      expect(command.split("'/srv/it'\\''s'")).toHaveLength(3);
+      expect(command.split("'/srv/it'\\''s'")).toHaveLength(4);
     });
   });
 

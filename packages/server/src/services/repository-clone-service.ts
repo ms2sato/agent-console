@@ -214,8 +214,13 @@ export class CloneNameConflictError extends Error {
  * so no separate fetch is needed) and then runs `remote set-head origin -a` to
  * resolve `origin/HEAD`, which `getDefaultBranch` reads first. Any non-zero
  * exit in the `&&` chain fails the whole command, so the caller's
- * partial-clone cleanup covers every step. The refspec contains `*`, `+` and
- * `:`, hence the quoting.
+ * partial-clone cleanup covers every step. The `set-head` step runs only when
+ * the clone has remote-tracking refs: an empty upstream has none, `set-head`
+ * would fail with "Cannot determine remote HEAD", and the clone itself
+ * succeeded, so the step is skipped and the clone is kept, the same shape the
+ * non-bare arm leaves (it becomes usable after the first push and fetch). A
+ * real `set-head` failure on a populated clone still fails the command. The
+ * refspec contains `*`, `+` and `:`, hence the quoting.
  *
  * @internal Exported for testing.
  */
@@ -228,7 +233,8 @@ export function buildCloneCommand(opts: { url: string; targetDir: string; bare?:
   const refspec = shellEscape('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
   return (
     `git clone --bare --config core.sharedRepository=group --config ${refspec} ${url} ${dir}` +
-    ` && git -C ${dir} remote set-head origin -a`
+    ` && if [ -n "$(git -C ${dir} for-each-ref --count=1 refs/remotes/origin)" ]; then` +
+    ` git -C ${dir} remote set-head origin -a; fi`
   );
 }
 

@@ -599,4 +599,65 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
     const result = await shell(buildCloneCommand({ url: join(root, 'does-not-exist'), targetDir: target, bare: true }), root);
     expect(result.code).not.toBe(0);
   });
+
+  describe('empty upstream (no commits, so no remote-tracking refs after the clone)', () => {
+    let empty: ScratchGitRepo;
+    const hasOriginHead = async (dir: string) => (await shell('git symbolic-ref -q refs/remotes/origin/HEAD', dir)).code === 0;
+    const defaultBranchOf = (dir: string) => inLib<string | null>(dir, 'return await lib.getDefaultBranch(dir);');
+
+    beforeAll(async () => {
+      empty = await createScratchGitRepo({ parentDir: root, name: 'empty-upstream-', initialCommit: false });
+    });
+
+    afterAll(async () => {
+      if (empty) await empty.cleanup();
+    });
+
+    it('bare: the clone is kept and registers as the non-bare clone does, and becomes fully usable after the first commit and a fetch', async () => {
+      const target = join(root, 'bare-empty');
+      const result = await shell(buildCloneCommand({ url: empty.dir, targetDir: target, bare: true }), root);
+      expect(result.code).toBe(0);
+      expect((await shell('git rev-parse --is-bare-repository', target)).out).toBe('true');
+      expect(await inLib<string>(target, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
+      expect(await hasOriginHead(target)).toBe(false);
+      expect(await defaultBranchOf(target)).toBeNull();
+
+      // Control, same upstream: the non-bare command also succeeds and also has no default branch.
+      const control = join(root, 'nonbare-empty');
+      expect((await shell(buildCloneCommand({ url: empty.dir, targetDir: control }), root)).code).toBe(0);
+      expect(await defaultBranchOf(control)).toBeNull();
+
+      // Recovery: this is what justifies keeping the clone.
+      await empty.git(['commit', '--allow-empty', '-q', '-m', 'first']);
+      expect((await shell('git fetch -q origin', target)).code).toBe(0);
+      expect(await inLib<string>(target, 'return await lib.refreshDefaultBranch(dir);')).toBe('main');
+      expect(await hasOriginHead(target)).toBe(true);
+    });
+  });
+
+  describe('gate polarity: the set-head step is skipped only when there are no tracking refs, a real failure still fails', () => {
+    const trailingFragment = (targetDir: string): string => {
+      const full = buildCloneCommand({ url: own.dir, targetDir, bare: true });
+      return full.slice(full.indexOf(' && ') + 4);
+    };
+
+    it('(i) a populated bare clone whose origin url no longer resolves: the fragment exits non-zero', async () => {
+      const target = join(root, 'bare-gate-populated');
+      expect((await shell(buildCloneCommand({ url: own.dir, targetDir: target, bare: true }), root)).code).toBe(0);
+      expect((await shell(`git remote set-url origin '${join(root, 'does-not-exist')}'`, target)).code).toBe(0);
+      expect((await shell(trailingFragment(target), root)).code).not.toBe(0);
+    });
+
+    it('(ii) an empty bare clone: the fragment exits zero', async () => {
+      const emptyUpstream = await createScratchGitRepo({ parentDir: root, name: 'gate-empty-upstream-', initialCommit: false });
+      try {
+        const target = join(root, 'bare-gate-empty');
+        const full = buildCloneCommand({ url: emptyUpstream.dir, targetDir: target, bare: true });
+        expect((await shell(full.slice(0, full.indexOf(' && ')), root)).code).toBe(0);
+        expect((await shell(full.slice(full.indexOf(' && ') + 4), root)).code).toBe(0);
+      } finally {
+        await emptyUpstream.cleanup();
+      }
+    });
+  });
 });
