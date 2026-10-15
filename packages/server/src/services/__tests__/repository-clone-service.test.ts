@@ -32,6 +32,7 @@ import {
   deriveNameFromUrl,
   classifyCloneError,
   validateCloneInputs,
+  buildCloneCommand,
 } from '../repository-clone-service.js';
 import type {
   RunAsUserFn,
@@ -394,6 +395,109 @@ describe('repository-clone-service', () => {
       expect(runAs.calls).toHaveLength(1);
       expect(runAs.calls[0].username).toBe('alice');
       expect(runAs.calls[0].command).toContain('git clone --config core.sharedRepository=group');
+    });
+  });
+
+  describe('buildCloneCommand', () => {
+    const url = 'https://github.com/org/repo.git';
+    const targetDir = '/srv/source-repos/repo';
+
+    it('non-bare (bare omitted): the exact command the service has always run', () => {
+      const expected =
+        "git clone --config core.sharedRepository=group 'https://github.com/org/repo.git' '/srv/source-repos/repo'";
+      expect(buildCloneCommand({ url, targetDir })).toBe(expected);
+      expect(buildCloneCommand({ url, targetDir, bare: false })).toBe(expected);
+    });
+
+    it('bare: one single-line command with the refspec and the head resolution, all escaped', () => {
+      const command = buildCloneCommand({ url, targetDir, bare: true });
+      expect(command).toBe(
+        "git clone --bare --config core.sharedRepository=group " +
+          "--config 'remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*' " +
+          "'https://github.com/org/repo.git' '/srv/source-repos/repo' " +
+          "&& origin_refs=$(git -C '/srv/source-repos/repo' for-each-ref --count=1 refs/remotes/origin) " +
+          "&& if [ -n \"$origin_refs\" ]; " +
+          "then git -C '/srv/source-repos/repo' remote set-head origin -a; fi",
+      );
+      expect(command.includes('\n')).toBe(false);
+    });
+
+    it('bare: a single quote in the target is escaped in all three places it appears', () => {
+      const command = buildCloneCommand({ url, targetDir: "/srv/it's", bare: true });
+      expect(command.split("'/srv/it'\\''s'")).toHaveLength(4);
+    });
+  });
+
+  describe('enqueueClone -- bare flag reaches the spawned command', () => {
+    it('bare request: the command contains --bare and the origin fetch refspec', async () => {
+      const runAs = createRunAsUserMock();
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      const jobId = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: null,
+        bare: true,
+      });
+      await waitForJobTerminal(service, jobId);
+
+      expect(runAs.calls).toHaveLength(1);
+      expect(runAs.calls[0].command).toContain('--bare');
+      expect(runAs.calls[0].command).toContain('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
+      // The directory name carries no .git suffix.
+      expect(runAs.calls[0].command).toContain(`'${path.join(sourceReposDir, 'repo')}'`);
+    });
+
+    it('control, default request: the command is identical to the pre-bare one', async () => {
+      const runAs = createRunAsUserMock();
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      const jobId = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: null,
+      });
+      await waitForJobTerminal(service, jobId);
+
+      expect(runAs.calls[0].command).toBe(
+        `git clone --config core.sharedRepository=group 'https://github.com/org/repo.git' '${path.join(sourceReposDir, 'repo')}'`,
+      );
+      expect(runAs.calls[0].command).not.toContain('--bare');
+    });
+
+    it('bare clone whose command exits non-zero fails the job and removes the partial directory', async () => {
+      const runAs = createRunAsUserMock();
+      runAs.responder.fn = async () => ({ stdout: '', stderr: 'fatal: fetch failed', exitCode: 1, timedOut: false });
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      const jobId = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: null,
+        bare: true,
+      });
+      await waitForJobTerminal(service, jobId);
+
+      expect(service.getJob(jobId)?.status).toBe(CLONE_JOB_STATUS.FAILED);
+      expect(registrar.calls).toHaveLength(0);
+      // Cleanup ran for the bare clone's directory (same helper the regular
+      // clone failure path uses; the mock runner records its recursive-remove call).
+      expect(runAs.calls).toHaveLength(2);
+      expect(runAs.calls[0].command).toContain('--bare');
+      expect(runAs.calls[1].command).toContain(path.join(sourceReposDir, 'repo'));
+      expect(runAs.calls[1].command).not.toContain('git clone');
     });
   });
 

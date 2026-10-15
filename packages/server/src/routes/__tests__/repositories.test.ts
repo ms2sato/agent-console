@@ -773,6 +773,28 @@ describe('Repositories API', () => {
       expect(firstArg.requestUser).toBe('testuser');
     });
 
+    it('threads bare: true through to enqueueClone', async () => {
+      const res = await app.request('/api/repositories/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://github.com/org/repo.git', bare: true }),
+      });
+
+      expect(res.status).toBe(202);
+      expect(repositoryCloneService.enqueueClone.mock.calls[0][0].bare).toBe(true);
+    });
+
+    it('control: a request without bare reaches enqueueClone with bare undefined', async () => {
+      const res = await app.request('/api/repositories/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://github.com/org/repo.git' }),
+      });
+
+      expect(res.status).toBe(202);
+      expect(repositoryCloneService.enqueueClone.mock.calls[0][0].bare).toBeUndefined();
+    });
+
     it('returns 400 when the schema rejects the URL (no service call)', async () => {
       const res = await app.request('/api/repositories/clone', {
         method: 'POST',

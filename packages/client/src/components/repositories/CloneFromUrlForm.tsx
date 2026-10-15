@@ -77,6 +77,9 @@ export function CloneFromUrlForm({ onSuccess, onCancel }: CloneFromUrlFormProps)
         url: data.url,
         ...(data.name ? { name: data.name } : {}),
         ...(data.description ? { description: data.description } : {}),
+        // Only a checked box adds the key; unchecked keeps the default
+        // request identical to one that never knew about bare clones.
+        ...(data.bare ? { bare: true } : {}),
       };
       const result = await cloneMutation.mutateAsync(payload);
       setJobId(result.jobId);
@@ -133,6 +136,18 @@ export function CloneFromUrlForm({ onSuccess, onCancel }: CloneFromUrlFormProps)
               error={errors.description}
             />
           </FormField>
+
+          <div className="flex items-center gap-2">
+            <input
+              {...register('bare')}
+              type="checkbox"
+              id="clone-bare"
+              className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900"
+            />
+            <label htmlFor="clone-bare" className="text-sm text-gray-400">
+              Bare repository (no working tree; sessions run only on worktrees)
+            </label>
+          </div>
 
           {submitError && (
             <p className="text-sm text-red-400" role="alert">{submitError}</p>

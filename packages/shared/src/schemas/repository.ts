@@ -91,6 +91,8 @@ export const CloneRepositoryRequestSchema = v.strictObject({
     ),
   ),
   description: v.optional(v.pipe(v.string(), v.trim())),
+  /** Clone as a bare repository (no working tree). Omitted means a regular clone. */
+  bare: v.optional(v.boolean()),
 });
 
 /**
