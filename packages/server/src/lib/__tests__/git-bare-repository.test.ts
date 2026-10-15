@@ -16,7 +16,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readlink, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -305,6 +305,29 @@ describe('source reads through the object store (readRepoFileAtRef / exportRepoT
         [dest],
       );
       expect(result).toEqual({ name: 'GitError' });
+    });
+
+    it('bare: a symlink in the tree is extracted AS a symlink (not followed), so the template copy can detect and skip it', async () => {
+      const linkRepo = await createScratchGitRepo({ parentDir: root, name: 'upstream-link-' });
+      try {
+        await mkdir(join(linkRepo.dir, '.agent-console'), { recursive: true });
+        await writeFile(join(linkRepo.dir, '.agent-console', 'regular.md'), 'regular\n');
+        await symlink('/etc/hostname', join(linkRepo.dir, '.agent-console', 'link.md'));
+        await linkRepo.git(['add', '-A']);
+        await linkRepo.git(['commit', '-q', '-m', 'with symlink']);
+        const linkBare = join(root, 'bare-link.git');
+        await sh(['clone', '-q', '--bare', linkRepo.dir, linkBare], root);
+
+        const dest = await mkdtemp(join(root, 'export-symlink-'));
+        const out = await exportTo(linkBare, 'HEAD', '.agent-console', dest);
+
+        const linkStat = await lstat(join(out!, 'link.md'));
+        expect(linkStat.isSymbolicLink()).toBe(true);
+        expect(await readlink(join(out!, 'link.md'))).toBe('/etc/hostname');
+        expect((await lstat(join(out!, 'regular.md'))).isSymbolicLink()).toBe(false);
+      } finally {
+        await linkRepo.cleanup();
+      }
     });
 
     it('non-bare control: the export is byte-identical to the bare one', async () => {

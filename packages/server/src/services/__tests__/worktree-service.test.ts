@@ -1324,6 +1324,65 @@ detached
         );
         expect(nested).toBe('{"key": "value"}');
       });
+
+      describe('symlink entries', () => {
+        // The service logger is a child created at import time, so the spy on
+        // `rootLogger.child` must be installed before the fresh module import.
+        async function createWithRecordingLogger() {
+          const warns: unknown[][] = [];
+          const original = rootLogger.child.bind(rootLogger);
+          const childSpy = spyOn(rootLogger, 'child').mockImplementation(((bindings: { service?: string }) => {
+            if (bindings?.service !== 'worktree-service') return original(bindings);
+            return new Proxy({} as Record<string, unknown>, {
+              get: (_t, prop) => {
+                if (prop === 'warn') return (...args: unknown[]) => warns.push(args);
+                return () => {};
+              },
+            });
+          }) as unknown as typeof rootLogger.child);
+          try {
+            const WorktreeService = await getWorktreeService();
+            const service = new WorktreeService({
+              worktreeRepository: mockRepo,
+              runAsUserImpl: runAsUserMock.runAsUserImpl,
+            });
+            const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
+            return { result, warns };
+          } finally {
+            childSpy.mockRestore();
+          }
+        }
+
+        it('does not copy a symlinked file, copies the sibling regular file, and warns', async () => {
+          fs.mkdirSync('/repo/.agent-console', { recursive: true });
+          fs.writeFileSync('/secret.txt', 'server secret');
+          fs.writeFileSync('/repo/.agent-console/regular.txt', 'regular');
+          fs.symlinkSync('/secret.txt', '/repo/.agent-console/link.txt');
+
+          const { result, warns } = await createWithRecordingLogger();
+
+          expect(result.error).toBeUndefined();
+          expect(result.copiedFiles).toEqual(['regular.txt']);
+          expect(fs.readFileSync(`${result.worktreePath}/regular.txt`, 'utf-8')).toBe('regular');
+          expect(fs.existsSync(`${result.worktreePath}/link.txt`)).toBe(false);
+          expect(warns.some(args => (args[1] as string) === 'template entry is a symlink; skipped')).toBe(true);
+        });
+
+        it('does not follow a symlinked directory, copies the sibling regular file, and warns', async () => {
+          fs.mkdirSync('/repo/.agent-console', { recursive: true });
+          fs.mkdirSync('/outside', { recursive: true });
+          fs.writeFileSync('/outside/secret.txt', 'server secret');
+          fs.writeFileSync('/repo/.agent-console/regular.txt', 'regular');
+          fs.symlinkSync('/outside', '/repo/.agent-console/linkdir');
+
+          const { result, warns } = await createWithRecordingLogger();
+
+          expect(result.error).toBeUndefined();
+          expect(result.copiedFiles).toEqual(['regular.txt']);
+          expect(fs.existsSync(`${result.worktreePath}/linkdir`)).toBe(false);
+          expect(warns.some(args => (args[1] as string) === 'template entry is a symlink; skipped')).toBe(true);
+        });
+      });
     });
 
     describe('template copying on a bare source repository', () => {

@@ -235,6 +235,14 @@ async function copyTemplateFiles(
       const srcPath = path.join(srcDir, entry.name);
       const destPath = path.join(destDir, entry.name);
 
+      // Templates are read in-process as the server user, so a symlink pushed to
+      // the repository could otherwise copy any server-readable file into a
+      // user's worktree. Never follow, never resolve.
+      if (entry.isSymbolicLink()) {
+        logger.warn({ srcPath }, 'template entry is a symlink; skipped');
+        continue;
+      }
+
       if (entry.isDirectory()) {
         await sink.mkdir(destPath);
         await copyRecursive(srcPath, destPath);
