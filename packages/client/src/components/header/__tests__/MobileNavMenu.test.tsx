@@ -92,13 +92,15 @@ describe('MobileNavMenu', () => {
       await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />);
 
       await waitFor(() => {
-        expect(screen.getByLabelText('1 open to-do items assigned to you')).toBeTruthy();
+        expect(
+          screen.getByRole('link', { name: /1 open to-do items assigned to you/ }).getAttribute('href'),
+        ).toBe('/todos');
       });
     });
 
     it('shows no badge without a current user', async () => {
       await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />);
-      expect(screen.queryByLabelText(/open to-do items assigned to you/)).toBeNull();
+      expect(screen.queryByText(/open to-do items assigned to you/)).toBeNull();
     });
   });
 

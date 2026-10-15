@@ -110,7 +110,9 @@ describe('TodosNavLink', () => {
     };
     await renderWithRouter(<TodosNavLink />);
     await waitFor(() => {
-      expect(screen.getByLabelText('2 open to-do items assigned to you')).toBeTruthy();
+      expect(
+        screen.getByRole('link', { name: /2 open to-do items assigned to you/ }).getAttribute('href'),
+      ).toBe('/todos');
     });
   });
 });
