@@ -1,8 +1,8 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact, Bookmark } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact, Bookmark, Todo, TodoKind, TodoScope, TodoStatus } from '@agent-console/shared';
 import type { ArtifactRecord } from '../repositories/artifact-repository.js';
 import type { BookmarkRecord } from '../repositories/bookmark-repository.js';
-import { computeCapabilities } from '@agent-console/shared';
-import type { Session, Worker, NewRepository, RepositoryRow, AgentRow, MessageTemplateRow, EmbeddedAgentRow, ArtifactRow, BookmarkRow, SessionRowFull, WorkerRowFull, AgentRowFull, EmbeddedAgentRowFull, RepositoryRowFull } from './schema.js';
+import { computeCapabilities, TODO_KINDS, TODO_SCOPES, TODO_STATUSES } from '@agent-console/shared';
+import type { Session, Worker, NewRepository, RepositoryRow, AgentRow, MessageTemplateRow, EmbeddedAgentRow, ArtifactRow, BookmarkRow, TodoRow, SessionRowFull, WorkerRowFull, AgentRowFull, EmbeddedAgentRowFull, RepositoryRowFull } from './schema.js';
 import type {
   PersistedSession,
   PersistedWorker,
@@ -38,7 +38,7 @@ export function assertNever(x: never, message?: string): never {
  */
 export class DataIntegrityError extends Error {
   constructor(
-    public readonly entityType: 'session' | 'worker' | 'embedded-agent' | 'bookmark',
+    public readonly entityType: 'session' | 'worker' | 'embedded-agent' | 'bookmark' | 'todo',
     public readonly entityId: string,
     public readonly issue: string
   ) {
@@ -893,5 +893,60 @@ export function toBookmarkRecord(row: BookmarkRow): BookmarkRecord {
     ...toBookmark(row),
     userId: row.user_id,
     sourceSessionId: row.source_session_id,
+  };
+}
+
+// ========== Todo Mappers ==========
+
+function isOneOf<T extends string>(list: readonly T[], value: string): value is T {
+  return (list as readonly string[]).includes(value);
+}
+
+/**
+ * Convert a database todo row to the shared `Todo` wire shape. The CHECK
+ * constraints already guard the closed lists and the exactly-one-creator
+ * rule; the runtime checks here narrow the TEXT columns to their unions and
+ * fail loudly on a row that somehow bypassed them.
+ *
+ * @throws DataIntegrityError if kind, scope, status or the creator columns are invalid
+ */
+export function toTodo(row: TodoRow): Todo {
+  if (!isOneOf(TODO_KINDS, row.kind)) {
+    throw new DataIntegrityError('todo', row.id, `kind (unexpected value: ${row.kind})`);
+  }
+  if (!isOneOf(TODO_SCOPES, row.scope)) {
+    throw new DataIntegrityError('todo', row.id, `scope (unexpected value: ${row.scope})`);
+  }
+  if (!isOneOf(TODO_STATUSES, row.status)) {
+    throw new DataIntegrityError('todo', row.id, `status (unexpected value: ${row.status})`);
+  }
+  const kind: TodoKind = row.kind;
+  const scope: TodoScope = row.scope;
+  const status: TodoStatus = row.status;
+
+  let createdBy: Todo['createdBy'];
+  if (row.created_worker_id !== null && row.created_user_id === null) {
+    createdBy = { workerId: row.created_worker_id };
+  } else if (row.created_worker_id === null && row.created_user_id !== null) {
+    createdBy = { userId: row.created_user_id };
+  } else {
+    throw new DataIntegrityError('todo', row.id, 'creator (exactly one of worker and user is required)');
+  }
+
+  return {
+    id: row.id,
+    kind,
+    scope,
+    title: row.title,
+    body: row.body,
+    sessionId: row.session_id,
+    createdBy,
+    assigneeUserId: row.assignee_user_id,
+    status,
+    resolutionText: row.resolution_text,
+    resolvedByUserId: row.resolved_by_user_id,
+    resolvedAt: row.resolved_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }

@@ -34,6 +34,7 @@ function urlToString(input: RequestInfo | URL): string {
 const MEMO_CONTENT = '# Hello Memo';
 const ARTIFACT_TITLE = 'My Dashboard';
 const BOOKMARK_TITLE = 'Example Site';
+const TODO_TITLE = 'Confirm the rollout';
 
 /**
  * Routes each panel's own query to the right fixture by URL substring, so
@@ -201,6 +202,35 @@ describe('SessionSidePanels', () => {
     expect(screen.getByLabelText('Collapse Bookmarks').getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('mounts the to-do section in the open rail when the session has an open item, and leaves it out otherwise', async () => {
+    const base = mockFetch.getMockImplementation()!;
+    mockFetch.mockImplementation((input: RequestInfo | URL) => {
+      if (urlToString(input).includes('/todos')) {
+        return Promise.resolve(jsonResponse({ todos: [{
+        id: 'todo-1', kind: 'action', scope: 'session', title: TODO_TITLE, body: '', sessionId: 'session-1',
+        createdBy: { workerId: 'worker-1' }, assigneeUserId: null, status: 'open', resolutionText: null,
+        resolvedByUserId: null, resolvedAt: null, createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:00:00.000Z',
+      }] }));
+      }
+      return base(input);
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } }));
+
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+
+    expect(await screen.findByText('To-do (1)')).toBeTruthy();
+    expect(screen.getByText(TODO_TITLE)).toBeTruthy();
+  });
+
+  it('renders no to-do section when the session has no items (the default routing serves no to-do list)', async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } }));
+
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy());
+    expect(screen.queryByLabelText('Collapse To-do')).toBeNull();
+  });
+
   it('the rail toggle button flips between the wide and narrow rail classes', async () => {
     const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
     await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
@@ -297,7 +327,7 @@ describe('SessionSidePanels', () => {
     expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
 
     expect(localStorage.getItem(STORAGE_KEY)).toBe(
-      JSON.stringify({ railOpen: true, expanded: { memo: true, artifacts: true, bookmarks: true } })
+      JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } })
     );
   });
 

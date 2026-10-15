@@ -1,0 +1,413 @@
+/**
+ * Sibling test for the human TODO list routes: real in-memory sqlite DB,
+ * production layering (appContext -> authMiddleware -> route).
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { Hono } from 'hono';
+import type { Kysely } from 'kysely';
+import * as v from 'valibot';
+import type { AppServerMessage, AuthUser, Todo } from '@agent-console/shared';
+import { TodoSchema, TodosListResponseSchema } from '@agent-console/shared';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
+import { SqliteTodoRepository } from '../../repositories/sqlite-todo-repository.js';
+import { TODO_RESOLUTION_SEPARATOR } from '../../repositories/todo-repository.js';
+import { todos } from '../todos.js';
+import { authMiddleware } from '../../middleware/auth.js';
+import { onApiError } from '../../lib/error-handler.js';
+import type { AppBindings, AppContext } from '../../app-context.js';
+import type { UserMode, PtySpawnRequest } from '../../services/user-mode.js';
+import type { PtyInstance } from '../../lib/pty-provider.js';
+
+const ALICE: AuthUser = { id: 'alice-1', username: 'alice', homeDir: '/home/alice' };
+const BOB: AuthUser = { id: 'bob-1', username: 'bob', homeDir: '/home/bob' };
+
+function mockUserMode(user: AuthUser | null): UserMode {
+  return {
+    authenticate: () => user,
+    login: async () => null,
+    spawnPty: (_request: PtySpawnRequest): PtyInstance => {
+      throw new Error('spawnPty not implemented in mock');
+    },
+  };
+}
+
+function buildApp(
+  todoRepository: SqliteTodoRepository,
+  user: AuthUser | null,
+  broadcastToApp: (msg: AppServerMessage) => void = () => {},
+): Hono<AppBindings> {
+  const partialContext: Partial<AppContext> = {
+    todoRepository,
+    userMode: mockUserMode(user),
+    broadcastToApp,
+  };
+  const app = new Hono<AppBindings>();
+  app.use('*', async (c, next) => {
+    c.set('appContext', partialContext as AppContext);
+    await next();
+  });
+  app.use('*', authMiddleware);
+  app.onError(onApiError);
+  app.route('/api/todos', todos);
+  return app;
+}
+
+function json(method: string, body?: unknown): RequestInit {
+  return { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) };
+}
+
+describe('Todo routes', () => {
+  let db: Kysely<Database>;
+  let repository: SqliteTodoRepository;
+  let broadcasts: AppServerMessage[];
+  let app: Hono<AppBindings>;
+
+  beforeEach(async () => {
+    db = await createDatabaseForTest();
+    repository = new SqliteTodoRepository(db);
+    broadcasts = [];
+    app = buildApp(repository, ALICE, (msg) => broadcasts.push(msg));
+  });
+
+  afterEach(async () => {
+    await db.destroy();
+  });
+
+  async function post(body: unknown): Promise<Response> {
+    return app.request('/api/todos', json('POST', body));
+  }
+
+  async function createTodo(body: Record<string, unknown>): Promise<Todo> {
+    const res = await post(body);
+    expect(res.status).toBe(201);
+    return ((await res.json()) as { todo: Todo }).todo;
+  }
+
+  async function seedAgentItem(overrides: Partial<Parameters<SqliteTodoRepository['create']>[0]> = {}): Promise<Todo> {
+    return repository.create({
+      id: crypto.randomUUID(),
+      kind: 'action',
+      scope: 'session',
+      title: 'agent item',
+      body: '',
+      sessionId: 'session-1',
+      createdBy: { workerId: 'worker-1' },
+      assigneeUserId: null,
+      ...overrides,
+    });
+  }
+
+  describe('authentication', () => {
+    it('rejects an unauthenticated request', async () => {
+      const unauthenticated = buildApp(repository, null);
+      expect((await unauthenticated.request('/api/todos')).status).toBe(401);
+      expect((await unauthenticated.request('/api/todos', json('POST', { kind: 'action', title: 't', body: '' }))).status).toBe(401);
+    });
+  });
+
+  describe('POST /api/todos (human create)', () => {
+    it('defaults scope to session when the request carries a sessionId', async () => {
+      const todo = await createTodo({ kind: 'action', title: 'From the panel', body: 'b', sessionId: 'session-1' });
+
+      expect(todo).toMatchObject({ scope: 'session', sessionId: 'session-1', status: 'open' });
+    });
+
+    it('defaults scope to global when the request carries no sessionId', async () => {
+      const todo = await createTodo({ kind: 'action', title: 'From the global page', body: 'b' });
+
+      expect(todo).toMatchObject({ scope: 'global', sessionId: null });
+    });
+
+    it('an explicit scope wins over the default (global action with session provenance)', async () => {
+      const todo = await createTodo({ kind: 'action', scope: 'global', title: 't', body: 'b', sessionId: 'session-1' });
+
+      expect(todo).toMatchObject({ scope: 'global', sessionId: 'session-1' });
+    });
+
+    it('records the human creator as {userId} and the optional assignee', async () => {
+      const todo = await createTodo({ kind: 'question', title: 't', body: 'b', sessionId: 's', assigneeUserId: BOB.id });
+
+      expect(todo.createdBy).toEqual({ userId: ALICE.id });
+      expect(todo.assigneeUserId).toBe(BOB.id);
+    });
+
+    it('refuses a question with explicit global scope (400) and writes nothing', async () => {
+      const res = await post({ kind: 'question', scope: 'global', title: 't', body: 'b', sessionId: 's' });
+
+      expect(res.status).toBe(400);
+      expect(await repository.list({})).toEqual([]);
+      expect(broadcasts).toEqual([]);
+    });
+
+    it('refuses a question with no sessionId, whose default scope would be global (400)', async () => {
+      expect((await post({ kind: 'question', title: 't', body: 'b' })).status).toBe(400);
+    });
+
+    it('refuses an explicit session scope without a sessionId (400)', async () => {
+      expect((await post({ kind: 'action', scope: 'session', title: 't', body: 'b' })).status).toBe(400);
+    });
+
+    it('rejects an invalid body (400): empty title, unknown field', async () => {
+      expect((await post({ kind: 'action', title: ' ', body: 'b' })).status).toBe(400);
+      expect((await post({ kind: 'action', title: 't', body: 'b', status: 'done' })).status).toBe(400);
+    });
+
+    it('broadcasts a trigger-only todos-updated with the item sessionId, or null', async () => {
+      await createTodo({ kind: 'action', title: 't', body: 'b', sessionId: 'session-1' });
+      await createTodo({ kind: 'action', title: 't', body: 'b' });
+
+      expect(broadcasts).toEqual([
+        { type: 'todos-updated', sessionId: 'session-1' },
+        { type: 'todos-updated', sessionId: null },
+      ]);
+    });
+  });
+
+  describe('GET /api/todos', () => {
+    it('returns an empty list, not an error, for zero items', async () => {
+      const res = await app.request('/api/todos');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ todos: [] });
+    });
+
+    it('returns items that strictly parse with the shared wire schema, including scope and withdrawn', async () => {
+      await createTodo({ kind: 'action', title: 'a', body: '', sessionId: 'session-1' });
+      await repository.withdrawOpenSessionScoped('session-1');
+
+      const body = await (await app.request('/api/todos')).json();
+      const parsed = v.parse(TodosListResponseSchema, body);
+
+      expect(parsed.todos).toHaveLength(1);
+      expect(parsed.todos[0]).toMatchObject({ scope: 'session', status: 'withdrawn' });
+      expect(v.safeParse(TodoSchema, parsed.todos[0]).success).toBe(true);
+    });
+
+    it('filters by status, scope, assignee and sessionId', async () => {
+      await createTodo({ kind: 'action', title: 'sess', body: '', sessionId: 'session-1', assigneeUserId: BOB.id });
+      await createTodo({ kind: 'action', title: 'glob', body: '' });
+      const dismissed = await createTodo({ kind: 'action', title: 'gone', body: '', sessionId: 'session-2' });
+      await app.request(`/api/todos/${dismissed.id}/dismiss`, json('POST'));
+
+      const titles = async (query: string) =>
+        ((await (await app.request(`/api/todos?${query}`)).json()) as { todos: Todo[] }).todos.map((t) => t.title).sort();
+
+      expect(await titles('status=dismissed')).toEqual(['gone']);
+      expect(await titles('scope=global')).toEqual(['glob']);
+      expect(await titles(`assignee=${BOB.id}`)).toEqual(['sess']);
+      expect(await titles('sessionId=session-1')).toEqual(['sess']);
+    });
+
+    it('rejects an unknown status or scope value (400)', async () => {
+      expect((await app.request('/api/todos?status=expired')).status).toBe(400);
+      expect((await app.request('/api/todos?scope=team')).status).toBe(400);
+    });
+
+    it('team-tool authorization: any member sees every member\'s items', async () => {
+      await createTodo({ kind: 'action', title: 'alice item', body: '' });
+
+      const asBob = buildApp(repository, BOB);
+      const list = (await (await asBob.request('/api/todos')).json()) as { todos: Todo[] };
+
+      expect(list.todos.map((t) => t.title)).toEqual(['alice item']);
+    });
+  });
+
+  describe('PATCH /api/todos/:id', () => {
+    it('edits title, body and assignee of an open item and broadcasts', async () => {
+      const todo = await createTodo({ kind: 'action', title: 'old', body: 'b', sessionId: 'session-1' });
+      broadcasts.length = 0;
+
+      const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { title: 'new', assigneeUserId: BOB.id }));
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { todo: Todo }).todo).toMatchObject({ title: 'new', assigneeUserId: BOB.id });
+      expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
+    });
+
+    it('team-tool authorization: another member may edit an item they did not create', async () => {
+      const todo = await createTodo({ kind: 'action', title: 'old', body: '' });
+
+      const res = await buildApp(repository, BOB).request(`/api/todos/${todo.id}`, json('PATCH', { title: 'bob edit' }));
+
+      expect(res.status).toBe(200);
+    });
+
+    it('404 for an unknown item', async () => {
+      expect((await app.request('/api/todos/missing', json('PATCH', { title: 'x' }))).status).toBe(404);
+    });
+
+    describe('re-scoping', () => {
+      it('session -> global keeps sessionId', async () => {
+        const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'global' }));
+
+        expect(((await res.json()) as { todo: Todo }).todo).toMatchObject({ scope: 'global', sessionId: 'session-1' });
+      });
+
+      it('global -> session uses the stored provenance sessionId', async () => {
+        const todo = await createTodo({ kind: 'action', scope: 'global', title: 't', body: '', sessionId: 'session-1' });
+
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'session' }));
+
+        expect(((await res.json()) as { todo: Todo }).todo).toMatchObject({ scope: 'session', sessionId: 'session-1' });
+      });
+
+      it('global -> session accepts a sessionId passed in the same PATCH and notifies both sessions', async () => {
+        const todo = await createTodo({ kind: 'action', scope: 'global', title: 't', body: '', sessionId: 'session-1' });
+        broadcasts.length = 0;
+
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'session', sessionId: 'session-2' }));
+
+        expect(((await res.json()) as { todo: Todo }).todo).toMatchObject({ scope: 'session', sessionId: 'session-2' });
+        expect(broadcasts).toEqual([
+          { type: 'todos-updated', sessionId: 'session-2' },
+          { type: 'todos-updated', sessionId: 'session-1' },
+        ]);
+      });
+
+      it('refuses global -> session with no stored and no passed sessionId (400), leaving the item global', async () => {
+        const todo = await createTodo({ kind: 'action', title: 't', body: '' });
+
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'session' }));
+
+        expect(res.status).toBe(400);
+        expect((await repository.findById(todo.id))!.scope).toBe('global');
+      });
+
+      it('refuses to re-scope a question in either direction (400)', async () => {
+        const question = await createTodo({ kind: 'question', title: 'q', body: '', sessionId: 'session-1' });
+
+        const res = await app.request(`/api/todos/${question.id}`, json('PATCH', { scope: 'global' }));
+
+        expect(res.status).toBe(400);
+        expect((await repository.findById(question.id))!.scope).toBe('session');
+      });
+
+      it('refuses to re-scope a non-open item (409)', async () => {
+        const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+        await repository.dismiss(todo.id);
+
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'global' }));
+
+        expect(res.status).toBe(409);
+        expect((await repository.findById(todo.id))!.scope).toBe('session');
+      });
+
+      it('a sessionId without a global -> session re-scope is refused (400)', async () => {
+        const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+
+        expect((await app.request(`/api/todos/${todo.id}`, json('PATCH', { sessionId: 'session-2' }))).status).toBe(400);
+        expect((await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'global', sessionId: 'session-2' }))).status).toBe(400);
+      });
+
+      it('restating the current scope is not a re-scope, even for a question', async () => {
+        const question = await createTodo({ kind: 'question', title: 'q', body: '', sessionId: 'session-1' });
+
+        const res = await app.request(`/api/todos/${question.id}`, json('PATCH', { scope: 'session', title: 'q2' }));
+
+        expect(res.status).toBe(200);
+      });
+    });
+
+    it('refuses to edit a non-open item (409)', async () => {
+      const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+      await repository.dismiss(todo.id);
+
+      expect((await app.request(`/api/todos/${todo.id}`, json('PATCH', { title: 'x' }))).status).toBe(409);
+    });
+  });
+
+  describe('POST /api/todos/:id/resolve', () => {
+    it('resolves an action without text and records the resolving user', async () => {
+      const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+      broadcasts.length = 0;
+
+      const res = await buildApp(repository, BOB, (m) => broadcasts.push(m)).request(`/api/todos/${todo.id}/resolve`, json('POST', {}));
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { todo: Todo }).todo).toMatchObject({
+        status: 'done',
+        resolutionText: null,
+        resolvedByUserId: BOB.id,
+      });
+      expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
+    });
+
+    it('refuses done on a question with empty or whitespace text (400) and leaves it open', async () => {
+      const question = await createTodo({ kind: 'question', title: 'q', body: '', sessionId: 'session-1' });
+
+      expect((await app.request(`/api/todos/${question.id}/resolve`, json('POST', {}))).status).toBe(400);
+      expect((await app.request(`/api/todos/${question.id}/resolve`, json('POST', { text: '   ' }))).status).toBe(400);
+      expect((await repository.findById(question.id))!.status).toBe('open');
+    });
+
+    it('a second resolve appends after a rule line, moves resolvedAt, and the status stays done', async () => {
+      const question = await createTodo({ kind: 'question', title: 'q', body: '', sessionId: 'session-1' });
+      const first = ((await (await app.request(`/api/todos/${question.id}/resolve`, json('POST', { text: 'one' }))).json()) as { todo: Todo }).todo;
+      await new Promise((r) => setTimeout(r, 5));
+
+      const second = ((await (await app.request(`/api/todos/${question.id}/resolve`, json('POST', { text: 'two' }))).json()) as { todo: Todo }).todo;
+
+      expect(second.status).toBe('done');
+      expect(second.resolutionText).toBe(`one${TODO_RESOLUTION_SEPARATOR}two`);
+      expect(second.resolvedAt! > first.resolvedAt!).toBe(true);
+    });
+
+    it.each(['dismissed', 'withdrawn', 'superseded'] as const)('refuses a %s item (409)', async (status) => {
+      const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+      if (status === 'dismissed') await repository.dismiss(todo.id);
+      if (status === 'withdrawn') await repository.withdrawOpenSessionScoped('session-1');
+      if (status === 'superseded') await repository.markSuperseded(todo.id, 'session-1');
+
+      expect((await app.request(`/api/todos/${todo.id}/resolve`, json('POST', { text: 'x' }))).status).toBe(409);
+      expect((await repository.findById(todo.id))!.status).toBe(status);
+    });
+
+    it('404 for an unknown item', async () => {
+      expect((await app.request('/api/todos/missing/resolve', json('POST', {}))).status).toBe(404);
+    });
+  });
+
+  describe('POST /api/todos/:id/dismiss', () => {
+    it('dismisses an open item, any member may', async () => {
+      const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+      broadcasts.length = 0;
+
+      const res = await buildApp(repository, BOB, (m) => broadcasts.push(m)).request(`/api/todos/${todo.id}/dismiss`, json('POST'));
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { todo: Todo }).todo.status).toBe('dismissed');
+      expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
+    });
+
+    it('refuses a non-open item (409) and an unknown one (404)', async () => {
+      const todo = await createTodo({ kind: 'action', title: 't', body: '' });
+      await repository.dismiss(todo.id);
+
+      expect((await app.request(`/api/todos/${todo.id}/dismiss`, json('POST'))).status).toBe(409);
+      expect((await app.request('/api/todos/missing/dismiss', json('POST'))).status).toBe(404);
+    });
+  });
+
+  describe('DELETE /api/todos/:id', () => {
+    it('hard-deletes an item of any status, notifying its session; any member may', async () => {
+      const agentItem = await seedAgentItem();
+      await repository.dismiss(agentItem.id);
+      broadcasts.length = 0;
+
+      const res = await buildApp(repository, BOB, (m) => broadcasts.push(m)).request(`/api/todos/${agentItem.id}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(await repository.findById(agentItem.id)).toBeNull();
+      expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
+    });
+
+    it('404 for an unknown item, with no broadcast', async () => {
+      expect((await app.request('/api/todos/missing', { method: 'DELETE' })).status).toBe(404);
+      expect(broadcasts).toEqual([]);
+    });
+  });
+});

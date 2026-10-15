@@ -42,6 +42,29 @@ describe('SqliteUserRepository', () => {
     bunDb.close();
   });
 
+  describe('findByUsername', () => {
+    it('returns the user with that username', async () => {
+      const alice = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      await repository.upsertByOsUid(1002, 'bob', '/home/bob');
+
+      expect(await repository.findByUsername('alice')).toEqual(alice);
+    });
+
+    it('returns null for an unknown username', async () => {
+      await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+
+      expect(await repository.findByUsername('nobody')).toBeNull();
+    });
+
+    it('follows a username refreshed from the OS (it resolves the current name only)', async () => {
+      const original = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      await repository.upsertByOsUid(1001, 'alice2', '/home/alice');
+
+      expect(await repository.findByUsername('alice2')).toMatchObject({ id: original.id });
+      expect(await repository.findByUsername('alice')).toBeNull();
+    });
+  });
+
   describe('upsertByOsUid', () => {
     it('should create a new user when none exists for the given os_uid', async () => {
       const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');

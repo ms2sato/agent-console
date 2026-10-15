@@ -36,6 +36,7 @@ import type { InterSessionMessageService } from './services/inter-session-messag
 import type { MessageTemplateRepository } from './repositories/message-template-repository.js';
 import type { ArtifactRepository } from './repositories/artifact-repository.js';
 import type { BookmarkRepository } from './repositories/bookmark-repository.js';
+import type { TodoRepository } from './repositories/todo-repository.js';
 import type { McpServerPermissionRepository } from './repositories/mcp-server-permission-repository.js';
 import type { NotificationCursorRepository } from './repositories/notification-cursor-repository.js';
 import type { NotificationService } from './services/notification-service.js';
@@ -97,6 +98,7 @@ import { getSourceReposDir, getConfigDir } from './lib/config.js';
 import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
 import { SqliteArtifactRepository } from './repositories/sqlite-artifact-repository.js';
 import { SqliteBookmarkRepository } from './repositories/sqlite-bookmark-repository.js';
+import { SqliteTodoRepository } from './repositories/sqlite-todo-repository.js';
 import { SqliteMcpServerPermissionRepository } from './repositories/sqlite-mcp-server-permission-repository.js';
 import { SqliteNotificationCursorRepository } from './repositories/sqlite-notification-cursor-repository.js';
 import { NotificationService as NotificationServiceClass } from './services/notification-service.js';
@@ -262,6 +264,9 @@ export interface AppContext {
   /** Bookmark CRUD repository */
   bookmarkRepository: BookmarkRepository;
 
+  /** Human TODO list repository (see docs/design/human-todo-list.md) */
+  todoRepository: TodoRepository;
+
   /**
    * MCP server permission repository (epic #1636 Phase 5 PR-2,
    * docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record").
@@ -365,6 +370,7 @@ export async function createAppContext(
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
   const bookmarkRepository = new SqliteBookmarkRepository(db);
+  const todoRepository = new SqliteTodoRepository(db);
   const mcpServerPermissionRepository = new SqliteMcpServerPermissionRepository(db);
   const notificationCursorRepository = new SqliteNotificationCursorRepository(db);
   const notificationService = new NotificationServiceClass({
@@ -456,6 +462,7 @@ export async function createAppContext(
     userMode,
     userRepository,
     sessionRepository,
+    todoRepository,
     jobQueue,
     db,
     agentManager,
@@ -731,6 +738,7 @@ export async function createAppContext(
     messageTemplateRepository,
     artifactRepository,
     bookmarkRepository,
+    todoRepository,
     mcpServerPermissionRepository,
     notificationCursorRepository,
     notificationService,
@@ -871,6 +879,7 @@ export async function createTestContext(
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
   const bookmarkRepository = new SqliteBookmarkRepository(db);
+  const todoRepository = new SqliteTodoRepository(db);
   const mcpServerPermissionRepository = new SqliteMcpServerPermissionRepository(db);
   const notificationCursorRepository = new SqliteNotificationCursorRepository(db);
   const notificationService = new NotificationServiceClass({
@@ -937,6 +946,7 @@ export async function createTestContext(
     userMode,
     userRepository,
     sessionRepository,
+    todoRepository,
     jobQueue,
     db,
     agentManager,
@@ -1070,6 +1080,7 @@ export async function createTestContext(
     messageTemplateRepository,
     artifactRepository,
     bookmarkRepository,
+    todoRepository,
     mcpServerPermissionRepository,
     notificationCursorRepository,
     notificationService,

@@ -8,6 +8,7 @@ import {
   branchKeys,
   systemKeys,
   notificationKeys,
+  todoKeys,
 } from '../query-keys';
 
 describe('Query Keys', () => {
@@ -240,6 +241,14 @@ describe('Query Keys', () => {
 
       // All keys should be serializable for use in TanStack Query
       expect(() => JSON.stringify(repoKey)).not.toThrow();
+    });
+  });
+
+  describe('todoKeys', () => {
+    it('scopes the list key by session under the shared root', () => {
+      expect(todoKeys.root()).toEqual(['todos']);
+      expect(todoKeys.listBySession('session-1')).toEqual(['todos', 'list', 'session-1']);
+      expect(todoKeys.listBySession('session-1')).not.toEqual(todoKeys.listBySession('session-2'));
     });
   });
 });

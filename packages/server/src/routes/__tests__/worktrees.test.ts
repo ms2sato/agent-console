@@ -516,6 +516,7 @@ describe('Worktrees API', () => {
         findById: mock(() => Promise.resolve(null)),
         getPreferences: mock(() => Promise.resolve(null)),
         setPreferences: mock(() => Promise.resolve(true)),
+        findByUsername: async () => null,
         getOsUidById: mock(() => Promise.resolve(6000)),
         refreshOsIdentity: mock((id: string, username: string, homeDir: string) =>
           Promise.resolve({ id, username, homeDir }),

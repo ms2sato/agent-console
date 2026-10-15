@@ -8,6 +8,8 @@ import { JobQueue as RealJobQueue, JOB_TYPES, type JobQueue } from '../../jobs/i
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
+import { SqliteTodoRepository } from '../../repositories/sqlite-todo-repository.js';
+import type { CreateTodoParams } from '../../repositories/todo-repository.js';
 import { rootLogger } from '../../lib/logger.js';
 import type { NotificationManager } from '../notifications/notification-manager.js';
 import type { MessageService } from '../message-service.js';
@@ -692,5 +694,155 @@ describe('SessionDeletionService delete transaction (real DB, real JobQueue)', (
         warnSpy.mockRestore();
       }
     });
+  });
+});
+
+describe('SessionDeletionService TODO withdrawal (real DB)', () => {
+  let db: Kysely<Database>;
+  let sessionRepository: SqliteSessionRepository;
+  let todoRepository: SqliteTodoRepository;
+  let jobQueue: RealJobQueue;
+  let memory: Map<string, InternalSession>;
+
+  const settle = <T>(p: Promise<T>): Promise<T | 'hung'> =>
+    Promise.race([p, new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3000))]);
+
+  beforeEach(async () => {
+    db = await createDatabaseForTest();
+    sessionRepository = new SqliteSessionRepository(db);
+    todoRepository = new SqliteTodoRepository(db);
+    jobQueue = new RealJobQueue(db);
+    memory = new Map();
+  });
+
+  afterEach(async () => {
+    await Promise.race([db.destroy(), new Promise((resolve) => setTimeout(resolve, 1000))]);
+  });
+
+  /**
+   * The three row-delete paths of `deleteRowWithCleanupJob`:
+   * - transaction: job queue + scope + db (cleanup enqueue, row delete and withdraw share a transaction)
+   * - no-db fallback: job queue + scope, no db handle
+   * - early return: no scope (orphaned), with and without a db handle
+   */
+  const PATHS: Array<{ name: string; withDb: boolean; scope: boolean }> = [
+    { name: 'transaction path', withDb: true, scope: true },
+    { name: 'no-db fallback path', withDb: false, scope: true },
+    { name: 'early-return path with a db handle', withDb: true, scope: false },
+    { name: 'early-return path without a db handle', withDb: false, scope: false },
+  ];
+
+  function createService(options: { withDb: boolean; scope: boolean }) {
+    return new SessionDeletionService(createMockDeps({
+      getSession: (id) => memory.get(id),
+      setSession: (id, session) => memory.set(id, session),
+      deleteSessionFromMemory: (id) => memory.delete(id),
+      sessionRepository,
+      todoRepository,
+      jobQueue,
+      db: options.withDb ? db : null,
+      getSessionScope: () => (options.scope ? { scope: 'repository', slug: 'test-repo' } : null),
+    }));
+  }
+
+  async function seedSession(id: string): Promise<void> {
+    await sessionRepository.save(buildPersistedWorktreeSession({ id }));
+    memory.set(id, buildInternalWorktreeSession([], { id }));
+  }
+
+  function todo(id: string, overrides: Partial<CreateTodoParams> = {}): CreateTodoParams {
+    return {
+      id,
+      kind: 'action',
+      scope: 'session',
+      title: id,
+      body: '',
+      sessionId: 'doomed',
+      createdBy: { userId: 'user-1' },
+      assigneeUserId: null,
+      ...overrides,
+    };
+  }
+
+  async function seedTodos(): Promise<void> {
+    await todoRepository.create(todo('open-session-action'));
+    await todoRepository.create(todo('open-global-action', { scope: 'global' }));
+    await todoRepository.create(todo('open-question', { kind: 'question' }));
+    await todoRepository.create(todo('done-item'));
+    await todoRepository.resolve('done-item', { text: 'ok', resolvedByUserId: 'user-1' });
+    await todoRepository.create(todo('survivor-open', { sessionId: 'survivor' }));
+  }
+
+  async function statuses(): Promise<Record<string, string>> {
+    const all = await todoRepository.list({});
+    return Object.fromEntries(all.map((t) => [t.id, t.status]));
+  }
+
+  for (const path of PATHS) {
+    describe(path.name, () => {
+      it('withdraws exactly the open session-scoped items; global, done and other sessions are untouched', async () => {
+        await seedSession('doomed');
+        await seedTodos();
+        const doneBefore = await todoRepository.findById('done-item');
+
+        expect(await settle(createService(path).deleteSession('doomed'))).toBe(true);
+
+        expect(await statuses()).toEqual({
+          'open-session-action': 'withdrawn',
+          'open-question': 'withdrawn',
+          'open-global-action': 'open',
+          'done-item': 'done',
+          'survivor-open': 'open',
+        });
+        // Rows are kept; a global item keeps its sessionId as provenance; a done row is byte-identical.
+        expect((await todoRepository.findById('open-global-action'))!.sessionId).toBe('doomed');
+        expect(await todoRepository.findById('done-item')).toEqual(doneBefore);
+        expect(await sessionRepository.findById('doomed')).toBeNull();
+      });
+
+      it('deleting a session with no items is a no-op for the list', async () => {
+        await seedSession('doomed');
+        await todoRepository.create(todo('survivor-open', { sessionId: 'survivor' }));
+
+        expect(await settle(createService(path).deleteSession('doomed'))).toBe(true);
+
+        expect(await statuses()).toEqual({ 'survivor-open': 'open' });
+      });
+    });
+  }
+
+  it('forceDeleteSession (orphaned, persisted only) also withdraws', async () => {
+    await sessionRepository.save(buildPersistedWorktreeSession({ id: 'doomed' }));
+    await seedTodos();
+
+    expect(await settle(createService({ withDb: true, scope: true }).forceDeleteSession('doomed'))).toBe(true);
+
+    expect((await statuses())['open-question']).toBe('withdrawn');
+    expect((await statuses())['open-global-action']).toBe('open');
+  });
+
+  it('transaction path: a failing withdraw rolls the row delete and the cleanup job back', async () => {
+    await seedSession('doomed');
+    await seedTodos();
+    spyOn(todoRepository, 'withdrawOpenSessionScoped').mockRejectedValue(new Error('injected withdraw failure'));
+
+    const outcome = await settle(createService({ withDb: true, scope: true }).deleteSession('doomed').catch((err: unknown) => err));
+
+    expect(outcome).toEqual(new Error('injected withdraw failure'));
+    expect(await sessionRepository.findById('doomed')).not.toBeNull();
+    expect(memory.has('doomed')).toBe(true);
+    expect((await db.selectFrom('jobs').select('type').execute())).toEqual([]);
+    expect((await statuses())['open-question']).toBe('open');
+  });
+
+  it('transaction path: a failing row delete leaves the items open', async () => {
+    await seedSession('doomed');
+    await seedTodos();
+    spyOn(sessionRepository, 'delete').mockRejectedValue(new Error('injected delete failure'));
+
+    await settle(createService({ withDb: true, scope: true }).deleteSession('doomed').catch((err: unknown) => err));
+
+    expect((await statuses())['open-question']).toBe('open');
+    expect((await statuses())['open-session-action']).toBe('open');
   });
 });

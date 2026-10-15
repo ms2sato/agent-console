@@ -1,5 +1,6 @@
 import { ChevronLeftIcon, ChevronRightIcon } from '../Icons';
 import { MemoPanel } from './MemoPanel';
+import { SessionTodosPanel } from './SessionTodosPanel';
 import { SessionArtifactsPanel } from './SessionArtifactsPanel';
 import { SessionBookmarksPanel } from './SessionBookmarksPanel';
 import { useSessionSidePanelsState, type SessionSidePanelKey } from './hooks/useSessionSidePanelsState';
@@ -9,7 +10,7 @@ interface SessionSidePanelsProps {
 }
 
 /**
- * Single owner of BOTH the Memo / Artifacts / Bookmarks expanded-state
+ * Single owner of BOTH the Memo / To-do / Artifacts / Bookmarks expanded-state
  * record AND the shared rail chrome -- exactly one bordered column exists
  * on the page, with each section a row inside it.
  *
@@ -62,6 +63,12 @@ export function SessionSidePanels({ sessionId }: SessionSidePanelsProps) {
         // the Edit button at all, so Edit is only reachable when
         // compact === false, i.e. railOpen === true already.
         onEnsureExpanded={() => expandSection('memo')}
+        compact={!railOpen}
+      />
+      <SessionTodosPanel
+        sessionId={sessionId}
+        isExpanded={expanded.todos}
+        onToggleExpanded={handleToggle('todos')}
         compact={!railOpen}
       />
       <SessionArtifactsPanel

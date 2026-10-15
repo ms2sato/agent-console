@@ -35,6 +35,7 @@ import {
   resumeSession,
   openInVSCode,
   fetchArtifacts,
+  fetchTodos,
   deleteArtifact,
   fetchNotifications,
   markNotificationsSeen,
@@ -1502,6 +1503,61 @@ describe('API Client', () => {
       );
 
       await expect(fetchArtifacts()).rejects.toThrow('Failed to fetch artifacts');
+    });
+  });
+
+  describe('fetchTodos', () => {
+    const validTodo = {
+      id: 'todo-1',
+      kind: 'action',
+      scope: 'session',
+      title: 'Run the migration',
+      body: 'body',
+      sessionId: 'session-1',
+      createdBy: { workerId: 'worker-1' },
+      assigneeUserId: null,
+      status: 'open',
+      resolutionText: null,
+      resolvedByUserId: null,
+      resolvedAt: null,
+      createdAt: '2026-10-15T00:00:00.000Z',
+      updatedAt: '2026-10-15T00:00:00.000Z',
+    };
+
+    it('sends only the defined filters as query params and returns the parsed list', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todos: [validTodo] }));
+
+      const result = await fetchTodos({ sessionId: 'session-1', status: undefined });
+
+      const url = new URL(getLastFetchUrl(), 'http://localhost');
+      expect(url.pathname).toBe('/api/todos');
+      expect(url.searchParams.get('sessionId')).toBe('session-1');
+      expect(url.searchParams.has('status')).toBe(false);
+      expect(result).toEqual([validTodo]);
+    });
+
+    it('calls the bare endpoint when no filter is given', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todos: [] }));
+
+      const result = await fetchTodos();
+
+      const url = new URL(getLastFetchUrl(), 'http://localhost');
+      expect(url.pathname).toBe('/api/todos');
+      expect([...url.searchParams.keys()]).toEqual([]);
+      expect(result).toEqual([]);
+    });
+
+    it('throws when the response fails schema validation (e.g. a dropped field)', async () => {
+      const { resolutionText: _dropped, ...withoutResolutionText } = validTodo;
+      mockFetch.mockResolvedValue(createMockResponse({ todos: [withoutResolutionText] }));
+
+      await expect(fetchTodos({ sessionId: 'session-1' })).rejects.toThrow();
+    });
+
+    it('throws error on failure', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({}, { status: 500, ok: false }));
+
+      await expect(fetchTodos()).rejects.toThrow('Failed to fetch to-do items');
     });
   });
 

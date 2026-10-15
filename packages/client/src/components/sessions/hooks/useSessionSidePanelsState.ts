@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 
-export type SessionSidePanelKey = 'memo' | 'artifacts' | 'bookmarks';
+export type SessionSidePanelKey = 'memo' | 'todos' | 'artifacts' | 'bookmarks';
 export type SessionSidePanelsExpanded = Record<SessionSidePanelKey, boolean>;
 
 interface SessionSidePanelsRecord {
@@ -15,7 +15,12 @@ interface SessionSidePanelsRecord {
 // per-section-only record to this one, and reverting to the old key would
 // silently reintroduce the old default.
 const STORAGE_KEY = 'agent-console:session-side-panels-v2';
-const SECTION_KEYS: SessionSidePanelKey[] = ['memo', 'artifacts', 'bookmarks'];
+const SECTION_KEYS: SessionSidePanelKey[] = ['memo', 'todos', 'artifacts', 'bookmarks'];
+// Sections added after the first release of this storage shape. A record
+// persisted before such a section existed stays valid (the section reads as
+// expanded) rather than being discarded, which would reset every user's
+// chosen layout on upgrade.
+const SECTIONS_ADDED_LATER: SessionSidePanelKey[] = ['todos'];
 
 // Default is rail CLOSED, every section expanded. This supersedes #1640's
 // R3' (rail open, every section expanded) by owner directive on 2026-09-13.
@@ -28,6 +33,7 @@ const DEFAULT_RECORD: SessionSidePanelsRecord = {
   railOpen: false,
   expanded: {
     memo: true,
+    todos: true,
     artifacts: true,
     bookmarks: true,
   },
@@ -37,7 +43,10 @@ function isValidExpandedRecord(value: unknown): value is SessionSidePanelsExpand
   return (
     typeof value === 'object' &&
     value !== null &&
-    SECTION_KEYS.every((key) => typeof (value as Record<string, unknown>)[key] === 'boolean')
+    SECTION_KEYS.every((key) => {
+      const entry = (value as Record<string, unknown>)[key];
+      return typeof entry === 'boolean' || (entry === undefined && SECTIONS_ADDED_LATER.includes(key));
+    })
   );
 }
 
@@ -55,7 +64,8 @@ function getInitialRecord(): SessionSidePanelsRecord {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return DEFAULT_RECORD;
     const parsed: unknown = JSON.parse(stored);
-    return isValidRecord(parsed) ? parsed : DEFAULT_RECORD;
+    if (!isValidRecord(parsed)) return DEFAULT_RECORD;
+    return { ...parsed, expanded: { ...DEFAULT_RECORD.expanded, ...parsed.expanded } };
   } catch {
     return DEFAULT_RECORD;
   }
