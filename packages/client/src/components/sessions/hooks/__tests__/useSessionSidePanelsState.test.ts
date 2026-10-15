@@ -10,11 +10,11 @@ describe('useSessionSidePanelsState', () => {
   });
 
   describe('initial state', () => {
-    it('defaults to the rail closed and all three sections expanded when nothing is stored', () => {
+    it('defaults to the rail closed and all four sections expanded when nothing is stored', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
     });
   });
 
@@ -37,7 +37,7 @@ describe('useSessionSidePanelsState', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
     });
 
     it('reads a previously-persisted record under the NEW key, railOpen and expanded independently', () => {
@@ -49,7 +49,21 @@ describe('useSessionSidePanelsState', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: false, bookmarks: true });
+      // A record persisted before the to-do section existed stays valid:
+      // the three stored flags are kept and the new section reads expanded.
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: false, bookmarks: true });
+    });
+
+    it('keeps a stored todos flag when the record carries one', () => {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ railOpen: true, expanded: { memo: true, todos: false, artifacts: true, bookmarks: true } })
+      );
+
+      const { result } = renderHook(() => useSessionSidePanelsState());
+
+      expect(result.current.railOpen).toBe(true);
+      expect(result.current.expanded.todos).toBe(false);
     });
 
     it('falls back to the default on invalid JSON', () => {
@@ -58,7 +72,7 @@ describe('useSessionSidePanelsState', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
     });
 
     it('falls back to the default when railOpen is missing', () => {
@@ -70,7 +84,7 @@ describe('useSessionSidePanelsState', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
     });
 
     it('falls back to the default when expanded is missing a key', () => {
@@ -82,7 +96,7 @@ describe('useSessionSidePanelsState', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
     });
 
     it('falls back to the default on a non-boolean field', () => {
@@ -94,7 +108,7 @@ describe('useSessionSidePanelsState', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
     });
   });
 
@@ -107,14 +121,14 @@ describe('useSessionSidePanelsState', () => {
       });
 
       expect(result.current.railOpen).toBe(true);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
 
       act(() => {
         result.current.toggleRail();
       });
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
     });
 
     it('persists railOpen under the new storage key', () => {
@@ -125,7 +139,7 @@ describe('useSessionSidePanelsState', () => {
       });
 
       expect(localStorage.getItem(STORAGE_KEY)).toBe(
-        JSON.stringify({ railOpen: true, expanded: { memo: true, artifacts: true, bookmarks: true } })
+        JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } })
       );
     });
   });
@@ -139,14 +153,14 @@ describe('useSessionSidePanelsState', () => {
       });
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: false, artifacts: true, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: false, todos: true, artifacts: true, bookmarks: true });
 
       act(() => {
         result.current.toggleSection('bookmarks');
       });
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: false, artifacts: true, bookmarks: false });
+      expect(result.current.expanded).toEqual({ memo: false, todos: true, artifacts: true, bookmarks: false });
     });
 
     it('persists the full updated record to the single global key', () => {
@@ -157,7 +171,7 @@ describe('useSessionSidePanelsState', () => {
       });
 
       expect(localStorage.getItem(STORAGE_KEY)).toBe(
-        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: true, bookmarks: true } })
+        JSON.stringify({ railOpen: false, expanded: { memo: false, todos: true, artifacts: true, bookmarks: true } })
       );
     });
   });
@@ -176,7 +190,7 @@ describe('useSessionSidePanelsState', () => {
       });
 
       expect(result.current.railOpen).toBe(true);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: false, bookmarks: false });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: false, bookmarks: false });
     });
 
     it('is idempotent when the target section is already expanded -- it must not flip it back off', () => {
@@ -212,7 +226,7 @@ describe('useSessionSidePanelsState', () => {
       });
 
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, artifacts: false, bookmarks: true });
+      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: false, bookmarks: true });
     });
 
     it('is idempotent when the target section is already expanded -- it must not flip it back off', () => {
@@ -264,7 +278,7 @@ describe('useSessionSidePanelsState', () => {
         const { result } = renderHook(() => useSessionSidePanelsState());
 
         expect(result.current.railOpen).toBe(false);
-        expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
+        expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
       } finally {
         Object.defineProperty(globalThis, 'localStorage', {
           value: original,
@@ -328,7 +342,7 @@ describe('useSessionSidePanelsState', () => {
       expect(raw).not.toBeNull();
       expect(JSON.parse(raw as string)).toEqual({
         railOpen: true,
-        expanded: { memo: true, artifacts: true, bookmarks: true },
+        expanded: { memo: true, todos: true, artifacts: true, bookmarks: true },
       });
     });
   });

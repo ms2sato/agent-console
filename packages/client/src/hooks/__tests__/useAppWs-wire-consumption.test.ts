@@ -241,8 +241,7 @@ const CASES: Record<AppServerMessage['type'], WireCase> = {
   },
   'todos-updated': {
     frame: { type: 'todos-updated', sessionId: 'session-1' },
-    expects: null,
-    noOpReason: 'trigger-only; no useAppWsEvent callback consumes it yet (the to-do list consumers arrive with the client slice)',
+    expects: { callback: 'onTodosUpdated', args: ['session-1'] },
   },
   'orchestrator-designation-changed': {
     frame: {
@@ -316,6 +315,40 @@ describe('useAppWsEvent wire consumption (one real frame per AppServerMessage ty
     for (const name of ALL_CALLBACKS) {
       if (name !== callback) expect(mocks[name]).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('useAppWsEvent wire consumption (todos-updated with a null session)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', { value: originalLocation, writable: true });
+  });
+
+  it('a todos-updated frame with sessionId null reaches onTodosUpdated as null', () => {
+    const onTodosUpdated = mock(() => {});
+    renderHook(() => useAppWsEvent({ onTodosUpdated }));
+    const ws = MockWebSocket.getLastInstance();
+
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'todos-updated', sessionId: null }));
+    });
+
+    expect(onTodosUpdated).toHaveBeenCalledTimes(1);
+    expect(onTodosUpdated).toHaveBeenCalledWith(null);
   });
 });
 

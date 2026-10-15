@@ -57,6 +57,7 @@ function urlToString(input: RequestInfo | URL): string {
 const MEMO_CONTENT = '# Hello Memo';
 const ARTIFACT_TITLE = 'My Dashboard';
 const BOOKMARK_TITLE = 'Example Site';
+const TODO_TITLE = 'Confirm the rollout';
 
 function routeFetchByPanel(): void {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
@@ -239,6 +240,30 @@ describe('SessionSidePanelsDrawer', () => {
       expect(dialog).toBeTruthy();
       expect(dialog!.className).toContain('translate-x-full');
       expect(dialog!.className).not.toContain('translate-x-0');
+    });
+
+    it('mounts the to-do section between Memo and Artifacts when the session has an open item', async () => {
+      const base = mockFetch.getMockImplementation()!;
+      mockFetch.mockImplementation((input: RequestInfo | URL) => {
+        if (urlToString(input).includes('/todos')) {
+          return Promise.resolve(jsonResponse({ todos: [{
+        id: 'todo-1', kind: 'action', scope: 'session', title: TODO_TITLE, body: '', sessionId: 'session-1',
+        createdBy: { workerId: 'worker-1' }, assigneeUserId: null, status: 'open', resolutionText: null,
+        resolvedByUserId: null, resolvedAt: null, createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:00:00.000Z',
+      }] }));
+        }
+        return base(input);
+      });
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      const todoHeader = await screen.findByLabelText('Collapse To-do');
+      expect(screen.getByText('To-do (1)')).toBeTruthy();
+      expect(screen.getByText(TODO_TITLE)).toBeTruthy();
+      expect(
+        screen.getByLabelText('Collapse Memo').compareDocumentPosition(todoHeader) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+      expect(
+        todoHeader.compareDocumentPosition(screen.getByLabelText('Collapse Artifacts')) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
     });
 
     it('renders the three section headers in Memo, Artifacts, Bookmarks order and no rail toggle', async () => {

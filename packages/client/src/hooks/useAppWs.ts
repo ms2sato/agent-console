@@ -89,6 +89,8 @@ interface UseAppWsEventOptions {
   onBookmarkCreated?: (sessionId: string, bookmarkId: string) => void;
   /** Called when a bookmark is deleted (realtime refresh trigger) */
   onBookmarkDeleted?: (sessionId: string, bookmarkId: string) => void;
+  /** Called when the to-do list changed (trigger-only; `sessionId` null means no single session, refetch whatever is shown) */
+  onTodosUpdated?: (sessionId: string | null) => void;
   /**
    * Called when a repository's set of designated-Orchestrator sessions
    * changes. Carries the repository's full re-read designated set; the
@@ -275,7 +277,8 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           optionsRef.current.onBookmarkDeleted?.(msg.sessionId, msg.bookmarkId);
           break;
         case 'todos-updated':
-          // Trigger-only; the to-do list consumers are wired by the client slice.
+          logger.debug(`[WebSocket] todos-updated: ${msg.sessionId}`);
+          optionsRef.current.onTodosUpdated?.(msg.sessionId);
           break;
         case 'schema-version':
           // First-frame wire-schema version. App state is unaffected by this

@@ -38,6 +38,9 @@ import type {
   MessageTemplate,
   Artifact,
   Bookmark,
+  Todo,
+  TodoStatus,
+  TodoScope,
   SetMcpServerPermissionsRequest,
   ListSharedAccountsResponse,
 } from '@agent-console/shared';
@@ -64,6 +67,7 @@ import {
   NotificationsSeenResponseSchema,
   BookmarksListResponseSchema,
   BookmarkSchema,
+  TodosListResponseSchema,
   ListSharedAccountsResponseSchema,
 } from '@agent-console/shared';
 import type {
@@ -1442,4 +1446,33 @@ export async function unregisterSharedAccount(username: string): Promise<void> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister shared account');
   }
+}
+
+// ===========================================================================
+// Human TODO list
+// ===========================================================================
+
+export interface FetchTodosFilter {
+  status?: TodoStatus;
+  scope?: TodoScope;
+  assignee?: string;
+  sessionId?: string;
+}
+
+/**
+ * Fetch TODO items, optionally filtered. Parsed through
+ * `TodosListResponseSchema` at the wire boundary so a server/client field
+ * drift fails loudly. Undefined filters are omitted from the query string.
+ */
+export async function fetchTodos(filter: FetchTodosFilter = {}): Promise<Todo[]> {
+  const query: Record<string, string> = {};
+  for (const [key, value] of Object.entries(filter)) {
+    if (value !== undefined) query[key] = value;
+  }
+  const res = await api.todos.$get({ query });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch to-do items');
+  }
+  const parsed = v.parse(TodosListResponseSchema, await res.json());
+  return parsed.todos;
 }
