@@ -12,7 +12,7 @@ What a working tree at the source-repo path is used for today:
 
 - **Users: nothing.** Every user action goes through a linked worktree under `<AGENT_CONSOLE_HOME>/repositories/<org>/<repo>/worktrees/`. The one exception is the dashboard's *main worktree* entry, which opens a session directly on the source path (section 5).
 - **The deploy script: build and rsync.** `scripts/update-and-deploy-for-multiuser-ubuntu.sh` ran `bun install` and `bun run build` inside the source-repo working tree and then rsynced that tree to the deploy target (section 6); since PR #2115 it builds a pinned SHA from `git archive` instead.
-- **The Orchestrator: a ref update by hand.** The "sync the source repo to `origin/main` before delegating" step is done as a `git fetch origin main:main`-shaped operation, which is exactly the operation that produced the drift.
+- **The Orchestrator: a ref update by hand.** The "sync the source repo to `origin/main` before delegating" step is done as a `git fetch origin main:main`-shaped operation, which is exactly the operation that produced the drift. On a bare repository this same command is the normal sync: nothing can drift, because there is no index or working tree.
 
 Keeping a working tree that nobody edits, next to refs that are updated out of band, is the structural cause. A bare repository has no index and no working tree to disagree with.
 
@@ -69,7 +69,7 @@ git -C main merge --ff-only origin/main       -> refs/heads/main advances; `git 
 git -C old archive --format=tar HEAD | wc -c  -> 10240
 ```
 
-So the drift incident's operation is *refused* by git as soon as the branch is checked out in a worktree, instead of silently diverging. It also means the Orchestrator's by-hand `fetch origin main:main` step stops working under main-worktree option (i) below and is replaced by `fetch origin` plus a fast-forward in the main worktree (a breaking change to that procedure, listed in section 8).
+So the drift incident's operation is *refused* by git as soon as the branch is checked out in a worktree, instead of silently diverging. Under the decided option (ii) a bare repository has no main worktree, so the Orchestrator's by-hand step on a bare repository is `fetch origin` (the remote-tracking refs) plus `fetch origin <default>:<default>` (the local default branch); git refuses the second only when a linked worktree has that branch checked out, and the step is then skipped. The non-bare procedure is unchanged.
 
 **3.6 `gh` works inside a bare repo.** With `remote.origin.url` set to this project's GitHub URL: `gh pr list --limit 1 --json number` returned a number and `gh api repos/{owner}/{repo}` resolved the placeholders (`ms2sato/agent-console`) from the bare repo's remote.
 

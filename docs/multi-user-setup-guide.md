@@ -1015,6 +1015,23 @@ fails the clone job and the partially created directory is removed. The `set-hea
 directory name carries no `.git` suffix, and with the box unchecked the clone
 command is unchanged.
 
+**Keeping a bare source repository current.** The server fetches
+`origin/<base>` itself when it creates a worktree, so delegation does not depend
+on a manual sync. To keep the local default branch current as well (it is used
+by the fetch-failure fallback and the ahead/behind count, and a bare clone's
+`refs/heads/<default>` otherwise stays at clone time), run, in the bare
+directory:
+
+```bash
+git fetch origin
+git fetch origin main:main
+```
+
+Nothing can drift on a bare repository (no index, no working tree). Git refuses
+the second command (non-zero exit, "refusing to fetch into branch") only while a
+linked worktree has `main` checked out; skip it then, the first command has
+already updated the remote-tracking refs.
+
 ### Manual fallback (operator step)
 
 The auto-apply step requires the server process (`agentconsole`) to either

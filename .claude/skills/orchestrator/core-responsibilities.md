@@ -324,12 +324,18 @@ Update the local main branch by pulling in the main repository directory (first 
 
 ```bash
 MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')
-git -C "$MAIN_DIR" pull origin main
+if [ "$(git -C "$MAIN_DIR" rev-parse --is-bare-repository)" = true ]; then
+  git -C "$MAIN_DIR" fetch origin && git -C "$MAIN_DIR" fetch origin main:main
+else
+  git -C "$MAIN_DIR" pull origin main
+fi
 ```
+
+On a bare-cloned source repository the first entry of `git worktree list` is the bare directory itself (there is no main worktree), so `MAIN_DIR` is that directory and the bare branch applies. The non-bare branch is unchanged.
 
 `run_process` runs in the session's directory by default; pass `cwd` only to run elsewhere.
 
-**Why:** Keeping the main repository directory synchronized after each merge prevents worktrees from being based on stale code.
+**Why:** Keeping the main repository directory synchronized after each merge prevents worktrees from being based on stale code. On a bare repository delegation already bases on `origin/<default>` after its own fetch (`worktree-creation-service.ts`, the `fetchRemote` call before the base is resolved), so the by-hand step there only keeps the local default branch current for the fetch-failure fallback and the ahead/behind count. Git refuses `fetch origin main:main` (non-zero exit, "refusing to fetch into branch") only when a linked worktree has `main` checked out; the step is then simply skipped, and the plain `fetch origin` still updated the remote-tracking refs.
 
 ### 7c. Orchestrator Branch Sync
 Rebase the Orchestrator session's own branch onto the updated `origin/main`:
