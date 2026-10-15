@@ -330,6 +330,18 @@ check "upload dir is mode 2750 owned by agent-console-users (#830 setgid regress
 
 rm -f "$COOKIE_JAR" "$ALICE_RESP" "$SESSION_RESP" "$WORKER_RESP" "$MESSAGE_RESP" "$UPLOAD_PAYLOAD"
 
+# Precondition for check 7 and the clone arms: the container must honour the
+# setup-script contract for the data root's source-repos directory (pre-created
+# 2775, group agent-console-users; the server never shapes it). Recorded BEFORE
+# check 7's bootstrap runs, so a directory created later by a login shell's
+# umask cannot be mistaken for the image's.
+SOURCE_REPOS_DIR="/var/lib/agent-console/source-repos"
+SOURCE_REPOS_STAT="$(compose exec -T agent-console stat -c '%a:%G' "$SOURCE_REPOS_DIR" 2>/dev/null | tr -d '\r' || echo MISSING)"
+echo "  stat ${SOURCE_REPOS_DIR} -> ${SOURCE_REPOS_STAT}"
+source_repos_ok=1
+[ "$SOURCE_REPOS_STAT" = "2775:agent-console-users" ] && source_repos_ok=0
+check "7pre: source-repos is pre-created mode 2775 owned by agent-console-users (precondition, setup-script contract)" "$source_repos_ok"
+
 echo
 echo "=== 7. worktree creation runs as the requesting user (#838) ==="
 # Verifies the umbrella #837 / Issue #838 fix: in multi-user mode, the server
