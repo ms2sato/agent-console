@@ -12,8 +12,9 @@
  *      and `### Term` headings inside the section. Table cells, nested
  *      bullets, and fenced code are not terms.
  *   B. Glossary self-consistency: two entries must not share a normalised
- *      heading, and an `Aliases` value must not equal a DIFFERENT entry's
- *      heading. An alias equal to its own entry's heading is exempt.
+ *      heading, an `Aliases` value must not equal a DIFFERENT entry's
+ *      heading, and two entries must not share an alias. An alias equal to
+ *      its own entry's heading is exempt.
  *
  * Exported types, MCP parameters, DB columns, and prose in rules are NOT
  * covered: their candidate set is not enumerable without a term judgment,
@@ -247,6 +248,26 @@ export function checkGlossaryConsistency(entries, glossaryRel) {
           term: a.raw,
           reason: `alias of "${e.heading}" equals the heading of a different entry (line ${owner.line})`,
         });
+      }
+    }
+  }
+  // Two DIFFERENT entries must not share an alias key; reported on the later entry (first wins).
+  const firstByAlias = new Map();
+  for (const e of entries) {
+    for (const a of e.aliases) {
+      const first = firstByAlias.get(a.key);
+      if (first) {
+        // Same entry repeating its own alias is not a violation.
+        if (first.entry !== e) {
+          violations.push({
+            file: glossaryRel,
+            line: a.line,
+            term: a.raw,
+            reason: `alias "${a.raw}" of "${e.heading}" is also an alias of "${first.entry.heading}" (line ${first.alias.line})`,
+          });
+        }
+      } else {
+        firstByAlias.set(a.key, { entry: e, alias: a });
       }
     }
   }

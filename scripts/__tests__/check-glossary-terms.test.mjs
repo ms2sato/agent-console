@@ -172,6 +172,50 @@ describe('checkGlossaryTerms: class B (glossary self-consistency)', () => {
     designDoc('d', '# D\n');
     expect(run().violations).toEqual([]);
   });
+
+  // Reach of the B3 rule, measured 2026-10-15 by mutating check-glossary-terms.mjs and restoring:
+  //   - removing the whole shared-alias loop fails exactly "reports an alias shared by two DIFFERENT
+  //     entries..." and "normalises case and quote variants..."; the three pre-existing class-B tests
+  //     and every class-A test stay green;
+  //   - dropping the `first.entry !== e` identity check fails "does not report the same alias listed
+  //     twice within ONE entry's line" AND the pre-existing "exempts an alias equal to its own entry's
+  //     heading" (its `ALPHA, alpha` line is also a same-entry repeat), nothing else.
+  it('reports an alias shared by two DIFFERENT entries, on the later entry (B3)', () => {
+    // Mutation: drop the shared-alias loop in checkGlossaryConsistency -> no violation.
+    glossary('### Alpha\nOne.\n- **Aliases:** Shared\n\n### Beta\nTwo.\n- **Aliases:** Shared');
+    designDoc('d', '# D\n');
+    const { violations } = run();
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ file: 'docs/glossary.md', term: 'Shared' });
+    // glossary() prepends 4 header lines: Alpha heading = 5, its alias = 7, Beta heading = 9, its alias = 11.
+    expect(violations[0].line).toBe(11);
+    expect(violations[0].reason).toContain('of "Beta"');
+    expect(violations[0].reason).toContain('alias of "Alpha"');
+    expect(violations[0].reason).toContain('(line 7)');
+  });
+
+  it('normalises case and quote variants of a shared alias to one key (B3)', () => {
+    // Mutation: drop the shared-alias loop in checkGlossaryConsistency -> no violation.
+    glossary('### Alpha\nOne.\n- **Aliases:** "Shared"\n\n### Beta\nTwo.\n- **Aliases:** shared');
+    designDoc('d', '# D\n');
+    const { violations } = run();
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ file: 'docs/glossary.md', term: 'shared' });
+  });
+
+  it('treats two entries with distinct aliases as clean (B3 control)', () => {
+    // Mutation: record a violation for every alias regardless of owner -> a violation appears.
+    glossary('### Alpha\nOne.\n- **Aliases:** Foo\n\n### Beta\nTwo.\n- **Aliases:** Bar');
+    designDoc('d', '# D\n');
+    expect(run().violations).toEqual([]);
+  });
+
+  it("does not report the same alias listed twice within ONE entry's line (B3 boundary)", () => {
+    // Mutation: compare by alias key only instead of also by entry identity (`first.entry !== e`) -> a violation appears.
+    glossary('### Alpha\nOne.\n- **Aliases:** Foo, foo');
+    designDoc('d', '# D\n');
+    expect(run().violations).toEqual([]);
+  });
 });
 
 describe('allowlist', () => {
