@@ -1003,12 +1003,13 @@ needs (the README for description generation and the repository's
 `HEAD`. Non-bare repositories are unchanged.
 
 The clone form has a **Bare repository** checkbox (default off; the request
-field is `bare` on `POST /api/repositories/clone`) that runs the same four
-commands for you as one command line, as the requesting user: `git clone --bare`
-with `--config core.sharedRepository=group` and
+field is `bare` on `POST /api/repositories/clone`) that runs, as the requesting
+user and as one command line, a clone with the refspec plus `remote set-head`:
+`git clone --bare` with `--config core.sharedRepository=group` and
 `--config remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*` (the refspec
-is set at clone time rather than by the separate `git config` step), then
-`fetch origin`, then `remote set-head origin -a`. A non-zero exit from any step
+is set at clone time, which makes the clone itself write the `origin/*`
+tracking refs), then `remote set-head origin -a`. The manual recipe above keeps
+its four lines. A non-zero exit from any step
 fails the clone job and the partially created directory is removed. The
 directory name carries no `.git` suffix, and with the box unchecked the clone
 command is unchanged.

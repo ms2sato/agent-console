@@ -209,10 +209,13 @@ export class CloneNameConflictError extends Error {
  *
  * Bare clone: `git clone --bare` leaves no `remote.origin.fetch` refspec and no
  * remote-tracking refs, which the remote-branch listing, default-branch refresh
- * and behind-count helpers all need. So the same line also sets the refspec at
- * clone time, fetches, and resolves `origin/HEAD`. Any non-zero exit in the
- * `&&` chain fails the whole command, so the caller's partial-clone cleanup
- * covers every step. The refspec contains `*`, `+` and `:`, hence the quoting.
+ * and behind-count helpers all need. So the same line sets the refspec at
+ * clone time (which makes the clone itself write the `origin/*` tracking refs,
+ * so no separate fetch is needed) and then runs `remote set-head origin -a` to
+ * resolve `origin/HEAD`, which `getDefaultBranch` reads first. Any non-zero
+ * exit in the `&&` chain fails the whole command, so the caller's
+ * partial-clone cleanup covers every step. The refspec contains `*`, `+` and
+ * `:`, hence the quoting.
  *
  * @internal Exported for testing.
  */
@@ -225,7 +228,6 @@ export function buildCloneCommand(opts: { url: string; targetDir: string; bare?:
   const refspec = shellEscape('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
   return (
     `git clone --bare --config core.sharedRepository=group --config ${refspec} ${url} ${dir}` +
-    ` && git -C ${dir} fetch origin` +
     ` && git -C ${dir} remote set-head origin -a`
   );
 }

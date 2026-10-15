@@ -409,21 +409,20 @@ describe('repository-clone-service', () => {
       expect(buildCloneCommand({ url, targetDir, bare: false })).toBe(expected);
     });
 
-    it('bare: one single-line command with the refspec, the fetch and the head resolution, all escaped', () => {
+    it('bare: one single-line command with the refspec and the head resolution, all escaped', () => {
       const command = buildCloneCommand({ url, targetDir, bare: true });
       expect(command).toBe(
         "git clone --bare --config core.sharedRepository=group " +
           "--config 'remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*' " +
           "'https://github.com/org/repo.git' '/srv/source-repos/repo' " +
-          "&& git -C '/srv/source-repos/repo' fetch origin " +
           "&& git -C '/srv/source-repos/repo' remote set-head origin -a",
       );
       expect(command.includes('\n')).toBe(false);
     });
 
-    it('bare: a single quote in the target is escaped in all three places it appears', () => {
+    it('bare: a single quote in the target is escaped in both places it appears', () => {
       const command = buildCloneCommand({ url, targetDir: "/srv/it's", bare: true });
-      expect(command.split("'/srv/it'\\''s'")).toHaveLength(4);
+      expect(command.split("'/srv/it'\\''s'")).toHaveLength(3);
     });
   });
 

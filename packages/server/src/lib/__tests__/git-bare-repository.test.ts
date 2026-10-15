@@ -540,7 +540,7 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
     expect(state.remote).toContain('origin/feature');
   });
 
-  it('polarity, both layers: a plain bare clone has no refspec and refreshDefaultBranch fails; the command cut before its trailing steps has the refspec but no origin/HEAD; the full command has origin/HEAD and the tracking refs', async () => {
+  it('polarity, both layers: a plain bare clone has no refspec and refreshDefaultBranch fails; the command cut before set-head has the refspec but no origin/HEAD; the full command has origin/HEAD and the tracking refs', async () => {
     type Observed = { refspec: string; remoteBefore: string[]; refreshed: string };
     const observe = (dir: string) =>
       inLib<Observed>(
@@ -554,7 +554,7 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
       );
     const hasOriginHead = async (dir: string) => (await shell('git symbolic-ref -q refs/remotes/origin/HEAD', dir)).code === 0;
 
-    // (a) what `git clone --bare` alone leaves: the failure the trailing steps and the refspec exist to prevent.
+    // (a) what `git clone --bare` alone leaves: the failure the set-head step and the refspec exist to prevent.
     const plain = join(root, 'bare-plain');
     expect((await shell(`git clone --bare '${own.dir}' '${plain}'`, root)).code).toBe(0);
     const plainState = await observe(plain);
@@ -562,14 +562,14 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
     expect(plainState.remoteBefore).toEqual([]);
     expect(plainState.refreshed).toBe('threw');
 
-    // (b) the builder's command cut before its two trailing steps: refspec present, but no origin/HEAD.
+    // (b) the builder's command cut before the set-head step: refspec present, but no origin/HEAD.
     const full = buildCloneCommand({ url: own.dir, targetDir: join(root, 'bare-cut'), bare: true });
     const cut = join(root, 'bare-cut');
     expect((await shell(full.slice(0, full.indexOf(' && ')), root)).code).toBe(0);
     expect(await hasOriginHead(cut)).toBe(false);
     // Measured with this git: the refspec given at clone time already makes the
-    // clone itself write the tracking refs, so the trailing fetch is a no-op
-    // here; what only the set-head step adds is origin/HEAD.
+    // clone itself write the tracking refs, so no separate fetch is needed;
+    // what only the set-head step adds is origin/HEAD.
     expect((await shell('git branch -r', cut)).out).toContain('origin/main');
 
     // (c) the full command: tracking refs and origin/HEAD exist immediately.
@@ -594,7 +594,7 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
     expect(await inLib<string>(target, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
   });
 
-  it('a failing trailing step fails the whole command (non-zero), so the service cleans the directory up', async () => {
+  it('a failing step fails the whole command (non-zero), so the service cleans the directory up', async () => {
     const target = join(root, 'bare-bad-url');
     const result = await shell(buildCloneCommand({ url: join(root, 'does-not-exist'), targetDir: target, bare: true }), root);
     expect(result.code).not.toBe(0);
