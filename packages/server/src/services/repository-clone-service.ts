@@ -116,6 +116,8 @@ export interface CloneRepositoryRequest {
   /** When omitted, derived from the URL's last path segment minus `.git`. */
   name?: string;
   description?: string;
+  /** Clone as a bare repository (no working tree). Omitted means a regular clone. */
+  bare?: boolean;
   /**
    * OS username threaded from `authUser.username`. `null` (single-user mode,
    * or any path that has no authenticated user context) skips elevation; the
@@ -198,6 +200,34 @@ export class CloneNameConflictError extends Error {
     super(message);
     this.name = 'CloneNameConflictError';
   }
+}
+
+/**
+ * Build the single-line shell command that clones `url` into `targetDir`.
+ *
+ * Regular clone: `git clone --config core.sharedRepository=group <url> <dir>`.
+ *
+ * Bare clone: `git clone --bare` leaves no `remote.origin.fetch` refspec and no
+ * remote-tracking refs, which the remote-branch listing, default-branch refresh
+ * and behind-count helpers all need. So the same line also sets the refspec at
+ * clone time, fetches, and resolves `origin/HEAD`. Any non-zero exit in the
+ * `&&` chain fails the whole command, so the caller's partial-clone cleanup
+ * covers every step. The refspec contains `*`, `+` and `:`, hence the quoting.
+ *
+ * @internal Exported for testing.
+ */
+export function buildCloneCommand(opts: { url: string; targetDir: string; bare?: boolean }): string {
+  const url = shellEscape(opts.url);
+  const dir = shellEscape(opts.targetDir);
+  if (!opts.bare) {
+    return `git clone --config core.sharedRepository=group ${url} ${dir}`;
+  }
+  const refspec = shellEscape('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
+  return (
+    `git clone --bare --config core.sharedRepository=group --config ${refspec} ${url} ${dir}` +
+    ` && git -C ${dir} fetch origin` +
+    ` && git -C ${dir} remote set-head origin -a`
+  );
 }
 
 /**
@@ -480,14 +510,11 @@ export class RepositoryCloneService {
     }
     this.transition(state, CLONE_JOB_STATUS.CLONING);
 
-    // Build `git clone --config core.sharedRepository=group <url> <targetDir>`
-    // with both args shell-escaped. The outer `runAsUser` decides whether to
+    // Build the clone command (see `buildCloneCommand`). The outer `runAsUser` decides whether to
     // wrap the command in `sudo -i sh -c ...` based on AUTH_MODE +
     // requestUser. cwd is set to the parent so the clone has a writable
     // ambient directory even when the elevated shell could not chdir.
-    const command =
-      `git clone --config core.sharedRepository=group ` +
-      `${shellEscape(url)} ${shellEscape(targetDir)}`;
+    const command = buildCloneCommand({ url, targetDir, bare: request.bare });
 
     let result: Awaited<ReturnType<RunAsUserFn>>;
     try {

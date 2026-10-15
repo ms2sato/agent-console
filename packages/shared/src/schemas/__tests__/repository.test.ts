@@ -189,6 +189,38 @@ describe('CloneRepositoryRequestSchema (Issue #834)', () => {
     });
   });
 
+  describe('bare flag', () => {
+    const url = 'https://github.com/org/repo.git';
+
+    it('omitted: accepted, and the output carries no bare key (control)', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, { url });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect('bare' in result.output).toBe(false);
+      }
+    });
+    it('true: accepted and preserved', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, { url, bare: true });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.bare).toBe(true);
+      }
+    });
+    it('false: accepted and preserved', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, { url, bare: false });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.bare).toBe(false);
+      }
+    });
+    it('a non-boolean is rejected', () => {
+      expect(v.safeParse(CloneRepositoryRequestSchema, { url, bare: 'yes' }).success).toBe(false);
+    });
+    it('an unknown key is still rejected (strictObject)', () => {
+      expect(v.safeParse(CloneRepositoryRequestSchema, { url, bare: true, other: 1 }).success).toBe(false);
+    });
+  });
+
   it('accepts optional description', () => {
     const result = v.safeParse(CloneRepositoryRequestSchema, {
       url: 'https://github.com/org/repo.git',

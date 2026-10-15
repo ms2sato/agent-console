@@ -1000,9 +1000,18 @@ needs (the README for description generation and the repository's
 `.agent-console/` templates) are read through git from the object store at
 `origin/<default branch>`, so they reflect the repository as of its last
 `fetch origin`; a bare repository whose fetch refspec is missing is read at
-`HEAD`. Non-bare repositories are unchanged. A clone-form checkbox that runs
-the four commands above for you is planned (it changes the clone request
-schema) and is not available yet.
+`HEAD`. Non-bare repositories are unchanged.
+
+The clone form has a **Bare repository** checkbox (default off; the request
+field is `bare` on `POST /api/repositories/clone`) that runs the same four
+commands for you as one command line, as the requesting user: `git clone --bare`
+with `--config core.sharedRepository=group` and
+`--config remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*` (the refspec
+is set at clone time rather than by the separate `git config` step), then
+`fetch origin`, then `remote set-head origin -a`. A non-zero exit from any step
+fails the clone job and the partially created directory is removed. The
+directory name carries no `.git` suffix, and with the box unchecked the clone
+command is unchanged.
 
 ### Manual fallback (operator step)
 

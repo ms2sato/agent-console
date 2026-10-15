@@ -69,6 +69,7 @@ const repositories = new Hono<AppBindings>()
         url: body.url,
         name: body.name,
         description: body.description,
+        bare: body.bare,
         requestUser: authUser.username,
       });
       logger.info(
