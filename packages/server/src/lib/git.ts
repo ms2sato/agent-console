@@ -901,9 +901,17 @@ export async function fetchAllRemote(
  *   `.git` of a non-bare repo, the repo root of a bare one. The common dir,
  *   not `--git-dir`, so a linked worktree resolves to the repository it
  *   belongs to.
- * - Bareness is asked of the COMMON dir (`git -C <common-dir> rev-parse
+ * - Bareness is asked of the COMMON dir (`git --git-dir <common-dir> rev-parse
  *   --is-bare-repository`), never the cwd: inside a linked worktree of a bare
  *   repository the cwd form prints `false`.
+ *
+ * - The bareness probe names the directory with an explicit `--git-dir` instead
+ *   of running git from inside it (`-C <common-dir>`). Git's ownership check
+ *   ("dubious ownership") lives in repository DISCOVERY and is keyed on the
+ *   discovered path, which for a non-bare repository is `<repo>/.git`; a
+ *   `safe.directory` entry for `<repo>` never covers that path, so a repository
+ *   owned by another OS user was reported as "not a git repository". An explicit
+ *   `--git-dir` skips discovery, and with it the check.
  *
  * Returns `null` when `repoPath` is not a git repository (either probe fails).
  *
@@ -917,7 +925,7 @@ export async function resolveGitDir(
   if (common === null || common === '') return null;
   const gitDir = path.resolve(abs, common);
 
-  const bare = await gitSafe(['-C', gitDir, 'rev-parse', '--is-bare-repository'], abs);
+  const bare = await gitSafe(['--git-dir', gitDir, 'rev-parse', '--is-bare-repository'], abs);
   if (bare === null) return null;
   return { gitDir, bare: bare === 'true' };
 }
