@@ -594,6 +594,27 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
     expect(await inLib<string>(target, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
   });
 
+  it('the service reserves the target with a plain mkdir first: both the bare and the default command accept that pre-made empty directory, and mkdir without -p refuses a second reservation', async () => {
+    const reserve = async (name: string) => {
+      const target = join(root, name);
+      expect((await shell(`mkdir -- '${target}'`, root)).code).toBe(0);
+      return target;
+    };
+
+    const bareTarget = await reserve('bare-reserved');
+    expect((await shell(buildCloneCommand({ url: own.dir, targetDir: bareTarget, bare: true }), root)).code).toBe(0);
+    expect((await shell('git rev-parse --is-bare-repository', bareTarget)).out).toBe('true');
+    expect(await inLib<string>(bareTarget, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
+
+    const plainTarget = await reserve('nonbare-reserved');
+    expect((await shell(buildCloneCommand({ url: own.dir, targetDir: plainTarget }), root)).code).toBe(0);
+    expect((await shell('git rev-parse --is-bare-repository', plainTarget)).out).toBe('false');
+
+    const second = await shell(`mkdir -- '${bareTarget}'`, root);
+    expect(second.code).not.toBe(0);
+    expect(second.err).toContain('File exists');
+  });
+
   it('a failing step fails the whole command (non-zero), so the service cleans the directory up', async () => {
     const target = join(root, 'bare-bad-url');
     const result = await shell(buildCloneCommand({ url: join(root, 'does-not-exist'), targetDir: target, bare: true }), root);

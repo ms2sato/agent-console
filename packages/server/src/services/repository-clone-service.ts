@@ -49,6 +49,17 @@ const logger = createLogger('service:repository-clone');
  */
 const DEFAULT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** Timeout for the single `mkdir` that reserves the target directory. */
+const RESERVE_TIMEOUT_MS = 30_000;
+
+/**
+ * Operator-facing explanation attached to a reservation `Permission denied`:
+ * the reservation is made as the requesting user, so the parent directory's
+ * layout (written by the setup script) is the contract being violated.
+ */
+const SOURCE_REPOS_CONTRACT_MESSAGE =
+  "source-repos directory must be group-writable with the setgid bit (mode 2775, group agent-console-users); run the setup script's drift check";
+
 /**
  * How long to keep a terminal (succeeded / failed) job's state in memory
  * before evicting it. Long enough to let a polling client observe the
@@ -419,10 +430,10 @@ export class RepositoryCloneService {
    * are THROWN, not surfaced as a failed job, so the route can map them to
    * `400` / `409` synchronously.
    *
-   * Race safety -- the target directory is reserved atomically via
-   * `fsPromises.mkdir(targetDir, { recursive: false })`. POSIX `mkdir(2)`
+   * Race safety -- the target directory is reserved atomically by a plain
+   * `mkdir -- <dir>` (no `-p`) run as the requesting user. POSIX `mkdir(2)`
    * guarantees that exactly one of N concurrent same-target requests
-   * succeeds; the rest receive `EEXIST` and are surfaced as
+   * succeeds; the rest fail with `File exists` and are surfaced as
    * `CloneNameConflictError`. This closes the TOCTOU window a lstat-only
    * check would leave open. The reservation lives until the job's
    * terminal-state cleanup (success: leave the dir alone; failure: rm the
@@ -446,7 +457,11 @@ export class RepositoryCloneService {
     // Ensure parent exists before reserving. The bootstrap script creates
     // `${DATA_ROOT}/source-repos` with the right ownership; this is a safety
     // net for development environments / single-user installs where the
-    // operator may not have run the bootstrap.
+    // operator may not have run the bootstrap. No mode is passed on purpose:
+    // the setup script is the single writer of the data-root layout, a mode
+    // argument would be masked by umask and give a false guarantee, and a host
+    // where the server has to create this directory is a host where setup did
+    // not run -- the loud reservation failure below is the correct outcome.
     try {
       await fsPromises.mkdir(this.sourceReposDir, { recursive: true });
     } catch (err: unknown) {
@@ -455,23 +470,43 @@ export class RepositoryCloneService {
       );
     }
 
-    // Atomic target reservation -- replaces the previous lstat conflict check
-    // (TOCTOU-vulnerable). `mkdir` without `recursive` fails with `EEXIST`
-    // when the target already exists, so we cannot accidentally re-purpose
-    // an operator-cloned tree. `git clone` happily clones INTO a pre-
-    // existing empty directory, so this reservation is compatible with the
-    // subsequent `runAsUser` clone step.
+    // Atomic target reservation, made AS THE REQUESTING USER so that the
+    // directory is owned by whoever clones into it (for a bare clone the
+    // directory IS the git dir). `mkdir` without `-p` fails with `File exists`
+    // when the target already exists, so we cannot accidentally re-purpose an
+    // operator-cloned tree. `git clone` happily clones INTO a pre-existing
+    // empty directory, so this reservation is compatible with the subsequent
+    // clone step. Nothing is created when the reservation fails, so there is
+    // nothing to clean up on any of the failure branches below.
+    let reservation: Awaited<ReturnType<RunAsUserFn>>;
     try {
-      await fsPromises.mkdir(targetDir);
+      reservation = await this.runAsUser({
+        username: request.requestUser,
+        command: `mkdir -- ${shellEscape(targetDir)}`,
+        cwd: this.sourceReposDir,
+        timeoutMs: RESERVE_TIMEOUT_MS,
+      });
     } catch (err: unknown) {
-      if (isEexist(err)) {
+      throw new CloneValidationError(
+        `Could not reserve target directory: ${errorMessage(err)}`,
+      );
+    }
+    if (reservation.timedOut) {
+      throw new CloneValidationError(
+        `Could not reserve target directory: timed out after ${Math.floor(RESERVE_TIMEOUT_MS / 1000)}s`,
+      );
+    }
+    if (reservation.exitCode !== 0) {
+      const stderr = reservation.stderr.trim();
+      if (stderr.includes('File exists')) {
         throw new CloneNameConflictError(
           `Target directory already exists: ${targetDir}`,
         );
       }
-      throw new CloneValidationError(
-        `Could not reserve target directory: ${errorMessage(err)}`,
-      );
+      if (stderr.includes('Permission denied')) {
+        throw new CloneValidationError(`${SOURCE_REPOS_CONTRACT_MESSAGE}: ${stderr}`);
+      }
+      throw new CloneValidationError(`Could not reserve target directory: ${stderr}`);
     }
 
     const jobId = randomUUID();
@@ -548,12 +583,7 @@ export class RepositoryCloneService {
       // with `unknown` code so the user sees the underlying message.
       const message = errorMessage(err);
       logger.warn({ jobId, err }, 'clone spawn threw; marking job failed');
-      // Cleanup intentionally uses `null` (direct server-side rm), not the
-      // requesting user: the spawn never started, so `targetDir` holds only
-      // the empty server-owned reservation from `mkdir(targetDir)` above.
-      // Re-routing through `runAsUser` here would re-hit the same spawn
-      // failure (sudo missing, etc.) and leak the reservation.
-      await this.cleanupPartialClone(targetDir, jobId, null);
+      await this.cleanupPartialClone(targetDir, jobId, request.requestUser);
       this.fail(state, CLONE_ERROR_CODES.UNKNOWN, message);
       return;
     }
@@ -683,15 +713,6 @@ export class RepositoryCloneService {
     }
     this.evictTimers.clear();
   }
-}
-
-function isEexist(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code?: unknown }).code === 'EEXIST'
-  );
 }
 
 function errorMessage(err: unknown): string {
