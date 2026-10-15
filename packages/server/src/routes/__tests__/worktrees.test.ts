@@ -1646,6 +1646,56 @@ describe('Worktrees API', () => {
       expect(mockWorktreeService.isWorktreeOf).not.toHaveBeenCalled();
     });
 
+    it('non-bare control (explicit): the repo root is the primary worktree and skips the ownership check', async () => {
+      mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => ({
+        gitDir: `${repoPath}/.git`,
+        bare: false,
+      }));
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/pull`,
+        pullRequest(REPO_PATH),
+      );
+
+      expect(res.status).toBe(202);
+      expect(mockWorktreeService.isWorktreeOf).not.toHaveBeenCalled();
+    });
+
+    it('bare: the bare directory is not a primary worktree -- it goes through the ownership check and is refused (400), never pulled', async () => {
+      mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => ({
+        gitDir: repoPath,
+        bare: true,
+      }));
+      // Mirrors the real service on a bare repository: the repo directory is not a worktree of itself.
+      (mockWorktreeService.isWorktreeOf as ReturnType<typeof mock>)
+        .mockImplementation((repoPath: string, worktreePath: string) => Promise.resolve(worktreePath !== repoPath));
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/pull`,
+        pullRequest(REPO_PATH),
+      );
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('Invalid worktree path for this repository');
+      expect(mockWorktreeService.isWorktreeOf).toHaveBeenCalledWith(REPO_PATH, REPO_PATH, TEST_REPO.id);
+      expect(mockGit.pullFastForward).not.toHaveBeenCalled();
+    });
+
+    it('bare: a linked worktree path still pulls (202)', async () => {
+      mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => ({
+        gitDir: repoPath,
+        bare: true,
+      }));
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/pull`,
+        pullRequest(WORKTREE_PATH),
+      );
+
+      expect(res.status).toBe(202);
+    });
+
     it('should return 400 for missing worktreePath', async () => {
       const res = await app.request(
         `/api/repositories/${TEST_REPO.id}/worktrees/pull`,

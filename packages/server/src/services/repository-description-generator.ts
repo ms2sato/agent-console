@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import type { AgentDefinition } from '@agent-console/shared';
 import { expandTemplate, TemplateExpansionError } from '../lib/template.js';
 import { createLogger } from '../lib/logger.js';
+import { readRepoFileAtRef, resolveGitDir, resolveSourceReadRef } from '../lib/git.js';
 import { runAsUser } from './privilege-elevation.js';
 
 const logger = createLogger('service:description-generator');
@@ -38,8 +39,19 @@ interface RepositoryDescriptionResponse {
 /**
  * Try to read a README file from the repository.
  * Tries common README filenames in order and returns the first one found.
+ *
+ * A bare repository has no working tree, so its README is read from the object
+ * store at the source read ref instead.
  */
 async function readReadme(repositoryPath: string): Promise<string | null> {
+  if ((await resolveGitDir(repositoryPath))?.bare) {
+    const ref = await resolveSourceReadRef(repositoryPath);
+    for (const filename of README_CANDIDATES) {
+      const content = await readRepoFileAtRef(repositoryPath, ref, filename);
+      if (content !== null) return content;
+    }
+    return null;
+  }
   for (const filename of README_CANDIDATES) {
     const filePath = path.join(repositoryPath, filename);
     try {

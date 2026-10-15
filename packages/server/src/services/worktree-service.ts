@@ -1,4 +1,5 @@
 import { promises as fsPromises } from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { Worktree, HookCommandResult } from '@agent-console/shared';
 import { getConfigDir, getRepositoryDir } from '../lib/config.js';
@@ -15,6 +16,8 @@ import {
   refreshDefaultBranch as gitRefreshDefaultBranch,
   GitError,
   resolveGitDir,
+  resolveSourceReadRef,
+  exportRepoTreeAtRef,
   type WorktreeRemovalRunner,
 } from '../lib/git.js';
 // listLocalBranches, listRemoteBranches, getDefaultBranch, refreshDefaultBranch
@@ -106,19 +109,62 @@ function generateRandomSuffix(length: number): string {
 }
 
 /**
+ * A resolved templates directory plus the release of anything materialized to
+ * provide it (a temp export on a bare repository; a no-op otherwise).
+ */
+interface TemplatesDir {
+  dir: string;
+  cleanup: () => Promise<void>;
+}
+
+const noopCleanup = async (): Promise<void> => {};
+
+/**
  * Find templates directory for a repository
  * Priority: 1. .agent-console/ in repo root  2. $AGENT_CONSOLE_HOME/repositories/<owner>/<repo>/templates/
+ *
+ * A bare repository has no working tree, so its `.agent-console/` is exported
+ * from the object store at the source read ref into a temp directory. A path
+ * absent at the ref falls through to the global templates exactly like a
+ * missing directory does; any other export failure propagates, so the
+ * repository's own settings are never skipped silently.
  */
-async function findTemplatesDir(repoPath: string, orgRepo: string): Promise<string | null> {
-  // Check repo-local templates
-  const localTemplates = path.join(repoPath, '.agent-console');
-  try {
-    const stat = await fsPromises.stat(localTemplates);
-    if (stat.isDirectory()) {
-      return localTemplates;
+async function findTemplatesDir(repoPath: string, orgRepo: string): Promise<TemplatesDir | null> {
+  if ((await resolveGitDir(repoPath))?.bare) {
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'agent-console-templates-'));
+    const cleanup = async (): Promise<void> => {
+      try {
+        await fsPromises.rm(tempDir, { recursive: true, force: true });
+      } catch (error) {
+        logger.warn({ err: error, tempDir }, 'Failed to remove temporary templates directory');
+      }
+    };
+    try {
+      const exported = await exportRepoTreeAtRef(
+        repoPath,
+        await resolveSourceReadRef(repoPath),
+        '.agent-console',
+        tempDir,
+      );
+      if (exported !== null && (await fsPromises.stat(exported)).isDirectory()) {
+        return { dir: exported, cleanup };
+      }
+    } catch (error) {
+      await cleanup();
+      throw error;
     }
-  } catch {
-    // Directory doesn't exist, continue to global templates
+    await cleanup();
+  } else {
+    // Check repo-local templates
+    const localTemplates = path.join(repoPath, '.agent-console');
+    try {
+      const stat = await fsPromises.stat(localTemplates);
+      if (stat.isDirectory()) {
+        return { dir: localTemplates, cleanup: noopCleanup };
+      }
+    } catch {
+      // Directory doesn't exist, continue to global templates
+    }
   }
 
   // Check global templates in $AGENT_CONSOLE_HOME/repositories/<org>/<repo>/templates/
@@ -126,7 +172,7 @@ async function findTemplatesDir(repoPath: string, orgRepo: string): Promise<stri
   try {
     const stat = await fsPromises.stat(globalTemplates);
     if (stat.isDirectory()) {
-      return globalTemplates;
+      return { dir: globalTemplates, cleanup: noopCleanup };
     }
   } catch {
     // Directory doesn't exist
@@ -574,27 +620,31 @@ export class WorktreeService {
       // consistent. The sink wraps `runAsUser` for that case; the
       // non-elevated branch uses direct fs writes (server-owned worktree
       // matches server-owned templates).
-      const templatesDir = await findTemplatesDir(repoPath, orgRepo);
+      const templates = await findTemplatesDir(repoPath, orgRepo);
       let copiedFiles: string[] = [];
 
-      if (templatesDir) {
-        const repoName = orgRepo.includes('/') ? orgRepo.split('/')[1] : orgRepo;
-        const sink = willElevate
-          ? this.makeUserOwnedTemplateSink(requestUsername!)
-          : directFsSink;
-        copiedFiles = await copyTemplateFiles(
-          templatesDir,
-          worktreePath,
-          {
-            worktreeNum: newIndex,
-            branch,
-            repo: repoName,
+      if (templates) {
+        try {
+          const repoName = orgRepo.includes('/') ? orgRepo.split('/')[1] : orgRepo;
+          const sink = willElevate
+            ? this.makeUserOwnedTemplateSink(requestUsername!)
+            : directFsSink;
+          copiedFiles = await copyTemplateFiles(
+            templates.dir,
             worktreePath,
-          },
-          sink,
-        );
-        if (copiedFiles.length > 0) {
-          logger.info({ copiedFiles }, 'Template files copied');
+            {
+              worktreeNum: newIndex,
+              branch,
+              repo: repoName,
+              worktreePath,
+            },
+            sink,
+          );
+          if (copiedFiles.length > 0) {
+            logger.info({ copiedFiles }, 'Template files copied');
+          }
+        } finally {
+          await templates.cleanup();
         }
       }
 
@@ -1060,8 +1110,16 @@ export class WorktreeService {
   async isWorktreeOf(repoPath: string, worktreePath: string, repositoryId: string): Promise<boolean> {
     // Main worktree is always valid. Compared canonically: `repoPath` is the
     // stored (resolved, symlink-preserving) path, `worktreePath` may be what
-    // git printed.
-    if (await canonicalPath(worktreePath) === await canonicalPath(repoPath)) return true;
+    // git printed. A bare repository has no main worktree: its directory is
+    // never a worktree of itself, so it falls through to the registry lookup
+    // (which has no record for it). The bareness probe runs only when the
+    // paths are equal.
+    if (
+      await canonicalPath(worktreePath) === await canonicalPath(repoPath) &&
+      !(await resolveGitDir(repoPath))?.bare
+    ) {
+      return true;
+    }
 
     // Check DB for registered worktree
     const record = await this.worktreeRepository.findByPath(worktreePath);

@@ -68,6 +68,7 @@ import { RepositoryNotFoundError, ValidationError } from '../lib/errors.js';
 import type { UserMode, assertSpawnCwdExists } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
+  resolveGitDir,
 } from '../lib/git.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
@@ -77,6 +78,7 @@ import { MemoService } from './memo-service.js';
 import { PtyMessageInjectionService } from './pty-message-injection-service.js';
 import { SessionMetadataService } from './session-metadata-service.js';
 import { createLogger } from '../lib/logger.js';
+import { canonicalPath } from '../lib/canonical-path.js';
 import { WorkerOutputFileManager, type HistoryReadResult, type HistoryRangeResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
@@ -1384,6 +1386,20 @@ export class SessionManager {
         if (!isValidSlug(slug)) {
           throw new InvalidSessionDataScopeError(
             `session slug ${JSON.stringify(slug)} does not match allowed pattern`
+          );
+        }
+        // A bare source repository has no working tree: a session located at
+        // the repository path itself would have nothing to run in. The path
+        // comparison runs first so a request for any other location (the
+        // common case) never pays for a git call.
+        const repoInfo = this.repositoryEnvLookup.getRepositoryInfo(request.repositoryId);
+        if (
+          repoInfo !== undefined &&
+          (await canonicalPath(request.locationPath)) === (await canonicalPath(repoInfo.path)) &&
+          (await resolveGitDir(repoInfo.path))?.bare
+        ) {
+          throw new ValidationError(
+            'a bare source repository has no working tree; open a session on a worktree',
           );
         }
         return registerSession('repository', slug);

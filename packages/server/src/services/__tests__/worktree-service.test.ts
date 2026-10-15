@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import * as fs from 'fs';
+import * as os from 'os';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit, GitError } from '../../__tests__/utils/mock-git-helper.js';
+import { resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import type { Worktree } from '@agent-console/shared';
 import type { WorktreeRepository, WorktreeRecord } from '../../repositories/worktree-repository.js';
 import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
@@ -1323,6 +1325,154 @@ detached
         expect(nested).toBe('{"key": "value"}');
       });
     });
+
+    describe('template copying on a bare source repository', () => {
+      const TMP_PREFIX = 'agent-console-templates-';
+
+      function makeBare() {
+        mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => ({ gitDir: repoPath, bare: true }));
+        mockGit.resolveSourceReadRef.mockImplementation(async () => 'origin/main');
+      }
+
+      /** Export stub: writes `files` (relative to the exported dir) into `destDir/.agent-console`. */
+      function scriptExport(files: Record<string, string>) {
+        mockGit.exportRepoTreeAtRef.mockImplementation(
+          async (_repo: string, _ref: string, relPath: string, destDir: string) => {
+            const root = `${destDir}/${relPath}`;
+            for (const [name, content] of Object.entries(files)) {
+              const full = `${root}/${name}`;
+              fs.mkdirSync(full.slice(0, full.lastIndexOf('/')), { recursive: true });
+              fs.writeFileSync(full, content);
+            }
+            return root;
+          },
+        );
+      }
+
+      function leftoverTemplateTempDirs(): string[] {
+        return fs.existsSync(os.tmpdir()) ? fs.readdirSync(os.tmpdir()).filter(n => n.startsWith(TMP_PREFIX)) : [];
+      }
+
+      beforeEach(() => {
+        fs.mkdirSync(os.tmpdir(), { recursive: true });
+        fs.mkdirSync('/repo', { recursive: true });
+      });
+
+      afterEach(() => {
+        resetGitMocks();
+      });
+
+      it('exports .agent-console at the source read ref, copies with substitution, and removes the temp dir', async () => {
+        makeBare();
+        scriptExport({ 'config.txt': 'branch={{BRANCH}}', '.claude/settings.json': '{"k":1}' });
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo, runAsUserImpl: runAsUserMock.runAsUserImpl });
+        const result = await service.createWorktree('/repo', 'my-feature', 'repo-1');
+
+        expect(result.error).toBeUndefined();
+        expect(mockGit.exportRepoTreeAtRef.mock.calls[0].slice(0, 3)).toEqual(['/repo', 'origin/main', '.agent-console']);
+        expect(result.copiedFiles).toContain('config.txt');
+        expect(result.copiedFiles).toContain('.claude/settings.json');
+        expect(fs.readFileSync(`${result.worktreePath}/config.txt`, 'utf-8')).toBe('branch=my-feature');
+        expect(leftoverTemplateTempDirs()).toEqual([]);
+      });
+
+      it('no .agent-console at the ref (null export): falls through to the global templates and removes the temp dir', async () => {
+        makeBare();
+        const globalTemplatesDir = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/templates`;
+        fs.mkdirSync(globalTemplatesDir, { recursive: true });
+        fs.writeFileSync(`${globalTemplatesDir}/setup.sh`, 'echo global');
+        mockGit.exportRepoTreeAtRef.mockImplementation(async () => null);
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo, runAsUserImpl: runAsUserMock.runAsUserImpl });
+        const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toEqual(['setup.sh']);
+        expect(leftoverTemplateTempDirs()).toEqual([]);
+      });
+
+      it('the repository templates win over the global ones (priority unchanged)', async () => {
+        makeBare();
+        const globalTemplatesDir = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/templates`;
+        fs.mkdirSync(globalTemplatesDir, { recursive: true });
+        fs.writeFileSync(`${globalTemplatesDir}/global-only.txt`, 'g');
+        scriptExport({ 'repo-only.txt': 'r' });
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo, runAsUserImpl: runAsUserMock.runAsUserImpl });
+        const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
+
+        expect(result.copiedFiles).toEqual(['repo-only.txt']);
+      });
+
+      it('an empty .agent-console directory at the ref copies nothing and still cleans up', async () => {
+        makeBare();
+        mockGit.exportRepoTreeAtRef.mockImplementation(async (_r: string, _f: string, relPath: string, destDir: string) => {
+          fs.mkdirSync(`${destDir}/${relPath}`, { recursive: true });
+          return `${destDir}/${relPath}`;
+        });
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo, runAsUserImpl: runAsUserMock.runAsUserImpl });
+        const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toEqual([]);
+        expect(leftoverTemplateTempDirs()).toEqual([]);
+      });
+
+      it('an export GitError makes createWorktree fail loudly (no silent skip of the repository settings) and leaves no temp dir', async () => {
+        makeBare();
+        const globalTemplatesDir = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/templates`;
+        fs.mkdirSync(globalTemplatesDir, { recursive: true });
+        fs.writeFileSync(`${globalTemplatesDir}/setup.sh`, 'echo global');
+        mockGit.exportRepoTreeAtRef.mockImplementation(async () => {
+          throw new GitError('git archive failed: boom', 128, 'boom');
+        });
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo, runAsUserImpl: runAsUserMock.runAsUserImpl });
+        const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
+
+        expect(result.worktreePath).toBe('');
+        expect(result.error).toBe('boom');
+        expect(leftoverTemplateTempDirs()).toEqual([]);
+      });
+
+      it('a failure while copying (a template file cannot be read) still removes the temp dir', async () => {
+        makeBare();
+        scriptExport({ 'a.txt': 'a' });
+        const spy = spyOn(fs.promises, 'readFile').mockRejectedValue(new Error('read failed'));
+
+        try {
+          const WorktreeService = await getWorktreeService();
+          const service = new WorktreeService({ worktreeRepository: mockRepo, runAsUserImpl: runAsUserMock.runAsUserImpl });
+          const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
+
+          expect(result.error).toContain('read failed');
+        } finally {
+          spy.mockRestore();
+        }
+        expect(leftoverTemplateTempDirs()).toEqual([]);
+      });
+
+      it('non-bare control: reads <repo>/.agent-console directly and never exports', async () => {
+        fs.mkdirSync('/repo/.agent-console', { recursive: true });
+        fs.writeFileSync('/repo/.agent-console/CLAUDE.md', 'hello world');
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo, runAsUserImpl: runAsUserMock.runAsUserImpl });
+        const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toContain('CLAUDE.md');
+        expect(mockGit.exportRepoTreeAtRef).not.toHaveBeenCalled();
+        expect(leftoverTemplateTempDirs()).toEqual([]);
+      });
+    });
   });
 
   describe('removeWorktree', () => {
@@ -2378,6 +2528,69 @@ detached
 
       const result = await service.isWorktreeOf('/repo/main', '/other/path', 'repo-1');
       expect(result).toBe(false);
+    });
+
+    describe('repository path vs bareness', () => {
+      afterEach(() => {
+        resetGitMocks();
+      });
+
+      function markBare(bare: boolean) {
+        mockGit.resolveGitDir.mockImplementation(async (repoPath: string) => ({
+          gitDir: bare ? repoPath : `${repoPath}/.git`,
+          bare,
+        }));
+      }
+
+      it('bare: the bare directory is never a worktree of itself', async () => {
+        markBare(true);
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        expect(await service.isWorktreeOf('/repos/bare', '/repos/bare', 'repo-1')).toBe(false);
+      });
+
+      it('bare: a registered linked worktree is still a worktree of it', async () => {
+        markBare(true);
+        mockRepo.records.push({
+          id: 'wt-1',
+          repositoryId: 'repo-1',
+          path: '/worktrees/feature-1',
+          indexNumber: 1,
+          createdAt: new Date().toISOString(),
+        });
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        expect(await service.isWorktreeOf('/repos/bare', '/worktrees/feature-1', 'repo-1')).toBe(true);
+      });
+
+      it('bare: an unregistered path is not a worktree of it', async () => {
+        markBare(true);
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        expect(await service.isWorktreeOf('/repos/bare', '/other/path', 'repo-1')).toBe(false);
+      });
+
+      it('non-bare control: the repository path itself is the main worktree and stays valid', async () => {
+        markBare(false);
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        expect(await service.isWorktreeOf('/repos/plain', '/repos/plain', 'repo-1')).toBe(true);
+      });
+
+      it('non-bare control: a path other than the repository path never asks git about bareness', async () => {
+        markBare(false);
+        mockGit.resolveGitDir.mockClear();
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        await service.isWorktreeOf('/repos/plain', '/other/path', 'repo-1');
+
+        expect(mockGit.resolveGitDir).not.toHaveBeenCalled();
+      });
     });
   });
 

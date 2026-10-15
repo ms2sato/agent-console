@@ -945,6 +945,108 @@ export async function assertOriginFetchRefspec(
 }
 
 /**
+ * The ref source files are read from when a repository has no working tree to
+ * read (`readRepoFileAtRef` / `exportRepoTreeAtRef`).
+ *
+ * On a bare clone `fetch origin` updates `refs/remotes/origin/*` only; the
+ * local `refs/heads/<default>` stays at the commit the clone was made at. So
+ * the fresh tip is `origin/<default>`, and that ref only exists once the fetch
+ * refspec is configured. Without it the only ref that exists is `HEAD`.
+ */
+export async function resolveSourceReadRef(repoPath: string): Promise<string> {
+  if ((await assertOriginFetchRefspec(repoPath)) !== 'present') return 'HEAD';
+  const defaultBranch = await getDefaultBranch(repoPath);
+  return `origin/${defaultBranch ?? 'HEAD'}`;
+}
+
+/**
+ * Read one file's content from the object store at `ref`, without a working
+ * tree. Returns `null` when the path (or the ref) does not exist. The content
+ * is trimmed like every other `git()` result.
+ *
+ * @throws GitError when the path exists but `git show` fails.
+ */
+export async function readRepoFileAtRef(
+  repoPath: string,
+  ref: string,
+  relPath: string,
+): Promise<string | null> {
+  const object = `${ref}:${relPath}`;
+  if ((await gitSafe(['cat-file', '-e', object], repoPath)) === null) return null;
+  return git(['show', object], repoPath);
+}
+
+/**
+ * Export the tree at `relPath` of `ref` into `destDir` (which must exist), as
+ * `git archive` piped into `tar -x` through an in-memory buffer: two separate
+ * spawns, no shell, both exit codes checked. Returns `<destDir>/<relPath>`, or
+ * `null` when `relPath` does not exist at `ref`.
+ *
+ * @throws GitError for any other failure of either process (including an
+ *   unresolvable `ref`).
+ */
+export async function exportRepoTreeAtRef(
+  repoPath: string,
+  ref: string,
+  relPath: string,
+  destDir: string,
+): Promise<string | null> {
+  const archive = Bun.spawn(['git', 'archive', '--format=tar', ref, '--', relPath], {
+    cwd: repoPath,
+    // The "absent path" verdict below is read from git's stderr text.
+    env: { ...process.env, LC_ALL: 'C' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [tarBytes, archiveStderr, archiveExit] = await raceWithTimeout(
+    Promise.all([new Response(archive.stdout).arrayBuffer(), new Response(archive.stderr).text(), archive.exited]),
+    DEFAULT_GIT_TIMEOUT_MS,
+    () => {
+      try {
+        archive.kill();
+      } catch {
+        // Process may have already exited.
+      }
+      return new GitError(`git archive timed out after ${DEFAULT_GIT_TIMEOUT_MS}ms`, -1, 'Timeout');
+    },
+  );
+  if (archiveExit !== 0) {
+    if (archiveStderr.includes('did not match any files')) return null;
+    throw new GitError(
+      `git archive failed: ${archiveStderr.trim() || `exit code ${archiveExit}`}`,
+      archiveExit,
+      archiveStderr,
+    );
+  }
+
+  const extract = Bun.spawn(['tar', '-x', '-C', destDir], {
+    stdin: new Uint8Array(tarBytes),
+    stdout: 'ignore',
+    stderr: 'pipe',
+  });
+  const [extractStderr, extractExit] = await raceWithTimeout(
+    Promise.all([new Response(extract.stderr).text(), extract.exited]),
+    DEFAULT_GIT_TIMEOUT_MS,
+    () => {
+      try {
+        extract.kill();
+      } catch {
+        // Process may have already exited.
+      }
+      return new GitError(`tar extract timed out after ${DEFAULT_GIT_TIMEOUT_MS}ms`, -1, 'Timeout');
+    },
+  );
+  if (extractExit !== 0) {
+    throw new GitError(
+      `tar extract failed: ${extractStderr.trim() || `exit code ${extractExit}`}`,
+      extractExit,
+      extractStderr,
+    );
+  }
+  return path.join(destDir, relPath);
+}
+
+/**
  * Get how many commits the local branch is behind the remote branch.
  * Returns 0 if up to date, positive number if behind.
  */

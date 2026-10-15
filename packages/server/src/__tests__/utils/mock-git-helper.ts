@@ -93,6 +93,15 @@ export const mockGit = {
     (repoPath: string) => Promise<'no-remote' | 'present' | 'missing'>
   >,
 
+  // Object-store reads (bare repositories have no working tree to read)
+  resolveSourceReadRef: mock(() => Promise.resolve('HEAD')) as Mock<(repoPath: string) => Promise<string>>,
+  readRepoFileAtRef: mock(() => Promise.resolve(null)) as Mock<
+    (repoPath: string, ref: string, relPath: string) => Promise<string | null>
+  >,
+  exportRepoTreeAtRef: mock(() => Promise.resolve(null)) as Mock<
+    (repoPath: string, ref: string, relPath: string, destDir: string) => Promise<string | null>
+  >,
+
   // Remote fetch operations
   fetchRemote: mock(() => Promise.resolve()) as Mock<
     (branch: string, cwd: string, requestUser?: string | null) => Promise<void>
@@ -147,6 +156,9 @@ export function resetGitMocks(): void {
   mockGit.deriveRepositorySlug.mockReset();
   mockGit.resolveGitDir.mockReset();
   mockGit.assertOriginFetchRefspec.mockReset();
+  mockGit.resolveSourceReadRef.mockReset();
+  mockGit.readRepoFileAtRef.mockReset();
+  mockGit.exportRepoTreeAtRef.mockReset();
   mockGit.fetchRemote.mockReset();
   mockGit.fetchAllRemote.mockReset();
   mockGit.getCommitsBehind.mockReset();
@@ -185,6 +197,9 @@ export function resetGitMocks(): void {
   mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('owner/repo'));
   mockGit.resolveGitDir.mockImplementation(defaultResolveGitDir);
   mockGit.assertOriginFetchRefspec.mockImplementation(() => Promise.resolve('present' as const));
+  mockGit.resolveSourceReadRef.mockImplementation(() => Promise.resolve('HEAD'));
+  mockGit.readRepoFileAtRef.mockImplementation(() => Promise.resolve(null));
+  mockGit.exportRepoTreeAtRef.mockImplementation(() => Promise.resolve(null));
   mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
   mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
   mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));
