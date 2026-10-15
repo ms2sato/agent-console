@@ -33,6 +33,7 @@ import { ConditionalWakeupManager } from '../../services/conditional-wakeup-mana
 import { InteractiveProcessManager } from '../../services/interactive-process-manager.js';
 import { AnnotationService } from '../../services/annotation-service.js';
 import { InterSessionMessageService } from '../../services/inter-session-message-service.js';
+import { PROCESS_STILL_RUNNING_NOTICE } from '../../services/process-output-router.js';
 import { SingleUserMode } from '../../services/user-mode.js';
 import { createMcpApp } from '../mcp-server.js';
 import { McpTokenRegistry, type McpAuthMode } from '../mcp-auth.js';
@@ -42,7 +43,7 @@ import { createWorktreeWithSession } from '../../services/worktree-creation-serv
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
-import type { AgentDirectoryEntry, EmbeddedAgentDefinition, AppServerMessage } from '@agent-console/shared';
+import type { AgentDirectoryEntry, EmbeddedAgentDefinition, AppServerMessage, InteractiveProcessInfo } from '@agent-console/shared';
 import type { PersistedWorker } from '../../repositories/persisted-types.js';
 import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
@@ -5039,6 +5040,137 @@ describe('MCP Server Tools', () => {
       const workerId = session.workers.find((w) => w.type === 'agent')!.id;
       return { sessionId: session.id, workerId };
     }
+
+    describe('create_timer run_process wake-up guard', () => {
+      function fakeProcess(sessionId: string, workerId: string, status: 'running' | 'exited'): InteractiveProcessInfo {
+        return {
+          id: `proc-${sessionId}-${status}`,
+          sessionId,
+          workerId,
+          command: 'sleep 60',
+          status,
+          startedAt: new Date().toISOString(),
+          outputMode: 'pty',
+        };
+      }
+
+      // Honors the sessionId argument like the real listProcesses, so a guard that
+      // forgets to scope by session sees the other session's process.
+      function stubProcesses(all: InteractiveProcessInfo[]) {
+        return jest
+          .spyOn(interactiveProcessManager, 'listProcesses')
+          .mockImplementation((sessionId?: string) =>
+            sessionId === undefined ? all : all.filter((p) => p.sessionId === sessionId),
+          );
+      }
+
+      it('refuses a short timer without backoff while this session has a running process', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const spy = stubProcesses([fakeProcess(sessionId, workerId, 'running')]);
+        const createSpy = jest.spyOn(timerManager, 'createTimer');
+        try {
+          const response = await callTool(app, mcpSessionId, 'create_timer', {
+            sessionId, workerId, intervalSeconds: 119, action: 'wait',
+          }, nextId++);
+          const data = parseToolResult(response) as { error: string };
+
+          expect(response.result?.isError).toBe(true);
+          expect(data.error).toBe(PROCESS_STILL_RUNNING_NOTICE);
+          expect(createSpy).not.toHaveBeenCalled();
+          expect(timerManager.listTimers(sessionId)).toHaveLength(0);
+        } finally {
+          spy.mockRestore();
+          createSpy.mockRestore();
+        }
+      });
+
+      it('accepts the timer when the session has no running process', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const spy = stubProcesses([]);
+        try {
+          const response = await callTool(app, mcpSessionId, 'create_timer', {
+            sessionId, workerId, intervalSeconds: 30, action: 'wait',
+          }, nextId++);
+          expect(response.result?.isError).toBeUndefined();
+          expect(timerManager.listTimers(sessionId)).toHaveLength(1);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('accepts the timer at exactly the threshold', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const spy = stubProcesses([fakeProcess(sessionId, workerId, 'running')]);
+        try {
+          const response = await callTool(app, mcpSessionId, 'create_timer', {
+            sessionId, workerId, intervalSeconds: 120, action: 'wait',
+          }, nextId++);
+          expect(response.result?.isError).toBeUndefined();
+          expect(timerManager.listTimers(sessionId)).toHaveLength(1);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('accepts a short timer when backoffFactor is given', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const spy = stubProcesses([fakeProcess(sessionId, workerId, 'running')]);
+        try {
+          const response = await callTool(app, mcpSessionId, 'create_timer', {
+            sessionId, workerId, intervalSeconds: 30, action: 'wait', backoffFactor: 2,
+          }, nextId++);
+          expect(response.result?.isError).toBeUndefined();
+          expect(timerManager.listTimers(sessionId)).toHaveLength(1);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('does not refuse for a process that has exited', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const spy = stubProcesses([fakeProcess(sessionId, workerId, 'exited')]);
+        try {
+          const response = await callTool(app, mcpSessionId, 'create_timer', {
+            sessionId, workerId, intervalSeconds: 30, action: 'wait',
+          }, nextId++);
+          expect(response.result?.isError).toBeUndefined();
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('does not refuse for a running process of another session', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const spy = stubProcesses([fakeProcess('some-other-session', 'other-worker', 'running')]);
+        try {
+          const response = await callTool(app, mcpSessionId, 'create_timer', {
+            sessionId, workerId, intervalSeconds: 30, action: 'wait',
+          }, nextId++);
+          expect(response.result?.isError).toBeUndefined();
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('advertises the refusal in the tool description', async () => {
+        const listRes = await app.request('/mcp', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+            'Mcp-Session-Id': mcpSessionId,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+        });
+        const listBody = (await listRes.json()) as {
+          result?: { tools?: Array<{ name: string; description?: string }> };
+        };
+        const description = listBody.result?.tools?.find((t) => t.name === 'create_timer')?.description;
+        expect(description).toContain(
+          'Refused while this session has a running run_process and intervalSeconds is under 120 and no backoffFactor is given: that process wakes you itself.',
+        );
+      });
+    });
 
     describe('create_timer', () => {
       it('should create a timer and return timer details', async () => {

@@ -60,14 +60,15 @@ export interface ProcessOutputRouterDeps {
 }
 
 /**
- * Appended to a stdout notice while the process is still running. The model
- * otherwise tends to poll `get_session_status` for a process that reports back
- * on its own.
+ * Appended to a stdout notice while the process is still running, and returned
+ * verbatim as the `create_timer` refusal while one is. A running process wakes
+ * the session itself, so the model must not substitute any wake-up of its own
+ * for it (polling a status tool, listing processes, or buying a timer); naming
+ * one tool at a time only moves the substitute to the next channel.
  */
 export const PROCESS_STILL_RUNNING_NOTICE =
-  'This process is still running; its remaining output and its exit notice arrive as further turns. ' +
-  'Do not poll get_session_status -- it cannot see processes; end your turn. ' +
-  'If no exit notice has arrived by the timeout, check list_processes once.';
+  'This process reports back on its own: its remaining output and its exit arrive as new turns, bounded by its timeoutSeconds. ' +
+  'Do not poll get_session_status or list_processes, and do not create a timer to wait for it -- end your turn with no further tool call.';
 
 function withStillRunningNotice(
   text: string,

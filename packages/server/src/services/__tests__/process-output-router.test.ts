@@ -198,7 +198,7 @@ describe('routeProcessContent (pty mode)', () => {
       ([, , params]) => (params.fields as { message: string }).message,
     );
     expect(messages[0]).toContain(
-      'This process is still running; its remaining output and its exit notice arrive as further turns. Do not poll get_session_status -- it cannot see processes; end your turn. If no exit notice has arrived by the timeout, check list_processes once.',
+      'This process reports back on its own: its remaining output and its exit arrive as new turns, bounded by its timeoutSeconds. Do not poll get_session_status or list_processes, and do not create a timer to wait for it -- end your turn with no further tool call.',
     );
     expect(messages[1]).toBe('out');
     expect(messages[2]).toBe('reply');
