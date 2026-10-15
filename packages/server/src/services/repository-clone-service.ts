@@ -431,7 +431,7 @@ export class RepositoryCloneService {
    * `400` / `409` synchronously.
    *
    * Race safety -- the target directory is reserved atomically by a plain
-   * `mkdir -- <dir>` (no `-p`) run as the requesting user. POSIX `mkdir(2)`
+   * `LC_ALL=C mkdir -- <dir>` (no `-p`) run as the requesting user. POSIX `mkdir(2)`
    * guarantees that exactly one of N concurrent same-target requests
    * succeeds; the rest fail with `File exists` and are surfaced as
    * `CloneNameConflictError`. This closes the TOCTOU window a lstat-only
@@ -482,7 +482,8 @@ export class RepositoryCloneService {
     try {
       reservation = await this.runAsUser({
         username: request.requestUser,
-        command: `mkdir -- ${shellEscape(targetDir)}`,
+        // The outcome mapping below matches mkdir's stderr text, and the requester's login shell imports their locale, so the locale must be fixed.
+        command: `LC_ALL=C mkdir -- ${shellEscape(targetDir)}`,
         cwd: this.sourceReposDir,
         timeoutMs: RESERVE_TIMEOUT_MS,
       });

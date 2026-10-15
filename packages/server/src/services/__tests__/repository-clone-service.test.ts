@@ -40,7 +40,7 @@ import type {
 } from '../repository-clone-service.js';
 import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
 
-const MKDIR_PREFIX = 'mkdir -- ';
+const MKDIR_PREFIX = 'LC_ALL=C mkdir -- ';
 
 /**
  * Capture-and-respond fake for `runAsUser`. Default response: success
@@ -49,7 +49,7 @@ const MKDIR_PREFIX = 'mkdir -- ';
  */
 function createRunAsUserMock() {
   const calls: RunAsUserOpts[] = [];
-  // The target-directory reservation is a `mkdir -- '<dir>'` call; it is routed
+  // The target-directory reservation is a `LC_ALL=C mkdir -- '<dir>'` call; it is routed
   // to `reservation` so tests that replace `responder` for the clone step
   // keep a faithful reservation. The default behaves like mkdir(2) without
   // `-p` on the memfs volume: exit 0, or exit 1 with a `File exists` stderr.
@@ -309,7 +309,7 @@ describe('repository-clone-service', () => {
       await waitForJobTerminal(service, jobId);
 
       const expectedTarget = path.join(sourceReposDir, 'my-clone');
-      expect(runAs.calls[0].command).toBe(`mkdir -- '${expectedTarget}'`);
+      expect(runAs.calls[0].command).toBe(`LC_ALL=C mkdir -- '${expectedTarget}'`);
       expect(runAs.calls[1].command).toContain(expectedTarget);
       expect(registrar.calls[0].repoPath).toBe(expectedTarget);
     });
@@ -395,7 +395,7 @@ describe('repository-clone-service', () => {
       ).rejects.toBeInstanceOf(CloneNameConflictError);
       // Only the failed reservation ran; no clone followed.
       expect(runAs.calls).toHaveLength(1);
-      expect(runAs.calls[0].command.startsWith('mkdir -- ')).toBe(true);
+      expect(runAs.calls[0].command.startsWith('LC_ALL=C mkdir -- ')).toBe(true);
       expect(registrar.calls).toHaveLength(0);
     });
   });
@@ -710,7 +710,7 @@ describe('repository-clone-service', () => {
       // The reservation, the clone and the rm-as-user calls must all have
       // happened, all targeting `alice`.
       expect(runAs.calls).toHaveLength(3);
-      expect(runAs.calls[0].command.startsWith('mkdir -- ')).toBe(true);
+      expect(runAs.calls[0].command.startsWith('LC_ALL=C mkdir -- ')).toBe(true);
       expect(runAs.calls[0].username).toBe('alice');
       const cloneCall = runAs.calls[1];
       expect(cloneCall.command.startsWith('git clone')).toBe(true);
@@ -790,7 +790,7 @@ describe('repository-clone-service', () => {
       await waitForJobTerminal(service, jobId);
 
       expect(runAs.calls[0].username).toBe('alice');
-      expect(runAs.calls[0].command).toBe(`mkdir -- '${targetDir()}'`);
+      expect(runAs.calls[0].command).toBe(`LC_ALL=C mkdir -- '${targetDir()}'`);
       expect(runAs.calls[0].command).not.toContain(' -p');
       expect(runAs.calls[0].cwd).toBe(sourceReposDir);
       expect(runAs.calls[0].timeoutMs).toBeGreaterThan(0);
@@ -804,7 +804,9 @@ describe('repository-clone-service', () => {
       const jobId = await service.enqueueClone(request('alice'));
       await waitForJobTerminal(service, jobId);
 
-      expect(runAs.calls.map((c) => c.command.split(' ')[0])).toEqual(['mkdir', 'git']);
+      expect(
+        runAs.calls.map((c) => (c.command.startsWith(MKDIR_PREFIX) ? 'mkdir' : c.command.startsWith('git clone') ? 'git' : 'other')),
+      ).toEqual(['mkdir', 'git']);
       service.dispose();
     });
 
@@ -897,7 +899,7 @@ describe('repository-clone-service', () => {
       await waitForJobTerminal(service, jobId);
 
       expect(runAs.calls[0].username).toBe(null);
-      expect(runAs.calls[0].command).toBe(`mkdir -- '${targetDir()}'`);
+      expect(runAs.calls[0].command).toBe(`LC_ALL=C mkdir -- '${targetDir()}'`);
       service.dispose();
     });
   });
