@@ -189,7 +189,7 @@ This is safe for the non-elevated (or bypassed-elevation, e.g. `username` equals
 
 **Worked example (`$`)**: `buildCloneCommand`'s bare-clone chain in `packages/server/src/services/repository-clone-service.ts` gates its `remote set-head origin -a` step on `origin_refs=$(...) && if [ -n "$origin_refs" ]`, which is the empty-upstream gate from PR [#2124](https://github.com/ms2sato/agent-console/pull/2124). Passed as `command`, the elevated login shell expanded `"$origin_refs"` to empty first, so the guard was always false and `origin/HEAD` was never set (masked afterwards by the default-branch fallback). The unelevated tests passed; the tier-2 check 11b caught it. The call now sends the chain as `stdin` to `sh -s`, for both the bare and the default clone.
 
-**Proactive audit candidates** (the bug shape, not current sites): any future caller that composes a multi-statement shell script (more than a single `cmd1 && cmd2` chain) and passes it directly as `command` to `runAsUser` / `spawnAsUser`. Single-line `command` strings (the overwhelming majority of existing call sites: `rm -rf --`, `kill -s`, `gh ...`, `git ...`) are unaffected and need no change.
+**Proactive audit candidates** (the bug shape, not current sites): any future caller that passes directly as `command` to `runAsUser` / `spawnAsUser` a string that is multi-line, OR that assigns a shell variable and then reads it (`x=$(...)` ... `"$x"`), regardless of its line count -- a chain written on one line is still affected. Single-line strings that only run a fixed argv (`rm -rf --`, `kill -s`, `gh ...`, `git ...`) and reference no variable the command itself sets (the overwhelming majority of existing call sites) are unaffected and need no change.
 
 ## How this rule is expected to evolve
 
