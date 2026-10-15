@@ -5126,6 +5126,20 @@ describe('MCP Server Tools', () => {
         }
       });
 
+      it('refuses a short timer with backoffFactor 1 because that is a flat timer', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const spy = stubProcesses([fakeProcess(sessionId, workerId, 'running')]);
+        try {
+          const response = await callTool(app, mcpSessionId, 'create_timer', {
+            sessionId, workerId, intervalSeconds: 30, action: 'wait', backoffFactor: 1,
+          }, nextId++);
+          expect(response.result?.isError).toBe(true);
+          expect(timerManager.listTimers(sessionId)).toHaveLength(0);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
       it('does not refuse for a process that has exited', async () => {
         const { sessionId, workerId } = await createSessionWithWorker();
         const spy = stubProcesses([fakeProcess(sessionId, workerId, 'exited')]);
@@ -5167,7 +5181,7 @@ describe('MCP Server Tools', () => {
         };
         const description = listBody.result?.tools?.find((t) => t.name === 'create_timer')?.description;
         expect(description).toContain(
-          'Refused while this session has a running run_process and intervalSeconds is under 120 and no backoffFactor is given: that process wakes you itself.',
+          'Refused while this session has a running run_process and intervalSeconds is under 120 and no backoffFactor above 1: that process wakes you itself.',
         );
       });
     });

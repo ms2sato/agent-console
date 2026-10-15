@@ -84,7 +84,7 @@ const logger = createLogger('mcp');
 
 /**
  * `create_timer` is refused for a session with a running `run_process` when the
- * interval is under this many seconds and no `backoffFactor` is given. A
+ * interval is under this many seconds and no `backoffFactor` above 1 is given. A
  * measured run used 20-30 s timers (created and deleted in pairs, 51 of them)
  * as a no-op wait for a pending process exit, which the process delivers by
  * itself. Long or backoff timers (the delegate-wait shape, 900 s with
@@ -1703,7 +1703,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'The timer fires an [internal:timer] notification on each tick -- delivered as a PTY write for ' +
       'agent/terminal workers, or as a queued turn for embedded-agent workers. ' +
       'Not for waiting on `run_process` output -- that always arrives on its own. ' +
-      `Refused while this session has a running run_process and intervalSeconds is under ${RUN_PROCESS_WAKEUP_REFUSAL_BELOW_SECONDS} and no backoffFactor is given: that process wakes you itself. ` +
+      `Refused while this session has a running run_process and intervalSeconds is under ${RUN_PROCESS_WAKEUP_REFUSAL_BELOW_SECONDS} and no backoffFactor above 1: that process wakes you itself. ` +
       'One standing timer per delegate; call `list_timers` first. ' +
       'Timers persist across server restarts (fireCount and backoff restart from the base interval). ' +
       'When waiting on a human decision or anything whose expected time-to-change grows with the time already waited, ' +
@@ -1786,7 +1786,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         if (
           intervalSeconds < RUN_PROCESS_WAKEUP_REFUSAL_BELOW_SECONDS &&
-          backoffFactor === undefined &&
+          (backoffFactor === undefined || backoffFactor <= 1) &&
           interactiveProcessManager.listProcesses(sessionId).some((p) => p.status === 'running')
         ) {
           logger.info({ sessionId, workerId, intervalSeconds }, 'create_timer refused: live run_process');
