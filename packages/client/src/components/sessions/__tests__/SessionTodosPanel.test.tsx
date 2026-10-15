@@ -165,6 +165,21 @@ describe('SessionTodosPanel', () => {
     expect(screen.getByText('bun run migrate')).toBeTruthy();
   });
 
+  it('takes body links out of the tab order only while the panel is collapsed', async () => {
+    mockFetch.mockImplementation(() =>
+      Promise.resolve(jsonResponse({ todos: [makeTodo({ body: 'See [the plan](https://example.com/plan)' })] }))
+    );
+
+    await renderPanel({ isExpanded: false });
+    const collapsedLink = (await screen.findByText('the plan', {}, { timeout: 2000 })).closest('a');
+    expect(collapsedLink?.getAttribute('tabindex')).toBe('-1');
+
+    cleanup();
+    await renderPanel({ isExpanded: true });
+    const expandedLink = (await screen.findByText('the plan')).closest('a');
+    expect(expandedLink?.getAttribute('tabindex')).toBeNull();
+  });
+
   it('shows the resolution text of a resolved item', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
