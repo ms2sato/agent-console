@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import * as v from 'valibot';
-import type { AppServerMessage, AuthUser, Todo } from '@agent-console/shared';
+import type { AppServerMessage, AuthUser, Session, Todo } from '@agent-console/shared';
 import { TodoSchema, TodosListResponseSchema } from '@agent-console/shared';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
@@ -18,6 +18,8 @@ import { onApiError } from '../../lib/error-handler.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
 import type { UserMode, PtySpawnRequest } from '../../services/user-mode.js';
 import type { PtyInstance } from '../../lib/pty-provider.js';
+import type { SessionManager } from '../../services/session-manager.js';
+import type { UserRepository } from '../../repositories/user-repository.js';
 
 const ALICE: AuthUser = { id: 'alice-1', username: 'alice', homeDir: '/home/alice' };
 const BOB: AuthUser = { id: 'bob-1', username: 'bob', homeDir: '/home/bob' };
@@ -27,14 +29,15 @@ const PAUSED_SESSION_IDS = new Set(['paused-1']);
 const KNOWN_USERS = [ALICE, BOB];
 
 /** Only the two lookups the todo routes make; a paused session exists only as a persisted row. */
-const stubSessionManager = {
-  getSession: (id: string) => (LIVE_SESSION_IDS.has(id) ? { id } : undefined),
-  getPersistedSession: async (id: string) => (PAUSED_SESSION_IDS.has(id) ? { id } : null),
-} as unknown as AppContext['sessionManager'];
+const sessionManagerStub: Partial<SessionManager> = {
+  getSession: (id: string) => (LIVE_SESSION_IDS.has(id) ? ({ id } as Session) : undefined),
+  getPersistedSession: async (id: string) => (PAUSED_SESSION_IDS.has(id) ? ({ id } as Session) : null),
+};
+const stubSessionManager = sessionManagerStub as SessionManager;
 
 const stubUserRepository = {
   findById: async (id: string) => KNOWN_USERS.find((u) => u.id === id) ?? null,
-} as unknown as AppContext['userRepository'];
+} as Pick<UserRepository, 'findById'> as UserRepository;
 
 function mockUserMode(user: AuthUser | null): UserMode {
   return {
