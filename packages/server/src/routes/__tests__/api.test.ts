@@ -5,6 +5,7 @@ import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from '../
 import type { ConfigResponse, SkillDefinition } from '@agent-console/shared';
 import type { MessageTemplateRepository } from '../../repositories/message-template-repository.js';
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
+import type { UserMode } from '../../services/user-mode.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { ArtifactRepository } from '../../repositories/artifact-repository.js';
 import type { BookmarkRepository } from '../../repositories/bookmark-repository.js';
@@ -75,6 +76,21 @@ describe('API route mounting', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { bookmarks: unknown[] };
     expect(Array.isArray(body.bookmarks)).toBe(true);
+  });
+
+  it('should mount users route at /api/users, behind the auth middleware', async () => {
+    const userRepository = { findAll: async () => [{ id: 'u1', username: 'alice', homeDir: '/home/alice' }] } as Pick<UserRepository, 'findAll'> as UserRepository;
+
+    const authed = await createTestApp({ userRepository });
+    const ok = await authed.request('/api/users');
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ users: [{ id: 'u1', username: 'alice' }] });
+
+    const unauthenticated = await createTestApp({
+      userRepository,
+      userMode: { authenticate: () => null } as Pick<UserMode, 'authenticate'> as UserMode,
+    });
+    expect((await unauthenticated.request('/api/users')).status).toBe(401);
   });
 
   it('should mount notifications route at /api/notifications', async () => {
@@ -150,6 +166,7 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
       getPreferences: async () => null,
       setPreferences: async () => true,
       findByUsername: async () => null,
+      findAll: async () => [],
       getOsUidById: async () => 9999,
       refreshOsIdentity: async (id: string, username: string, homeDir: string) => ({ id, username, homeDir }),
     } satisfies UserRepository;

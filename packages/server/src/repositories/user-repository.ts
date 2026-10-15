@@ -17,6 +17,12 @@ export interface UserRepository {
   findById(id: string): Promise<AuthUser | null>;
 
   /**
+   * Every user, ordered by username (then id, so the order is stable when
+   * two rows share a username). Backs the member directory.
+   */
+  findAll(): Promise<AuthUser[]>;
+
+  /**
    * Find a user by their current username. Null when no row matches. Usernames
    * are mutable (refreshed from the OS), so a caller resolving a name to an id
    * must store the id, never the name.

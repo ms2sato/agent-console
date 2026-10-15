@@ -67,6 +67,7 @@ describe('resolveDisableClaudeAiConnectors', () => {
       },
       findById: async () => null,
       findByUsername: async () => null,
+      findAll: async () => [],
       getOsUidById: async () => {
         throw new Error('not used in this test');
       },

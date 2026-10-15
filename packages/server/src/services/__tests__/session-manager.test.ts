@@ -3217,6 +3217,7 @@ describe('SessionManager', () => {
             return null;
           },
           async findByUsername() { return null; },
+          async findAll() { return []; },
           async getOsUidById(): Promise<number | null | undefined> {
             throw new Error('getOsUidById not used by this test');
           },
@@ -3607,6 +3608,7 @@ describe('SessionManager', () => {
       },
       findById,
       async findByUsername() { return null; },
+      async findAll() { return []; },
       async getOsUidById(): Promise<number | null | undefined> {
         throw new Error('getOsUidById not used by this test');
       },
@@ -7464,6 +7466,7 @@ describe('SessionManager', () => {
           return null;
         },
         async findByUsername() { return null; },
+        async findAll() { return []; },
         async getOsUidById(): Promise<number | null | undefined> {
           throw new Error('getOsUidById not used by this test');
         },
@@ -7639,6 +7642,7 @@ describe('SessionManager', () => {
           return null;
         },
         async findByUsername() { return null; },
+        async findAll() { return []; },
         async getOsUidById(): Promise<number | null | undefined> {
           throw new Error('getOsUidById not used by this test');
         },
@@ -7947,6 +7951,7 @@ describe('SessionManager', () => {
           return null;
         },
         async findByUsername() { return null; },
+        async findAll() { return []; },
         async getOsUidById(): Promise<number | null | undefined> {
           throw new Error('getOsUidById not used by this test');
         },
