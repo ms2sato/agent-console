@@ -41,6 +41,8 @@ import type {
 import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
 
 const MKDIR_PREFIX = 'LC_ALL=C mkdir -- ';
+// The clone chain is delivered over stdin to `sh -s`; `command` never carries it.
+const CLONE_COMMAND = 'sh -s';
 
 /**
  * Capture-and-respond fake for `runAsUser`. Default response: success
@@ -274,9 +276,10 @@ describe('repository-clone-service', () => {
       // Spawn invocations: the reservation, then the clone.
       expect(runAs.calls).toHaveLength(2);
       const call = runAs.calls[1];
-      expect(call.command).toContain('git clone --config core.sharedRepository=group');
-      expect(call.command).toContain("'https://github.com/org/repo.git'");
-      expect(call.command).toContain(path.join(sourceReposDir, 'repo'));
+      expect(call.command).toBe(CLONE_COMMAND);
+      expect(call.stdin).toContain('git clone --config core.sharedRepository=group');
+      expect(call.stdin).toContain("'https://github.com/org/repo.git'");
+      expect(call.stdin).toContain(path.join(sourceReposDir, 'repo'));
       expect(call.cwd).toBe(sourceReposDir);
       expect(call.username).toBe(null);
       expect(call.preserveEnv).toEqual([
@@ -310,7 +313,8 @@ describe('repository-clone-service', () => {
 
       const expectedTarget = path.join(sourceReposDir, 'my-clone');
       expect(runAs.calls[0].command).toBe(`LC_ALL=C mkdir -- '${expectedTarget}'`);
-      expect(runAs.calls[1].command).toContain(expectedTarget);
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain(expectedTarget);
       expect(registrar.calls[0].repoPath).toBe(expectedTarget);
     });
   });
@@ -423,7 +427,8 @@ describe('repository-clone-service', () => {
       expect(runAs.calls).toHaveLength(2);
       expect(runAs.calls[0].username).toBe('alice');
       expect(runAs.calls[1].username).toBe('alice');
-      expect(runAs.calls[1].command).toContain('git clone --config core.sharedRepository=group');
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain('git clone --config core.sharedRepository=group');
     });
   });
 
@@ -475,10 +480,11 @@ describe('repository-clone-service', () => {
       await waitForJobTerminal(service, jobId);
 
       expect(runAs.calls).toHaveLength(2);
-      expect(runAs.calls[1].command).toContain('--bare');
-      expect(runAs.calls[1].command).toContain('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain('--bare');
+      expect(runAs.calls[1].stdin).toContain('remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*');
       // The directory name carries no .git suffix.
-      expect(runAs.calls[1].command).toContain(`'${path.join(sourceReposDir, 'repo')}'`);
+      expect(runAs.calls[1].stdin).toContain(`'${path.join(sourceReposDir, 'repo')}'`);
     });
 
     it('control, default request: the command is identical to the pre-bare one', async () => {
@@ -496,10 +502,11 @@ describe('repository-clone-service', () => {
       });
       await waitForJobTerminal(service, jobId);
 
-      expect(runAs.calls[1].command).toBe(
-        `git clone --config core.sharedRepository=group 'https://github.com/org/repo.git' '${path.join(sourceReposDir, 'repo')}'`,
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toBe(
+        `git clone --config core.sharedRepository=group 'https://github.com/org/repo.git' '${path.join(sourceReposDir, 'repo')}'\n`,
       );
-      expect(runAs.calls[1].command).not.toContain('--bare');
+      expect(runAs.calls[1].stdin).not.toContain('--bare');
     });
 
     it('bare clone whose command exits non-zero fails the job and removes the partial directory', async () => {
@@ -524,7 +531,8 @@ describe('repository-clone-service', () => {
       // Cleanup ran for the bare clone's directory (same helper the regular
       // clone failure path uses; the mock runner records its recursive-remove call).
       expect(runAs.calls).toHaveLength(3);
-      expect(runAs.calls[1].command).toContain('--bare');
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain('--bare');
       expect(runAs.calls[2].command).toContain(path.join(sourceReposDir, 'repo'));
       expect(runAs.calls[2].command).not.toContain('git clone');
     });
@@ -620,7 +628,7 @@ describe('repository-clone-service', () => {
       // post-condition lstat ENOENT assertion can verify cleanup happened
       // via the helper.
       runAs.responder.fn = async (opts) => {
-        if (opts.command.startsWith('git clone')) {
+        if (opts.command === CLONE_COMMAND) {
           await fsPromises.mkdir(targetDir, { recursive: true });
           await fsPromises.writeFile(path.join(targetDir, 'partial-marker'), 'x');
           return {
@@ -657,7 +665,8 @@ describe('repository-clone-service', () => {
       // passes the null username through; the real `runAsUser` would
       // short-circuit elevation, but the mock just captures the shape.
       expect(runAs.calls).toHaveLength(3);
-      expect(runAs.calls[1].command).toContain('git clone');
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(runAs.calls[1].stdin).toContain('git clone');
       const rmCall = runAs.calls[2];
       expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
       expect(rmCall.command).toContain(`'${targetDir}'`);
@@ -674,7 +683,7 @@ describe('repository-clone-service', () => {
       const targetDir = path.join(sourceReposDir, 'repo');
       const runAs = createRunAsUserMock();
       runAs.responder.fn = async (opts) => {
-        if (opts.command.startsWith('git clone')) {
+        if (opts.command === CLONE_COMMAND) {
           await fsPromises.mkdir(targetDir, { recursive: true });
           await fsPromises.writeFile(path.join(targetDir, 'partial-marker'), 'x');
           return {
@@ -713,7 +722,8 @@ describe('repository-clone-service', () => {
       expect(runAs.calls[0].command.startsWith('LC_ALL=C mkdir -- ')).toBe(true);
       expect(runAs.calls[0].username).toBe('alice');
       const cloneCall = runAs.calls[1];
-      expect(cloneCall.command.startsWith('git clone')).toBe(true);
+      expect(cloneCall.command).toBe(CLONE_COMMAND);
+      expect(String(cloneCall.stdin).startsWith('git clone')).toBe(true);
       expect(cloneCall.username).toBe('alice');
       const rmCall = runAs.calls[2];
       expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
@@ -731,7 +741,7 @@ describe('repository-clone-service', () => {
       const targetDir = path.join(sourceReposDir, 'repo');
       const runAs = createRunAsUserMock();
       runAs.responder.fn = async (opts) => {
-        if (opts.command.startsWith('git clone')) {
+        if (opts.command === CLONE_COMMAND) {
           throw new Error('spawn sudo ENOENT');
         }
         if (opts.command.startsWith('rm -rf --')) {
@@ -758,7 +768,8 @@ describe('repository-clone-service', () => {
       // Three calls: the reservation, the failing clone and the helper's rm,
       // all as alice.
       expect(runAs.calls).toHaveLength(3);
-      expect(runAs.calls[1].command.startsWith('git clone')).toBe(true);
+      expect(runAs.calls[1].command).toBe(CLONE_COMMAND);
+      expect(String(runAs.calls[1].stdin).startsWith('git clone')).toBe(true);
       expect(runAs.calls[1].username).toBe('alice');
       const rmCall = runAs.calls[2];
       expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
@@ -805,7 +816,7 @@ describe('repository-clone-service', () => {
       await waitForJobTerminal(service, jobId);
 
       expect(
-        runAs.calls.map((c) => (c.command.startsWith(MKDIR_PREFIX) ? 'mkdir' : c.command.startsWith('git clone') ? 'git' : 'other')),
+        runAs.calls.map((c) => (c.command.startsWith(MKDIR_PREFIX) ? 'mkdir' : c.command === CLONE_COMMAND ? 'git' : 'other')),
       ).toEqual(['mkdir', 'git']);
       service.dispose();
     });

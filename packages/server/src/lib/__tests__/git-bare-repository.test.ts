@@ -581,6 +581,13 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
     return { code: await proc.exited, out: out.trim(), err: err.trim() };
   };
 
+  // The delivery shape the service uses: `sh -s` with the chain on stdin.
+  const shellViaStdin = async (command: string, cwd: string): Promise<{ code: number; out: string; err: string }> => {
+    const proc = Bun.spawn(['sh', '-s'], { cwd, env: own.env, stdin: new TextEncoder().encode(`${command}\n`), stdout: 'pipe', stderr: 'pipe' });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, out: out.trim(), err: err.trim() };
+  };
+
   async function inLib<T>(dir: string, body: string): Promise<T> {
     const script = `
       import * as lib from ${JSON.stringify(GIT_TS)};
@@ -739,6 +746,47 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
       expect((await shell('git fetch -q origin', target)).code).toBe(0);
       expect(await inLib<string>(target, 'return await lib.refreshDefaultBranch(dir);')).toBe('main');
       expect(await hasOriginHead(target)).toBe(true);
+    });
+  });
+
+  // These arms pin the delivery shape the service uses (`sh -s`, chain on
+  // stdin), not elevation: no unelevated test can tell the two shapes apart by
+  // outcome. They repeat the assertions of the `sh -c` arms above.
+  describe('delivered through sh -s with the chain on stdin (the service\'s delivery shape)', () => {
+    const hasOriginHead = async (dir: string) => (await shell('git symbolic-ref -q refs/remotes/origin/HEAD', dir)).code === 0;
+
+    it('bare: same end state as the sh -c arm, including origin/HEAD from the set-head step', async () => {
+      const target = join(root, 'bare-stdin');
+      expect((await shellViaStdin(buildCloneCommand({ url: own.dir, targetDir: target, bare: true }), root)).code).toBe(0);
+      expect(await hasOriginHead(target)).toBe(true);
+      const trackingRefs = (await shell('git branch -r', target)).out;
+      expect(trackingRefs).toContain('origin/main');
+      expect(trackingRefs).toContain('origin/feature');
+      expect(await inLib<string>(target, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
+      expect(await inLib<string>(target, 'return await lib.refreshDefaultBranch(dir);')).toBe('main');
+    });
+
+    it('default (non-bare): same end state as the sh -c arm', async () => {
+      const target = join(root, 'nonbare-stdin');
+      expect((await shellViaStdin(buildCloneCommand({ url: own.dir, targetDir: target }), root)).code).toBe(0);
+      expect((await shell('git rev-parse --is-bare-repository', target)).out).toBe('false');
+      expect(await inLib<string>(target, 'return await lib.assertOriginFetchRefspec(dir);')).toBe('present');
+    });
+
+    it('bare, empty upstream: exits zero with no origin/HEAD, as the sh -c arm does', async () => {
+      const emptyUpstream = await createScratchGitRepo({ parentDir: root, name: 'stdin-empty-upstream-', initialCommit: false });
+      try {
+        const target = join(root, 'bare-stdin-empty');
+        expect((await shellViaStdin(buildCloneCommand({ url: emptyUpstream.dir, targetDir: target, bare: true }), root)).code).toBe(0);
+        expect(await hasOriginHead(target)).toBe(false);
+      } finally {
+        await emptyUpstream.cleanup();
+      }
+    });
+
+    it('a failing step still fails the whole command (non-zero)', async () => {
+      const target = join(root, 'bare-stdin-bad-url');
+      expect((await shellViaStdin(buildCloneCommand({ url: join(root, 'does-not-exist'), targetDir: target, bare: true }), root)).code).not.toBe(0);
     });
   });
 

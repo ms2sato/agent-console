@@ -565,9 +565,14 @@ export class RepositoryCloneService {
 
     let result: Awaited<ReturnType<RunAsUserFn>>;
     try {
+      // The chain goes over stdin to `sh -s`, not as `command`: the elevated
+      // login shell expands `$` and collapses newlines before the inner
+      // `sh -c` runs (see the multi-line section of the elevation rule), which
+      // would empty the chain's own `origin_refs` variable.
       result = await this.runAsUser({
         username: request.requestUser,
-        command,
+        command: 'sh -s',
+        stdin: `${command}\n`,
         cwd: this.sourceReposDir,
         timeoutMs: this.cloneTimeoutMs,
         // Inherit the user's auth env across the sudo barrier. FORCE_COLOR
