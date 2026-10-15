@@ -1474,12 +1474,12 @@ s11b_root() {
   compose exec -T --user root agent-console "$@" 2>&1 | tr -d '\r'
 }
 
-# git as root against a repository owned by someone else: safe.directory '*'
-# on the command line, otherwise root is refused with "dubious ownership".
+# git as root against a repository owned by someone else; relies on root's
+# global safe.directory '*' provisioned at the start of the prerequisites.
 s11b_rootgit() { # s11b_rootgit <repo-path> <git args...>
   local p="$1"
   shift
-  s11b_root git -c 'safe.directory=*' -C "$p" "$@"
+  s11b_root git -C "$p" "$@"
 }
 
 # Registered repository's path, from GET /api/repositories/:id.
@@ -1624,18 +1624,32 @@ compose exec -T agent-console sh -c 'test -x "$(git --exec-path)/git-daemon"' >/
 s11b_daemon_present_rc=$?
 check "git daemon is available in the verification image" "$s11b_daemon_present_rc"
 
+# The verification container's ROOT account reads repositories owned by
+# agentconsole (the upstream clone below) and by alice (the on-disk assertions
+# on her clones). Git refuses those with "dubious ownership", and a command-
+# line `-c safe.directory=*` is NOT enough: the local-transport child
+# (upload-pack) does not inherit it. So root is provisioned once, globally.
+# This touches only root's ~/.gitconfig inside the disposable verification
+# container; it is never applied to the server's accounts (alice, bob,
+# agentconsole), whose own ownership handling is what checks 7-11 exercise.
+compose exec -T --user root agent-console git config --global --add safe.directory '*' >"$S11B_OUT" 2>&1
+s11b_safedir_rc=$?
+if [ "$s11b_safedir_rc" -ne 0 ]; then
+  echo "  git config output: $(tr -d '\r' < "$S11B_OUT")"
+fi
+check "container root is provisioned with safe.directory '*' (root reads agentconsole-/alice-owned repositories)" "$s11b_safedir_rc"
+
 s11b_upstream_rc=1
 s11b_started_rc=1
 s11b_lsremote_rc=1
-if [ "$s11b_daemon_present_rc" -eq 0 ]; then
-  # Root clones the agentconsole-owned check-7 repository, hence the command-
-  # line safe.directory. The daemon serves ONLY this directory
-  # (--base-path + --export-all), on loopback.
+if [ "$s11b_daemon_present_rc" -eq 0 ] && [ "$s11b_safedir_rc" -eq 0 ]; then
+  # The daemon serves ONLY this directory (--base-path + --export-all), on
+  # loopback.
   compose exec -T --user root agent-console sh -c "
     set -e
     mkdir -p '${S11B_GITD_ROOT}'
     rm -f '${GITD_2094_PID_FILE}'
-    git -c 'safe.directory=*' clone -q --bare '${SOURCE_REPO_PATH}' '${S11B_GITD_ROOT}/upstream.git'
+    git clone -q --bare '${SOURCE_REPO_PATH}' '${S11B_GITD_ROOT}/upstream.git'
   " >"$S11B_OUT" 2>&1
   s11b_upstream_rc=$?
   if [ "$s11b_upstream_rc" -ne 0 ]; then
