@@ -15,9 +15,10 @@ import {
   toArtifactRecord,
   DataIntegrityError,
   assertNever,
+  toTodo,
 } from '../mappers.js';
 import type { LegacySessionRow, LegacyAgentRow } from '../mappers.js';
-import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow, ArtifactRow } from '../schema.js';
+import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow, ArtifactRow, TodoRow } from '../schema.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type {
   PersistedAgentWorker,
@@ -2478,5 +2479,70 @@ describe('mappers', () => {
       expect(record.sourceSessionId).toBe('session-1');
       expect('userId' in toArtifact(row)).toBe(false);
     });
+  });
+});
+
+
+describe('toTodo', () => {
+  function buildTodoRow(overrides: Partial<TodoRow> = {}): TodoRow {
+    return {
+      id: 'todo-1',
+      kind: 'action',
+      scope: 'session',
+      title: 'Do it',
+      body: 'details',
+      session_id: 'session-1',
+      created_worker_id: null,
+      created_user_id: 'user-1',
+      assignee_user_id: null,
+      status: 'open',
+      resolution_text: null,
+      resolved_by_user_id: null,
+      resolved_at: null,
+      created_at: '2026-10-15T00:00:00.000Z',
+      updated_at: '2026-10-15T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('maps a human-created row to camelCase with createdBy {userId}', () => {
+    expect(toTodo(buildTodoRow())).toEqual({
+      id: 'todo-1',
+      kind: 'action',
+      scope: 'session',
+      title: 'Do it',
+      body: 'details',
+      sessionId: 'session-1',
+      createdBy: { userId: 'user-1' },
+      assigneeUserId: null,
+      status: 'open',
+      resolutionText: null,
+      resolvedByUserId: null,
+      resolvedAt: null,
+      createdAt: '2026-10-15T00:00:00.000Z',
+      updatedAt: '2026-10-15T00:00:00.000Z',
+    });
+  });
+
+  it('maps an agent-created row to createdBy {workerId}', () => {
+    const todo = toTodo(buildTodoRow({ created_worker_id: 'worker-1', created_user_id: null }));
+    expect(todo.createdBy).toEqual({ workerId: 'worker-1' });
+  });
+
+  it('keeps a null sessionId for a global item without provenance', () => {
+    expect(toTodo(buildTodoRow({ scope: 'global', session_id: null })).sessionId).toBeNull();
+  });
+
+  it.each([
+    ['kind', { kind: 'reminder' }],
+    ['scope', { scope: 'team' }],
+    ['status', { status: 'expired' }],
+  ])('throws DataIntegrityError for an unrecognized %s', (_name, override) => {
+    expect(() => toTodo(buildTodoRow(override))).toThrow(DataIntegrityError);
+  });
+
+  it('throws DataIntegrityError when both or neither creator column is set', () => {
+    expect(() => toTodo(buildTodoRow({ created_worker_id: 'w', created_user_id: 'u' }))).toThrow(DataIntegrityError);
+    expect(() => toTodo(buildTodoRow({ created_worker_id: null, created_user_id: null }))).toThrow(DataIntegrityError);
   });
 });

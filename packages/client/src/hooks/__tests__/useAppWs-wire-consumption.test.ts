@@ -239,6 +239,11 @@ const CASES: Record<AppServerMessage['type'], WireCase> = {
     frame: { type: 'bookmark-deleted', sessionId: 'session-1', bookmarkId: 'bookmark-1' },
     expects: { callback: 'onBookmarkDeleted', args: ['session-1', 'bookmark-1'] },
   },
+  'todos-updated': {
+    frame: { type: 'todos-updated', sessionId: 'session-1' },
+    expects: null,
+    noOpReason: 'trigger-only; no useAppWsEvent callback consumes it yet (the to-do list consumers arrive with the client slice)',
+  },
   'orchestrator-designation-changed': {
     frame: {
       type: 'orchestrator-designation-changed',

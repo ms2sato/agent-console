@@ -80,6 +80,7 @@ import { createLogger } from '../lib/logger.js';
 import { WorkerOutputFileManager, type HistoryReadResult, type HistoryRangeResult } from '../lib/worker-output-file.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
+import type { TodoRepository } from '../repositories/todo-repository.js';
 import { resolveSpawnUsername } from './resolve-spawn-username.js';
 import { resolveDisableClaudeAiConnectors } from './resolve-disable-claude-ai-connectors.js';
 import type { JobQueue } from '../jobs/index.js';
@@ -192,6 +193,11 @@ interface SessionManagerOptions {
    * that never inject a database on their previous behaviour.
    */
   db?: Kysely<Database>;
+  /**
+   * Human TODO list repository. Session deletion withdraws the session's open
+   * session-scoped items through it. Optional: callers that never hold TODO items omit it.
+   */
+  todoRepository?: TodoRepository;
   agentManager: AgentManager;
   /**
    * Embedded-agent definition registry (used by createWorker to validate an
@@ -401,6 +407,7 @@ export class SessionManager {
   private userRepository: UserRepository | null = null;
   private jobQueue: JobQueue | null = null;
   private db: Kysely<Database> | null = null;
+  private todoRepository: TodoRepository | null = null;
   private notificationManager: NotificationManager | null = null;
   private workerOutputFileManager: WorkerOutputFileManager;
   private interSessionMessageService: InterSessionMessageService;
@@ -504,6 +511,7 @@ export class SessionManager {
     this.sessionRepository = options.sessionRepository;
     this.jobQueue = options?.jobQueue ?? null;
     this.db = options?.db ?? null;
+    this.todoRepository = options.todoRepository ?? null;
 
     // Embedded-agent subprocess lifecycle. Constructed before the
     // WorkerLifecycleManager / deletion / pause services so their
@@ -637,6 +645,7 @@ export class SessionManager {
       workerManager: this.workerManager,
       jobQueue: this.jobQueue,
       db: this.db,
+      todoRepository: this.todoRepository,
       notificationManager: this.notificationManager,
       messageService: this.messageService,
       interSessionMessageService: this.interSessionMessageService,

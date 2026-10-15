@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 49;
+export const LATEST_SCHEMA_VERSION = 50;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -459,6 +459,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 49) {
     await migrateToV49(database);
+  }
+
+  if (currentVersion < 50) {
+    await migrateToV50(database);
   }
 }
 
@@ -3143,6 +3147,72 @@ export async function migrateToV49(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 49`.execute(database);
 
   logger.info('Migration to v49 completed');
+}
+
+/**
+ * Migration v50: Create the `todos` table (human TODO list,
+ * docs/design/human-todo-list.md section 3).
+ *
+ * Additive new table. No foreign keys anywhere: a row outlives its session,
+ * and users are never deleted. Seven CHECK constraints pin the invariants
+ * the application relies on (closed lists, exactly one creator, an agent
+ * creator and a session-scoped item both need a session, a question is
+ * always session-scoped).
+ *
+ * Owner-approved DDL:
+ * ```sql
+ * CREATE TABLE IF NOT EXISTS todos (
+ *   id TEXT PRIMARY KEY, kind TEXT NOT NULL, scope TEXT NOT NULL,
+ *   title TEXT NOT NULL, body TEXT NOT NULL, session_id TEXT,
+ *   created_worker_id TEXT, created_user_id TEXT, assignee_user_id TEXT,
+ *   status TEXT NOT NULL DEFAULT 'open', resolution_text TEXT,
+ *   resolved_by_user_id TEXT, resolved_at TEXT,
+ *   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ *   CONSTRAINT todos_kind_check ... (seven CHECKs, see the design doc)
+ * );
+ * CREATE INDEX IF NOT EXISTS idx_todos_status_assignee ON todos (status, assignee_user_id);
+ * CREATE INDEX IF NOT EXISTS idx_todos_session_status ON todos (session_id, status);
+ * PRAGMA user_version = 50;
+ * ```
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV50(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v50: Creating todos table');
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS todos (
+      id                   TEXT PRIMARY KEY,
+      kind                 TEXT NOT NULL,
+      scope                TEXT NOT NULL,
+      title                TEXT NOT NULL,
+      body                 TEXT NOT NULL,
+      session_id           TEXT,
+      created_worker_id    TEXT,
+      created_user_id      TEXT,
+      assignee_user_id     TEXT,
+      status               TEXT NOT NULL DEFAULT 'open',
+      resolution_text      TEXT,
+      resolved_by_user_id  TEXT,
+      resolved_at          TEXT,
+      created_at           TEXT NOT NULL,
+      updated_at           TEXT NOT NULL,
+      CONSTRAINT todos_kind_check           CHECK (kind IN ('question', 'action')),
+      CONSTRAINT todos_scope_check          CHECK (scope IN ('session', 'global')),
+      CONSTRAINT todos_status_check         CHECK (status IN ('open', 'done', 'superseded', 'dismissed', 'withdrawn')),
+      CONSTRAINT todos_creator_check        CHECK ((created_worker_id IS NOT NULL AND created_user_id IS NULL) OR (created_worker_id IS NULL AND created_user_id IS NOT NULL)),
+      CONSTRAINT todos_agent_session_check  CHECK (created_worker_id IS NULL OR session_id IS NOT NULL),
+      CONSTRAINT todos_session_scope_check  CHECK (scope <> 'session' OR session_id IS NOT NULL),
+      CONSTRAINT todos_question_scope_check CHECK (kind <> 'question' OR scope = 'session')
+    )
+  `.execute(database);
+
+  await sql`CREATE INDEX IF NOT EXISTS idx_todos_status_assignee ON todos (status, assignee_user_id)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_todos_session_status ON todos (session_id, status)`.execute(database);
+
+  await sql`PRAGMA user_version = 50`.execute(database);
+
+  logger.info('Migration to v50 completed');
 }
 
 /**

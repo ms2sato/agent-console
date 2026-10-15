@@ -171,6 +171,7 @@ const mcpApp = createMcpApp({
   userRepository: appContext.userRepository,
   artifactRepository: appContext.artifactRepository,
   bookmarkRepository: appContext.bookmarkRepository,
+  todoRepository: appContext.todoRepository,
   broadcastToApp: appContext.broadcastToApp,
   fetchPullRequestUrl: appContext.fetchPullRequestUrl,
   findOpenPullRequest: appContext.findOpenPullRequest,

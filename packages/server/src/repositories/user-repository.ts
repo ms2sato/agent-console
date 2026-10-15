@@ -17,6 +17,13 @@ export interface UserRepository {
   findById(id: string): Promise<AuthUser | null>;
 
   /**
+   * Find a user by their current username. Null when no row matches. Usernames
+   * are mutable (refreshed from the OS), so a caller resolving a name to an id
+   * must store the id, never the name.
+   */
+  findByUsername(username: string): Promise<AuthUser | null>;
+
+  /**
    * Read a user's current OS uid by id, without any write. `undefined` means
    * no row exists for `id` (should be unreachable in practice --
    * `shared_accounts` has an ON DELETE CASCADE FK to `users` -- but callers

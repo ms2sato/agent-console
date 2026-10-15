@@ -3,6 +3,7 @@ import type { InternalSession } from './internal-types.js';
 import type { Database } from '../database/schema.js';
 import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { SessionRepository } from '../repositories/index.js';
+import type { TodoRepository } from '../repositories/todo-repository.js';
 import type { WorkerManager } from './worker-manager.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import type { MessageService } from './message-service.js';
@@ -30,6 +31,11 @@ export interface SessionDeletionDeps {
    * transaction on. Absent: the two writes run separately, as before.
    */
   db?: Kysely<Database> | null;
+  /**
+   * Withdraws the deleted session's open session-scoped TODO items in the same
+   * transaction as the row delete. Absent: no TODO items are touched.
+   */
+  todoRepository?: TodoRepository | null;
   notificationManager: NotificationManager | null;
   messageService: MessageService;
   interSessionMessageService: InterSessionMessageService;
@@ -93,20 +99,33 @@ export class SessionDeletionService {
    * so a failed row delete cannot leave a live session whose output files are
    * already scheduled for deletion. With no job queue or no scope there is
    * nothing to schedule and the row delete runs alone. The transaction body is
-   * exactly the two statements: process and filesystem work stays outside it.
+   * exactly the statements below: process and filesystem work stays outside it.
    * The queue is woken after commit because an enqueue on a transaction does
    * not emit by itself.
    *
-   * Without an injected `db` the two writes run separately (enqueue first, as
+   * Every path that deletes the row also withdraws the session's open
+   * session-scoped TODO items (`TodoRepository.withdrawOpenSessionScoped`), in
+   * the same transaction wherever one exists, so no open item outlives the
+   * session that was its only audience.
+   *
+   * Without an injected `db` the writes run separately (enqueue first, as
    * before) and a warning says so.
    */
   private async deleteRowWithCleanupJob(
     id: string,
     scopeInfo: { scope: 'quick' | 'repository'; slug: string | null } | null,
   ): Promise<void> {
-    const { jobQueue, db, sessionRepository } = this.deps;
+    const { jobQueue, db, sessionRepository, todoRepository } = this.deps;
     if (!jobQueue || !scopeInfo) {
+      if (db && todoRepository) {
+        await db.transaction().execute(async (trx) => {
+          await sessionRepository.delete(id, trx);
+          await todoRepository.withdrawOpenSessionScoped(id, trx);
+        });
+        return;
+      }
       await sessionRepository.delete(id);
+      await todoRepository?.withdrawOpenSessionScoped(id);
       return;
     }
     const payload = { sessionId: id, scope: scopeInfo.scope, slug: scopeInfo.slug };
@@ -117,11 +136,13 @@ export class SessionDeletionService {
       );
       await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload);
       await sessionRepository.delete(id);
+      await todoRepository?.withdrawOpenSessionScoped(id);
       return;
     }
     await db.transaction().execute(async (trx) => {
       await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload, { executor: trx });
       await sessionRepository.delete(id, trx);
+      await todoRepository?.withdrawOpenSessionScoped(id, trx);
     });
     jobQueue.wake();
   }

@@ -31,6 +31,7 @@ import type { UserRepository } from '../repositories/user-repository.js';
 import type { RepositoryUpdates } from '../repositories/repository-repository.js';
 import type { ArtifactRepository } from '../repositories/artifact-repository.js';
 import type { BookmarkRepository } from '../repositories/bookmark-repository.js';
+import { TodoSupersedeRefusedError, type TodoRepository } from '../repositories/todo-repository.js';
 import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
@@ -46,6 +47,7 @@ import {
   emitBookmarkDeleted,
 } from '../lib/artifact-bookmark-triggers.js';
 import { toWireBookmark } from '../lib/bookmark-wire.js';
+import { emitTodosUpdated } from '../lib/todo-triggers.js';
 import { serverConfig } from '../lib/server-config.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
 import {
@@ -74,6 +76,10 @@ import {
   canReceiveSessionMessages,
   canReceiveNotifications,
   CreateBookmarkRequestSchema,
+  CreateTodoRequestSchema,
+  TODO_KINDS,
+  TODO_SCOPES,
+  TODO_STATUSES,
   UpdateEmbeddedAgentWorkerRequestSchema,
   SetMcpServerPermissionsRequestSchema,
 } from '@agent-console/shared';
@@ -436,6 +442,12 @@ export interface McpDependencies {
   artifactRepository: ArtifactRepository;
   /** Bookmark repository, backing `create_bookmark` / `delete_bookmark` (see docs/design/session-bookmarks.md). */
   bookmarkRepository: BookmarkRepository;
+  /**
+   * Human TODO list repository, backing `create_todo` / `list_todos` (see
+   * docs/design/human-todo-list.md). Optional so the many MCP tests that never
+   * touch the list keep their deps; the tools return an error result without it.
+   */
+  todoRepository?: TodoRepository;
   broadcastToApp: (msg: AppServerMessage) => void;
   /**
    * Fetch PR URL for a branch. 3rd arg is `requestUsername`, threaded by
@@ -474,7 +486,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, bookmarkRepository, broadcastToApp, findOpenPullRequest } = deps;
+  const { sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, bookmarkRepository, todoRepository, broadcastToApp, findOpenPullRequest } = deps;
 
   // MCP caller identity (spec: docs/design/embedded-agent-worker.md § "MCP
   // caller identity"). The registry defaults to empty and the mode resolves
@@ -2857,6 +2869,185 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, bookmarkId, sessionId }, 'delete_bookmark failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: create_todo ----------
+
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
+  mcpServer.tool(
+    'create_todo',
+    'Add an item to the human TODO list: a question that needs a human answer, or an action a human has to carry out. ' +
+      'Each call appends a new open item (a second call never overwrites the first). Humans resolve or dismiss items in the UI; ' +
+      'agents cannot. `scope` defaults to "session" (ends with this session); use "global" for an action that must survive it. ' +
+      'A question is always session-scoped. `supersedes` names an open item of THIS session that the new item replaces.',
+    {
+      kind: z.enum(TODO_KINDS).describe('"question" (needs an answer) or "action" (needs doing).'),
+      scope: z.enum(TODO_SCOPES).optional().describe(
+        '"session" (default): ends with this session. "global": survives it; not allowed for a question.',
+      ),
+      title: z.string().describe('One line (max 200 characters): the list is scanned by title.'),
+      body: z.string().describe('Markdown: context and recommendation for a question, the command or instructions for an action.'),
+      assigneeUsername: z.string().optional().describe('Optional username of the team member this item is for. Omitted: anyone on the team.'),
+      supersedes: z.string().optional().describe('Optional id of an open item of this session that this item replaces.'),
+      sessionId: z.string().optional().describe(
+        'The session the item belongs to. Optional for embedded agents (defaults to your own session, proven by your ' +
+          'bearer token; a different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
+      ),
+      workerId: z.string().optional().describe(
+        'The worker that hears the resolution. Optional for embedded agents (defaults to your own worker). ' +
+          'Required for terminal agents: your worker id (AGENT_CONSOLE_WORKER_ID in your environment).',
+      ),
+    },
+    async ({
+      kind,
+      scope,
+      title,
+      body,
+      assigneeUsername,
+      supersedes,
+      sessionId: requestedSessionId,
+      workerId: requestedWorkerId,
+    }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedSessionId, workerId: requestedWorkerId },
+        'create_todo',
+      );
+      if (!self.ok) return errorResult(self.error);
+      const { sessionId, workerId } = self;
+
+      try {
+        if (!todoRepository) {
+          return errorResult('The TODO list is not available on this server');
+        }
+
+        // CreateTodoRequestSchema is the single writer of title validation.
+        const parsed = v.safeParse(CreateTodoRequestSchema, { kind, scope, title, body, sessionId });
+        if (!parsed.success) {
+          return errorResult(parsed.issues.map((issue) => issue.message).join('; '));
+        }
+        const resolvedScope = parsed.output.scope ?? 'session';
+        if (parsed.output.kind === 'question' && resolvedScope === 'global') {
+          return errorResult('A question is always session-scoped: scope "global" is not allowed for kind "question"');
+        }
+
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+        if (!canReceiveNotifications(worker)) {
+          return errorResult(
+            `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
+          );
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'create_todo' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        let assigneeUserId: string | null = null;
+        if (assigneeUsername !== undefined) {
+          const assignee = await userRepository.findByUsername(assigneeUsername);
+          if (!assignee) {
+            return errorResult(`No user named ${assigneeUsername}`);
+          }
+          assigneeUserId = assignee.id;
+        }
+
+        const params = {
+          id: randomUUID(),
+          kind: parsed.output.kind,
+          scope: resolvedScope,
+          title: parsed.output.title,
+          body: parsed.output.body,
+          sessionId,
+          createdBy: { workerId },
+          assigneeUserId,
+        };
+        const created = supersedes !== undefined
+          ? await todoRepository.createSuperseding(params, supersedes)
+          : await todoRepository.create(params);
+
+        logger.info({ todoId: created.id, sessionId, workerId, supersedes }, 'Todo created via MCP');
+        emitTodosUpdated(broadcastToApp, sessionId);
+
+        return textResult({ id: created.id });
+      } catch (err) {
+        if (err instanceof TodoSupersedeRefusedError) {
+          return errorResult(err.message);
+        }
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'create_todo failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: list_todos ----------
+
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
+  mcpServer.tool(
+    'list_todos',
+    "List this session's items on the human TODO list, newest first (an empty list is a normal result). " +
+      'Use it to catch up on what humans resolved or dismissed when a notification could not be delivered.',
+    {
+      status: z.enum(TODO_STATUSES).optional().describe('Only items with this status.'),
+      scope: z.enum(TODO_SCOPES).optional().describe('Only items with this scope.'),
+      mine: z.boolean().optional().describe("Only items assigned to this session's user."),
+      sessionId: z.string().optional().describe(
+        'The session whose items to list. Optional for embedded agents (defaults to your own session, proven by your ' +
+          'bearer token; a different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
+      ),
+    },
+    async ({ status, scope, mine, sessionId: requestedSessionId }) => {
+      const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'list_todos');
+      if (!self.ok) return errorResult(self.error);
+      const sessionId = self.sessionId;
+
+      try {
+        if (!todoRepository) {
+          return errorResult('The TODO list is not available on this server');
+        }
+
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'list_todos' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        if (mine && !session.createdBy) {
+          return errorResult(`Session ${sessionId} has no owner; "mine" cannot be resolved`);
+        }
+
+        const todos = await todoRepository.list({
+          sessionId,
+          status,
+          scope,
+          assigneeUserId: mine ? session.createdBy : undefined,
+        });
+        return textResult({ todos });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'list_todos failed');
         return errorResult(message);
       }
     },

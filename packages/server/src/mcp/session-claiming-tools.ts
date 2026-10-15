@@ -23,6 +23,8 @@ export const SESSION_CLAIMING_TOOLS = [
   'delete_html_artifact',
   'create_bookmark',
   'delete_bookmark',
+  'create_todo',
+  'list_todos',
   'set_agent_parameters',
   'set_mcp_server_permission',
   'write_memo',

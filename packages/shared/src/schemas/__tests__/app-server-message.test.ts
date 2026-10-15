@@ -831,6 +831,25 @@ describe('AppServerMessageSchema', () => {
     });
   });
 
+  describe('todos-updated', () => {
+    it('should accept a session id', () => {
+      const output = expectValid({ type: 'todos-updated', sessionId: 'session-1' });
+      expect(output.type).toBe('todos-updated');
+    });
+
+    it('should accept a null session id (an item with no session)', () => {
+      expectValid({ type: 'todos-updated', sessionId: null });
+    });
+
+    it('should reject a missing sessionId', () => {
+      expectInvalid({ type: 'todos-updated' });
+    });
+
+    it('should reject a payload carrying content (trigger-only structural pin)', () => {
+      expectInvalid({ type: 'todos-updated', sessionId: 'session-1', todos: [] });
+    });
+  });
+
   describe('orchestrator-designation-changed', () => {
     it('should accept a payload for the added action', () => {
       const output = expectValid({

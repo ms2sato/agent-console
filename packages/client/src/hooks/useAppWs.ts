@@ -274,6 +274,9 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           logger.debug(`[WebSocket] bookmark-deleted: ${msg.bookmarkId}`);
           optionsRef.current.onBookmarkDeleted?.(msg.sessionId, msg.bookmarkId);
           break;
+        case 'todos-updated':
+          // Trigger-only; the to-do list consumers are wired by the client slice.
+          break;
         case 'schema-version':
           // First-frame wire-schema version. App state is unaffected by this
           // frame; server/client mismatch handling lives in the transport layer.

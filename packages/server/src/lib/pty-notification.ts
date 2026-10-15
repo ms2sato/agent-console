@@ -161,6 +161,18 @@ export interface InternalWorkerInterruptedPtyNotification extends BasePtyNotific
   intent: PtyNotificationIntent;
 }
 
+export interface InternalTodoResolvedPtyNotification extends BasePtyNotificationParams {
+  kind: Extract<PtyNotificationKind, 'internal-todo-resolved'>;
+  tag: 'internal:todo-resolved';
+  fields: {
+    todoId: string;
+    todoKind: string;
+    title: string;
+    resolution: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
   | InternalMessagePtyNotification
@@ -170,7 +182,8 @@ export type WritePtyNotificationParams =
   | InternalProcessPtyNotification
   | InternalConditionalWakeupPtyNotification
   | InternalAgentSpawnFailedPtyNotification
-  | InternalWorkerInterruptedPtyNotification;
+  | InternalWorkerInterruptedPtyNotification
+  | InternalTodoResolvedPtyNotification;
 
 /**
  * Structured PTY-notification params, without the PTY-only `writeInput`

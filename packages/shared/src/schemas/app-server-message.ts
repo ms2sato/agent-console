@@ -623,6 +623,13 @@ const BookmarkDeletedSchema = v.strictObject({
   bookmarkId: v.string(),
 });
 
+// Trigger-only (ids, never content): clients refetch `GET /api/todos`.
+// `sessionId` is null for an item that has no session.
+const TodosUpdatedSchema = v.strictObject({
+  type: v.literal('todos-updated'),
+  sessionId: v.nullable(v.string()),
+});
+
 const OrchestratorDesignationChangedSchema = v.strictObject({
   type: v.literal('orchestrator-designation-changed'),
   repositoryId: v.string(),
@@ -687,6 +694,7 @@ export const AppServerMessageSchema = v.variant('type', [
   ArtifactDeletedSchema,
   BookmarkCreatedSchema,
   BookmarkDeletedSchema,
+  TodosUpdatedSchema,
   OrchestratorDesignationChangedSchema,
   SchemaVersionMessageSchema,
 ]);
