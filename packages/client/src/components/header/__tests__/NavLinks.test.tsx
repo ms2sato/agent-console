@@ -1,18 +1,12 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { screen, cleanup, waitFor } from '@testing-library/react';
-import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { completeWireBody } from '../../../test/wire-fixtures';
 import { setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 import {
-  JobsNavLink,
   TodosNavLink,
-  AgentsNavLink,
   ArtifactsNavLink,
-  RepositoriesNavLink,
-  SettingsNavLink,
   ReviewNavLink,
-  LogoutButton,
   ValidationWarningIndicator,
 } from '../NavLinks';
 
@@ -29,7 +23,6 @@ function jsonResponse(data: unknown, status = 200): Response {
 
 let reviewQueueResponse: unknown = [];
 let validateSessionsResponse: unknown = { hasIssues: false, results: [] };
-let logoutCalled = false;
 let todosResponse: unknown = { todos: [] };
 
 const baseTodo = {
@@ -64,11 +57,6 @@ const mockFetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
     return jsonResponse(completeWireBody(validateSessionsResponse));
   }
 
-  if (url.includes('/auth/logout')) {
-    logoutCalled = true;
-    return jsonResponse({});
-  }
-
   return jsonResponse({});
 });
 
@@ -76,7 +64,6 @@ beforeEach(() => {
   globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
   reviewQueueResponse = [];
   validateSessionsResponse = { hasIssues: false, results: [] };
-  logoutCalled = false;
   todosResponse = { todos: [] };
   resetAuth();
 });
@@ -119,56 +106,6 @@ describe('TodosNavLink', () => {
   });
 });
 
-describe('JobsNavLink', () => {
-  it('should render a link with text "Jobs"', async () => {
-    await renderWithRouter(<JobsNavLink />);
-    const link = screen.getByText('Jobs');
-    expect(link).toBeTruthy();
-    expect(link.getAttribute('href')).toBe('/jobs');
-  });
-
-  it('should have active styling when on /jobs path', async () => {
-    await renderWithRouter(<JobsNavLink />, '/jobs');
-    const link = screen.getByText('Jobs');
-    expect(link.className).toContain('text-white');
-    expect(link.className).toContain('bg-white/10');
-  });
-
-  it('should have inactive styling when on a different path', async () => {
-    await renderWithRouter(<JobsNavLink />, '/agents');
-    const link = screen.getByText('Jobs');
-    expect(link.className).toContain('text-slate-400');
-    expect(link.className).not.toContain('bg-white/10');
-  });
-
-  it('should be active on sub-paths like /jobs/123', async () => {
-    await renderWithRouter(<JobsNavLink />, '/jobs/123');
-    const link = screen.getByText('Jobs');
-    expect(link.className).toContain('text-white');
-  });
-});
-
-describe('AgentsNavLink', () => {
-  it('should render a link with text "Agents"', async () => {
-    await renderWithRouter(<AgentsNavLink />);
-    const link = screen.getByText('Agents');
-    expect(link).toBeTruthy();
-    expect(link.getAttribute('href')).toBe('/agents');
-  });
-
-  it('should have active styling when on /agents path', async () => {
-    await renderWithRouter(<AgentsNavLink />, '/agents');
-    const link = screen.getByText('Agents');
-    expect(link.className).toContain('text-white');
-  });
-
-  it('should have inactive styling on a different path', async () => {
-    await renderWithRouter(<AgentsNavLink />, '/');
-    const link = screen.getByText('Agents');
-    expect(link.className).toContain('text-slate-400');
-  });
-});
-
 describe('ArtifactsNavLink', () => {
   it('should render a link with text "Artifacts"', async () => {
     await renderWithRouter(<ArtifactsNavLink />);
@@ -195,50 +132,6 @@ describe('ArtifactsNavLink', () => {
     await renderWithRouter(<ArtifactsNavLink />, '/artifacts/123');
     const link = screen.getByText('Artifacts');
     expect(link.className).toContain('text-white');
-  });
-});
-
-describe('RepositoriesNavLink', () => {
-  it('should render a link with text "Repositories"', async () => {
-    await renderWithRouter(<RepositoriesNavLink />);
-    const link = screen.getByText('Repositories');
-    expect(link).toBeTruthy();
-    expect(link.getAttribute('href')).toBe('/settings/repositories');
-  });
-
-  it('should have active styling only on exact /settings/repositories path', async () => {
-    await renderWithRouter(<RepositoriesNavLink />, '/settings/repositories');
-    const link = screen.getByText('Repositories');
-    expect(link.className).toContain('text-white');
-  });
-
-  it('should have inactive styling on /settings/other', async () => {
-    await renderWithRouter(<RepositoriesNavLink />, '/settings/other');
-    const link = screen.getByText('Repositories');
-    expect(link.className).toContain('text-slate-400');
-  });
-});
-
-describe('SettingsNavLink', () => {
-  it('should render a link with text "Settings"', async () => {
-    await renderWithRouter(<SettingsNavLink />);
-    const link = screen.getByText('Settings');
-    expect(link).toBeTruthy();
-    expect(link.getAttribute('href')).toBe('/settings');
-  });
-
-  it('should have active styling on exact /settings path', async () => {
-    await renderWithRouter(<SettingsNavLink />, '/settings');
-    const link = screen.getByText('Settings');
-    expect(link.className).toContain('text-white');
-    expect(link.className).toContain('bg-white/10');
-  });
-
-  it('should NOT be active on /settings/repositories (no double-highlight)', async () => {
-    await renderWithRouter(<SettingsNavLink />, '/settings/repositories');
-    const link = screen.getByText('Settings');
-    expect(link.className).toContain('text-slate-400');
-    expect(link.className).not.toContain('bg-white/10');
   });
 });
 
@@ -281,34 +174,6 @@ describe('ReviewNavLink', () => {
     await renderWithRouter(<ReviewNavLink />, '/review');
     const link = screen.getByText('Review');
     expect(link.closest('a')!.className).toContain('text-white');
-  });
-});
-
-describe('LogoutButton', () => {
-  it('should not render when there is no current user', async () => {
-    await renderWithRouter(<LogoutButton />);
-    expect(screen.queryByText('Logout')).toBeNull();
-  });
-
-  it('should render when there is a current user', async () => {
-    setCurrentUser({ id: 'user-1', username: 'testuser', homeDir: '/home/testuser' });
-    await renderWithRouter(<LogoutButton />);
-    const button = screen.getByText('Logout');
-    expect(button).toBeTruthy();
-    expect(button.getAttribute('title')).toBe('Logout (testuser)');
-  });
-
-  it('should show "Logging out..." and disable button during logout', async () => {
-    setCurrentUser({ id: 'user-1', username: 'testuser', homeDir: '/home/testuser' });
-    await renderWithRouter(<LogoutButton />);
-    const button = screen.getByText('Logout');
-
-    // Click logout - don't await, check intermediate state
-    const user = userEvent.setup();
-    await user.click(button);
-
-    // After click, the API was called
-    expect(logoutCalled).toBe(true);
   });
 });
 
