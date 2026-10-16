@@ -5747,7 +5747,49 @@ describe('MCP Server Tools', () => {
         expect(data.exited).toBe(false);
         expect(data).not.toHaveProperty('output');
         expect(data).not.toHaveProperty('exitCode');
-        expect(data.note).toBe(`Still running after 1.5 s. ${PROCESS_WAKES_ITSELF}`);
+        expect(data.note).toBe(`Still running: ${PROCESS_WAKES_ITSELF}`);
+      });
+
+      it('reports exited: false without an elapsed-time claim when output passes the hold cap inside the window', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const started = Date.now();
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: "head -c 70000 /dev/zero | tr '\\0' a; sleep 60",
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        const data = parseToolResult(response) as Record<string, unknown>;
+        expect(data.exited).toBe(false);
+        expect(data).not.toHaveProperty('output');
+        expect(data.note).toBe(`Still running: ${PROCESS_WAKES_ITSELF}`);
+        expect(String(data.note)).not.toMatch(/\d+(\.\d+)? s\b/);
+        // The cap ended the hold well before the 1.5 s window elapsed.
+        expect(Date.now() - started).toBeLessThan(RUN_PROCESS_INLINE_WINDOW_MS);
+      });
+
+      it('reports removed: true and promises no wake-up when the process is killed while run_process is waiting', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const pending = callTool(app, mcpSessionId, 'run_process', {
+          command: 'sleep 60',
+          sessionId,
+          workerId,
+        }, nextId++);
+        const deadline = Date.now() + 1000;
+        while (interactiveProcessManager.listProcesses(sessionId).length === 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        const [running] = interactiveProcessManager.listProcesses(sessionId);
+        expect(running).toBeDefined();
+        const killed = await callTool(app, mcpSessionId, 'kill_process', { processId: running.id }, nextId++);
+        expect(killed.result?.isError).toBeUndefined();
+
+        const data = parseToolResult(await pending) as Record<string, unknown>;
+        expect(data).toMatchObject({ processId: running.id, exited: false, removed: true });
+        expect(String(data.note)).toContain('nothing further will arrive');
+        expect(String(data.note)).not.toContain('reports back on its own');
       });
 
       it('should pass cwd to the spawned process when provided', async () => {

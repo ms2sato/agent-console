@@ -68,7 +68,7 @@ interface StoredProcess {
   /** Open while output is held for an inline result; undefined once released or settled. */
   inlineWindow?: InlineWindow;
   /** Settles with the inline result, or null when the process did not finish inside the window. */
-  inlineResult: Promise<InlineProcessResult | null>;
+  inlineResult: Promise<InlineProcessResult | InlineProcessRemoved | null>;
 }
 
 /**
@@ -81,12 +81,23 @@ export interface InlineProcessResult {
   timedOut: boolean;
 }
 
+/**
+ * Outcome of `awaitInline` when the process was removed (killed, or its session
+ * was deleted) while the window was open: removal suppresses the exit
+ * callback, so nothing further will ever arrive for it.
+ */
+export interface InlineProcessRemoved {
+  removed: true;
+}
+
+const INLINE_PROCESS_REMOVED: InlineProcessRemoved = { removed: true };
+
 /** The open inline window of one process: output is held, not routed. */
 interface InlineWindow {
   held: string;
   heldBytes: number;
   timer: ReturnType<typeof setTimeout>;
-  settle: (result: InlineProcessResult | null) => void;
+  settle: (result: InlineProcessResult | InlineProcessRemoved | null) => void;
 }
 
 export interface ProcessOutputCallback {
@@ -235,7 +246,7 @@ export class InteractiveProcessManager {
       timeoutSeconds * 1000 - 1,
     );
     let inlineWindow: InlineWindow | undefined;
-    let inlineResult: Promise<InlineProcessResult | null> = Promise.resolve(null);
+    let inlineResult: Promise<InlineProcessResult | InlineProcessRemoved | null> = Promise.resolve(null);
     if (inlineMs > 0) {
       inlineResult = new Promise((settle) => {
         inlineWindow = {
@@ -385,14 +396,20 @@ export class InteractiveProcessManager {
 
   /**
    * Resolves with the captured result when the process exited and its streams
-   * drained inside the inline window, or null when the window ended first (or
-   * there was none, or the process is gone). Never rejects.
+   * drained inside the inline window; `{ removed: true }` when it was removed
+   * while the window was open (nothing will arrive for it); null when the
+   * window ended first -- by expiry or by the hold cap, in which case the held
+   * output has been routed and more follows -- or there was none, or the
+   * process is unknown. Never rejects.
    */
-  awaitInline(processId: string): Promise<InlineProcessResult | null> {
+  awaitInline(processId: string): Promise<InlineProcessResult | InlineProcessRemoved | null> {
     return this.processes.get(processId)?.inlineResult ?? Promise.resolve(null);
   }
 
-  private closeInlineWindow(stored: StoredProcess, result: InlineProcessResult | null): void {
+  private closeInlineWindow(
+    stored: StoredProcess,
+    result: InlineProcessResult | InlineProcessRemoved | null,
+  ): void {
     const window = stored.inlineWindow;
     if (!window) return;
     stored.inlineWindow = undefined;
@@ -492,7 +509,7 @@ export class InteractiveProcessManager {
     }
 
     this.clearOutputBuffer(processId);
-    this.closeInlineWindow(stored, null);
+    this.closeInlineWindow(stored, INLINE_PROCESS_REMOVED);
     clearTimeout(stored.timeoutTimer);
 
     try {
@@ -625,7 +642,7 @@ export class InteractiveProcessManager {
     for (const [id, stored] of this.processes) {
       if (stored.info.sessionId === sessionId) {
         this.clearOutputBuffer(id);
-        this.closeInlineWindow(stored, null);
+        this.closeInlineWindow(stored, INLINE_PROCESS_REMOVED);
         clearTimeout(stored.timeoutTimer);
         try {
           this.signalStored(stored, 15);
@@ -650,7 +667,7 @@ export class InteractiveProcessManager {
     this.outputBuffers.clear();
 
     for (const stored of this.processes.values()) {
-      this.closeInlineWindow(stored, null);
+      this.closeInlineWindow(stored, INLINE_PROCESS_REMOVED);
       clearTimeout(stored.timeoutTimer);
       try {
         this.signalStored(stored, 15);

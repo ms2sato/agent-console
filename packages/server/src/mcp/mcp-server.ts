@@ -2060,7 +2060,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
   mcpServer.tool(
     'run_process',
     'Runs a command connected to a session. ' +
-      'A process that finishes within 5 seconds returns its output and exit code HERE, in this result, and sends no further turn. ' +
+      'A process that finishes within 5 seconds returns its output and exit code HERE, in this result, and sends no further turn, unless its output passes 60 KB inside the window, in which case it is delivered as turns like a longer process. ' +
       'A longer process reports back on its own as new turns: its output as it runs, then an exit notice -- or a timeout notice if it runs past timeoutSeconds (default 600), in which case it is killed. ' +
       'The script can drive a workflow via STDOUT and block on STDIN waiting for responses via write_process_response. ' +
       'The worker can be an agent, terminal, or embedded-agent worker. ' +
@@ -2177,6 +2177,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
         };
 
         const inline = await interactiveProcessManager.awaitInline(process.id);
+        if (inline && 'removed' in inline) {
+          return textResult({
+            ...started,
+            exited: false,
+            removed: true,
+            note: 'The process was removed (killed, or its session was deleted) before it finished; nothing further will arrive.',
+          });
+        }
         if (inline) {
           return textResult({
             ...started,
@@ -2189,7 +2197,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
         return textResult({
           ...started,
           exited: false,
-          note: `Still running after ${interactiveProcessManager.inlineWindowMs / 1000} s. ${PROCESS_WAKES_ITSELF}`,
+          note: `Still running: ${PROCESS_WAKES_ITSELF}`,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';

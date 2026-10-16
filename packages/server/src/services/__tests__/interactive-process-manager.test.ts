@@ -1940,14 +1940,14 @@ describe('InteractiveProcessManager', () => {
       ['deleteProcessesBySession', (m: InteractiveProcessManager) => void m.deleteProcessesBySession(target.sessionId)],
       ['disposeAll', (m: InteractiveProcessManager) => void m.disposeAll()],
     ] as const)('removing the process inside its window via %s', (_name, remove) => {
-      it('settles an already-captured inline result as null and routes nothing', async () => {
+      it('settles an already-captured inline result as removed and routes nothing', async () => {
         const info = await manager.runProcess({ ...target, command: 'echo held; sleep 30' });
         const inline = manager.awaitInline(info.id);
         await sleep(200);
 
         remove(manager, info.id);
 
-        expect(await inline).toBeNull();
+        expect(await inline).toEqual({ removed: true });
         await sleep(InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 150);
         expect(onOutput).not.toHaveBeenCalled();
         expect(onExit).not.toHaveBeenCalled();
