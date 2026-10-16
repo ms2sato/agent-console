@@ -18,7 +18,7 @@ A web application for managing multiple AI coding agent instances running in dif
 - **Git Worktree Integration**: Create and delete git worktrees directly from the UI; add a repository by cloning from a URL (optionally as a bare repository) or by registering an existing path
 - **Diff Review with Annotations**: A git-diff worker shows a worktree's changes; agents can push review annotations that appear in the diff in real time, and the Review page lists pending reviews
 - **Session Memo**: Agents write Markdown memos for a session; fenced code blocks have a one-click Copy control, and the memo's command blocks can be run in the session's terminal after a confirmation
-- **Human To-do List**: A To-do page and a per-session panel where agents leave questions and actions that need a human, and humans resolve or dismiss them
+- **Human Todo List**: A Todo page and a per-session panel where agents leave questions and actions that need a human, and humans resolve or dismiss them
 - **Bookmarks and HTML Artifacts**: Agents register URLs as session bookmarks and publish self-contained HTML pages that you open from the session sidebar or the Artifacts page
 - **Timers and Conditional Wakeups**: Periodic timers (with optional exponential backoff) and silent polling wakeups that notify an agent only when a shell condition becomes true
 - **Notifications and Integrations**: A notification center, per-repository Slack notifications, and inbound GitHub webhook events (see [GitHub Webhook Integration](#github-webhook-integration-inbound-events))
@@ -300,8 +300,9 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 |------|-------------|
 | `send_session_message` | Send a message to a worker in another session (file-based with PTY notification) |
 | `write_memo` | Write a Markdown memo for a session, visible in the UI |
-| `create_todo` | Add an item to the human To-do list: a question that needs a human answer, or an action a human has to carry out |
-| `list_todos` | List this session's To-do items, newest first (to catch up on what humans resolved or dismissed) |
+| `create_todo` | Add an item to the human Todo list: a question that needs a human answer, or an action a human has to carry out |
+| `list_todos` | List this session's Todo items, newest first (to catch up on what humans resolved or dismissed) |
+| `resolve_todo` | Mark items of this session done on the strength of a human's words (the human's statement quoted), for example when the human answered in chat; several items can be resolved in one call |
 
 #### Timer and Wakeup
 
