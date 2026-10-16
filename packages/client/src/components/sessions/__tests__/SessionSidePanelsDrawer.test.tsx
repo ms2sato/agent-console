@@ -255,8 +255,8 @@ describe('SessionSidePanelsDrawer', () => {
         return base(input);
       });
       await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
-      const todoHeader = await screen.findByLabelText('Collapse To-do');
-      expect(screen.getByText('To-do (1)')).toBeTruthy();
+      const todoHeader = await screen.findByLabelText('Collapse Todo');
+      expect(screen.getByText('Todo (1)')).toBeTruthy();
       expect(screen.getByText(TODO_TITLE)).toBeTruthy();
       expect(
         screen.getByLabelText('Collapse Memo').compareDocumentPosition(todoHeader) & Node.DOCUMENT_POSITION_FOLLOWING

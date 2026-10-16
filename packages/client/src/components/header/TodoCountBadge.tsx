@@ -12,7 +12,7 @@ export function TodoCountBadge() {
       >
         {count}
       </span>
-      <span className="sr-only">{count} open to-do items assigned to you</span>
+      <span className="sr-only">{count} open Todo items assigned to you</span>
     </>
   );
 }

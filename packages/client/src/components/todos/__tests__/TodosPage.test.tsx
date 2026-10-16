@@ -83,7 +83,7 @@ describe('TodosPage', () => {
     it('shows the empty state', async () => {
       await renderPage();
 
-      await waitFor(() => expect(screen.getByText('No to-do items found')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('No Todo items found')).toBeTruthy());
     });
 
     it('shows an error state when the list cannot be fetched', async () => {
@@ -91,7 +91,7 @@ describe('TodosPage', () => {
       api.state.todos = [{ bad: true } as never];
       await renderPage();
 
-      await waitFor(() => expect(screen.getByText('Failed to load to-do items')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('Failed to load Todo items')).toBeTruthy());
     });
   });
 

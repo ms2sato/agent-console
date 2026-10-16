@@ -64,9 +64,9 @@ export function TodosPage() {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <PageBreadcrumb items={[{ label: 'Agent Console', to: '/' }, { label: 'To-do' }]} />
+      <PageBreadcrumb items={[{ label: 'Agent Console', to: '/' }, { label: 'Todo' }]} />
 
-      <h1 className="text-2xl font-semibold mb-6">To-do</h1>
+      <h1 className="text-2xl font-semibold mb-6">Todo</h1>
 
       <AddTodoForm users={users} knownSessionIds={sessionIdsOf(fetched)} onError={showError} />
 
@@ -128,13 +128,13 @@ export function TodosPage() {
       {isLoading && (
         <div className="flex items-center gap-2 text-gray-500">
           <Spinner size="sm" />
-          <span>Loading to-do items...</span>
+          <span>Loading Todo items...</span>
         </div>
       )}
 
       {!isLoading && error && (
         <div className="card text-center py-10">
-          <p className="text-red-400 mb-4">Failed to load to-do items</p>
+          <p className="text-red-400 mb-4">Failed to load Todo items</p>
           <button onClick={() => refetch()} className="btn btn-primary">
             Retry
           </button>
@@ -151,7 +151,7 @@ export function TodosPage() {
 
       {!isLoading && !error && visible.length === 0 && (
         <div className="card text-center py-10">
-          <p className="text-gray-500">No to-do items found</p>
+          <p className="text-gray-500">No Todo items found</p>
         </div>
       )}
 

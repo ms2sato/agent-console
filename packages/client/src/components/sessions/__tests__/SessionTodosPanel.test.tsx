@@ -90,7 +90,7 @@ describe('SessionTodosPanel', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(container.textContent).toBe('');
-    expect(screen.queryByLabelText('Collapse To-do')).toBeNull();
+    expect(screen.queryByLabelText('Collapse Todo')).toBeNull();
   });
 
   it('renders nothing when the list holds only done items (zero OPEN items)', async () => {
@@ -124,7 +124,7 @@ describe('SessionTodosPanel', () => {
 
     await renderPanel();
 
-    expect(await screen.findByText('To-do (2)')).toBeTruthy();
+    expect(await screen.findByText('Todo (2)')).toBeTruthy();
     expect(screen.getByText('Open one')).toBeTruthy();
     expect(screen.getByText('Done one')).toBeTruthy();
     expect(screen.getByText('Open global')).toBeTruthy();
@@ -141,7 +141,7 @@ describe('SessionTodosPanel', () => {
     );
 
     await renderPanel();
-    await screen.findByText('To-do (1)');
+    await screen.findByText('Todo (1)');
 
     expect(screen.getAllByLabelText('Scope: session')).toHaveLength(1);
     expect(screen.getAllByLabelText('Scope: global')).toHaveLength(1);
@@ -204,7 +204,7 @@ describe('SessionTodosPanel', () => {
       <SessionTodosPanel sessionId="session-1" isExpanded onToggleExpanded={onToggle} compact={false} />
     );
 
-    fireEvent.click(await screen.findByLabelText('Collapse To-do'));
+    fireEvent.click(await screen.findByLabelText('Collapse Todo'));
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
@@ -213,8 +213,8 @@ describe('SessionTodosPanel', () => {
 
     await renderPanel({ compact: true });
 
-    expect(await screen.findByLabelText('Expand to-do')).toBeTruthy();
-    expect(screen.getByText('To-do (1)')).toBeTruthy();
+    expect(await screen.findByLabelText('Expand Todo')).toBeTruthy();
+    expect(screen.getByText('Todo (1)')).toBeTruthy();
     expect(screen.queryByText('Run the migration')).toBeNull();
   });
 

@@ -218,7 +218,7 @@ describe('SessionSidePanels', () => {
 
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
 
-    expect(await screen.findByText('To-do (1)')).toBeTruthy();
+    expect(await screen.findByText('Todo (1)')).toBeTruthy();
     expect(screen.getByText(TODO_TITLE)).toBeTruthy();
   });
 
@@ -228,7 +228,7 @@ describe('SessionSidePanels', () => {
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
 
     await waitFor(() => expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy());
-    expect(screen.queryByLabelText('Collapse To-do')).toBeNull();
+    expect(screen.queryByLabelText('Collapse Todo')).toBeNull();
   });
 
   it('the rail toggle button flips between the wide and narrow rail classes', async () => {

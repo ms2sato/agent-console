@@ -1573,7 +1573,7 @@ describe('API Client', () => {
     it('throws error on failure', async () => {
       mockFetch.mockResolvedValue(createMockResponse({}, { status: 500, ok: false }));
 
-      await expect(fetchTodos()).rejects.toThrow('Failed to fetch to-do items');
+      await expect(fetchTodos()).rejects.toThrow('Failed to fetch Todo items');
     });
   });
 

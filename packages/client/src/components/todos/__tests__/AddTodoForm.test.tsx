@@ -108,7 +108,7 @@ describe('AddTodoForm', () => {
     await user.type(screen.getByLabelText('Session id'), 'session-gone');
     await user.click(screen.getByRole('button', { name: 'Add' }));
 
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Add To-do', 'Session not found'));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Add Todo', 'Session not found'));
     expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Orphan');
   });
 });

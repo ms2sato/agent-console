@@ -44,7 +44,7 @@ export function AddTodoForm({ users, knownSessionIds, onError }: AddTodoFormProp
       setAssigneeUserId(UNASSIGNED_VALUE);
       await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
     },
-    onError: (err: Error) => onError('Failed to Add To-do', err.message),
+    onError: (err: Error) => onError('Failed to Add Todo', err.message),
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -54,7 +54,7 @@ export function AddTodoForm({ users, knownSessionIds, onError }: AddTodoFormProp
   };
 
   return (
-    <form onSubmit={handleSubmit} aria-label="Add to-do" className="card mb-6 flex flex-col gap-2">
+    <form onSubmit={handleSubmit} aria-label="Add Todo" className="card mb-6 flex flex-col gap-2">
       <div className="flex gap-2 flex-wrap">
         <select
           aria-label="Kind"

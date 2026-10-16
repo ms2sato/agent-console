@@ -1137,7 +1137,7 @@ const NOTIFICATION_KIND_LABELS = {
   'internal-conditional-wakeup': 'Conditional Wakeup',
   'internal-agent-spawn-failed': 'Agent Spawn Failed',
   'internal-worker-interrupted': 'Worker Interrupted',
-  'internal-todo-resolved': 'To-do Resolved',
+  'internal-todo-resolved': 'Todo Resolved',
 } satisfies Record<PtyNotificationKind, string>;
 
 /** Cap (in characters) for the fallback preview derived from a notification's raw text -- see notificationPreviewText. */

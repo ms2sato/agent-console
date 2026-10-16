@@ -166,7 +166,7 @@ describe('TodoRow', () => {
 
       await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
       expect(onError).toHaveBeenCalledWith(
-        'Failed to Resolve To-do',
+        'Failed to Resolve Todo',
         'Resolving a question requires a non-empty text (the answer)',
       );
     });
@@ -194,7 +194,7 @@ describe('TodoRow', () => {
 
       await user.click(screen.getByRole('button', { name: 'Dismiss' }));
 
-      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Dismiss To-do', 'The item is no longer open'));
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Dismiss Todo', 'The item is no longer open'));
     });
   });
 
@@ -232,7 +232,7 @@ describe('TodoRow', () => {
       const dialog = await screen.findByRole('alertdialog');
       await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
-      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Delete To-do', 'Todo not found'));
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Delete Todo', 'Todo not found'));
     });
   });
 
@@ -276,7 +276,7 @@ describe('TodoRow', () => {
 
       await user.selectOptions(screen.getByLabelText(`Assignee for ${todo.title}`), BOB.id);
 
-      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Assign To-do', 'User not found'));
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Assign Todo', 'User not found'));
     });
   });
 
@@ -320,7 +320,7 @@ describe('TodoRow', () => {
 
       await user.click(screen.getByRole('button', { name: 'Make global' }));
 
-      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Re-scope To-do', 'Session not found'));
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Re-scope Todo', 'Session not found'));
     });
 
     it('offers no re-scope for a question (always session-scoped)', async () => {

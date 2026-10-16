@@ -54,12 +54,12 @@ export function TodoRow({ todo, users, onError }: TodoRowProps) {
       setResolutionText('');
       await settled();
     },
-    onError: failed('Failed to Resolve To-do'),
+    onError: failed('Failed to Resolve Todo'),
   });
   const dismissMutation = useMutation({
     mutationFn: () => dismissTodo(todo.id),
     onSuccess: settled,
-    onError: failed('Failed to Dismiss To-do'),
+    onError: failed('Failed to Dismiss Todo'),
   });
   const deleteMutation = useMutation({
     mutationFn: () => deleteTodo(todo.id),
@@ -69,13 +69,13 @@ export function TodoRow({ todo, users, onError }: TodoRowProps) {
     },
     onError: (err: Error) => {
       setConfirmDelete(false);
-      onError('Failed to Delete To-do', err.message);
+      onError('Failed to Delete Todo', err.message);
     },
   });
   const assignMutation = useMutation({
     mutationFn: (assigneeUserId: string | null) => updateTodo(todo.id, { assigneeUserId }),
     onSuccess: settled,
-    onError: failed('Failed to Assign To-do'),
+    onError: failed('Failed to Assign Todo'),
   });
   const reScopeMutation = useMutation({
     mutationFn: (patch: { scope: 'session' | 'global'; sessionId?: string }) => updateTodo(todo.id, patch),
@@ -84,7 +84,7 @@ export function TodoRow({ todo, users, onError }: TodoRowProps) {
       setSessionIdInput('');
       await settled();
     },
-    onError: failed('Failed to Re-scope To-do'),
+    onError: failed('Failed to Re-scope Todo'),
   });
 
   const handleResolve = () => {
@@ -249,7 +249,7 @@ export function TodoRow({ todo, users, onError }: TodoRowProps) {
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={(open) => !open && setConfirmDelete(false)}
-        title="Delete To-do"
+        title="Delete Todo"
         description={`Are you sure you want to delete "${todo.title}"? This cannot be undone.`}
         confirmLabel="Delete"
         variant="danger"

@@ -76,10 +76,10 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
       <button
         onClick={onToggleExpanded}
         className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
-        title="Expand to-do"
-        aria-label="Expand to-do"
+        title="Expand Todo"
+        aria-label="Expand Todo"
       >
-        <span className="text-xs" style={{ writingMode: 'vertical-rl' }}>To-do ({openCount})</span>
+        <span className="text-xs" style={{ writingMode: 'vertical-rl' }}>Todo ({openCount})</span>
       </button>
     );
   }
@@ -91,10 +91,10 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
           type="button"
           onClick={onToggleExpanded}
           aria-expanded={isExpanded}
-          aria-label={isExpanded ? 'Collapse To-do' : 'Expand To-do'}
+          aria-label={isExpanded ? 'Collapse Todo' : 'Expand Todo'}
           className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
         >
-          To-do ({openCount})
+          Todo ({openCount})
         </button>
       </div>
       <AccordionSectionBody isExpanded={isExpanded}>
