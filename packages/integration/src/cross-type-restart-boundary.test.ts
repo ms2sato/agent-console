@@ -43,7 +43,7 @@ import type {
 } from '@agent-console/server/src/services/privilege-elevation';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 
-import { AppServerMessageSchema, type AppServerMessage } from '@agent-console/shared';
+import { AppServerMessageSchema, WorkerResponseSchema, type AppServerMessage } from '@agent-console/shared';
 
 /**
  * Fake spawnAsUser for the embedded-agent loop subprocess, so activation
@@ -185,10 +185,14 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
     });
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { worker: { id: string; type: string; embeddedAgentId?: string } };
+    const rawResponseBody = await res.json();
+    // The real route body passes the strict wire schema the client parses it with, and the
+    // same body plus one extra field does not.
+    expect(v.safeParse(WorkerResponseSchema, { ...(rawResponseBody as object), extra: true }).success).toBe(false);
+    const body = v.parse(WorkerResponseSchema, rawResponseBody);
     expect(body.worker.id).toBe(ptyWorker.id);
     expect(body.worker.type).toBe('embedded-agent');
-    expect(body.worker.embeddedAgentId).toBe(def.id);
+    expect(body.worker.type === 'embedded-agent' && body.worker.embeddedAgentId).toBe(def.id);
 
     // Persisted row: type flips to 'embedded-agent' (real DB read through the
     // real production mapper, same pattern as

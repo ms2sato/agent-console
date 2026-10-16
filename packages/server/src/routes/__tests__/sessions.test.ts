@@ -16,7 +16,8 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SingleUserMode } from '../../services/user-mode.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
-import { SessionManager } from '../../services/session-manager.js';
+import { SessionManager, type RestartAllAgentWorkersResult } from '../../services/session-manager.js';
+import type { RestartAllAgentsResponse } from '@agent-console/shared';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
@@ -25,6 +26,15 @@ import { serverConfig } from '../../lib/server-config.js';
 import { RepositoryManager } from '../../services/repository-manager.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
+
+// Type pin: the client's wire schema for POST /api/sessions/restart-all-agents must stay
+// identical to what the route serializes (`c.json(result)` of the server-side interface,
+// which is not importable from shared). Drift in either direction fails `tsc` with TS2344.
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _RestartAllAgentsResponseMatchesServerResult = Assert<
+  Equals<RestartAllAgentsResponse, RestartAllAgentWorkersResult>
+>;
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
