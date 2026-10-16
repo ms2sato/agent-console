@@ -139,6 +139,53 @@ describe('SqliteTodoRepository', () => {
     });
   });
 
+  describe('adopt', () => {
+    it('moves session_id and created_worker_id of an agent-created open item and bumps updatedAt', async () => {
+      const created = await repository.create(
+        params({ scope: 'global', sessionId: 'session-1', createdBy: { workerId: 'worker-1' } }),
+      );
+      await new Promise((r) => setTimeout(r, 5));
+
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2' });
+
+      expect(adopted).toMatchObject({
+        sessionId: 'session-2',
+        createdBy: { workerId: 'worker-2' },
+        scope: 'global',
+        status: 'open',
+        title: 'Do the thing',
+      });
+      expect(adopted!.updatedAt > created.updatedAt).toBe(true);
+      expect(await repository.findById('todo-1')).toEqual(adopted);
+    });
+
+    it('moves only session_id of a human-created item: its creator stays the human and no worker is set', async () => {
+      await repository.create(params({ createdBy: { userId: 'user-1' } }));
+
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2' });
+
+      expect(adopted).toMatchObject({ sessionId: 'session-2', createdBy: { userId: 'user-1' } });
+      expect(adopted!.createdBy).not.toHaveProperty('workerId');
+    });
+
+    it('returns null for an unknown id and for every non-open status, leaving the row untouched', async () => {
+      expect(await repository.adopt('missing', { sessionId: 'session-2', workerId: 'worker-2' })).toBeNull();
+
+      for (const [id, close] of [
+        ['done', () => repository.resolve('done', { text: 'ok', resolvedByUserId: 'user-1' })],
+        ['dismissed', () => repository.dismiss('dismissed')],
+        ['superseded', () => repository.markSuperseded('superseded', 'session-1')],
+      ] as const) {
+        await repository.create(params({ id, createdBy: { workerId: 'worker-1' } }));
+        await close();
+        const before = await repository.findById(id);
+
+        expect(await repository.adopt(id, { sessionId: 'session-2', workerId: 'worker-2' })).toBeNull();
+        expect(await repository.findById(id)).toEqual(before);
+      }
+    });
+  });
+
   describe('resolve', () => {
     it('marks the item done with the text, resolver and time', async () => {
       await repository.create(params({ kind: 'question' }));

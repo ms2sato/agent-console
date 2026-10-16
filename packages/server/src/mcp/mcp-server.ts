@@ -3026,18 +3026,25 @@ export function createMcpApp(deps: McpDependencies): Hono {
   mcpServer.tool(
     'list_todos',
     "List this session's items on the human TODO list, newest first (an empty list is a normal result). " +
-      'Use it to catch up on what humans resolved or dismissed when a notification could not be delivered.',
+      'Use it to catch up on what humans resolved or dismissed when a notification could not be delivered. ' +
+      "With `global: true` it lists every session's `global` items instead (a successor session catching up on its " +
+      "predecessor); take one over with `adopt_todo`.",
     {
       status: z.enum(TODO_STATUSES).optional().describe('Only items with this status.'),
       scope: z.enum(TODO_SCOPES).optional().describe('Only items with this scope.'),
       mine: z.boolean().optional().describe("Only items assigned to this session's user."),
+      global: z.boolean().optional().describe(
+        "Also list other sessions' `global` items (a successor Orchestrator catching up on its predecessor): " +
+          'with true, the result is every `global` item of every session, not only this one\'s. ' +
+          'Session-scoped items stay private to their session.',
+      ),
       sessionId: z.string().optional().describe(
         'The session whose items to list. Optional for embedded agents (defaults to your own session, proven by your ' +
           'bearer token; a different value is refused). Required for terminal agents: your session id ' +
           '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
     },
-    async ({ status, scope, mine, sessionId: requestedSessionId }) => {
+    async ({ status, scope, mine, global: includeGlobal, sessionId: requestedSessionId }) => {
       const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'list_todos');
       if (!self.ok) return errorResult(self.error);
       const sessionId = self.sessionId;
@@ -3062,11 +3069,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (mine && !session.createdBy) {
           return errorResult(`Session ${sessionId} has no owner; "mine" cannot be resolved`);
         }
+        if (includeGlobal && scope === 'session') {
+          return errorResult("global: true lists global items only; scope 'session' cannot be combined");
+        }
 
         const todos = await todoRepository.list({
-          sessionId,
+          // Team-wide on purpose, like GET /api/todos?scope=global: no session filter and no owner filter.
+          sessionId: includeGlobal ? undefined : sessionId,
           status,
-          scope,
+          scope: includeGlobal ? 'global' : scope,
           assigneeUserId: mine ? session.createdBy : undefined,
         });
         return textResult({ todos });
@@ -3170,6 +3181,100 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'resolve_todo failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: adopt_todo ----------
+
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
+  mcpServer.tool(
+    'adopt_todo',
+    "Take over an OPEN item of the human TODO list from another session (a successor session picking up its " +
+      "predecessor's open questions): the item moves to THIS session and, when an agent created it, to THIS worker, " +
+      'so the human\'s resolution is delivered to you. Nothing else about the item changes, and nothing is delivered ' +
+      'now. Re-adopting your own item succeeds without a change. Refused: an unknown id, an item that is not open, ' +
+      "and an item of a session owned by another user. The ownership check needs the creating session to still exist " +
+      'and the caller to carry a bearer token; without either it cannot run and the adoption proceeds.',
+    {
+      id: z.string().describe('The id of the open item to take over (from `list_todos` or the handoff memo).'),
+      sessionId: z.string().optional().describe(
+        'The session that takes the item over. Optional for embedded agents (defaults to your own session, proven by your ' +
+          'bearer token; a different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
+      ),
+      workerId: z.string().optional().describe(
+        'The worker that hears the resolution. Optional for embedded agents (defaults to your own worker). ' +
+          'Required for terminal agents: your worker id (AGENT_CONSOLE_WORKER_ID in your environment).',
+      ),
+    },
+    async ({ id, sessionId: requestedSessionId, workerId: requestedWorkerId }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedSessionId, workerId: requestedWorkerId },
+        'adopt_todo',
+      );
+      if (!self.ok) return errorResult(self.error);
+      const { sessionId, workerId } = self;
+
+      try {
+        if (!todoRepository) {
+          return errorResult('The TODO list is not available on this server');
+        }
+
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'adopt_todo' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const todo = await todoRepository.findById(id);
+        if (!todo) {
+          return errorResult(`Todo not found: ${id}`);
+        }
+        if (todo.status !== 'open') {
+          return errorResult(`Cannot adopt ${id}: its status is ${todo.status}, only an open item can be adopted`);
+        }
+        if (todo.sessionId === sessionId) {
+          return textResult({ todo });
+        }
+
+        // The creating session's owner is compared with the caller's token user. When the creating
+        // session no longer exists, or the caller has no token identity, the comparison cannot run.
+        const callerUserId = getMcpCallerIdentity()?.userId;
+        if (todo.sessionId !== null && callerUserId !== undefined) {
+          const creatingSession =
+            sessionManager.getSession(todo.sessionId) ?? (await sessionManager.getPersistedSession(todo.sessionId));
+          if (creatingSession?.createdBy !== undefined && creatingSession.createdBy !== callerUserId) {
+            return errorResult(`Cannot adopt ${id}: the item belongs to a session owned by another user`);
+          }
+        }
+
+        const adopted = await todoRepository.adopt(id, { sessionId, workerId });
+        if (!adopted) {
+          return errorResult(`Cannot adopt ${id}: it is no longer an open item`);
+        }
+
+        logger.info({ todoId: id, fromSessionId: todo.sessionId, sessionId, workerId }, 'Todo adopted via MCP');
+        emitTodosUpdated(broadcastToApp, todo.sessionId);
+        emitTodosUpdated(broadcastToApp, sessionId);
+
+        return textResult({ todo: adopted });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'adopt_todo failed');
         return errorResult(message);
       }
     },

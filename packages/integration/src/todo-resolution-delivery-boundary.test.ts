@@ -12,6 +12,13 @@
  *
  * The delivery is fire-and-forget, so the tests poll for the frame with a
  * bounded wait.
+ *
+ * The handoff scenarios add the REAL `/mcp` app (`createMcpApp`, enforce mode):
+ * a successor worker calls `adopt_todo` with the bearer token the real
+ * activation minted for it (read from its `init` command), so the item is
+ * re-targeted through the production path before the human resolves it.
+ * Recorded proxies: the loop subprocess is a fake that records stdin, and the
+ * route is driven with `app.request` rather than a socket.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as v from 'valibot';
@@ -32,9 +39,24 @@ import { EmbeddedAgentManager } from '@agent-console/server/src/services/embedde
 import { SqliteEmbeddedAgentRepository } from '@agent-console/server/src/repositories/sqlite-embedded-agent-repository';
 import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
 import { SqliteTodoRepository } from '@agent-console/server/src/repositories/sqlite-todo-repository';
+import { SqliteArtifactRepository } from '@agent-console/server/src/repositories/sqlite-artifact-repository';
+import { SqliteBookmarkRepository } from '@agent-console/server/src/repositories/sqlite-bookmark-repository';
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
+import { createMcpApp } from '@agent-console/server/src/mcp/mcp-server';
+import { initializeMcp, callTool, parseToolResult } from '@agent-console/server/src/mcp/__tests__/mcp-protocol-test-helpers';
+import { AgentDirectory } from '@agent-console/server/src/services/agent-directory';
+import { TimerManager } from '@agent-console/server/src/services/timer-manager';
+import { ConditionalWakeupManager } from '@agent-console/server/src/services/conditional-wakeup-manager';
+import { InteractiveProcessManager } from '@agent-console/server/src/services/interactive-process-manager';
+import { InterSessionMessageService } from '@agent-console/server/src/services/inter-session-message-service';
+import { WorktreeService } from '@agent-console/server/src/services/worktree-service';
+import { RepositoryManager } from '@agent-console/server/src/services/repository-manager';
+import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
+import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
+import type { SuggestSessionMetadataFn } from '@agent-console/server/src/services/session-metadata-suggester';
+import { createEmptyEmbeddedAgentSurface } from './test-utils';
 import { todos } from '@agent-console/server/src/routes/todos';
 import { authMiddleware } from '@agent-console/server/src/middleware/auth';
 import { onApiError } from '@agent-console/server/src/lib/error-handler';
@@ -52,28 +74,35 @@ function makeFakeSpawn(): {
   fn: SpawnAsUserFn;
   captured: SpawnAsUserOpts[];
   stdinWrites: string[];
+  /** Stdin writes of each spawn, in spawn order (one entry per activated worker). */
+  perSpawn: string[][];
 } {
   const captured: SpawnAsUserOpts[] = [];
   const stdinWrites: string[] = [];
+  const perSpawn: string[][] = [];
   const stdout = new ReadableStream<Uint8Array>({ start() {} });
   const stderr = new ReadableStream<Uint8Array>({ start() {} });
   const exited = new Promise<number>(() => {
     // Never resolves: these tests never deactivate the worker.
   });
-  const stdin: FakeFileSink = {
-    write: (chunk: string | Uint8Array) => {
-      stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
-      return 0;
-    },
-    end: () => 0,
-    flush: () => 0,
-  };
-  const subprocess: FakeSubprocess = { pid: 9999, exited, stdin, stdout, stderr, kill: () => {} };
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
+    const writes: string[] = [];
+    perSpawn.push(writes);
+    const stdin: FakeFileSink = {
+      write: (chunk: string | Uint8Array) => {
+        const text = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+        stdinWrites.push(text);
+        writes.push(text);
+        return 0;
+      },
+      end: () => 0,
+      flush: () => 0,
+    };
+    const subprocess: FakeSubprocess = { pid: 9999, exited, stdin, stdout, stderr, kill: () => {} };
     return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
-  return { fn, captured, stdinWrites };
+  return { fn, captured, stdinWrites, perSpawn };
 }
 
 async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
@@ -109,6 +138,8 @@ describe('Boundary: resolving an agent-created TODO notifies the creating embedd
   let fake: ReturnType<typeof makeFakeSpawn>;
   let todoRepository: SqliteTodoRepository;
   let app: Hono<AppBindings>;
+  let mcpApp: Hono;
+  let mcpSessionId: string;
   let resolver: AuthUser;
 
   beforeEach(async () => {
@@ -129,6 +160,8 @@ describe('Boundary: resolving an agent-created TODO notifies the creating embedd
     embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(db));
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
+    const mcpTokenRegistry = new McpTokenRegistry();
+
     sessionManager = await SessionManager.create({
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
@@ -137,7 +170,7 @@ describe('Boundary: resolving an agent-created TODO notifies the creating embedd
       agentManager,
       embeddedAgentManager,
       annotationService: new AnnotationService(),
-      mcpTokenRegistry: new McpTokenRegistry(),
+      mcpTokenRegistry,
       repositoryLookup: defaultRepositoryLookup,
       repositoryEnvLookup: defaultRepositoryEnvLookup,
       spawnAsUserFn: fake.fn,
@@ -163,6 +196,41 @@ describe('Boundary: resolving an agent-created TODO notifies the creating embedd
     app.use('*', authMiddleware);
     app.onError(onApiError);
     app.route('/api/todos', todos);
+
+    mcpApp = new Hono();
+    mcpApp.route(
+      '',
+      createMcpApp({
+        sessionManager,
+        repositoryManager: await RepositoryManager.create({ jobQueue }),
+        agentManager,
+        agentDirectory: new AgentDirectory({ terminal: agentManager, embedded: createEmptyEmbeddedAgentSurface() }),
+        timerManager: new TimerManager(() => {}),
+        conditionalWakeupManager: new ConditionalWakeupManager(() => {}),
+        interactiveProcessManager: new InteractiveProcessManager(() => {}, () => {}),
+        worktreeService: new WorktreeService({ db }),
+        annotationService: new AnnotationService(),
+        interSessionMessageService: new InterSessionMessageService(),
+        suggestSessionMetadata: (async () => ({ branch: 'feat/test', title: 'Test' })) as SuggestSessionMetadataFn,
+        createWorktreeWithSession,
+        deleteWorktree,
+        userRepository,
+        artifactRepository: new SqliteArtifactRepository(db),
+        bookmarkRepository: new SqliteBookmarkRepository(db),
+        todoRepository,
+        broadcastToApp: () => {},
+        findOpenPullRequest: async () => null,
+        fetchPullRequestUrl: async () => null,
+        mcpAuthMode: 'enforce',
+        mcpTokenRegistry,
+      }),
+    );
+    const handshakeToken = mcpTokenRegistry.mint({
+      sessionId: 'test-harness-handshake-session',
+      workerId: 'test-harness-handshake-worker',
+      userId: 'test-harness-handshake-user',
+    });
+    mcpSessionId = await initializeMcp(mcpApp, { Authorization: `Bearer ${handshakeToken}` });
   });
 
   afterEach(async () => {
@@ -248,5 +316,89 @@ describe('Boundary: resolving an agent-created TODO notifies the creating embedd
     expect(frames.length).toBe(1);
     expect(frames[0].text).toContain('[internal:todo-resolved]');
     expect(frames[0].text).toContain('use sqlite');
+  });
+
+  describe('handoff: a successor adopts the predecessor\'s item before the human resolves it', () => {
+    /** The token the real activation minted for the spawn at `index`, read from its `init` command. */
+    function tokenOfSpawn(index: number): string {
+      const init = JSON.parse(fake.perSpawn[index]![0]!) as { mcp: { token: string } };
+      expect(init.mcp.token).toBeTruthy();
+      return init.mcp.token;
+    }
+
+    function notificationFramesOfSpawn(index: number): Array<Extract<EmbeddedAgentCommand, { type: 'user-message' }>> {
+      return parseFrames(fake.perSpawn[index]!).filter(
+        (f): f is Extract<EmbeddedAgentCommand, { type: 'user-message' }> =>
+          f.type === 'user-message' && f.text.includes('[internal:todo-resolved]'),
+      );
+    }
+
+    async function activatedPredecessorAndSuccessor() {
+      const a = await createEmbeddedWorker();
+      await sessionManager.activateEmbeddedAgentWorker(a.sessionId, a.workerId);
+      const b = await createEmbeddedWorker();
+      await sessionManager.activateEmbeddedAgentWorker(b.sessionId, b.workerId);
+      expect(fake.captured.length).toBe(2);
+      return { a, b };
+    }
+
+    // Polarity measured: with the adopt call skipped, the same resolve delivers to A (spawn 0) and
+    // not to B (spawn 1), which is the failure the adoption exists to prevent.
+    it('after adopt_todo (real /mcp, the successor\'s own token) the resolution frame reaches B and not A', async () => {
+      const { a, b } = await activatedPredecessorAndSuccessor();
+      const item = await seedAgentItem(a.sessionId, a.workerId);
+
+      const adopt = await callTool(mcpApp, mcpSessionId, 'adopt_todo', { id: item.id }, 50, {
+        Authorization: `Bearer ${tokenOfSpawn(1)}`,
+      });
+      expect(adopt.result?.isError).toBeUndefined();
+      expect((parseToolResult(adopt) as { todo: { sessionId: string } }).todo.sessionId).toBe(b.sessionId);
+
+      const res = await resolveViaRoute(item.id, 'use sqlite');
+      expect(res.status).toBe(200);
+
+      await waitFor(() => notificationFramesOfSpawn(1).length >= 1);
+      await new Promise((r) => setTimeout(r, 20));
+      const frames = notificationFramesOfSpawn(1);
+      expect(frames.length).toBe(1);
+      expect(frames[0].text).toContain(`todoId=${item.id}`);
+      expect(frames[0].text).toContain('use sqlite');
+      expect(notificationFramesOfSpawn(0)).toEqual([]);
+    });
+
+    it('control (no adopt call): the same resolve is delivered to the predecessor A and not to B', async () => {
+      const { a } = await activatedPredecessorAndSuccessor();
+      const item = await seedAgentItem(a.sessionId, a.workerId);
+
+      const res = await resolveViaRoute(item.id, 'use sqlite');
+      expect(res.status).toBe(200);
+
+      await waitFor(() => notificationFramesOfSpawn(0).length >= 1);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(notificationFramesOfSpawn(0).length).toBe(1);
+      expect(notificationFramesOfSpawn(1)).toEqual([]);
+    });
+
+    it('resolving a global item whose creating session was deleted answers 200, marks it done and does not throw', async () => {
+      const a = await createEmbeddedWorker();
+      const item = await todoRepository.create({
+        id: crypto.randomUUID(),
+        kind: 'action',
+        scope: 'global',
+        title: 'Survives the session',
+        body: '',
+        sessionId: a.sessionId,
+        createdBy: { workerId: a.workerId },
+        assigneeUserId: null,
+      });
+      expect(await sessionManager.deleteSession(a.sessionId)).toBe(true);
+
+      const res = await resolveViaRoute(item.id, 'done by hand');
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(res.status).toBe(200);
+      expect((await todoRepository.findById(item.id))!.status).toBe('done');
+      expect(notificationFrames()).toEqual([]);
+    });
   });
 });

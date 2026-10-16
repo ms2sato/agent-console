@@ -37,6 +37,12 @@ export interface UpdateTodoParams {
   sessionId?: string | null;
 }
 
+/** The session and worker an open item is re-targeted to by {@link TodoRepository.adopt}. */
+export interface AdoptTodoParams {
+  sessionId: string;
+  workerId: string;
+}
+
 export interface ResolveTodoParams {
   /** Empty or omitted leaves any stored resolution text untouched. */
   text?: string;
@@ -95,6 +101,14 @@ export interface TodoRepository {
 
   /** Update the given fields of an OPEN item. Null when the item does not exist or is not open. */
   update(id: string, patch: UpdateTodoParams, executor?: TodoExecutor): Promise<Todo | null>;
+
+  /**
+   * Re-target an OPEN item to another session: `session_id` always;
+   * `created_worker_id` only when the item is agent-created, so the creator's
+   * kind never changes (CHECK `todos_creator_check`). Null when the item does
+   * not exist or is not open.
+   */
+  adopt(id: string, params: AdoptTodoParams, executor?: TodoExecutor): Promise<Todo | null>;
 
   /**
    * Record a resolution: status becomes `done`. A second resolution appends
