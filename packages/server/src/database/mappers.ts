@@ -945,6 +945,7 @@ export function toTodo(row: TodoRow): Todo {
     status,
     resolutionText: row.resolution_text,
     resolvedByUserId: row.resolved_by_user_id,
+    resolvedByWorkerId: row.resolved_by_worker_id,
     resolvedAt: row.resolved_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

@@ -471,8 +471,8 @@ describe('create_todo / list_todos', () => {
     });
   });
 
-  describe('agents have no way to resolve, dismiss, delete or re-scope', () => {
-    it('the MCP surface registers only create_todo and list_todos for the list', async () => {
+  describe('agents have no way to dismiss, delete or re-scope', () => {
+    it('the MCP surface registers only create_todo, list_todos and resolve_todo for the list', async () => {
       const res = await app.request('/mcp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Mcp-Session-Id': mcpSessionId },
@@ -482,7 +482,7 @@ describe('create_todo / list_todos', () => {
       const names = [...text.matchAll(/"name":"([a-z_]+)"/g)].map((m) => m[1]);
 
       const todoTools = names.filter((n) => n!.includes('todo')).sort();
-      expect(todoTools).toEqual(['create_todo', 'list_todos']);
+      expect(todoTools).toEqual(['create_todo', 'list_todos', 'resolve_todo']);
     });
   });
 });

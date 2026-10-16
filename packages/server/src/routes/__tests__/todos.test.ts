@@ -436,6 +436,7 @@ describe('Todo routes', () => {
         status: 'done',
         resolutionText: null,
         resolvedByUserId: BOB.id,
+        resolvedByWorkerId: null,
       });
       expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
     });

@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 50;
+export const LATEST_SCHEMA_VERSION = 51;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -463,6 +463,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 50) {
     await migrateToV50(database);
+  }
+
+  if (currentVersion < 51) {
+    await migrateToV51(database);
   }
 }
 
@@ -3213,6 +3217,37 @@ export async function migrateToV50(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 50`.execute(database);
 
   logger.info('Migration to v50 completed');
+}
+
+/**
+ * Migration v51: Add `resolved_by_worker_id` to `todos` (agent-recorded
+ * resolutions, docs/design/human-todo-list.md section 3).
+ *
+ * One additive nullable column, no default, no backfill, no CHECK: existing
+ * rows read `NULL` ("a human resolved it in the UI"); the invariant "set only
+ * with status done" is enforced in the repository.
+ *
+ * Owner-approved DDL:
+ * ```sql
+ * ALTER TABLE todos ADD COLUMN resolved_by_worker_id TEXT;
+ * PRAGMA user_version = 51;
+ * ```
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV51(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v51: Adding resolved_by_worker_id column to todos');
+
+  try {
+    await sql`ALTER TABLE todos ADD COLUMN resolved_by_worker_id TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column resolved_by_worker_id already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 51`.execute(database);
+
+  logger.info('Migration to v51 completed');
 }
 
 /**

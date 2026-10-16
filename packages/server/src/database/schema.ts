@@ -678,6 +678,8 @@ export interface TodosTable {
   resolved_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Agent worker that recorded a human's statement; NULL when a human resolved the item in the UI. Added by migration v51. */
+  resolved_by_worker_id: string | null;
 }
 
 /** Todo row as returned from SELECT queries */
