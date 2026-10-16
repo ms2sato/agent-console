@@ -269,6 +269,7 @@ export {
   type PausedSession,
   type RunningSession,
   type CreateSessionResponse,
+  type CreateWorkerResponse,
   type WorkerActivityInfo,
   type Repository,
   type WorktreeCreationCompletedPayload,
