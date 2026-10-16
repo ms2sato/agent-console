@@ -362,8 +362,11 @@ export function TerminalView({
     if (!el) return;
     // Consume the programmatic flag first: this scroll event may have been
     // fired by our own scrollTop write (anchor compensation / bottom-follow /
-    // jump-to-bottom). Only the §6.4 eviction check is gated on it below; the
-    // scroll-to-top fetch trigger and atBottom tracking run unconditionally.
+    // jump-to-bottom). Both the older-history fetch trigger and the §6.4
+    // eviction check are gated on it below; only atBottom tracking runs
+    // unconditionally. The view's own writes must not page history: with content
+    // under 3 viewports the pinned scrollTop is already inside the fetch zone, so
+    // every bottom-follow would otherwise fetch another chunk with no user scroll.
     const wasProgrammatic = programmaticScrollRef.current;
     programmaticScrollRef.current = false;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -373,9 +376,12 @@ export function TerminalView({
     // Scroll-to-top history paging (terminal-history-paging.md §6.1). Only in
     // the normal buffer (alt-screen scroll is forwarded to the app); the store
     // gates the rest (in-flight, unsupported, cap, oldestOffset>0, hasMore).
+    // A window too short to overflow never produces a user scroll event; the
+    // wheel handler covers that case.
     const { canRequestOlder, pagedTopChunkRowCount } = pagingRef.current;
     const topTrigger = el.clientHeight * 2;
     if (
+      !wasProgrammatic &&
       bufferTypeRef.current === 'normal' &&
       canRequestOlder &&
       el.scrollTop < topTrigger
@@ -488,7 +494,21 @@ export function TerminalView({
     };
 
     const onWheel = (e: WheelEvent) => {
-      if (bufferTypeRef.current !== 'alternate') return; // main screen: native scroll
+      if (bufferTypeRef.current !== 'alternate') {
+        // Main screen: native scroll stays (no preventDefault). A window shorter
+        // than the viewport has no scrollbar, so no scroll event can ever reach
+        // the gate in handleScroll; wheel-up near the top is the gesture there.
+        // The store guards re-entry (in-flight request).
+        if (
+          bufferTypeRef.current === 'normal' &&
+          e.deltaY < 0 &&
+          pagingRef.current.canRequestOlder &&
+          el.scrollTop < el.clientHeight * 2
+        ) {
+          instance.requestOlderHistory();
+        }
+        return;
+      }
       e.preventDefault();
       const { charW, charH } = cellMetrics();
       const steps = stepFrom(e.deltaY, charH);

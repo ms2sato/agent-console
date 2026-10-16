@@ -126,13 +126,31 @@ export const serverConfig = {
     64 * 1024,
   ),
   /**
-   * Maximum number of lines to load on initial connection.
-   * Full history is still saved, but only the most recent N lines are sent on connection.
-   * Default: 5000 lines (approximately 500KB-1MB)
+   * Line budget of the display window sent on initial connection.
+   * Full history is still saved; only a recent window is sent. The window is
+   * the LONGER of the last N lines (this knob) and the last M bytes
+   * (`WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES`), line-head aligned.
+   * Default: 5000 lines. Line count alone says little about size: measured on
+   * Claude Code (Ink-style) streams, lines average ~18 bytes, so 5000 lines is
+   * only ~82-98 KB -- not the "500KB-1MB" a plain-text estimate suggests.
    */
   WORKER_OUTPUT_INITIAL_HISTORY_LINES: parsePositiveIntWithDefault(
     process.env.WORKER_OUTPUT_INITIAL_HISTORY_LINES,
     5000,
+  ),
+  /**
+   * Byte floor of the display window sent on initial connection. The window is
+   * the LONGER of the last `WORKER_OUTPUT_INITIAL_HISTORY_LINES` lines and the
+   * last M bytes, where the byte window's start is moved BACKWARD to the
+   * nearest line head (never forward, which would shrink it below the floor).
+   * Short-line streams (~18 bytes/line measured) otherwise yield a window of
+   * under 100 KB, too small for a terminal to hold several screens of recent
+   * output. Display read only; the restore reader is unaffected.
+   * Default: 512KB (512 * 1024 bytes)
+   */
+  WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES: parsePositiveIntWithDefault(
+    process.env.WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES,
+    512 * 1024,
   ),
   /**
    * Base URL for the application.
