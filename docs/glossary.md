@@ -99,6 +99,7 @@ The on-disk Git repository a [Repository](#repository) is registered from, livin
 - **`withdrawn`:** the terminal status of an item whose session was deleted while it was open; distinct from `dismissed`, which is a human act.
 - **`kind`:** a closed list in v1, `question` or `action`. A `question` needs a non-empty resolution text to be marked `done`; an `action` does not.
 - **Assignee (`assigneeUserId`):** the team member an item is assigned to; null means anyone on the team. Not to be confused with [assignee](#assignee) (the delegate target of `delegate_to_worktree`), which is a different field on a different concept.
+- **UI label:** **Todo** (owner decision, 2026-10-16).
 - **Aliases:** to-do item, human TODO, TODO list entry
 - **Contrast:** the [Memo](#memo) keeps status; the TODO list takes requests (questions and commands).
 - **See:** [human-todo-list.md](design/human-todo-list.md)
