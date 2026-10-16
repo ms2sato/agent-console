@@ -219,6 +219,23 @@ export const EmbeddedAgentDefinitionSchema = v.variant('engine', [
 ]);
 
 /**
+ * Response of GET /api/embedded-agents.
+ */
+export const EmbeddedAgentsListResponseSchema = v.strictObject({
+  embeddedAgents: v.array(EmbeddedAgentDefinitionSchema),
+});
+
+/**
+ * Response of POST /api/embedded-agents and PATCH /api/embedded-agents/:id.
+ */
+export const EmbeddedAgentResponseSchema = v.strictObject({
+  embeddedAgent: EmbeddedAgentDefinitionSchema,
+});
+
+export type EmbeddedAgentsListResponse = v.InferOutput<typeof EmbeddedAgentsListResponseSchema>;
+export type EmbeddedAgentResponse = v.InferOutput<typeof EmbeddedAgentResponseSchema>;
+
+/**
  * Schema for creating an embedded agent definition. `createdBy` is set
  * server-side from the authenticated user, never from the request body.
  *

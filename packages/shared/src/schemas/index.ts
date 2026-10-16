@@ -121,6 +121,8 @@ export {
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
   EmbeddedAgentProviderSchema,
   EmbeddedAgentDefinitionSchema,
+  EmbeddedAgentsListResponseSchema,
+  EmbeddedAgentResponseSchema,
   EmbeddedAgentWindowObservationsSchema,
   CreateEmbeddedAgentRequestSchema,
   UpdateEmbeddedAgentRequestSchema,
@@ -131,7 +133,19 @@ export {
   ExitReasonSchema,
   type CreateEmbeddedAgentRequest,
   type UpdateEmbeddedAgentRequest,
+  type EmbeddedAgentsListResponse,
+  type EmbeddedAgentResponse,
 } from './embedded-agent.js';
+
+// Job schemas
+export {
+  JobSchema,
+  JobsResponseSchema,
+  JobStatsSchema,
+  type JobWire,
+  type JobsResponseWire,
+  type JobStatsWire,
+} from './job.js';
 
 // Session schemas
 export {
@@ -280,8 +294,10 @@ export {
 export {
   SystemOpenRequestSchema,
   SystemOpenVSCodeRequestSchema,
+  SystemHealthResponseSchema,
   type SystemOpenRequest,
   type SystemOpenVSCodeRequest,
+  type SystemHealthResponse,
 } from './system.js';
 
 // Message schemas

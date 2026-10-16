@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Hono } from 'hono';
+import * as v from 'valibot';
+import {
+  EmbeddedAgentsListResponseSchema,
+  EmbeddedAgentResponseSchema,
+} from '@agent-console/shared';
+import { claudeSdkAgent } from '../../services/embedded-agents/claude-sdk-builtin.js';
 import type { AppBindings } from '../../app-context.js';
 import { ValidationError } from '../../lib/errors.js';
 import {
@@ -453,6 +459,76 @@ describe('Embedded Agents API', () => {
       const body = (await res.json()) as { success: boolean };
       expect(body.success).toBe(true);
       expect(embeddedAgentManager.deleteEmbeddedAgent).toHaveBeenCalledWith('def-1');
+    });
+  });
+
+  // =========================================================================
+  // Wire-schema pin: the served bodies must satisfy the strict client schemas
+  // =========================================================================
+
+  describe('served bodies parse through the shared wire schemas', () => {
+    /** A schema-valid openai-api definition (the shared `ownedDefinition` omits `engine`). */
+    function wireDefinition(overrides: Record<string, unknown> = {}) {
+      return ownedDefinition({ engine: 'openai-api', isBuiltIn: false, ...overrides });
+    }
+
+    it('GET list parses, including the served builtin claude-sdk definition', async () => {
+      embeddedAgentManager.getAllServedEmbeddedAgents.mockReturnValue([claudeSdkAgent, wireDefinition()]);
+
+      const res = await app.request('/api/embedded-agents');
+      expect(res.status).toBe(200);
+
+      const parsed = v.parse(EmbeddedAgentsListResponseSchema, await res.json());
+      expect(parsed.embeddedAgents.map((d) => d.engine)).toEqual(['claude-sdk', 'openai-api']);
+    });
+
+    it('GET list parses a definition carrying windowObservations', async () => {
+      embeddedAgentManager.getAllServedEmbeddedAgents.mockReturnValue([
+        wireDefinition({
+          windowObservations: {
+            providerStated: { tokens: 128000, observedAt: '2026-01-01T00:00:00.000Z' },
+            apparentClamp: { observedAt: '2026-01-01T00:00:01.000Z' },
+          },
+        }),
+      ]);
+
+      const res = await app.request('/api/embedded-agents');
+      const parsed = v.parse(EmbeddedAgentsListResponseSchema, await res.json());
+      expect(parsed.embeddedAgents[0].windowObservations?.providerStated?.tokens).toBe(128000);
+    });
+
+    it('POST response parses', async () => {
+      embeddedAgentManager.createEmbeddedAgent.mockReturnValue(Promise.resolve(wireDefinition()));
+
+      const res = await app.request('/api/embedded-agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER }),
+      });
+      expect(res.status).toBe(201);
+
+      const parsed = v.parse(EmbeddedAgentResponseSchema, await res.json());
+      expect(parsed.embeddedAgent.id).toBe('def-1');
+    });
+
+    it('PATCH response parses, with windowObservations composed by toServed', async () => {
+      embeddedAgentManager.getEmbeddedAgent.mockReturnValue(wireDefinition());
+      embeddedAgentManager.updateEmbeddedAgent.mockReturnValue(Promise.resolve(wireDefinition({ name: 'Renamed' })));
+      embeddedAgentManager.toServed.mockImplementation((def: any) => ({
+        ...def,
+        windowObservations: { apparentClamp: { observedAt: '2026-01-01T00:00:00.000Z' } },
+      }));
+
+      const res = await app.request('/api/embedded-agents/def-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(res.status).toBe(200);
+
+      const parsed = v.parse(EmbeddedAgentResponseSchema, await res.json());
+      expect(parsed.embeddedAgent.name).toBe('Renamed');
+      expect(parsed.embeddedAgent.windowObservations?.apparentClamp).toBeDefined();
     });
   });
 });
