@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import * as v from 'valibot';
 import type { AppServerMessage, AuthUser, Session, Todo } from '@agent-console/shared';
-import { TodoSchema, TodosListResponseSchema } from '@agent-console/shared';
+import { TodoResponseSchema, TodoSchema, TodosListResponseSchema } from '@agent-console/shared';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteTodoRepository } from '../../repositories/sqlite-todo-repository.js';
@@ -315,6 +315,32 @@ describe('Todo routes', () => {
       const list = (await (await asBob.request('/api/todos')).json()) as { todos: Todo[] };
 
       expect(list.todos.map((t) => t.title)).toEqual(['alice item']);
+    });
+  });
+
+  describe('GET /api/todos/:id', () => {
+    it('returns the item wrapped as { todo }, strictly parsing with the shared wire schema', async () => {
+      const created = await createTodo({ kind: 'action', title: 'one', body: 'details', sessionId: 'session-1' });
+
+      const res = await app.request(`/api/todos/${created.id}`);
+
+      expect(res.status).toBe(200);
+      const parsed = v.parse(TodoResponseSchema, await res.json());
+      expect(parsed.todo).toMatchObject({ id: created.id, title: 'one', body: 'details', sessionId: 'session-1' });
+    });
+
+    it('is 404 "Todo not found" for an unknown id', async () => {
+      const res = await app.request('/api/todos/does-not-exist');
+
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).toContain('Todo not found');
+    });
+
+    it('rejects an unauthenticated request (401)', async () => {
+      const created = await createTodo({ kind: 'action', title: 'one', body: '' });
+      const unauthenticated = buildApp(repository, null);
+
+      expect((await unauthenticated.request(`/api/todos/${created.id}`)).status).toBe(401);
     });
   });
 

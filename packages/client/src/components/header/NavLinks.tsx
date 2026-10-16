@@ -38,7 +38,7 @@ export function TodosNavLink() {
         isActive ? 'text-white bg-white/10' : 'text-slate-400'
       }`}
     >
-      To-do
+      Todo
       <TodoCountBadge />
     </Link>
   );

@@ -67,10 +67,10 @@ describe('MobileNavMenu', () => {
     });
   });
 
-  describe('To-do link', () => {
+  describe('Todo link', () => {
     it('links to /todos and is active on /todos', async () => {
       await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />, '/todos');
-      const link = screen.getByText('To-do').closest('a')!;
+      const link = screen.getByText('Todo').closest('a')!;
       expect(link.getAttribute('href')).toBe('/todos');
       expect(link.className).toContain('bg-white/10');
     });
@@ -93,14 +93,14 @@ describe('MobileNavMenu', () => {
 
       await waitFor(() => {
         expect(
-          screen.getByRole('link', { name: /1 open to-do items assigned to you/ }).getAttribute('href'),
+          screen.getByRole('link', { name: /1 open Todo items assigned to you/ }).getAttribute('href'),
         ).toBe('/todos');
       });
     });
 
     it('shows no badge without a current user', async () => {
       await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />);
-      expect(screen.queryByText(/open to-do items assigned to you/)).toBeNull();
+      expect(screen.queryByText(/open Todo items assigned to you/)).toBeNull();
     });
   });
 

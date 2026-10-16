@@ -4,6 +4,6 @@ import { TodosPage } from '../../components/todos/TodosPage';
 export const Route = createFileRoute('/todos/')({
   component: TodosPage,
   head: () => ({
-    meta: [{ title: 'To-do' }],
+    meta: [{ title: 'Todo' }],
   }),
 });

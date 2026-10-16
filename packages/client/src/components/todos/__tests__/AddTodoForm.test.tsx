@@ -108,7 +108,42 @@ describe('AddTodoForm', () => {
     await user.type(screen.getByLabelText('Session id'), 'session-gone');
     await user.click(screen.getByRole('button', { name: 'Add' }));
 
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Add To-do', 'Session not found'));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Add Todo', 'Session not found'));
     expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Orphan');
+  });
+});
+
+describe('AddTodoForm with a preset session', () => {
+  async function renderPreset(users = [ME]) {
+    const onError = mock((_title: string, _message: string) => {});
+    await renderWithRouter(<AddTodoForm users={users} sessionId="session-9" hideSessionField onError={onError} />);
+    return { onError, user: userEvent.setup() };
+  }
+
+  // Mutations: sending no scope (the server-derived default) or ignoring the
+  // preset id fails the first test; leaving the session input or the scope
+  // choice rendered fails the second.
+  it('sends the preset session id with the session scope', async () => {
+    const { user } = await renderPreset();
+
+    await user.type(screen.getByLabelText('Title'), 'Review the diff');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(api.writes()).toHaveLength(1));
+    expect(api.writes()[0]?.body).toEqual({ kind: 'action', title: 'Review the diff', body: '', scope: 'session', sessionId: 'session-9' });
+  });
+
+  it('renders neither the session field nor the scope choice, but keeps the kind choice', async () => {
+    await renderPreset();
+
+    expect(screen.queryByLabelText('Session id')).toBeNull();
+    expect(screen.queryByLabelText('Scope')).toBeNull();
+    expect(screen.getByLabelText('Kind')).toBeTruthy();
+  });
+
+  it('keeps the assignee choice when the directory has several users', async () => {
+    await renderPreset([ME, BOB]);
+
+    expect(screen.getByLabelText('Assignee')).toBeTruthy();
   });
 });
