@@ -8,13 +8,9 @@ import type {
   CreateRepositoryRequest,
   CreateAgentRequest,
   UpdateAgentRequest,
-  EmbeddedAgentDefinition,
   CreateEmbeddedAgentRequest,
   UpdateEmbeddedAgentRequest,
   SessionsValidationResponse,
-  Job,
-  JobsResponse,
-  JobStats,
   JobStatus,
   JobType,
   RefreshDefaultBranchResponse,
@@ -81,6 +77,12 @@ import {
   OrchestratorDesignationResponseSchema,
   ClearOrchestratorDesignationResponseSchema,
   UpdateSessionResponseSchema,
+  EmbeddedAgentsListResponseSchema,
+  EmbeddedAgentResponseSchema,
+  JobSchema,
+  JobsResponseSchema,
+  JobStatsSchema,
+  SystemHealthResponseSchema,
 } from '@agent-console/shared';
 import type {
   WorkersResponse,
@@ -106,6 +108,12 @@ import type {
   ClearOrchestratorDesignationResponse,
   UpdateSessionRequest,
   UpdateSessionResponse,
+  EmbeddedAgentsListResponse,
+  EmbeddedAgentResponse,
+  JobWire,
+  JobsResponseWire,
+  JobStatsWire,
+  SystemHealthResponse,
 } from '@agent-console/shared';
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
@@ -731,20 +739,12 @@ export async function unregisterAgent(agentId: string): Promise<void> {
 // Embedded Agents API
 // ===========================================================================
 
-export interface EmbeddedAgentsResponse {
-  embeddedAgents: EmbeddedAgentDefinition[];
-}
-
-export async function fetchEmbeddedAgents(): Promise<EmbeddedAgentsResponse> {
+export async function fetchEmbeddedAgents(): Promise<EmbeddedAgentsListResponse> {
   const res = await api['embedded-agents'].$get();
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch embedded agents');
   }
-  return res.json();
-}
-
-export interface EmbeddedAgentResponse {
-  embeddedAgent: EmbeddedAgentDefinition;
+  return v.parse(EmbeddedAgentsListResponseSchema, await res.json());
 }
 
 export async function createEmbeddedAgent(
@@ -754,7 +754,7 @@ export async function createEmbeddedAgent(
   if (!res.ok) {
     await handleApiError(res, 'Failed to create embedded agent');
   }
-  return res.json() as Promise<EmbeddedAgentResponse>;
+  return v.parse(EmbeddedAgentResponseSchema, await res.json());
 }
 
 export async function updateEmbeddedAgent(
@@ -768,7 +768,7 @@ export async function updateEmbeddedAgent(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update embedded agent');
   }
-  return res.json() as Promise<EmbeddedAgentResponse>;
+  return v.parse(EmbeddedAgentResponseSchema, await res.json());
 }
 
 export async function deleteEmbeddedAgent(embeddedAgentId: string): Promise<void> {
@@ -835,7 +835,7 @@ export async function deleteInvalidSession(sessionId: string): Promise<void> {
 // ===========================================================================
 
 // Re-export job types from shared package
-export type { Job, JobsResponse, JobStats, JobStatus, JobType };
+export type { JobWire as Job, JobsResponseWire as JobsResponse, JobStatsWire as JobStats, JobStatus, JobType };
 
 /**
  * Parameters for fetching jobs.
@@ -847,7 +847,7 @@ export interface FetchJobsParams {
   offset?: number;
 }
 
-export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse> {
+export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponseWire> {
   // Build query object - only include defined values
   const query: Record<string, string> = {};
   if (params?.status) {
@@ -867,23 +867,23 @@ export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse>
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch jobs');
   }
-  return res.json();
+  return v.parse(JobsResponseSchema, await res.json());
 }
 
-export async function fetchJobStats(): Promise<JobStats> {
+export async function fetchJobStats(): Promise<JobStatsWire> {
   const res = await api.jobs.stats.$get();
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch job stats');
   }
-  return res.json();
+  return v.parse(JobStatsSchema, await res.json());
 }
 
-export async function fetchJob(jobId: string): Promise<Job> {
+export async function fetchJob(jobId: string): Promise<JobWire> {
   const res = await api.jobs[':id'].$get({ param: { id: jobId } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch job');
   }
-  return res.json();
+  return v.parse(JobSchema, await res.json());
 }
 
 export async function retryJob(jobId: string): Promise<void> {
@@ -1089,12 +1089,12 @@ export async function fetchNotificationStatus(): Promise<NotificationStatus> {
 // System Health
 // ===========================================================================
 
-export async function fetchSystemHealth(): Promise<{ webhookSecretConfigured: boolean; appUrl: string | null }> {
+export async function fetchSystemHealth(): Promise<SystemHealthResponse> {
   const res = await fetch(`${API_BASE}/system/health`);
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch system health');
   }
-  return res.json();
+  return v.parse(SystemHealthResponseSchema, await res.json());
 }
 
 // ===========================================================================

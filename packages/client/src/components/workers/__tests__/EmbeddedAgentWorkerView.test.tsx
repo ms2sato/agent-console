@@ -11,6 +11,7 @@ import {
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { _resetEmbeddedAgentWorkers } from '../embedded-agent-store';
 import type { RestorePreservation } from '@agent-console/shared';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 function ndjson(...events: Record<string, unknown>[]): string {
   return events.map((e) => JSON.stringify(e)).join('\n') + '\n';
@@ -54,7 +55,7 @@ function makeEmbeddedViewFetch(embeddedAgents: unknown[] = []) {
     if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse({ skills: [] }));
     if (url.endsWith('/api/message-templates')) return Promise.resolve(jsonResponse({ templates: [] }));
     if (url.endsWith('/api/agents')) return Promise.resolve(jsonResponse({ agents: [] }));
-    if (url.endsWith('/api/embedded-agents')) return Promise.resolve(jsonResponse({ embeddedAgents }));
+    if (url.endsWith('/api/embedded-agents')) return Promise.resolve(jsonResponse(completeWireBody({ embeddedAgents })));
     return Promise.resolve(new Response('null', { status: 404 }));
   };
 }
@@ -67,7 +68,11 @@ function embeddedAgentFixture(overrides: Record<string, unknown> = {}) {
     id: 'ea-1',
     name: 'Test Embedded Agent',
     engine: 'openai-api',
-    provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+    // The served definition is a discriminated union: a claude-sdk arm carries no baseUrl.
+    provider:
+      overrides.engine === 'claude-sdk'
+        ? { model: 'sonnet' }
+        : { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
     isBuiltIn: false,
     createdBy: 'user-1',
     createdAt: '2026-01-01T00:00:00.000Z',
