@@ -630,17 +630,17 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
     },
     {
       key: 'q14',
-      text: 'Q14: Decision Coverage -- If the PR exposes any operation on any surface: locate the surface-by-operation table (`.claude/rules/decision-table.md`). (1) Any `?` cell, or any operation present in the diff with no row? (2) Any decision the diff makes that neither the table nor the AC contains (a control placed or omitted, a surface added)? Either -> HOLD; the decision goes to the AC author or the owner and into the design doc. A PR with no surface/operation answers N/A with one sentence.',
+      text: 'Q14: Decision Coverage -- If the PR exposes any operation on any surface: locate the surface-by-operation table (`.claude/rules/decision-table.md`). (1) Any `?` cell, or any operation present in the diff, the AC or the design doc with no row? (2) Any decision the diff makes that neither the table nor the AC contains (a control placed or omitted, a surface added)? Either -> HOLD; the decision goes to the AC author or the owner and into the design doc. A PR with no surface/operation answers N/A with one sentence.',
       focus: [
         'See `.claude/rules/decision-table.md` for the table format and the meaning of the `do` / `not here` / `?` cells.',
         'Mechanical procedure:',
         '  1. Locate the table in the design doc\'s Surfaces section named by the AC checklist line.',
-        '  2. Count the `?` cells, and count the operations the AC names that have no row.',
+        '  2. Count the `?` cells, and count the operations the AC or the design doc names that have no row.',
         '  3. Compare the diff\'s surfaces (components, MCP tools, REST routes) against the table\'s `do` and `not here` cells; any surface or control in the diff that the table does not account for is an undecided decision.',
         '  4. A pure refactor or infrastructure change with no operation on any surface -> answer N/A with one sentence.',
       ].join('\n  '),
       insufficient: '"Matches the design" (without naming the table section and the counted cells)',
-      sufficient: '"Design doc docs/design/foo.md section \'Surfaces\' (named by the AC checklist line 2): 0 `?` cells of 12, every AC-named operation (create, rename, delete) has a row. Diff surfaces compared against the table: RenameDialog.tsx (UI, `do`), rename_session MCP tool (`do`), PATCH /api/sessions/:id (REST, `do`); the CLI cell is `not here` and no CLI file is in the diff. No control placed or omitted outside the table."',
+      sufficient: '"Design doc docs/design/foo.md section \'Surfaces\' (named by the AC checklist line 2): 0 `?` cells of 12, every operation named by the AC or the design doc (create, rename, delete) has a row. Diff surfaces compared against the table: RenameDialog.tsx (UI, `do`), rename_session MCP tool (`do`), PATCH /api/sessions/:id (REST, `do`); the CLI cell is `not here` and no CLI file is in the diff. No control placed or omitted outside the table."',
     },
   ];
 

@@ -340,6 +340,8 @@ describe('getQuestions', () => {
     expect(q14.text).toContain('Decision Coverage');
     expect(q14.text).toContain('decision-table.md');
     expect(q14.text).toContain('HOLD');
+    // Counts operations named by the AC or the design doc (not the AC alone).
+    expect(q14.text).toContain('the AC or the design doc with no row');
     expect(q14.focus).toContain('decision-table.md');
     expect(q14.insufficient).toBeTruthy();
     expect(q14.sufficient).toBeTruthy();
