@@ -319,7 +319,7 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 
 | Tool | Description |
 |------|-------------|
-| `run_process` | Start an interactive script that communicates via STDOUT/STDIN |
+| `run_process` | Start an interactive script that communicates via STDOUT/STDIN. A process that finishes within 5 seconds returns its output and exit code in the result and sends no further turn; a longer one reports back as new turns |
 | `write_process_response` | Send a response to a waiting interactive process |
 | `kill_process` | Terminate a running interactive process |
 | `list_processes` | List all interactive processes (useful after agent restart) |
