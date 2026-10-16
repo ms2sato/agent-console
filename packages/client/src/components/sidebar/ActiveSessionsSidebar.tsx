@@ -1,7 +1,7 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import type { AgentActivityState, WorktreeDeletionTask, Session } from '@agent-console/shared';
+import type { AgentActivityState, WorktreeDeletionTask, Session, RestartAllAgentsResponse } from '@agent-console/shared';
 import type { WorktreeCreationTask } from '../../lib/worktree-creation-task';
 import type { SessionFilterMode } from '../../types/session-filter';
 import {
@@ -9,7 +9,6 @@ import {
   fetchRepositories,
   raiseOrchestratorDesignation,
   clearOrchestratorDesignation,
-  type RestartAllAgentsResult,
 } from '../../lib/api';
 import { repositoryKeys } from '../../lib/query-keys';
 import { useAuth } from '../../lib/auth';
@@ -65,7 +64,7 @@ interface ActiveSessionsSidebarProps {
  * all-terminal sessions, or dormant/idle-evicted embedded agents).
  * These two cases must not render byte-identical text.
  */
-export function formatRestartMessage(data: RestartAllAgentsResult): string {
+export function formatRestartMessage(data: RestartAllAgentsResponse): string {
   const { restarted, failed, skipped } = data;
   if (restarted === 0 && failed === 0 && skipped === 0) {
     return 'No agent workers found.';
