@@ -1,6 +1,6 @@
 # Human TODO List: stable, countable items for the humans (questions and actions)
 
-Status: design, owner-approved DDL (2026-10-15), slice (a) in implementation. Issue [#739](https://github.com/ms2sato/agent-console/issues/739); implementation [#2080](https://github.com/ms2sato/agent-console/issues/2080). The storage change needs a database migration and the feature adds wire types, both the owner's call; the document's job is to make that a one-line yes or no.
+Status: implemented (slice (a) #2120, slice (b) #2129, slice (c) the closing slice); owner-approved DDL (2026-10-15). Issue [#739](https://github.com/ms2sato/agent-console/issues/739); implementation [#2080](https://github.com/ms2sato/agent-console/issues/2080). The storage change needs a database migration and the feature adds wire types, both the owner's call; the document's job is to make that a one-line yes or no.
 
 Every claim about the code below was read at `origin/main` **`f083ef62`** and is cited as `file:line` at that SHA.
 
@@ -52,6 +52,7 @@ The closed lists (kinds, scopes, statuses) are the scope-creep guard.
 - *Session delete, by scope (kind no longer affects deletion):* open `session`-scoped items of the deleted session become `withdrawn`, a terminal status distinct from `dismissed`. The rows are KEPT, because "ended unanswered / undone" is the count this feature exists to make possible and a hard delete would destroy it. `global` items are untouched whatever their status; their `sessionId` stays as provenance. Non-open rows of the deleted session (done, superseded, dismissed) stay as they are. One `UPDATE todos SET status = 'withdrawn', updated_at = ? WHERE session_id = ? AND scope = 'session' AND status = 'open'` runs in the session-deletion transaction, and on the path without an injected database handle right after the row delete. Deleting a session that has no items is a no-op.
 - *A global item created by a deleted session* stays open with its `sessionId`.
 - *Re-scoping.* A human may `PATCH` the `scope` of an OPEN `action` only, in both directions. `session` to `global` keeps `sessionId`. `global` to `session` needs a `sessionId` (the stored provenance, or one passed in the same PATCH) and is refused otherwise. A `question` cannot be re-scoped, a non-open item cannot be re-scoped, and agents cannot re-scope (a human act, like resolve and delete).
+- *What the notification carries.* Only a resolution of an agent-created item is delivered, and the text is THIS resolution's text (not the appended history), truncated to 500 characters with an ASCII `...` marker because the line is injected as typed input; an `action` resolved without text carries an empty `resolution`. The full text stays in `list_todos`. Dismiss, delete, supersede and withdraw deliver nothing: they are not an answer, and the creating session learns of them through `list_todos`.
 - *Resolving an item whose creating worker is gone*: the resolution is stored and the delivery failure is recorded; the status is `done` either way (storage is the record, delivery is best effort).
 
 **Who may do what.** A team tool, like the memo and End Session: any team member may create, assign, resolve, dismiss and DELETE an item. Delete is a hard delete in v1; the audit case is the `dismissed` row, which stays. Agents may create, list and supersede their own session's items; agents may NOT resolve or delete (the human act is the point; "the agent verifies the action happened" is a v2 question). Multi-user visibility: every team member sees every item, consistent with memos today.
@@ -137,7 +138,7 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 
 ## 5. What changes for the Orchestrator skill
 
-The memo keeps status; the list takes requests. Owner-facing questions AND owner-facing commands go through `create_todo`, and the answer or the confirmation arrives as a notification (or through `list_todos`). That text change belongs to slice (c) of the implementation, not to this design; the skill is not edited here.
+The memo keeps status; the list takes requests. Owner-facing questions AND owner-facing commands go through `create_todo`, and the answer or the confirmation arrives as a notification (or through `list_todos`). The skill text changed in slice (c): the memo keeps status, owner-facing questions and commands go through `create_todo`, an owner-gated wait is an open `question` item, and the handoff's owner-pending judgments are `list_todos({ status: 'open' })`.
 
 ## 6. Non-goals (v1)
 
@@ -147,6 +148,6 @@ Due dates, priority, comments or threads, agent-side resolve, Slack or webhook d
 
 - **(a)** Migration v50, repository, REST, MCP `create_todo` / `list_todos`, the per-session panel, `todos-updated`, the scope-based withdraw rule in the session-deletion transaction (it is the owner's design point), and ALL wire shapes including the `internal-todo-resolved` notification kind.
 - **(b)** The global `/todos` page, assignment (`PATCH`, the user directory), the navigation badge, human create, re-scope and delete.
-- **(c)** The resolution delivery through `deliverWorkerNotification` and the Orchestrator skill text (no second `SCHEMA_VERSION` move).
+- **(c)** The resolution delivery through `deliverWorkerNotification` and the Orchestrator skill text (applied; no `SCHEMA_VERSION` move, the notification kind was added in (a)).
 
 [#2085](https://github.com/ms2sato/agent-console/issues/2085) (the command block in a body) rides after slice (a) as its own Issue, shared with the memo renderer. Polarity each slice must carry, against today: a memo overwrite leaves the list intact; a second `create_todo` does not overwrite the first; the resolution reaches the creating session as a notification; a session deletion withdraws its open `session`-scoped items and leaves its `global` items open.
