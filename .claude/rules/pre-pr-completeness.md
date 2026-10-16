@@ -142,6 +142,8 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     Where a table's `via` claim is mechanically checkable (e.g., the MCP table's `via` naming a tool that must actually be registered in `packages/server/src/mcp/mcp-server.ts`), add or extend the corresponding test (see `packages/server/src/mcp/__tests__/agent-operations-mcp.test.ts` for the pattern) instead of relying on review alone. Where it is not mechanically checkable (UI `via` claims naming a component/page), accuracy stays a review-time judgment call — this residue is the same "process rule as the residual net" pattern documented in `docs/design/agent-surface.md` Mechanism 3.
 
+    The document-level form of this table for every feature, where types cannot reach, is [`decision-table.md`](./decision-table.md).
+
     (Lesson: this rule itself — Issue [#1160](https://github.com/ms2sato/agent-console/issues/1160) PR-D built the exposure-table mechanism specifically because Q11's original four questions catch tool-level gaps like the embedded-agent-v1 case above, but had no equivalent for operation-level gaps like `list_agents` silently excluding embedded agents while `delegate_to_worktree` accepted them — see `docs/design/agent-surface.md` §0 "Verified current state" for that concrete parity bug.)
 
 12. **Is the AC's own verification requirement still satisfiable? — before starting implementation:**
@@ -169,6 +171,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     1. **Production-real or proxy?** For each verification the plan mandates: does it traverse the production shipping path, or a proxy (synthetic stub, internal API call, mock, mechanism probe)? Proxies are allowed — but only as an explicit, recorded decision, never as an unnoticed default.
     2. **Does it have polarity?** Would the verification fail against the pre-change implementation (or, for an experiment, distinguish the hypotheses)? A verification that passes in both worlds proves nothing and reads as false confidence.
+    3. **Is every surface-by-operation cell decided?** Is there a cell I am leaving to the implementer? The table and its roles live in [`decision-table.md`](./decision-table.md).
 
     **And ship the AC's `- [ ] ` checklist together with the AC, never as a follow-up.** `acceptance-check.js` reads `^- [ ] ` lines from the Issue BODY and nothing else — not comments, not messages — so the Orchestrator transcribes the AC and its checklist into the body at dispatch (`orchestrator/SKILL.md` "The AC goes in the Issue BODY"). What this paragraph adds is the author's half: an AC delivered as prose rulings makes Q3 report "No acceptance criteria (checklist) found" and silently degrades the criterion-to-test mapping to the Orchestrator's judgment, so the author converts each required item into a checklist line in the same delivery as the AC — not "the Orchestrator will derive one" and not "I'll send it if asked". (Lesson: Sprint 2026-09-09, #1621 — the delivered ruling had zero checklist lines; the checklist arrived as a second message after the acceptance check had already run without it.)
 

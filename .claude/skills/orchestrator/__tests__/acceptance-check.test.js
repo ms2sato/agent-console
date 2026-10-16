@@ -320,15 +320,36 @@ describe('createStdinReader', () => {
 });
 
 describe('getQuestions', () => {
-  it('returns 12 questions (Q1-Q12)', () => {
+  it('returns 13 questions by default (Q1-Q12 + Q14)', () => {
     const questions = getQuestions(false);
-    expect(questions).toHaveLength(12);
+    expect(questions).toHaveLength(13);
   });
 
-  it('returns questions with keys q1-q12 in order', () => {
+  it('returns questions with keys q1-q12 then q14 in order', () => {
     const questions = getQuestions(false);
     const keys = questions.map(q => q.key);
-    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10', 'q11', 'q12']);
+    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10', 'q11', 'q12', 'q14']);
+  });
+
+  it('Q14 is present by default, right after Q12, with the decision-table pointer', () => {
+    const questions = getQuestions(false);
+    const keys = questions.map(q => q.key);
+    expect(keys.indexOf('q14')).toBe(keys.indexOf('q12') + 1);
+    const q14 = questions.find(q => q.key === 'q14');
+    expect(q14).toBeTruthy();
+    expect(q14.text).toContain('Decision Coverage');
+    expect(q14.text).toContain('decision-table.md');
+    expect(q14.text).toContain('HOLD');
+    expect(q14.focus).toContain('decision-table.md');
+    expect(q14.insufficient).toBeTruthy();
+    expect(q14.sufficient).toBeTruthy();
+  });
+
+  it('Q14 is present alongside Q13 when codeRabbitDispositionRequired is true, and Q13 stays last', () => {
+    const questions = getQuestions(false, { codeRabbitDispositionRequired: true });
+    const keys = questions.map(q => q.key);
+    expect(keys.slice(-2)).toEqual(['q14', 'q13']);
+    expect(questions).toHaveLength(14);
   });
 
   it('Q10 references the Concerns Surfacing Discipline', () => {
@@ -426,20 +447,20 @@ describe('getQuestions', () => {
   // where the question costs nothing.
   it('does not add Q13 when codeRabbitDispositionRequired is omitted (default)', () => {
     const questions = getQuestions(false);
-    expect(questions).toHaveLength(12);
+    expect(questions).toHaveLength(13);
     expect(questions.find((q) => q.key === 'q13')).toBeUndefined();
   });
 
   it('does not add Q13 when codeRabbitDispositionRequired is false (reviewed head)', () => {
     const questions = getQuestions(false, { codeRabbitDispositionRequired: false });
-    expect(questions).toHaveLength(12);
+    expect(questions).toHaveLength(13);
     expect(questions.find((q) => q.key === 'q13')).toBeUndefined();
   });
 
   it('adds Q13 when codeRabbitDispositionRequired is true', () => {
     const questions = getQuestions(false, { codeRabbitDispositionRequired: true });
-    expect(questions).toHaveLength(13);
-    const q13 = questions.find((q) => q.key === 'q13');
+    expect(questions).toHaveLength(14);
+    const q13 =questions.find((q) => q.key === 'q13');
     expect(q13).toBeTruthy();
     expect(q13.text).toContain('CodeRabbit Disposition Record');
     expect(q13.text).toContain('WHERE the disposition is durably recorded');
@@ -1277,19 +1298,19 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
   // `unanswered.length > 0 || ciRetrievalFailed` to `&&` makes this test
   // (and the partial-answers and CI-retrieval-failed tests below) fail —
   // all three assert exitCode 1 from only one side of the OR being true.
-  it('closed stdin (no answers at all): all 12 questions unanswered, exitCode 1', async () => {
+  it('closed stdin (no answers at all): all 13 questions unanswered, exitCode 1', async () => {
     const stdin = createMockStdin([]);
     const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard() });
     expect(result.exitCode).toBe(1);
-    expect(result.unanswered).toHaveLength(12);
+    expect(result.unanswered).toHaveLength(13);
     expect(result.ciRetrievalFailed).toBe(false);
   });
 
-  it('partial answers (3 of 12): the 3 are excluded from unanswered, the other 9 are listed, exitCode 1', async () => {
+  it('partial answers (3 of 13): the 3 are excluded from unanswered, the other 10 are listed, exitCode 1', async () => {
     const stdin = createMockStdin(['real answer one', 'real answer two', 'real answer three']);
     const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard() });
     expect(result.exitCode).toBe(1);
-    expect(result.unanswered).toHaveLength(9);
+    expect(result.unanswered).toHaveLength(10);
     expect(result.unanswered).not.toContain('q1');
     expect(result.unanswered).not.toContain('q2');
     expect(result.unanswered).not.toContain('q3');
@@ -1299,8 +1320,8 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
   // D1 polarity, post-fix half: full answers must still pass. Without this,
   // a fix that marked everything unanswered unconditionally would also
   // pass the closed-stdin test above for the wrong reason.
-  it('all 12 questions answered with real content: exitCode 0, unanswered is empty', async () => {
-    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+  it('all 13 questions answered with real content: exitCode 0, unanswered is empty', async () => {
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard() });
     expect(result.exitCode).toBe(0);
@@ -1311,7 +1332,7 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
   // question was answered — "could not retrieve" can never coexist with
   // exit 0.
   it('CI status retrieval failed (ciStatus null) with all questions answered: exitCode 1, ciRetrievalFailed true', async () => {
-    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard({ ciStatus: null }) });
     expect(result.exitCode).toBe(1);
@@ -1330,7 +1351,7 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
   // exit gate in runWizard (acceptance-check.js) for the canonical
   // rationale and its re-arming condition.
   it('CI status retrieved but not all green: exitCode still driven by answers, not by allGreen', async () => {
-    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const notGreenCi = { allGreen: false, checks: [{ name: 'test', bucket: 'fail' }], failed: [{ name: 'test' }], pending: [], passed: [] };
     const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard({ ciStatus: notGreenCi }) });
@@ -1351,7 +1372,7 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
   // pushed) makes the reason-string assertion fail while exitCode stays
   // correct — the two assertions are not redundant with each other.
   it('CI status retrieved with an empty checks array (no checks reported yet): exitCode 1, ciNoChecksYet true, ciRetrievalFailed false', async () => {
-    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const noChecksYetCi = { allGreen: false, checks: [], failed: [], pending: [], passed: [] };
     const logs = [];
@@ -1379,7 +1400,7 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
   it('acceptanceCriteriaState "prose" drives Q3 to the manual variant, not the checklist variant', async () => {
     const logs = [];
     logSpy.mockImplementation((...args) => logs.push(args.join(' ')));
-    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     // linkedIssue is intentionally left at its default (null) — Q3's
     // manual-vs-checklist wiring depends only on acceptanceCriteriaState,
@@ -1402,7 +1423,7 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
   it('acceptanceCriteriaState "empty-heading" also drives Q3 to the manual variant', async () => {
     const logs = [];
     logSpy.mockImplementation((...args) => logs.push(args.join(' ')));
-    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const autoDetection = baseAutoDetectionForWizard({
       acceptanceCriteriaState: { state: 'empty-heading', items: [] },
@@ -1418,9 +1439,9 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
 //
 // `autoDetection.codeRabbitHeadState` is injected the same way `ciStatus`
 // is above. Omitting the field entirely (as `baseAutoDetectionForWizard()`
-// does by default) must behave exactly like the pre-#1547 code: 12
-// questions, no extra exit-code gating — covered by the existing tests
-// above that already pass 12 answers. These tests cover the three states
+// does by default) must behave exactly like the pre-#1547 code: 13
+// questions (Q1-Q12 + Q14), no extra exit-code gating — covered by the
+// existing tests above that already pass 13 answers. These tests cover the three states
 // the new field can hold.
 describe('runWizard — CodeRabbit head-state precondition', () => {
   let logSpy;
@@ -1433,8 +1454,8 @@ describe('runWizard — CodeRabbit head-state precondition', () => {
     logSpy.mockRestore();
   });
 
-  it('reviewed head: no Q13 is added, 12 answers suffice, exitCode 0', async () => {
-    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+  it('reviewed head: no Q13 is added, 13 answers (Q1-Q12 + Q14) suffice, exitCode 0', async () => {
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const autoDetection = baseAutoDetectionForWizard({
       codeRabbitHeadState: {
@@ -1452,7 +1473,7 @@ describe('runWizard — CodeRabbit head-state precondition', () => {
   });
 
   it('unreviewed head, Q13 answered: exitCode 0 — loud-but-passing, like red-but-retrieved CI', async () => {
-    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
+    const answers = Array.from({ length: 14 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const autoDetection = baseAutoDetectionForWizard({
       codeRabbitHeadState: {
@@ -1470,8 +1491,8 @@ describe('runWizard — CodeRabbit head-state precondition', () => {
   });
 
   it('unreviewed head, Q13 left unanswered: exitCode 1, Q13 listed as unanswered', async () => {
-    // Only 12 answers for 13 questions (Q1-Q12 + Q13) — Q13 is left empty.
-    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    // Only 13 answers for 14 questions (Q1-Q12, Q14, then Q13 last) — Q13 is left empty.
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const autoDetection = baseAutoDetectionForWizard({
       codeRabbitHeadState: {
@@ -1493,7 +1514,7 @@ describe('runWizard — CodeRabbit head-state precondition', () => {
   // 'unreviewed', there is no recorded decision to answer for when the
   // `gh` calls themselves never succeeded.
   it('retrieval-failed: exitCode 1 even with Q13 answered, coderabbitRetrievalFailed true', async () => {
-    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
+    const answers = Array.from({ length: 14 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const autoDetection = baseAutoDetectionForWizard({
       codeRabbitHeadState: {
@@ -1513,7 +1534,7 @@ describe('runWizard — CodeRabbit head-state precondition', () => {
   it('retrieval-failed: the FAILED reason line names the CodeRabbit state explicitly', async () => {
     const logs = [];
     logSpy.mockImplementation((...args) => logs.push(args.join(' ')));
-    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
+    const answers = Array.from({ length: 14 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
     const autoDetection = baseAutoDetectionForWizard({
       codeRabbitHeadState: {
@@ -1559,8 +1580,10 @@ describe('runWizard — --answers map (non-interactive)', () => {
     });
   }
 
-  function fullAnswers(n = 12) {
-    return Object.fromEntries(Array.from({ length: n }, (_, i) => [`q${i + 1}`, `real answer ${i + 1}`]));
+  // Default question set: q1..q12 plus q14 (q13 is conditional).
+  function fullAnswers() {
+    const keys = [...Array.from({ length: 12 }, (_, i) => `q${i + 1}`), 'q14'];
+    return Object.fromEntries(keys.map((k) => [k, `real answer ${k}`]));
   }
 
   it('full map: every question OK, exitCode 0, stdin untouched', async () => {
@@ -1574,6 +1597,19 @@ describe('runWizard — --answers map (non-interactive)', () => {
     const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(printed).toContain('OK Q1 answered');
     expect(printed).toContain('OK Q12 answered');
+    expect(printed).toContain('OK Q14 answered');
+  });
+
+  it('q14 is accepted as a key; a map missing only q14 leaves exactly q14 unanswered, exitCode 1', async () => {
+    const answers = fullAnswers();
+    delete answers.q14;
+    const result = await runWizard('999', {
+      stdin: forbiddenStdin(),
+      answers,
+      autoDetection: baseAutoDetectionForWizard(),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.unanswered).toEqual(['q14']);
   });
 
   it('each answer lands on its own question (no cross-feeding)', async () => {
@@ -1608,7 +1644,7 @@ describe('runWizard — --answers map (non-interactive)', () => {
       autoDetection: baseAutoDetectionForWizard(),
     });
     expect(result.exitCode).toBe(1);
-    expect(result.unanswered).toHaveLength(12);
+    expect(result.unanswered).toHaveLength(13);
   });
 
   it('whitespace-only and non-string values count as unanswered', async () => {
@@ -1625,10 +1661,10 @@ describe('runWizard — --answers map (non-interactive)', () => {
     await expect(
       runWizard('999', {
         stdin: forbiddenStdin(),
-        answers: { ...fullAnswers(), q9a: 'typo', q14: 'x' },
+        answers: { ...fullAnswers(), q9a: 'typo', q15: 'x' },
         autoDetection: baseAutoDetectionForWizard(),
       }),
-    ).rejects.toThrow(/q9a, q14/);
+    ).rejects.toThrow(/q9a, q15/);
     expect(logSpy).not.toHaveBeenCalled();
   });
 });
@@ -1652,6 +1688,10 @@ describe('loadAnswersFile', () => {
 
   it('returns the parsed object', () => {
     expect(loadAnswersFile(write('{"q1":"a","q13":"b"}'))).toEqual({ q1: 'a', q13: 'b' });
+  });
+
+  it('accepts q14 as a known key', () => {
+    expect(loadAnswersFile(write('{"q14":"c"}'))).toEqual({ q14: 'c' });
   });
 
   it('rejects an unknown key, naming it', () => {
