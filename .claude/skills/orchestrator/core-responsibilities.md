@@ -327,7 +327,7 @@ MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')
 if [ "$(git -C "$MAIN_DIR" rev-parse --is-bare-repository)" = true ]; then
   git -C "$MAIN_DIR" fetch origin
   if git -C "$MAIN_DIR" worktree list --porcelain | grep -qx 'branch refs/heads/main'; then
-    echo "main is checked out in a linked worktree; local main left as is (origin/main is current)"
+    echo "main is checked out in a linked worktree; local main left as is (origin/main is current); update it through that worktree when that is safe"
   else
     git -C "$MAIN_DIR" fetch origin main:main
   fi
@@ -340,7 +340,7 @@ On a bare-cloned source repository the first entry of `git worktree list` is the
 
 `run_process` runs in the session's directory by default; pass `cwd` only to run elsewhere.
 
-**Why:** Keeping the main repository directory synchronized after each merge prevents worktrees from being based on stale code. On a bare repository delegation already bases on `origin/<default>` after its own fetch (`worktree-creation-service.ts`, the `fetchRemote` call before the base is resolved), so the by-hand step there only keeps the local default branch current for the fetch-failure fallback and the ahead/behind count. Git 2.35 and later (production and this host run 2.43) refuse the second fetch while a linked worktree has `main` checked out (`refusing to fetch into branch`); git 2.34 does not check a bare repository at all and would move the branch under that worktree, which is why the procedure checks `git worktree list --porcelain` first instead of depending on a git version floor nobody pins. The skipped step costs nothing: the plain `fetch origin` already updated the remote-tracking refs.
+**Why:** Keeping the main repository directory synchronized after each merge prevents worktrees from being based on stale code. On a bare repository delegation already bases on `origin/<default>` after its own fetch (`worktree-creation-service.ts`, the `fetchRemote` call before the base is resolved), so the by-hand step there only keeps the local default branch current for the fetch-failure fallback and the ahead/behind count. Git 2.35 and later (production and this host run 2.43) refuse the second fetch while a linked worktree has `main` checked out (`refusing to fetch into branch`); git 2.34 does not check a bare repository at all and would move the branch under that worktree, which is why the procedure checks `git worktree list --porcelain` first instead of depending on a git version floor nobody pins. The skipped step costs nothing for delegation: the plain `fetch origin` already updated the remote-tracking refs, and delegation bases on `origin/<default>`. It does leave local `main` behind, and `worktree-creation-service.ts` falls back to the local branch as the base when its own fetch fails ("created from local branch instead"), so a skipped update leaves that fallback stale: bring `main` up to date through the linked worktree that holds it (for example `git -C <that worktree> merge --ff-only origin/main`) when that is safe, and treat a delegation that reports the local-branch fallback with that in mind.
 
 ### 7c. Orchestrator Branch Sync
 Rebase the Orchestrator session's own branch onto the updated `origin/main`:

@@ -140,7 +140,15 @@ stop_gitd_2094() {
   GITD_2094_STARTED=0
 }
 
+# Temp files created by check 11b (cookie jars hold session cookies). Each path
+# is appended right after its mktemp; cleanup() removes them on any exit.
+S11B_TMPFILES=()
+
 cleanup() {
+  local s11b_tmp
+  for s11b_tmp in ${S11B_TMPFILES[@]+"${S11B_TMPFILES[@]}"}; do
+    rm -f "$s11b_tmp"
+  done
   stop_gitd_2094
   if [ "$KEEP" -eq 1 ]; then
     echo "[info] --keep set; container left running at ${BASE_URL}"
@@ -1474,13 +1482,13 @@ S11B_GITD_ROOT="/srv/gitd"
 S11B_DAEMON_OK=1
 S11B_CLONE_ID=""
 S11B_WT_PATH=""
-S11B_ALICE_JAR="$(mktemp)"
-S11B_BOB_JAR="$(mktemp)"
-S11B_RESP="$(mktemp)"
-S11B_LIST="$(mktemp)"
-S11B_BASELINE="$(mktemp)"
-S11B_AFTER="$(mktemp)"
-S11B_OUT="$(mktemp)"
+S11B_ALICE_JAR="$(mktemp)"; S11B_TMPFILES+=("$S11B_ALICE_JAR")
+S11B_BOB_JAR="$(mktemp)"; S11B_TMPFILES+=("$S11B_BOB_JAR")
+S11B_RESP="$(mktemp)"; S11B_TMPFILES+=("$S11B_RESP")
+S11B_LIST="$(mktemp)"; S11B_TMPFILES+=("$S11B_LIST")
+S11B_BASELINE="$(mktemp)"; S11B_TMPFILES+=("$S11B_BASELINE")
+S11B_AFTER="$(mktemp)"; S11B_TMPFILES+=("$S11B_AFTER")
+S11B_OUT="$(mktemp)"; S11B_TMPFILES+=("$S11B_OUT")
 
 # First string value of "<key>" in a compact JSON file.
 s11b_json_str() { # s11b_json_str <key> <file>
