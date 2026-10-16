@@ -142,7 +142,7 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 
 **UI.**
 
-- (a) A per-session block beside `MemoPanel`: "Todo (N)", N = the open items of this session (both scopes, with a scope badge), listing every item whose `sessionId` is this session as a summary row (see "Surfaces" below). The block renders with zero items too, so a session with no Todo can still get one from its sidebar (v2 behaviour change: it was hidden at zero open items).
+- (a) A per-session block beside `MemoPanel`: "Todo (N)", N = the open items of this session (both scopes, with a scope badge), listing every item whose `sessionId` is this session as a summary row (see "Surfaces" below). The block renders with zero items too, so a session with no Todo can still get one from its sidebar (v2 behaviour change: it was hidden at zero open items). The block renders once the first fetch settles, including on error.
 - (b) A **global `/todos` page** (a new route beside `routes/artifacts`, `routes/jobs`): all items, filters for status, assignee and session. This is what makes assignment usable: an assignee cannot find items session by session. It also hosts the human "add" control; delete, edit and re-scope live in the detail view (see "Surfaces"). The page refetches on `todos-updated` and on `session-deleted`; the server emits no `todos-updated` for a deletion's withdrawals, `session-deleted` is that signal.
 - (c) A **navigation badge** = the open items assigned to me, in the header navigation (`components/header/NavLinks.tsx`, `MobileNavMenu.tsx`).
 - The body renders with the same markdown renderer as the memo (`react-markdown`, `MemoPanel.tsx:2`; the shared fenced-block chrome is `MarkdownCodeBlock`: a Copy control on every block, plus a Run control on ```terminal blocks only that opens a full-command confirmation and then sends the text to a terminal worker of the session, #2085 / #2100), so #2085's command block lands once, for both.
@@ -152,7 +152,7 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 
 | operation | session sidebar (`SessionTodosPanel`) | `/todos` list (`TodosPage`) | detail (`TodoDetail`: page `/todos/:id` and in-session dialog) | MCP | REST |
 |---|---|---|---|---|---|
-| create | do: compact `AddTodoForm` (session preset) | do: `AddTodoForm` | not here: a detail is one item | do: `create_todo` | do: POST |
+| create | do: session-scoped create only; a global item is created on /todos or re-scoped from the detail | do: `AddTodoForm` | not here: a detail is one item | do: `create_todo` | do: POST |
 | list / summary | do: `TodoRow` summary | do: `TodoRow` summary + filters | not here | do: `list_todos` | do: GET |
 | read detail (full body, resolution history, provenance, timestamps, session link) | not here: summary only; "Open" opens the dialog | not here: "Open" links to the page | do | do: `list_todos` carries the full item | do: GET /:id |
 | resolve | do | do | do | do: `resolve_todo` | do: POST /:id/resolve |

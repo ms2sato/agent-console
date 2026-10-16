@@ -36,7 +36,7 @@ async function renderDetail(overrides: Parameters<typeof makeTodo>[0] = {}, opti
   const onError = mock((_title: string, _message: string) => {});
   const onDeleted = mock(() => {});
   const onRun = mock((_command: string) => {});
-  await renderWithRouter(
+  const { queryClient } = await renderWithRouter(
     <TodoDetail
       todo={todo}
       users={options.users ?? [ALICE]}
@@ -46,7 +46,7 @@ async function renderDetail(overrides: Parameters<typeof makeTodo>[0] = {}, opti
       onDeleted={onDeleted}
     />,
   );
-  return { todo, onError, onDeleted, onRun, user: userEvent.setup() };
+  return { todo, onError, onDeleted, onRun, queryClient, user: userEvent.setup() };
 }
 
 /**
@@ -222,6 +222,25 @@ describe('TodoDetail', () => {
       await waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1));
       expect(api.writes()).toHaveLength(1);
       expect(api.writes()[0]).toMatchObject({ method: 'DELETE', path: `/api/todos/${todo.id}` });
+    });
+
+    it('calls onDeleted before it refetches the lists, so the host leaves before the deleted-state render', async () => {
+      const { onDeleted, queryClient, user } = await renderDetail({ title: 'Doomed' });
+      const order: string[] = [];
+      onDeleted.mockImplementation(() => {
+        order.push('onDeleted');
+      });
+      const invalidate = queryClient.invalidateQueries.bind(queryClient);
+      queryClient.invalidateQueries = ((...args: Parameters<typeof invalidate>) => {
+        order.push('invalidate');
+        return invalidate(...args);
+      }) as typeof queryClient.invalidateQueries;
+
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      const dialog = await screen.findByRole('alertdialog');
+      await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() => expect(order).toEqual(['onDeleted', 'invalidate']));
     });
 
     it('cancelling the confirmation deletes nothing and does not call onDeleted', async () => {

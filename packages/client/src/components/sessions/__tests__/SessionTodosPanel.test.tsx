@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
+import { screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { installMockWebSocket } from '../../../test/mock-websocket';
@@ -51,6 +52,8 @@ async function renderPanel(props: { isExpanded?: boolean; compact?: boolean; onT
  *     -> 'adds with the session preset and the session scope ...'
  *   - the session field shown in the sidebar form -> 'the add form hides the session field ...'
  *   - the rows render the body -> 'rows are summaries ...'
+ *   - the `tabIndex` dropped from one control type (the Open button, the assignee select, the
+ *     add-form controls, resolve/dismiss) -> 'excludes every control of the body from the tab order ...'
  *   - the panel replaced by the dialog while one is open
  *     -> 'opening the detail leaves the surrounding markup mounted'
  */
@@ -113,6 +116,52 @@ describe('SessionTodosPanel', () => {
     await renderPanel({ compact: true });
 
     expect(await screen.findByText('Todo (0)')).toBeTruthy();
+  });
+
+  it('excludes every control of the body from the tab order while collapsed, and restores them when expanded', async () => {
+    api.state.users = [ME, BOB];
+    api.state.todos = [makeTodo({ id: 'a', title: 'Open one' })];
+
+    function Host() {
+      const [expanded, setExpanded] = useState(false);
+      return (
+        <SessionTodosPanel
+          sessionId="session-1"
+          isExpanded={expanded}
+          onToggleExpanded={() => setExpanded((value) => !value)}
+          compact={false}
+        />
+      );
+    }
+    await renderWithRouter(<Host />);
+    const row = await screen.findByTestId('todo-a');
+    const body = row.closest('.max-h-96') as HTMLElement;
+    // Wait for the directory so the assignee select is part of the body.
+    await waitFor(() => expect(screen.getByLabelText('Assignee for Open one')).toBeTruthy());
+
+    const named = [
+      screen.getByLabelText('Kind'),
+      screen.getByLabelText('Title'),
+      screen.getByLabelText('Body'),
+      within(screen.getByRole('form', { name: 'Add Todo', hidden: true })).getByLabelText('Assignee'),
+      screen.getByRole('button', { name: 'Add', hidden: true }),
+      screen.getByLabelText('Open Open one'),
+      screen.getByLabelText('Resolution text for Open one'),
+      screen.getByRole('button', { name: 'Resolve', hidden: true }),
+      screen.getByRole('button', { name: 'Dismiss', hidden: true }),
+      screen.getByLabelText('Assignee for Open one'),
+    ];
+    const everyControl = Array.from(body.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href]'));
+    expect(everyControl.length).toBe(named.length);
+    for (const control of everyControl) {
+      expect(control.getAttribute('tabindex')).toBe('-1');
+    }
+
+    fireEvent.click(screen.getByLabelText('Expand Todo'));
+    await waitFor(() => expect(screen.getByLabelText('Collapse Todo')).toBeTruthy());
+    for (const control of everyControl) {
+      expect(control.getAttribute('tabindex')).toBeNull();
+    }
   });
 
   describe('add form', () => {

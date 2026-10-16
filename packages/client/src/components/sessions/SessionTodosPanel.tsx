@@ -63,7 +63,7 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
       </div>
       <AccordionSectionBody isExpanded={isExpanded}>
         <div className="min-w-0 max-h-96 overflow-y-auto">
-          <AddTodoForm users={users} sessionId={sessionId} hideSessionField onError={showError} />
+          <AddTodoForm users={users} sessionId={sessionId} hideSessionField onError={showError} focusable={isExpanded} />
           <ul className="flex flex-col gap-2 list-none p-2 m-0">
             {todos.map((todo) => (
               <TodoRow
@@ -73,6 +73,7 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
                 onError={showError}
                 onOpenDetail={setOpenTodoId}
                 showSessionLink={false}
+                focusable={isExpanded}
               />
             ))}
           </ul>

@@ -16,6 +16,8 @@ interface TodoRowProps {
   onOpenDetail: (todoId: string) => void;
   /** False where the host already IS the item's session (the session sidebar). */
   showSessionLink?: boolean;
+  /** False while the host is collapsed: every control leaves the tab order (fallback for engines without `inert`). */
+  focusable?: boolean;
 }
 
 /**
@@ -23,7 +25,8 @@ interface TodoRowProps {
  * created / holds it, and the resolve / dismiss / assign controls. The body,
  * resolution history, editing and deleting live in the detail view.
  */
-export function TodoRow({ todo, users, onError, onOpenDetail, showSessionLink = true }: TodoRowProps) {
+export function TodoRow({ todo, users, onError, onOpenDetail, showSessionLink = true, focusable = true }: TodoRowProps) {
+  const tabIndex = focusable ? undefined : -1;
   return (
     <li className="card" data-testid={`todo-${todo.id}`}>
       <div className="flex items-start justify-between gap-2 flex-wrap">
@@ -48,6 +51,7 @@ export function TodoRow({ todo, users, onError, onOpenDetail, showSessionLink = 
           <Link
             to="/sessions/$sessionId"
             params={{ sessionId: todo.sessionId }}
+            tabIndex={tabIndex}
             className="text-slate-400 hover:text-white underline"
           >
             Open session
@@ -55,6 +59,7 @@ export function TodoRow({ todo, users, onError, onOpenDetail, showSessionLink = 
         )}
         <button
           type="button"
+          tabIndex={tabIndex}
           aria-label={`Open ${todo.title}`}
           onClick={() => onOpenDetail(todo.id)}
           className="text-slate-400 hover:text-white underline"
@@ -63,7 +68,7 @@ export function TodoRow({ todo, users, onError, onOpenDetail, showSessionLink = 
         </button>
       </div>
 
-      <TodoActions todo={todo} users={users} onError={onError} />
+      <TodoActions todo={todo} users={users} onError={onError} focusable={focusable} />
     </li>
   );
 }

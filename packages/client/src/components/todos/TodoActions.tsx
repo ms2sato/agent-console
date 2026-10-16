@@ -13,13 +13,16 @@ interface TodoActionsProps {
   users: DirectoryUsers;
   /** Shows a refused or failed action; the message is the server's own. */
   onError: (title: string, message: string) => void;
+  /** False while the host is collapsed: every control leaves the tab order (fallback for engines without `inert`). */
+  focusable?: boolean;
 }
 
 /**
  * The resolve / dismiss / assign controls of one Todo item. The single home of
  * those three mutations: the summary row and the detail view both render it.
  */
-export function TodoActions({ todo, users, onError }: TodoActionsProps) {
+export function TodoActions({ todo, users, onError, focusable = true }: TodoActionsProps) {
+  const tabIndex = focusable ? undefined : -1;
   const queryClient = useQueryClient();
   const [resolutionText, setResolutionText] = useState('');
 
@@ -66,6 +69,7 @@ export function TodoActions({ todo, users, onError }: TodoActionsProps) {
           <>
             <input
               type="text"
+              tabIndex={tabIndex}
               aria-label={`Resolution text for ${todo.title}`}
               placeholder={
                 isQuestion ? 'Answer (required)' : todo.status === 'done' ? 'Add to the resolution' : 'Resolution (optional)'
@@ -76,6 +80,7 @@ export function TodoActions({ todo, users, onError }: TodoActionsProps) {
             />
             <button
               type="button"
+              tabIndex={tabIndex}
               onClick={handleResolve}
               disabled={resolveNeedsText || resolveMutation.isPending}
               className="btn text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50"
@@ -87,6 +92,7 @@ export function TodoActions({ todo, users, onError }: TodoActionsProps) {
         {isOpen && (
           <button
             type="button"
+            tabIndex={tabIndex}
             onClick={() => dismissMutation.mutate()}
             disabled={dismissMutation.isPending}
             className="btn text-xs bg-slate-700 hover:bg-slate-600"
@@ -101,6 +107,7 @@ export function TodoActions({ todo, users, onError }: TodoActionsProps) {
           <label className="flex items-center gap-1.5 text-xs text-gray-400">
             Assignee
             <select
+              tabIndex={tabIndex}
               aria-label={`Assignee for ${todo.title}`}
               value={todo.assigneeUserId ?? UNASSIGNED_VALUE}
               onChange={(e) => assignMutation.mutate(e.target.value === UNASSIGNED_VALUE ? null : e.target.value)}

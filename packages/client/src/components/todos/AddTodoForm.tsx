@@ -7,6 +7,8 @@ import { todoKeys } from '../../lib/query-keys';
 interface AddTodoFormBaseProps {
   users: UsersListResponse['users'];
   onError: (title: string, message: string) => void;
+  /** False while the host is collapsed: every control leaves the tab order (fallback for engines without `inert`). */
+  focusable?: boolean;
 }
 
 /** The `/todos` page form: a free session field, an explicit scope choice. */
@@ -30,7 +32,8 @@ type AddTodoFormProps = GlobalAddTodoFormProps | SessionAddTodoFormProps;
 const DEFAULT_SCOPE = '';
 const UNASSIGNED_VALUE = '';
 
-export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSessionId, hideSessionField, onError }: AddTodoFormProps) {
+export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSessionId, hideSessionField, onError, focusable = true }: AddTodoFormProps) {
+  const tabIndex = focusable ? undefined : -1;
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<TodoKind>('action');
   const [scope, setScope] = useState<TodoScope | typeof DEFAULT_SCOPE>(DEFAULT_SCOPE);
@@ -77,6 +80,7 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
     >
       <div className="flex gap-2 flex-wrap">
         <select
+          tabIndex={tabIndex}
           aria-label="Kind"
           value={kind}
           onChange={(e) => setKind(e.target.value as TodoKind)}
@@ -89,6 +93,7 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
           ))}
         </select>
         <input
+          tabIndex={tabIndex}
           type="text"
           aria-label="Title"
           placeholder="Title"
@@ -98,6 +103,7 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
         />
       </div>
       <textarea
+        tabIndex={tabIndex}
         aria-label="Body"
         placeholder="Details (markdown)"
         value={body}
@@ -109,6 +115,7 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
         {!hideSessionField && (
           <>
             <input
+              tabIndex={tabIndex}
               type="text"
               aria-label="Session id"
               placeholder="Session id (optional)"
@@ -126,6 +133,7 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
         )}
         {!isPreset && (
           <select
+            tabIndex={tabIndex}
             aria-label="Scope"
             value={scope}
             onChange={(e) => setScope(e.target.value as TodoScope | typeof DEFAULT_SCOPE)}
@@ -141,6 +149,7 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
         )}
         {canAssign && (
           <select
+            tabIndex={tabIndex}
             aria-label="Assignee"
             value={assigneeUserId}
             onChange={(e) => setAssigneeUserId(e.target.value)}
@@ -155,6 +164,7 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
           </select>
         )}
         <button
+          tabIndex={tabIndex}
           type="submit"
           disabled={title.trim() === '' || mutation.isPending}
           className="btn btn-primary text-sm ml-auto disabled:opacity-50"

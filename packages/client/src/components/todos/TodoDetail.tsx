@@ -177,8 +177,9 @@ export function TodoDetail({ todo, users, onError, runEnabled, onRun, onDeleted 
     mutationFn: () => deleteTodo(todo.id),
     onSuccess: async () => {
       setConfirmDelete(false);
-      await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+      // Leave first: refetching the deleted item before the host closes would flash the deleted-state card.
       onDeleted();
+      await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
     },
     onError: (err: Error) => {
       setConfirmDelete(false);
