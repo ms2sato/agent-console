@@ -527,24 +527,31 @@ class TerminalController implements TerminalInstance {
    */
   whenIdleForTest(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`terminal-store: not idle after ${IDLE_WAIT_MAX_MS}ms`)),
-        IDLE_WAIT_MAX_MS,
-      );
+      // Set once the promise has settled so the background polling stops.
+      let cancelled = false;
+      const timer = setTimeout(() => {
+        cancelled = true;
+        reject(new Error(`terminal-store: not idle after ${IDLE_WAIT_MAX_MS}ms`));
+      }, IDLE_WAIT_MAX_MS);
       const settle = async (): Promise<void> => {
         for (let round = 0; round < IDLE_WAIT_MAX_ROUNDS; round++) {
-          if (this.disposed) return;
+          if (this.disposed || cancelled) return;
           // A write is queued behind every earlier write, so its callback marks
           // the point where all earlier parsing (and its scheduleNotify) is done.
           await new Promise<void>((done) => this.terminal.write('', done));
           if (!this.frameScheduled) return;
-          while (this.frameScheduled) {
+          while (this.frameScheduled && !cancelled) {
             await new Promise<void>((done) => setTimeout(done, 4));
           }
         }
         throw new Error(`terminal-store: not idle after ${IDLE_WAIT_MAX_ROUNDS} rounds`);
       };
-      settle().then(resolve, reject).finally(() => clearTimeout(timer));
+      settle()
+        .then(resolve, reject)
+        .finally(() => {
+          cancelled = true;
+          clearTimeout(timer);
+        });
     });
   }
 
