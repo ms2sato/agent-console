@@ -31,7 +31,7 @@ import type { UserRepository } from '../repositories/user-repository.js';
 import type { RepositoryUpdates } from '../repositories/repository-repository.js';
 import type { ArtifactRepository } from '../repositories/artifact-repository.js';
 import type { BookmarkRepository } from '../repositories/bookmark-repository.js';
-import { TodoSupersedeRefusedError, type TodoRepository } from '../repositories/todo-repository.js';
+import { TodoResolveRefusedError, TodoSupersedeRefusedError, type TodoRepository } from '../repositories/todo-repository.js';
 import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
@@ -253,6 +253,9 @@ const HTML_HEADING_TAG_RE = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i;
  * storage/render cost for a caller-supplied title with no natural limit.
  */
 const MAX_TITLE_LENGTH = 200;
+
+/** Most items one `resolve_todo` call may name. */
+const RESOLVE_TODO_MAX_IDS = 50;
 
 /**
  * Strip HTML tags from an already-extracted fragment and collapse whitespace,
@@ -2903,7 +2906,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'create_todo',
     'Add an item to the human TODO list: a question that needs a human answer, or an action a human has to carry out. ' +
       'Each call appends a new open item (a second call never overwrites the first). Humans resolve or dismiss items in the UI; ' +
-      'agents cannot. `scope` defaults to "session" (ends with this session); use "global" for an action that must survive it. ' +
+      'an agent may mark this session\'s items done with `resolve_todo` when a human has answered in words. `scope` defaults to "session" (ends with this session); use "global" for an action that must survive it. ' +
       'A question is always session-scoped. `supersedes` names an open item of THIS session that the new item replaces.',
     {
       kind: z.enum(TODO_KINDS).describe('"question" (needs an answer) or "action" (needs doing).'),
@@ -3070,6 +3073,112 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'list_todos failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: resolve_todo ----------
+
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
+  mcpServer.tool(
+    'resolve_todo',
+    "Mark items of THIS session done on the strength of a human's words. `statement` is the human's words, quoted " +
+      '(what they typed or said), never a resolution you inferred from what they did. Use one call for several items ' +
+      'one statement answered. Only open items of this session can be resolved, and only to done; if any id is not ' +
+      'one, nothing is changed.',
+    {
+      ids: z.array(z.string()).describe(`The items to mark done: 1 to ${RESOLVE_TODO_MAX_IDS} ids of open items of this session.`),
+      statement: z.string().describe("The human's words, quoted. Required; whitespace alone is refused."),
+      statedBy: z.string().optional().describe(
+        'Optional username of the team member who said it. Omitted: the user who owns this session.',
+      ),
+      sessionId: z.string().optional().describe(
+        'The session the items belong to. Optional for embedded agents (defaults to your own session, proven by your ' +
+          'bearer token; a different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
+      ),
+      workerId: z.string().optional().describe(
+        'The worker recording the statement. Optional for embedded agents (defaults to your own worker). ' +
+          'Required for terminal agents: your worker id (AGENT_CONSOLE_WORKER_ID in your environment).',
+      ),
+    },
+    async ({ ids, statement, statedBy, sessionId: requestedSessionId, workerId: requestedWorkerId }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedSessionId, workerId: requestedWorkerId },
+        'resolve_todo',
+      );
+      if (!self.ok) return errorResult(self.error);
+      const { sessionId, workerId } = self;
+
+      try {
+        if (!todoRepository) {
+          return errorResult('The TODO list is not available on this server');
+        }
+
+        const uniqueIds = [...new Set(ids)];
+        if (uniqueIds.length === 0) {
+          return errorResult('ids must name at least one item');
+        }
+        if (uniqueIds.length > RESOLVE_TODO_MAX_IDS) {
+          return errorResult(`ids may name at most ${RESOLVE_TODO_MAX_IDS} items (got ${uniqueIds.length})`);
+        }
+        const text = statement.trim();
+        if (text === '') {
+          return errorResult("statement must be the human's words, quoted; it cannot be empty");
+        }
+
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'resolve_todo' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        let resolvedByUserId: string | null = session.createdBy ?? null;
+        if (statedBy !== undefined) {
+          const stater = await userRepository.findByUsername(statedBy);
+          if (!stater) {
+            return errorResult(`No user named ${statedBy}`);
+          }
+          resolvedByUserId = stater.id;
+        }
+
+        const resolved = await todoRepository.inTransaction(async (trx) => {
+          const rows = await todoRepository.resolveManyOpen(
+            uniqueIds,
+            { text, resolvedByUserId, resolvedByWorkerId: workerId, sessionId },
+            trx,
+          );
+          if (rows.length !== uniqueIds.length) {
+            const resolvedIds = new Set(rows.map((row) => row.id));
+            const refused = uniqueIds.filter((id) => !resolvedIds.has(id));
+            throw new TodoResolveRefusedError(refused);
+          }
+          return rows;
+        });
+
+        logger.info({ sessionId, workerId, count: resolved.length }, 'Todos resolved via MCP');
+        emitTodosUpdated(broadcastToApp, sessionId);
+
+        return textResult({ todos: resolved });
+      } catch (err) {
+        if (err instanceof TodoResolveRefusedError) {
+          return errorResult(err.message);
+        }
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'resolve_todo failed');
         return errorResult(message);
       }
     },

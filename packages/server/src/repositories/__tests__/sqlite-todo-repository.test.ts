@@ -190,6 +190,142 @@ describe('SqliteTodoRepository', () => {
     });
   });
 
+  describe('resolve: agent-recorded resolutions', () => {
+    it('a human resolve leaves the worker null', async () => {
+      await repository.create(params());
+
+      const resolved = await repository.resolve('todo-1', { text: 'done', resolvedByUserId: 'user-2' });
+
+      expect(resolved).toMatchObject({ status: 'done', resolvedByUserId: 'user-2', resolvedByWorkerId: null });
+    });
+
+    it('an agent resolve stores the worker and the attributed user', async () => {
+      await repository.create(params());
+
+      const resolved = await repository.resolve('todo-1', {
+        text: 'ok to merge',
+        resolvedByUserId: 'user-2',
+        resolvedByWorkerId: 'worker-9',
+      });
+
+      expect(resolved).toMatchObject({
+        status: 'done',
+        resolutionText: 'ok to merge',
+        resolvedByUserId: 'user-2',
+        resolvedByWorkerId: 'worker-9',
+      });
+      expect((await repository.findById('todo-1'))!.resolvedByWorkerId).toBe('worker-9');
+    });
+
+    it('accepts a null attributed user (a session with no owner) alongside a worker', async () => {
+      await repository.create(params());
+
+      const resolved = await repository.resolve('todo-1', { text: 'x', resolvedByUserId: null, resolvedByWorkerId: 'worker-9' });
+
+      expect(resolved).toMatchObject({ resolvedByUserId: null, resolvedByWorkerId: 'worker-9' });
+    });
+
+    it('a later human resolve clears the worker: the latest resolver is the record', async () => {
+      await repository.create(params());
+      await repository.resolve('todo-1', { text: 'quoted', resolvedByUserId: 'user-2', resolvedByWorkerId: 'worker-9' });
+
+      const second = await repository.resolve('todo-1', { text: 'confirmed in the UI', resolvedByUserId: 'user-3' });
+
+      expect(second).toMatchObject({ resolvedByUserId: 'user-3', resolvedByWorkerId: null });
+    });
+
+    it('worker id only with done: an item that is not resolvable never gets a worker', async () => {
+      await repository.create(params({ id: 'open' }));
+      await repository.create(params({ id: 'dismissed' }));
+      await repository.dismiss('dismissed');
+
+      expect(
+        await repository.resolve('dismissed', { text: 'x', resolvedByUserId: 'u', resolvedByWorkerId: 'worker-9' }),
+      ).toBeNull();
+
+      for (const todo of await repository.list({})) {
+        expect(todo.resolvedByWorkerId).toBeNull();
+        expect(todo.status).not.toBe('done');
+      }
+    });
+  });
+
+  describe('resolveManyOpen', () => {
+    const agentParams = (sessionId = 'session-1') => ({
+      text: 'all fine to merge',
+      resolvedByUserId: 'user-2',
+      resolvedByWorkerId: 'worker-9',
+      sessionId,
+    });
+
+    it('resolves the open items of one session in the caller transaction and returns the updated rows', async () => {
+      await repository.create(params({ id: 'a' }));
+      await repository.create(params({ id: 'b', kind: 'question' }));
+
+      const rows = await repository.inTransaction((trx) => repository.resolveManyOpen(['a', 'b'], agentParams(), trx));
+
+      expect(rows.map((r) => r.id).sort()).toEqual(['a', 'b']);
+      for (const row of rows) {
+        expect(row).toMatchObject({
+          status: 'done',
+          resolutionText: 'all fine to merge',
+          resolvedByUserId: 'user-2',
+          resolvedByWorkerId: 'worker-9',
+        });
+        expect(row.resolvedAt).not.toBeNull();
+      }
+    });
+
+    it('skips a done row and the caller sees the short count', async () => {
+      await repository.create(params({ id: 'a' }));
+      await repository.create(params({ id: 'b' }));
+      await repository.resolve('b', { text: 'earlier human answer', resolvedByUserId: 'user-3' });
+
+      const rows = await repository.inTransaction((trx) => repository.resolveManyOpen(['a', 'b'], agentParams(), trx));
+
+      expect(rows.map((r) => r.id)).toEqual(['a']);
+      const untouched = (await repository.findById('b'))!;
+      expect(untouched).toMatchObject({ resolutionText: 'earlier human answer', resolvedByUserId: 'user-3', resolvedByWorkerId: null });
+    });
+
+    it("does not touch another session's rows, nor dismissed or unknown ids", async () => {
+      await repository.create(params({ id: 'mine' }));
+      await repository.create(params({ id: 'theirs', sessionId: 'session-2' }));
+      await repository.create(params({ id: 'gone' }));
+      await repository.dismiss('gone');
+
+      const rows = await repository.inTransaction((trx) =>
+        repository.resolveManyOpen(['mine', 'theirs', 'gone', 'missing'], agentParams(), trx),
+      );
+
+      expect(rows.map((r) => r.id)).toEqual(['mine']);
+      expect((await repository.findById('theirs'))!.status).toBe('open');
+      expect((await repository.findById('gone'))!.status).toBe('dismissed');
+    });
+
+    it('rolls back with the enclosing transaction when the caller refuses a short count', async () => {
+      await repository.create(params({ id: 'a' }));
+
+      await repository
+        .inTransaction(async (trx) => {
+          const rows = await repository.resolveManyOpen(['a', 'missing'], agentParams(), trx);
+          if (rows.length !== 2) throw new Error('refused');
+        })
+        .catch(() => undefined);
+
+      expect((await repository.findById('a'))).toMatchObject({ status: 'open', resolvedByWorkerId: null });
+    });
+
+    it('an empty id list updates nothing and returns an empty list', async () => {
+      await repository.create(params({ id: 'a' }));
+
+      const rows = await repository.inTransaction((trx) => repository.resolveManyOpen([], agentParams(), trx));
+
+      expect(rows).toEqual([]);
+      expect((await repository.findById('a'))!.status).toBe('open');
+    });
+  });
+
   describe('dismiss / delete', () => {
     it('dismisses only an open item', async () => {
       await repository.create(params());

@@ -40,7 +40,16 @@ export interface UpdateTodoParams {
 export interface ResolveTodoParams {
   /** Empty or omitted leaves any stored resolution text untouched. */
   text?: string;
-  resolvedByUserId: string;
+  /** The human whose decision this is; null when an agent records a statement for a session with no owner. */
+  resolvedByUserId: string | null;
+  /** Set when an agent worker records a human's statement; omitted (stored null) for a human's own resolution. */
+  resolvedByWorkerId?: string;
+}
+
+/** What {@link TodoRepository.resolveManyOpen} writes: one resolution applied to several items of ONE session. */
+export interface ResolveManyOpenParams extends ResolveTodoParams {
+  /** Only open items of this session are resolved. */
+  sessionId: string;
 }
 
 /**
@@ -51,6 +60,18 @@ export class TodoSupersedeRefusedError extends Error {
   constructor(public readonly supersededId: string) {
     super(`Cannot supersede ${supersededId}: it is not an open item of this session`);
     this.name = 'TodoSupersedeRefusedError';
+  }
+}
+
+/**
+ * Thrown by a caller of {@link TodoRepository.resolveManyOpen} when some ids
+ * were not open items of the session; throwing inside the transaction rolls
+ * the whole resolution back.
+ */
+export class TodoResolveRefusedError extends Error {
+  constructor(public readonly refusedIds: string[]) {
+    super(`Cannot resolve ${refusedIds.join(', ')}: not an open item of this session. Nothing was changed`);
+    this.name = 'TodoResolveRefusedError';
   }
 }
 
@@ -79,9 +100,22 @@ export interface TodoRepository {
    * Record a resolution: status becomes `done`. A second resolution appends
    * its text after {@link TODO_RESOLUTION_SEPARATOR}, moves `resolvedAt`, and
    * the status stays `done`. Null when the item does not exist or is neither
-   * `open` nor `done`.
+   * `open` nor `done`. `resolvedByWorkerId` is replaced on every resolution
+   * (absent clears it): the latest resolver is the record.
    */
   resolve(id: string, params: ResolveTodoParams, executor?: TodoExecutor): Promise<Todo | null>;
+
+  /**
+   * Resolve every item of `ids` that is `open` and belongs to `params.sessionId`
+   * in the caller's transaction, and return the rows actually updated. Any
+   * other id (unknown, not open, another session's) is silently skipped, so
+   * the caller refuses when `rows.length !== ids.length` (after deduplicating)
+   * and lets its transaction roll back.
+   */
+  resolveManyOpen(ids: string[], params: ResolveManyOpenParams, executor: TodoExecutor): Promise<Todo[]>;
+
+  /** Run `fn` in ONE transaction: it commits when `fn` resolves and rolls back when it throws. */
+  inTransaction<T>(fn: (trx: TodoExecutor) => Promise<T>): Promise<T>;
 
   /** `open` to `dismissed`. Null when the item does not exist or is not open. */
   dismiss(id: string, executor?: TodoExecutor): Promise<Todo | null>;

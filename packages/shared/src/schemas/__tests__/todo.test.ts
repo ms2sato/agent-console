@@ -24,6 +24,7 @@ const humanTodo: Todo = {
   status: 'open',
   resolutionText: null,
   resolvedByUserId: null,
+  resolvedByWorkerId: null,
   resolvedAt: null,
   createdAt: '2026-10-15T00:00:00.000Z',
   updatedAt: '2026-10-15T00:00:00.000Z',
@@ -54,6 +55,30 @@ describe('TodoSchema', () => {
     expect(v.safeParse(TodoSchema, globalHumanTodo).success).toBe(true);
     expect(v.safeParse(TodoSchema, globalAgentTodo).success).toBe(true);
     expect(v.safeParse(TodoSchema, { ...humanTodo, createdBy: { workerId: 'worker-1' } }).success).toBe(true);
+  });
+
+  it('accepts resolvedByWorkerId both null and set (an agent-recorded resolution)', () => {
+    expect(v.safeParse(TodoSchema, { ...humanTodo, resolvedByWorkerId: null }).success).toBe(true);
+    const recorded: Todo = {
+      ...humanTodo,
+      status: 'done',
+      resolutionText: 'ok to merge',
+      resolvedByUserId: 'user-1',
+      resolvedByWorkerId: 'worker-9',
+      resolvedAt: '2026-10-16T00:00:00.000Z',
+    };
+    const result = v.safeParse(TodoSchema, recorded);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.output.resolvedByWorkerId).toBe('worker-9');
+  });
+
+  it('rejects a payload missing resolvedByWorkerId (strict wire contract)', () => {
+    const { resolvedByWorkerId: _worker, ...withoutWorker } = humanTodo;
+    expect(v.safeParse(TodoSchema, withoutWorker).success).toBe(false);
+  });
+
+  it('rejects a non-string resolvedByWorkerId', () => {
+    expect(v.safeParse(TodoSchema, { ...humanTodo, resolvedByWorkerId: 7 }).success).toBe(false);
   });
 
   it('rejects an unknown field (strict object)', () => {
@@ -157,7 +182,7 @@ describe('closed lists vs TodoSchema', () => {
     const base = {
       id: 'i', kind: 'action', scope: 'session', title: 't', body: 'b', sessionId: 's',
       createdBy: { userId: 'u' }, assigneeUserId: null, status: 'open', resolutionText: null,
-      resolvedByUserId: null, resolvedAt: null, createdAt: 'c', updatedAt: 'u',
+      resolvedByUserId: null, resolvedByWorkerId: null, resolvedAt: null, createdAt: 'c', updatedAt: 'u',
     };
     for (const kind of TODO_KINDS) expect(v.safeParse(TodoSchema, { ...base, kind }).success).toBe(true);
     for (const scope of TODO_SCOPES) expect(v.safeParse(TodoSchema, { ...base, scope }).success).toBe(true);

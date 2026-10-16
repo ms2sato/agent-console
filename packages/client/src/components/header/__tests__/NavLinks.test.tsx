@@ -43,6 +43,7 @@ const baseTodo = {
   status: 'open',
   resolutionText: null,
   resolvedByUserId: null,
+  resolvedByWorkerId: null,
   resolvedAt: null,
   createdAt: '2026-10-15T00:00:00.000Z',
   updatedAt: '2026-10-15T00:00:00.000Z',

@@ -35,7 +35,13 @@ export interface Todo {
   assigneeUserId: string | null;
   status: TodoStatus;
   resolutionText: string | null;
+  /**
+   * The human whose decision this is. For an agent-recorded resolution: the
+   * person the agent attributes the quoted words to.
+   */
   resolvedByUserId: string | null;
+  /** The agent worker that recorded a human's statement; null when a human resolved the item in the UI. */
+  resolvedByWorkerId: string | null;
   resolvedAt: string | null;
   createdAt: string;
   updatedAt: string;

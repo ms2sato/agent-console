@@ -8,6 +8,7 @@ import {
   TODO_RESOLUTION_SEPARATOR,
   TodoSupersedeRefusedError,
   type CreateTodoParams,
+  type ResolveManyOpenParams,
   type ResolveTodoParams,
   type TodoExecutor,
   type TodoListFilters,
@@ -118,6 +119,7 @@ export class SqliteTodoRepository implements TodoRepository {
         status: 'done',
         resolution_text: resolutionText,
         resolved_by_user_id: params.resolvedByUserId,
+        resolved_by_worker_id: params.resolvedByWorkerId ?? null,
         resolved_at: now,
         updated_at: now,
       })
@@ -126,6 +128,32 @@ export class SqliteTodoRepository implements TodoRepository {
       .executeTakeFirst();
     if (affectedRows(result) === 0n) return null;
     return this.findById(id, executor);
+  }
+
+  async resolveManyOpen(ids: string[], params: ResolveManyOpenParams, executor: TodoExecutor): Promise<Todo[]> {
+    if (ids.length === 0) return [];
+    const now = new Date().toISOString();
+    const text = params.text ?? '';
+    const rows = await executor
+      .updateTable('todos')
+      .set({
+        status: 'done',
+        resolution_text: text === '' ? null : text,
+        resolved_by_user_id: params.resolvedByUserId,
+        resolved_by_worker_id: params.resolvedByWorkerId ?? null,
+        resolved_at: now,
+        updated_at: now,
+      })
+      .where('id', 'in', ids)
+      .where('session_id', '=', params.sessionId)
+      .where('status', '=', 'open')
+      .returningAll()
+      .execute();
+    return rows.map(toTodo);
+  }
+
+  async inTransaction<T>(fn: (trx: TodoExecutor) => Promise<T>): Promise<T> {
+    return this.db.transaction().execute(fn);
   }
 
   async dismiss(id: string, executor?: TodoExecutor): Promise<Todo | null> {

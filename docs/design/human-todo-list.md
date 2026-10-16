@@ -6,6 +6,8 @@ Every claim about the code below was read at `origin/main` **`f083ef62`** and is
 
 ## History
 
+v2 (2026-10-16): agent-recorded resolutions and status changes from the session sidebar, from the owner's dogfood: an agent asked three "may I merge X?" questions, the human answered "all OK to merge" in chat, the agent merged but could not close the items, so the record diverged from reality; and the sidebar could not change status. Sections below carry the v2 changes inline and mark them.
+
 This replaces the owner-decision queue design of 2026-10-13 (`docs/design/owner-decision-queue.md`, merged in 9f8d5d13). The owner's 2026-10-14 direction generalised it. **Kept unchanged:** database-backed storage and its argument; no foreign key to `sessions` (rows outlive the session); `supersedes`; a second resolution appends; the trigger-only `*-updated` app message; delivery of the resolution to the asking worker through `deliverWorkerNotification` with one new notification kind; every agent-side tool is session-claiming; `implicit-endorsed` stays dropped. **Changed:** the name and the table (`decision_requests` -> `todos`); the item model (a closed `kind`, a `title`, either an agent or a human creator, an assignee); two surfaces (a global list page and assignment); and the session-delete rule, which is now keyed on the new `scope` field rather than on `kind` (revised 2026-10-14, see section 2).
 
 ## 1. Problem
@@ -34,7 +36,8 @@ A **TodoItem**:
 | `assigneeUserId` | nullable; null means anyone on the team |
 | `status` | `open` / `done` / `superseded` / `dismissed` / `withdrawn` (closed list in v1) |
 | `resolutionText` | nullable. Required for `done` on a `question`; optional on an `action` |
-| `resolvedByUserId`, `resolvedAt` | set when resolved |
+| `resolvedByUserId`, `resolvedAt` | set when resolved. `resolvedByUserId` is the human whose decision this is: for an agent-recorded resolution (v2) it is the person the agent attributes the words to |
+| `resolvedByWorkerId` | (v2) nullable. Null = a human resolved the item in the UI; set = an agent worker recorded a human's statement. The latest resolver is the record: a later human resolution clears it. Set only together with status `done` (enforced in the repository and pinned by a test, no `CHECK`) |
 | `createdAt`, `updatedAt` | timestamps |
 
 The closed lists (kinds, scopes, statuses) are the scope-creep guard.
@@ -53,9 +56,10 @@ The closed lists (kinds, scopes, statuses) are the scope-creep guard.
 - *A global item created by a deleted session* stays open with its `sessionId`.
 - *Re-scoping.* A human may `PATCH` the `scope` of an OPEN `action` only, in both directions. `session` to `global` keeps `sessionId`. `global` to `session` needs a `sessionId` (the stored provenance, or one passed in the same PATCH) and is refused otherwise. A `question` cannot be re-scoped, a non-open item cannot be re-scoped, and agents cannot re-scope (a human act, like resolve and delete).
 - *What the notification carries.* Only a resolution of an agent-created item is delivered, and the text is THIS resolution's text (not the appended history), truncated to 500 characters with an ASCII `...` marker because the line is injected as typed input; an `action` resolved without text carries an empty `resolution`. The full text stays in `list_todos`. Dismiss, delete, supersede and withdraw deliver nothing: they are not an answer. The creating session learns of a dismissed, superseded or withdrawn item through `list_todos`; a deleted item is gone (delete is a hard delete), so nothing, including `list_todos`, reports it afterwards.
+- *Agent resolution (v2).* `resolve_todo` accepts only OPEN items whose `sessionId` is the caller's session (either creator), only to `done`. It is atomic: every id must be such an item or the whole call is refused and nothing is written (one transaction, like `supersedes`); duplicate ids are deduplicated; an empty or longer-than-50 list, a whitespace-only `statement` and an unknown `statedBy` are refused. It delivers NO notification (the resolving session is the item's own session and already knows) and emits one `todos-updated`; human resolutions deliver as before. The server cannot verify the quote: the words a human types into a terminal agent go through PTY stdin, which the server forwards and never records, so the quote is agent-reported and the record distinguishes it from a human's own resolution (`resolvedByWorkerId`) so a human can audit. Adoption of an item by a successor session (#2134) rewrites `session_id`, after which this same rule makes the item resolvable by the successor.
 - *Resolving an item whose creating worker is gone*: the resolution is stored and the delivery failure is recorded; the status is `done` either way (storage is the record, delivery is best effort).
 
-**Who may do what.** A team tool, like the memo and End Session: any team member may create, assign, resolve, dismiss and DELETE an item. Delete is a hard delete in v1; the audit case is the `dismissed` row, which stays. Agents may create, list and supersede their own session's items; agents may NOT resolve or delete (the human act is the point; "the agent verifies the action happened" is a v2 question). Multi-user visibility: every team member sees every item, consistent with memos today.
+**Who may do what.** A team tool, like the memo and End Session: any team member may create, assign, resolve, dismiss and DELETE an item. Delete is a hard delete in v1; the audit case is the `dismissed` row, which stays. Agents may create, list and supersede their own session's items, and (v2) may mark their own session's OPEN items `done` with `resolve_todo` on the strength of a human's quoted words (rules below); agents may NOT dismiss or delete, and may not complete an item they performed themselves (an `action` is by definition a human act: if the agent did it, the item was mis-filed). Multi-user visibility: every team member sees every item, consistent with memos today.
 
 ## 3. Storage: database-backed
 
@@ -107,11 +111,22 @@ CREATE INDEX IF NOT EXISTS idx_todos_session_status  ON todos (session_id, statu
 
 Owner approval: 2026-10-15, as written above (scope revision included). `LATEST_SCHEMA_VERSION` was 49 at `ee176a3e`, so v50 is the next free version. Notes: the `CHECK` constraints follow `mcp_server_permissions_decision_check` (`database/connection.ts:2869`); the table is additive, following the `migrateToV33` shape. There is **no foreign key** on `session_id` (a row must outlive the session, as in `timers` and `bookmarks`) and none on the user columns either (a row must outlive everything it references; users are never deleted today).
 
+
+### v51 (v2): agent-recorded resolutions
+
+```sql
+-- migration v51: agent-recorded resolutions (human TODO list v2)
+ALTER TABLE todos ADD COLUMN resolved_by_worker_id TEXT;  -- agent worker that recorded a human's statement; NULL when a human resolved the item in the UI
+```
+
+One additive column, no `CHECK` (the invariant "set only with status `done`" is enforced in the repository and pinned by a test), `LATEST_SCHEMA_VERSION` 50 -> 51. Owner approval: 2026-10-16, as written above. Wire: `Todo` gains `resolvedByWorkerId: string | null` in `types/todo.ts` and `schemas/todo.ts` (strictObject, so both or the frame is dropped): one `SCHEMA_VERSION` move for the whole of v2.
+
 ## 4. Surfaces (v1)
 
 **MCP, for agents** (a session-claiming pair: `create_todo` and `list_todos` join `SESSION_CLAIMING_TOOLS`, `mcp/session-claiming-tools.ts:11`, and gate the claimed `sessionId` through `checkCallerOwnsSession`, like `create_conditional_wakeup`; a terminal agent passes its own session and worker ids, an embedded agent defaults to its own):
 
 - `create_todo({ kind, scope?, title, body, assigneeUsername?, supersedes? }) -> { id }`. Appends an `open` item. `assigneeUsername` is resolved to a user id server-side. `supersedes` names an open item of the same session and marks it `superseded` in the same transaction. A second call never overwrites the first.
+- `resolve_todo({ ids: string[] (1..50), statement, statedBy?, sessionId?, workerId? }) -> { todos }` (v2). Marks open items of THIS session done on the strength of a human's words: `statement` is the human's words, quoted (what they typed or said), never a resolution inferred from what they did. One call covers several items one statement answered (the owner's three merges, one "all OK"). Session-claiming (it joins `SESSION_CLAIMING_TOOLS`, identity as `create_todo`). `resolvedByUserId` = the `statedBy` user, else the session's creator, else null; `resolvedByWorkerId` = the caller. Rules in section 2.
 - `list_todos({ status?, scope?, mine? })`: the session's own items; `mine` means assigned to this session's user. This is also how an agent catches up when a notification could not be delivered (except for a hard-deleted item, which nothing reports).
 
 **REST, for the UI** (server-composed; the client renders only what these return, invariant N1 of `docs/design/notification-center.md`):
@@ -126,7 +141,7 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 
 **UI.**
 
-- (a) A per-session block beside `MemoPanel`: "To-do (N)", N = the open items of this session (both scopes, with a scope badge), listing every item whose `sessionId` is this session; zero open items hides the block.
+- (a) A per-session block beside `MemoPanel`: "To-do (N)", N = the open items of this session (both scopes, with a scope badge), listing every item whose `sessionId` is this session; zero open items hides the block. (v2, owner-confirmed 2026-10-16: resolve and dismiss live wherever an item is shown, so the block offers them; add, edit, assign, re-scope and delete live only on `/todos`, one place for editing. The block gains an "Open in /todos" link.)
 - (b) A **global `/todos` page** (a new route beside `routes/artifacts`, `routes/jobs`): all items, filters for status, assignee and session. This is what makes assignment usable: an assignee cannot find items session by session. It also hosts the human "add" and "delete" controls. The page refetches on `todos-updated` and on `session-deleted`; the server emits no `todos-updated` for a deletion's withdrawals, `session-deleted` is that signal.
 - (c) A **navigation badge** = the open items assigned to me, in the header navigation (`components/header/NavLinks.tsx`, `MobileNavMenu.tsx`).
 - The body renders with the same markdown renderer as the memo (`react-markdown`, `MemoPanel.tsx:2`; the shared fenced-block chrome is `MarkdownCodeBlock`: a Copy control on every block, plus a Run control on ```terminal blocks only that opens a full-command confirmation and then sends the text to a terminal worker of the session, #2085 / #2100), so #2085's command block lands once, for both.
@@ -138,16 +153,20 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 
 ## 5. What changes for the Orchestrator skill
 
+v2: when the human answers in chat or in a message, the Orchestrator records it with `resolve_todo` (the human's words quoted) before acting on the answer; the `/todos` answer path stays for the human's convenience, not as the only one.
+
 The memo keeps status; the list takes requests. Owner-facing questions AND owner-facing commands go through `create_todo`, and the answer or the confirmation arrives as a notification (or through `list_todos`, except for a hard-deleted item, which nothing reports). The skill text changed in slice (c): the memo keeps status, owner-facing questions and commands go through `create_todo`, an owner-gated wait is an open `question` item, and the handoff memo lists each open item by title and todo id. `list_todos` is scoped to the calling session, so a successor session finds the predecessor's items on the global `/todos` page (and by id), not through `list_todos`; the common case is the SAME session surviving a context refresh or restart, where `list_todos({ status: 'open' })` is the catch-up.
 
 ## 6. Non-goals (v1)
 
-Due dates, priority, comments or threads, agent-side resolve, Slack or webhook delivery, cross-repository scoping, per-item access control, time-based automatic expiry.
+Due dates, priority, comments or threads, Slack or webhook delivery, cross-repository scoping, per-item access control, time-based automatic expiry. Not in v2 either: agent dismiss (`dismissed` is the human's "not needed" count; an agent that no longer needs its question uses `supersedes` or asks the human), agent self-performed completion, a third kind for approvals ("may I merge X?" is a `question` answered "yes"; approval is a body shape, not a kind), and server-side verification of quoted words (no input record exists).
 
 ## 7. Implementation slices (sequential; each `Refs #2080`, the last `Closes #2080`)
 
 - **(a)** Migration v50, repository, REST, MCP `create_todo` / `list_todos`, the per-session panel, `todos-updated`, the scope-based withdraw rule in the session-deletion transaction (it is the owner's design point), and ALL wire shapes including the `internal-todo-resolved` notification kind.
 - **(b)** The global `/todos` page, assignment (`PATCH`, the user directory), the navigation badge, human create, re-scope and delete.
 - **(c)** The resolution delivery through `deliverWorkerNotification` and the Orchestrator skill text (applied; no `SCHEMA_VERSION` move, the notification kind was added in (a)).
+- **(d)** (v2) Migration v51 and the wire field `resolvedByWorkerId` (the one `SCHEMA_VERSION` move of v2), the repository `resolve` taking the worker and the transactional `resolveManyOpen`, the MCP `resolve_todo`, and the skill text; the provenance line ("resolved by <user>" vs "recorded by an agent from <user>'s statement") renders in the to-do UI once its detail view lands. Joins the next reload batch.
+- **(e)** (v2) Status changes from the session sidebar: the block reuses the row's resolve and dismiss with a link to `/todos`; no schema, file-disjoint from (d).
 
 [#2085](https://github.com/ms2sato/agent-console/issues/2085) (the command block in a body) rides after slice (a) as its own Issue, shared with the memo renderer. Polarity each slice must carry, against today: a memo overwrite leaves the list intact; a second `create_todo` does not overwrite the first; the resolution reaches the creating session as a notification; a session deletion withdraws its open `session`-scoped items and leaves its `global` items open.

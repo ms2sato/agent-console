@@ -150,6 +150,46 @@ describe('Client-Server Boundary: human TODO list', () => {
     expect(resolved.resolvedByUserId).not.toBeNull();
   });
 
+  it('an agent-recorded resolution (worker set) survives populate -> serialize -> strict parse; a human one reads null', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'alice', '/home/alice');
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
+      { createdBy: owner.id },
+    );
+    const workerId = session.workers[0]!.id;
+    const agentCreated = await ctx.todoRepository.create({
+      id: 'agent-item',
+      kind: 'question',
+      scope: 'session',
+      title: 'May I merge?',
+      body: 'b',
+      sessionId: session.id,
+      createdBy: { workerId },
+      assigneeUserId: null,
+    });
+    await ctx.todoRepository.resolve(agentCreated.id, {
+      text: 'yes, merge it',
+      resolvedByUserId: owner.id,
+      resolvedByWorkerId: workerId,
+    });
+    const humanResolved = v.parse(
+      TodoResponseSchema,
+      await post('/api/todos', { kind: 'action', title: 'a', body: '', sessionId: session.id }),
+    ).todo;
+    const humanDone = v.parse(TodoResponseSchema, await post(`/api/todos/${humanResolved.id}/resolve`, {})).todo;
+
+    const byId = new Map((await list()).todos.map((t) => [t.id, t]));
+
+    expect(byId.get('agent-item')).toMatchObject({
+      status: 'done',
+      resolutionText: 'yes, merge it',
+      resolvedByUserId: owner.id,
+      resolvedByWorkerId: workerId,
+    });
+    expect(humanDone.resolvedByWorkerId).toBeNull();
+    expect(byId.get(humanResolved.id)!.resolvedByWorkerId).toBeNull();
+  });
+
   it('the user directory survives populate -> serialize -> strict parse with only id and username', async () => {
     const alice = await ctx.userRepository.upsertByOsUid(54321, 'alice', '/home/alice');
     const bob = await ctx.userRepository.upsertByOsUid(54322, 'bob', '/home/bob');
