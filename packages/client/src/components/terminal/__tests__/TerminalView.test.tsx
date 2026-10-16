@@ -406,6 +406,104 @@ describe('TerminalView history-paging trigger', () => {
     expect(requestOlderHistory).not.toHaveBeenCalled();
   });
 
+  // Fetch trigger fires only on a user gesture. Rows are 18px; with 25 rows and
+  // clientHeight 180 the pinned bottom is scrollTop 270, inside the trigger zone
+  // (< 2 * 180), so only the programmatic gate separates a bottom-follow write
+  // from a genuine scroll.
+  // Measured reach: removing the `!wasProgrammatic` fetch gate fails "does not
+  // request older history on the view's own bottom-follow scroll" and "requests
+  // older history on a genuine scroll right after a programmatic pin" (the latter
+  // on its pre-scroll not-called assertion); disabling the wheel branch fails
+  // "requests older history on wheel-up in a window with no overflow" only.
+  function mountPinnedShortWindow(requestOlderHistory: () => void) {
+    const listeners = new Set<() => void>();
+    let snap: TerminalSnapshot = { ...makeSnapshot(makeRows(25, 0)), canRequestOlder: true };
+    const instance: TerminalInstance = {
+      ...makeInstance(snap),
+      subscribe: (l) => {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      },
+      getSnapshot: () => snap,
+      requestOlderHistory,
+    };
+    const { container } = render(<TerminalView instance={instance} />);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const geom = installGeometry(scroller, 180);
+    geom.setSilent(scroller.scrollHeight); // pinned at the bottom (270)
+    // A new live row grows scrollHeight; bottom-follow writes scrollTop 270 -> 288,
+    // a programmatic write whose scroll event fires synchronously in this harness.
+    act(() => {
+      snap = { ...makeSnapshot(makeRows(26, 0)), canRequestOlder: true };
+      for (const l of Array.from(listeners)) l();
+    });
+    return scroller;
+  }
+
+  it('does not request older history on the view\'s own bottom-follow scroll', () => {
+    const requestOlderHistory = mock(() => {});
+    const scroller = mountPinnedShortWindow(requestOlderHistory);
+    expect(scroller.scrollTop).toBe(288); // inside the trigger zone (< 360)
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+  });
+
+  it('requests older history on a genuine scroll right after a programmatic pin', () => {
+    const requestOlderHistory = mock(() => {});
+    const scroller = mountPinnedShortWindow(requestOlderHistory);
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+    fireEvent.scroll(scroller); // the flag was consumed by the pin's own event
+    expect(requestOlderHistory).toHaveBeenCalled();
+  });
+
+  // Short window: no overflow, so no scroll event can ever fire. Wheel-up is the gesture.
+  function wheelSetup(snapshotOverrides: Partial<TerminalSnapshot>) {
+    const requestOlderHistory = mock(() => {});
+    const forwardScroll = mock(() => {});
+    const snapshot = { ...makeSnapshot(ROWS), ...snapshotOverrides };
+    const instance = { ...makeInstance(snapshot), requestOlderHistory, forwardScroll };
+    const { container } = render(<TerminalView instance={instance} />);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    Object.defineProperty(scroller, 'clientHeight', { value: 100, configurable: true });
+    Object.defineProperty(scroller, 'scrollHeight', { value: 100, configurable: true });
+    Object.defineProperty(scroller, 'scrollTop', { value: 0, writable: true, configurable: true });
+    return { scroller, requestOlderHistory, forwardScroll };
+  }
+
+  it('requests older history on wheel-up in a window with no overflow', () => {
+    const { scroller, requestOlderHistory } = wheelSetup({ canRequestOlder: true });
+    fireEvent.wheel(scroller, { deltaY: -100 });
+    expect(requestOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let wheel-up request older history when the store disallows it', () => {
+    const { scroller, requestOlderHistory } = wheelSetup({ canRequestOlder: false });
+    fireEvent.wheel(scroller, { deltaY: -100 });
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+  });
+
+  it('does not request older history on wheel-down', () => {
+    const { scroller, requestOlderHistory } = wheelSetup({ canRequestOlder: true });
+    fireEvent.wheel(scroller, { deltaY: 100 });
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+  });
+
+  it('does not request older history on wheel-up far from the top', () => {
+    const { scroller, requestOlderHistory } = wheelSetup({ canRequestOlder: true });
+    scroller.scrollTop = 500; // >= 2 * clientHeight
+    fireEvent.wheel(scroller, { deltaY: -100 });
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+  });
+
+  it('still forwards wheel to the app in the alternate buffer without paging', () => {
+    const { scroller, requestOlderHistory, forwardScroll } = wheelSetup({
+      canRequestOlder: true,
+      bufferType: 'alternate',
+    });
+    fireEvent.wheel(scroller, { deltaY: -100 });
+    expect(forwardScroll).toHaveBeenCalled();
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+  });
+
   it('shows the cap-reached notice overlay', () => {
     const snapshot = { ...makeSnapshot(ROWS), pagedCapReached: true };
     render(<TerminalView instance={makeInstance(snapshot)} />);
