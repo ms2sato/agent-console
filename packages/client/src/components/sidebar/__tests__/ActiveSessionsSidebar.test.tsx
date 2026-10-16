@@ -17,7 +17,7 @@ import { SessionStopTasksContext } from '../../../contexts/root-contexts';
 import type { UseSessionStopTasksReturn } from '../../../hooks/useSessionStopTasks';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
-import type { AgentActivityState, WorktreeSession, QuickSession, Session, Repository } from '@agent-console/shared';
+import type { AgentActivityState, WorktreeSession, QuickSession, Session, Repository, RestartAllAgentsResponse } from '@agent-console/shared';
 import { completeWireBody } from '../../../test/wire-fixtures';
 
 // --- Global fetch mock (Issue #1643 PR-2) ---
@@ -1399,6 +1399,19 @@ describe('ActiveSessionsSidebar', () => {
       expect(message).toContain('Restarted 1');
       expect(message).toContain('failed 2');
       expect(message).toContain('skipped 3');
+    });
+
+    it('summarises from the counts of a shared-schema response whose rows carry outcomes and an error', () => {
+      const data: RestartAllAgentsResponse = {
+        restarted: 1,
+        failed: 1,
+        skipped: 0,
+        results: [
+          { sessionId: 's1', workerId: 'w1', workerType: 'agent', outcome: 'restarted' },
+          { sessionId: 's2', workerId: 'w2', workerType: 'embedded-agent', outcome: 'failed', error: 'boom' },
+        ],
+      };
+      expect(formatRestartMessage(data)).toBe('Restarted 1, failed 1.');
     });
   });
 
