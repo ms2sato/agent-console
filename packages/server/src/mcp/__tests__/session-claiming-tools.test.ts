@@ -51,6 +51,11 @@ describe('SESSION_CLAIMING_TOOLS registry', () => {
     expect(claiming.map((b) => b.name)).toEqual(expect.arrayContaining(['create_todo', 'list_todos']));
   });
 
+  it('lists resolve_todo: it takes a caller-claimed sessionId and is gated like create_todo', () => {
+    expect(SESSION_CLAIMING_TOOLS).toContain('resolve_todo');
+    expect(claiming.map((b) => b.name)).toContain('resolve_todo');
+  });
+
   it('positive control: the parser finds known claiming tools and not a known non-claiming one', () => {
     const allNames = blocks.map((b) => b.name);
     const claimingNames = claiming.map((b) => b.name);
