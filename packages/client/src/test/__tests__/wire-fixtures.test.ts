@@ -4,6 +4,7 @@ import {
   AgentsResponseSchema,
   RepositoriesResponseSchema,
   SessionResponseSchema,
+  WorkerResponseSchema,
   SessionsValidationResponseSchema,
   ReviewQueueResponseSchema,
 } from '@agent-console/shared';
@@ -26,6 +27,12 @@ describe('completeWireBody', () => {
         completeWireBody({ session: { id: 's', type: 'worktree', worktreeId: 'feat' } }),
       ).success,
     ).toBe(true);
+  });
+
+  it('completes a partial worker envelope of every worker type', () => {
+    for (const type of ['agent', 'terminal', 'git-diff', 'embedded-agent']) {
+      expect(v.safeParse(WorkerResponseSchema, completeWireBody({ worker: { id: 'w', type } })).success).toBe(true);
+    }
   });
 
   it('never overrides a field the fixture sets', () => {

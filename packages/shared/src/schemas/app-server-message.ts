@@ -248,10 +248,6 @@ export interface CreateSessionResponse {
   session: Session;
 }
 
-export interface CreateWorkerResponse {
-  worker: Worker;
-}
-
 // === Supporting schemas ===
 
 export const WorkerActivityInfoSchema = v.strictObject({

@@ -55,12 +55,14 @@ import {
   refreshDefaultBranch,
   raiseOrchestratorDesignation,
   clearOrchestratorDesignation,
+  updateSessionMetadata,
   ServerUnavailableError,
   ApiError,
 } from '../api';
 import * as capabilitiesModule from '../capabilities';
 import { UpdateEmbeddedAgentWorkerRequestSchema } from '@agent-console/shared';
 import * as v from 'valibot';
+import { completeWireBody } from '../../test/wire-fixtures';
 
 // Bun's expect().toEqual() enforces strict generic matching between actual and expected types.
 // Tests use partial mock data intentionally (verifying passthrough, not shape), so we wrap
@@ -185,7 +187,7 @@ describe('API Client', () => {
 
   describe('createSession', () => {
     it('should create worktree session', async () => {
-      const mockSession = { session: { id: '1', type: 'worktree' } };
+      const mockSession = completeWireBody({ session: { id: '1', type: 'worktree' } });
       mockFetch.mockResolvedValue(createMockResponse(mockSession));
 
       const result = await createSession({
@@ -208,7 +210,7 @@ describe('API Client', () => {
     });
 
     it('should create quick session', async () => {
-      const mockSession = { session: { id: '1', type: 'quick' } };
+      const mockSession = completeWireBody({ session: { id: '1', type: 'quick' } });
       mockFetch.mockResolvedValue(createMockResponse(mockSession));
 
       const result = await createSession({
@@ -334,7 +336,7 @@ describe('API Client', () => {
     // Agent workers are created automatically by the server during session creation
 
     it('should create terminal worker', async () => {
-      const mockWorker = { worker: { id: 'worker-2', type: 'terminal', name: 'Shell 1' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-2', type: 'terminal', name: 'Shell 1' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await createWorker('session-id', { type: 'terminal', name: 'Shell 1' });
@@ -360,7 +362,7 @@ describe('API Client', () => {
 
   describe('restartAgentWorker', () => {
     it('should restart agent worker', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Claude' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'agent', name: 'Claude' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await restartAgentWorker('session-id', 'worker-id', true);
@@ -373,7 +375,7 @@ describe('API Client', () => {
     });
 
     it('should pass agentId when provided', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Custom Agent' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'agent', name: 'Custom Agent' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await restartAgentWorker('session-id', 'worker-id', false, 'custom-agent-id');
@@ -386,7 +388,7 @@ describe('API Client', () => {
     });
 
     it('should not include agentId when not provided', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'agent', name: 'Claude' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'agent', name: 'Claude' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       await restartAgentWorker('session-id', 'worker-id', false);
@@ -399,7 +401,7 @@ describe('API Client', () => {
 
   describe('restartWorkerAsEmbeddedAgent (cross-type restart, #1171)', () => {
     it('should restart a PTY agent worker as an embedded-agent worker', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1');
@@ -416,7 +418,7 @@ describe('API Client', () => {
     });
 
     it('should pass branch when provided', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1', 'feat/new-branch');
@@ -426,7 +428,7 @@ describe('API Client', () => {
     });
 
     it('should not include branch when not provided', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1');
@@ -451,7 +453,7 @@ describe('API Client', () => {
 
   describe('updateEmbeddedAgentWorker (agent-surface.md Phase 3, mid-run model/effort override)', () => {
     it('sends the compaction-toggle body unchanged (pre-existing shape)', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await updateEmbeddedAgentWorker('session-id', 'worker-id', { autoCompaction: true });
@@ -465,7 +467,7 @@ describe('API Client', () => {
     });
 
     it('sends a model override together with its context window (Ruling 4 pairing)', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       await updateEmbeddedAgentWorker('session-id', 'worker-id', {
@@ -481,7 +483,7 @@ describe('API Client', () => {
     });
 
     it('sends a null context window when the caller declares no window for the model', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       await updateEmbeddedAgentWorker('session-id', 'worker-id', {
@@ -496,7 +498,7 @@ describe('API Client', () => {
     });
 
     it('clears the override with exactly { model: null, reasoningEffort: null } -- no contextWindowTokens key', async () => {
-      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       await updateEmbeddedAgentWorker('session-id', 'worker-id', { model: null, reasoningEffort: null });
@@ -525,7 +527,7 @@ describe('API Client', () => {
 
   describe('setMcpServerPermissions (epic #1636 Phase 5 PR-3b)', () => {
     it('sends a named-decision body to the mcp-permissions endpoint', async () => {
-      const mockWorker = { worker: { id: 'worker-id', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-id', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       const result = await setMcpServerPermissions('session-id', 'worker-id', {
@@ -542,7 +544,7 @@ describe('API Client', () => {
     });
 
     it('sends the { all: true } body for "allow all pending"', async () => {
-      const mockWorker = { worker: { id: 'worker-id', type: 'embedded-agent', name: 'Local GPT' } };
+      const mockWorker = completeWireBody({ worker: { id: 'worker-id', type: 'embedded-agent', name: 'Local GPT' } });
       mockFetch.mockResolvedValue(createMockResponse(mockWorker));
 
       await setMcpServerPermissions('session-id', 'worker-id', { all: true });
@@ -2211,6 +2213,129 @@ describe('API Client', () => {
         ]) {
           mockFetch.mockResolvedValue(createMockResponse(body));
           await expect(fetchReviewQueue()).rejects.toThrow();
+        }
+      });
+    });
+  });
+
+  // The ten session/worker mutations parse a strict wire schema. The same table is run against
+  // the REAL routes in packages/integration's api-response-schemas-boundary.test.ts.
+  describe('strict response parsing (pass 4)', () => {
+    const quickSession = completeWireBody({ session: { id: 's1', type: 'quick' } }) as Record<string, unknown>;
+    const terminalWorker = completeWireBody({ worker: { id: 'w1', type: 'terminal' } }) as Record<string, unknown>;
+    const embeddedWorker = completeWireBody({ worker: { id: 'w1', type: 'embedded-agent' } }) as Record<string, unknown>;
+    const restartAll = {
+      restarted: 1,
+      failed: 0,
+      skipped: 1,
+      results: [
+        { sessionId: 's1', workerId: 'w1', workerType: 'agent', outcome: 'restarted' },
+        { sessionId: 's1', workerId: 'w2', workerType: 'terminal', outcome: 'skipped', error: 'not an agent' },
+      ],
+    };
+    const designation = { repositoryId: 'repo-1', orchestratorSessionIds: ['s1'] };
+    const cleared = { repositoryId: 'repo-1', removed: true, orchestratorSessionIds: [] };
+
+    // [name, call, valid body, key whose removal must fail]
+    const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>, string]> = [
+      ['createSession', () => createSession({ type: 'quick', locationPath: '/p' }), quickSession, 'session'],
+      ['createWorker', () => createWorker('s1', { type: 'terminal', name: 'Shell' }), terminalWorker, 'worker'],
+      ['restartAgentWorker', () => restartAgentWorker('s1', 'w1'), terminalWorker, 'worker'],
+      ['restartWorkerAsEmbeddedAgent', () => restartWorkerAsEmbeddedAgent('s1', 'w1', 'e1'), embeddedWorker, 'worker'],
+      [
+        'updateEmbeddedAgentWorker',
+        () => updateEmbeddedAgentWorker('s1', 'w1', { autoCompaction: false }),
+        embeddedWorker,
+        'worker',
+      ],
+      [
+        'setMcpServerPermissions',
+        () => setMcpServerPermissions('s1', 'w1', { all: true }),
+        embeddedWorker,
+        'worker',
+      ],
+      ['restartAllAgentWorkers', () => restartAllAgentWorkers(), restartAll, 'results'],
+      ['raiseOrchestratorDesignation', () => raiseOrchestratorDesignation('s1'), designation, 'repositoryId'],
+      ['clearOrchestratorDesignation', () => clearOrchestratorDesignation('s1'), cleared, 'removed'],
+      ['updateSessionMetadata', () => updateSessionMetadata('s1', { title: 'T' }), { success: true, title: 'T' }, 'success'],
+    ];
+
+    it.each(cases)('%s resolves with a valid body', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse(valid));
+      expect(await call()).toEqual(valid);
+    });
+
+    it.each(cases)('%s throws on a body with an unknown extra field', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse({ ...valid, extra: true }));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it.each(cases)('%s throws when a required key is missing', async (_name, call, valid, requiredKey) => {
+      const { [requiredKey]: _dropped, ...rest } = valid;
+      mockFetch.mockResolvedValue(createMockResponse(rest));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it.each(cases.filter(([, , valid]) => 'worker' in valid))(
+      '%s throws when the nested worker has an unknown field or a dropped required field',
+      async (_name, call, valid) => {
+        const worker = valid.worker as Record<string, unknown>;
+        const { createdAt: _dropped, ...withoutCreatedAt } = worker;
+        for (const body of [{ worker: { ...worker, extra: 1 } }, { worker: withoutCreatedAt }]) {
+          mockFetch.mockResolvedValue(createMockResponse(body));
+          await expect(call()).rejects.toThrow();
+        }
+      },
+    );
+
+    it('createSession throws when the nested session has an unknown field', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ session: { ...(quickSession.session as object), extra: 1 } }));
+      await expect(createSession({ type: 'quick', locationPath: '/p' })).rejects.toThrow();
+    });
+
+    it('does not parse the body of a failed response', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: mock(() => Promise.resolve({ error: 'boom' })),
+      } as unknown as Response);
+      await expect(createWorker('s1', { type: 'terminal', name: 'Shell' })).rejects.toThrow('boom');
+    });
+
+    describe('restartAllAgentWorkers', () => {
+      it('accepts an empty results list (the vacuous case)', async () => {
+        const empty = { restarted: 0, failed: 0, skipped: 0, results: [] };
+        mockFetch.mockResolvedValue(createMockResponse(empty));
+        expect(await restartAllAgentWorkers()).toEqual(empty);
+      });
+
+      it('throws when ONE result row lacks outcome, carries an unknown field or has an unknown workerType', async () => {
+        const [first] = restartAll.results;
+        const { outcome: _outcome, ...withoutOutcome } = first;
+        for (const row of [withoutOutcome, { ...first, extra: 1 }, { ...first, workerType: 'git-diff' }]) {
+          mockFetch.mockResolvedValue(createMockResponse({ ...restartAll, results: [first, row] }));
+          await expect(restartAllAgentWorkers()).rejects.toThrow();
+        }
+      });
+    });
+
+    describe('clearOrchestratorDesignation', () => {
+      it('accepts the idempotent no-op body (removed: false)', async () => {
+        const noop = { repositoryId: 'repo-1', removed: false, orchestratorSessionIds: ['s2'] };
+        mockFetch.mockResolvedValue(createMockResponse(noop));
+        expect(await clearOrchestratorDesignation('s1')).toEqual(noop);
+      });
+    });
+
+    describe('updateSessionMetadata', () => {
+      it('accepts { success: true } without a title, and rejects false and a null title', async () => {
+        mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+        expect(await updateSessionMetadata('s1', {})).toEqual({ success: true });
+
+        for (const body of [{ success: false }, { success: true, title: null }]) {
+          mockFetch.mockResolvedValue(createMockResponse(body));
+          await expect(updateSessionMetadata('s1', {})).rejects.toThrow();
         }
       });
     });

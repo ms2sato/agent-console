@@ -108,6 +108,8 @@ export {
   type SetMcpServerPermissionsRequest,
   WorkersResponseSchema,
   type WorkersResponse,
+  WorkerResponseSchema,
+  type WorkerResponse,
 } from './worker.js';
 
 // Embedded agent schemas
@@ -140,6 +142,10 @@ export {
   UpdateSessionMemoRequestSchema,
   DeleteSessionRequestSchema,
   SessionResponseSchema,
+  RestartAllAgentsResponseSchema,
+  OrchestratorDesignationResponseSchema,
+  ClearOrchestratorDesignationResponseSchema,
+  UpdateSessionResponseSchema,
   SessionsValidationResponseSchema,
   SessionMemoResponseSchema,
   RestoreInfoMessageSchema,
@@ -152,6 +158,10 @@ export {
   type UpdateSessionMemoRequest,
   type DeleteSessionRequest,
   type SessionResponse,
+  type RestartAllAgentsResponse,
+  type OrchestratorDesignationResponse,
+  type ClearOrchestratorDesignationResponse,
+  type UpdateSessionResponse,
   type SessionMemoResponse,
 } from './session.js';
 
@@ -259,7 +269,6 @@ export {
   type PausedSession,
   type RunningSession,
   type CreateSessionResponse,
-  type CreateWorkerResponse,
   type WorkerActivityInfo,
   type Repository,
   type WorktreeCreationCompletedPayload,

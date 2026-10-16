@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useTabManagement } from '../useTabManagement';
 import type { Worker, AgentActivityState } from '@agent-console/shared';
+import { completeWireBody } from '../../../../test/wire-fixtures';
 
 type UseTabManagementOptions = Parameters<typeof useTabManagement>[0];
 
@@ -66,7 +67,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (pendingCreateWorkerGate) {
       await pendingCreateWorkerGate;
     }
-    return new Response(JSON.stringify(createWorkerResponse()), {
+    return new Response(JSON.stringify(completeWireBody(createWorkerResponse())), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });

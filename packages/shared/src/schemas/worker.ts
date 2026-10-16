@@ -303,3 +303,14 @@ export const WorkersResponseSchema = v.strictObject({
 });
 
 export type WorkersResponse = v.InferOutput<typeof WorkersResponseSchema>;
+
+/**
+ * Schema for the `{ worker }` body of every worker-returning mutation: create
+ * (201), restart (agent and cross-type), the embedded-agent PATCH, and the
+ * MCP-permission POST.
+ */
+export const WorkerResponseSchema = v.strictObject({
+  worker: WorkerSchema,
+});
+
+export type WorkerResponse = v.InferOutput<typeof WorkerResponseSchema>;
