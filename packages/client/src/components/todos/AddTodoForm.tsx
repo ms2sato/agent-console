@@ -4,42 +4,58 @@ import { TODO_KINDS, TODO_SCOPES, type TodoKind, type TodoScope, type UsersListR
 import { createTodo } from '../../lib/api';
 import { todoKeys } from '../../lib/query-keys';
 
-interface AddTodoFormProps {
+interface AddTodoFormBaseProps {
   users: UsersListResponse['users'];
-  /** Session ids offered as suggestions for the optional session field. */
-  knownSessionIds: string[];
   onError: (title: string, message: string) => void;
 }
+
+/** The `/todos` page form: a free session field, an explicit scope choice. */
+interface GlobalAddTodoFormProps extends AddTodoFormBaseProps {
+  /** Session ids offered as suggestions for the optional session field. */
+  knownSessionIds: string[];
+  sessionId?: undefined;
+  hideSessionField?: undefined;
+}
+
+/** The session sidebar form: the session is preset, so the item is always session-scoped. */
+interface SessionAddTodoFormProps extends AddTodoFormBaseProps {
+  sessionId: string;
+  hideSessionField: true;
+  knownSessionIds?: undefined;
+}
+
+type AddTodoFormProps = GlobalAddTodoFormProps | SessionAddTodoFormProps;
 
 /** The scope sent when the human does not choose one: the server derives it from the session. */
 const DEFAULT_SCOPE = '';
 const UNASSIGNED_VALUE = '';
 
-export function AddTodoForm({ users, knownSessionIds, onError }: AddTodoFormProps) {
+export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSessionId, hideSessionField, onError }: AddTodoFormProps) {
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<TodoKind>('action');
   const [scope, setScope] = useState<TodoScope | typeof DEFAULT_SCOPE>(DEFAULT_SCOPE);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
-  const [sessionId, setSessionId] = useState('');
+  const [sessionIdInput, setSessionIdInput] = useState('');
   const [assigneeUserId, setAssigneeUserId] = useState(UNASSIGNED_VALUE);
 
   const canAssign = users.length > 1;
+  const isPreset = presetSessionId !== undefined;
 
   const mutation = useMutation({
     mutationFn: () =>
       createTodo({
         kind,
-        scope: scope === DEFAULT_SCOPE ? undefined : scope,
+        scope: isPreset ? 'session' : scope === DEFAULT_SCOPE ? undefined : scope,
         title: title.trim(),
         body,
-        sessionId: sessionId.trim() === '' ? undefined : sessionId.trim(),
+        sessionId: isPreset ? presetSessionId : sessionIdInput.trim() === '' ? undefined : sessionIdInput.trim(),
         assigneeUserId: canAssign && assigneeUserId !== UNASSIGNED_VALUE ? assigneeUserId : undefined,
       }),
     onSuccess: async () => {
       setTitle('');
       setBody('');
-      setSessionId('');
+      setSessionIdInput('');
       setScope(DEFAULT_SCOPE);
       setAssigneeUserId(UNASSIGNED_VALUE);
       await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
@@ -54,7 +70,11 @@ export function AddTodoForm({ users, knownSessionIds, onError }: AddTodoFormProp
   };
 
   return (
-    <form onSubmit={handleSubmit} aria-label="Add Todo" className="card mb-6 flex flex-col gap-2">
+    <form
+      onSubmit={handleSubmit}
+      aria-label="Add Todo"
+      className={isPreset ? 'px-3 py-2 border-b border-slate-700/50 flex flex-col gap-2' : 'card mb-6 flex flex-col gap-2'}
+    >
       <div className="flex gap-2 flex-wrap">
         <select
           aria-label="Kind"
@@ -82,37 +102,43 @@ export function AddTodoForm({ users, knownSessionIds, onError }: AddTodoFormProp
         placeholder="Details (markdown)"
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        rows={3}
+        rows={isPreset ? 2 : 3}
         className="input text-sm"
       />
       <div className="flex gap-2 flex-wrap items-center">
-        <input
-          type="text"
-          aria-label="Session id"
-          placeholder="Session id (optional)"
-          list="todo-known-sessions"
-          value={sessionId}
-          onChange={(e) => setSessionId(e.target.value)}
-          className="input text-sm"
-        />
-        <datalist id="todo-known-sessions">
-          {knownSessionIds.map((id) => (
-            <option key={id} value={id} />
-          ))}
-        </datalist>
-        <select
-          aria-label="Scope"
-          value={scope}
-          onChange={(e) => setScope(e.target.value as TodoScope | typeof DEFAULT_SCOPE)}
-          className="input text-sm"
-        >
-          <option value={DEFAULT_SCOPE}>Scope: automatic</option>
-          {TODO_SCOPES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+        {!hideSessionField && (
+          <>
+            <input
+              type="text"
+              aria-label="Session id"
+              placeholder="Session id (optional)"
+              list="todo-known-sessions"
+              value={sessionIdInput}
+              onChange={(e) => setSessionIdInput(e.target.value)}
+              className="input text-sm"
+            />
+            <datalist id="todo-known-sessions">
+              {knownSessionIds.map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+          </>
+        )}
+        {!isPreset && (
+          <select
+            aria-label="Scope"
+            value={scope}
+            onChange={(e) => setScope(e.target.value as TodoScope | typeof DEFAULT_SCOPE)}
+            className="input text-sm"
+          >
+            <option value={DEFAULT_SCOPE}>Scope: automatic</option>
+            {TODO_SCOPES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        )}
         {canAssign && (
           <select
             aria-label="Assignee"

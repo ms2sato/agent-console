@@ -216,19 +216,27 @@ describe('TodosPage', () => {
       await waitFor(() => expect(api.listFetches().length).toBeGreaterThan(fetchesBefore));
     });
 
-    it('deleting needs the confirmation, then refetches the list', async () => {
-      api.state.todos = [makeTodo({ id: 'a', title: 'Delete me' })];
-      const { user } = await renderPage();
-      await waitFor(() => expect(screen.getByText('Delete me')).toBeTruthy());
-      const fetchesBefore = api.listFetches().length;
+    it('rows carry no body, edit, re-scope or delete controls (those live in the detail view)', async () => {
+      api.state.todos = [makeTodo({ id: 'a', title: 'Summary only', body: 'The long body text' })];
+      await renderPage();
+      await waitFor(() => expect(screen.getByText('Summary only')).toBeTruthy());
 
-      await user.click(screen.getByRole('button', { name: 'Delete' }));
-      expect(api.writes()).toHaveLength(0);
-      const dialog = await screen.findByRole('alertdialog');
-      await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+      expect(screen.queryByText('The long body text')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Make global' })).toBeNull();
+    });
+  });
 
-      await waitFor(() => expect(api.writes()[0]).toMatchObject({ method: 'DELETE', path: '/api/todos/a' }));
-      await waitFor(() => expect(api.listFetches().length).toBeGreaterThan(fetchesBefore));
+  describe('open detail', () => {
+    it('Open navigates to the item\'s detail page', async () => {
+      api.state.todos = [makeTodo({ id: 'todo-42', title: 'Open me' })];
+      const { user, router } = await renderPage();
+      await waitFor(() => expect(screen.getByText('Open me')).toBeTruthy());
+
+      await user.click(screen.getByRole('button', { name: 'Open Open me' }));
+
+      // Mutation: an onOpenDetail that navigates elsewhere (or nowhere) fails this.
+      await waitFor(() => expect(router.state.location.pathname).toBe('/todos/todo-42'));
     });
   });
 
@@ -250,21 +258,6 @@ describe('TodosPage', () => {
       await renderPage();
 
       await waitFor(() => expect(screen.getByLabelText('Assignee for Team task')).toBeTruthy());
-    });
-  });
-
-  describe('refusals', () => {
-    it('shows the server\'s message when a re-scope is refused', async () => {
-      api.state.refusal = { status: 409, error: 'Only an open item can be edited (this one is done)' };
-      api.state.todos = [makeTodo({ id: 'a', title: 'Raced item', kind: 'action', scope: 'session' })];
-      const { user } = await renderPage();
-      await waitFor(() => expect(screen.getByText('Raced item')).toBeTruthy());
-
-      await user.click(screen.getByRole('button', { name: 'Make global' }));
-
-      await waitFor(() => {
-        expect(screen.getByText('Only an open item can be edited (this one is done)')).toBeTruthy();
-      });
     });
   });
 

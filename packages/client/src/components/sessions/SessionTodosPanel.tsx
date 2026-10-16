@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import type { Todo } from '@agent-console/shared';
+import { useQuery } from '@tanstack/react-query';
+import { fetchUsers } from '../../lib/api';
+import { userKeys } from '../../lib/query-keys';
 import { useSessionTodos } from './hooks/useSessionTodos';
 import { AccordionSectionBody } from './AccordionSectionBody';
-import { TodoBodyMarkdown } from '../todos/TodoBodyMarkdown';
-import { useSessionTerminalRun } from './SessionTerminalRunContext';
-import { RunCommandDialog } from './RunCommandDialog';
+import { AddTodoForm } from '../todos/AddTodoForm';
+import { TodoRow } from '../todos/TodoRow';
+import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
+import { TodoDetailDialog } from './TodoDetailDialog';
 
 interface SessionTodosPanelProps {
   sessionId: string;
@@ -13,61 +16,22 @@ interface SessionTodosPanelProps {
   compact: boolean;
 }
 
-const BADGE_CLASS = 'shrink-0 px-1.5 py-0.5 rounded-full text-xs font-medium leading-none';
-
-function TodoItem({
-  todo,
-  isExpanded,
-  onRun,
-}: {
-  todo: Todo;
-  isExpanded: boolean;
-  onRun: ((command: string) => void) | undefined;
-}) {
-  return (
-    <div className="px-3 py-2 border-b border-slate-700/50">
-      <div className="flex items-start gap-1.5 flex-wrap">
-        <span className="min-w-0 break-words text-sm text-gray-200">{todo.title}</span>
-      </div>
-      <div className="flex items-center gap-1.5 mt-1">
-        <span className={`${BADGE_CLASS} bg-slate-600/60 text-gray-300`} aria-label={`Scope: ${todo.scope}`}>
-          {todo.scope}
-        </span>
-        <span className={`${BADGE_CLASS} bg-blue-500/20 text-blue-300`} aria-label={`Kind: ${todo.kind}`}>
-          {todo.kind}
-        </span>
-        {todo.status !== 'open' && (
-          <span className={`${BADGE_CLASS} bg-gray-500/20 text-gray-400`} aria-label={`Status: ${todo.status}`}>
-            {todo.status}
-          </span>
-        )}
-      </div>
-      {todo.body !== '' && (
-        <div className="mt-1 text-sm text-gray-300 break-words">
-          <TodoBodyMarkdown body={todo.body} focusable={isExpanded} onRun={onRun} />
-        </div>
-      )}
-      {todo.resolutionText && (
-        <p className="mt-1 text-xs text-gray-400 whitespace-pre-wrap break-words">{todo.resolutionText}</p>
-      )}
-    </div>
-  );
-}
-
 /**
- * Read-only list of the to-do items attached to this session, presented
- * alongside `MemoPanel` (`docs/design/human-todo-list.md`, section 4 "UI",
- * item (a)). Lists every item whose `sessionId` is this session, both scopes;
- * the header count is the number of OPEN items only. The whole block renders
- * nothing while there are zero open items (or before the first fetch
- * resolves), so a session with nothing to do carries no extra chrome.
+ * The Todo items attached to this session, presented alongside `MemoPanel`
+ * (`docs/design/human-todo-list.md`, section 4 "UI"): a compact add form that
+ * presets this session, then one summary row per item (both scopes). "Open"
+ * shows the item's detail in a dialog over the session page. The header count
+ * is the number of OPEN items only. The block renders nothing until the first
+ * fetch settles, and renders with zero items afterwards so an empty session
+ * can still receive one.
  */
 export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, compact }: SessionTodosPanelProps) {
-  const { todos, openCount } = useSessionTodos(sessionId);
-  const [pendingRunCommand, setPendingRunCommand] = useState<string | null>(null);
-  const terminalRun = useSessionTerminalRun();
+  const { todos, openCount, isPending } = useSessionTodos(sessionId);
+  const { data: users = [] } = useQuery({ queryKey: userKeys.list(), queryFn: fetchUsers });
+  const { errorDialogProps, showError } = useErrorDialog();
+  const [openTodoId, setOpenTodoId] = useState<string | null>(null);
 
-  if (openCount === 0) {
+  if (isPending) {
     return null;
   }
 
@@ -99,24 +63,28 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
       </div>
       <AccordionSectionBody isExpanded={isExpanded}>
         <div className="min-w-0 max-h-96 overflow-y-auto">
-          {todos.map((todo) => (
-            <TodoItem
-              key={todo.id}
-              todo={todo}
-              isExpanded={isExpanded}
-              onRun={terminalRun ? setPendingRunCommand : undefined}
-            />
-          ))}
+          <AddTodoForm users={users} sessionId={sessionId} hideSessionField onError={showError} />
+          <ul className="flex flex-col gap-2 list-none p-2 m-0">
+            {todos.map((todo) => (
+              <TodoRow
+                key={todo.id}
+                todo={todo}
+                users={users}
+                onError={showError}
+                onOpenDetail={setOpenTodoId}
+                showSessionLink={false}
+              />
+            ))}
+          </ul>
         </div>
       </AccordionSectionBody>
-      {terminalRun && pendingRunCommand !== null && (
-        <RunCommandDialog
-          sessionId={sessionId}
-          command={pendingRunCommand}
-          terminalRun={terminalRun}
-          onClose={() => setPendingRunCommand(null)}
-        />
-      )}
+      <TodoDetailDialog
+        todoId={openTodoId}
+        sessionId={sessionId}
+        users={users}
+        onClose={() => setOpenTodoId(null)}
+      />
+      <ErrorDialog {...errorDialogProps} />
     </div>
   );
 }

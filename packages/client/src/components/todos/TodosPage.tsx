@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
 import { TODO_STATUSES, type Todo, type TodoStatus } from '@agent-console/shared';
 import { fetchUsers } from '../../lib/api';
 import { userKeys } from '../../lib/query-keys';
@@ -30,6 +31,7 @@ function sessionIdsOf(todos: Todo[]): string[] {
 
 export function TodosPage() {
   const { errorDialogProps, showError } = useErrorDialog();
+  const navigate = useNavigate();
   const { currentUser } = useAuth();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(DEFAULT_STATUS_FILTER);
   const [assigneeFilter, setAssigneeFilter] = useState<string>(ANYONE);
@@ -144,7 +146,7 @@ export function TodosPage() {
       {!isLoading && !error && visible.length > 0 && (
         <ul className="flex flex-col gap-3 list-none p-0 m-0">
           {visible.map((todo) => (
-            <TodoRow key={todo.id} todo={todo} users={users} onError={showError} onOpenDetail={() => {}} />
+            <TodoRow key={todo.id} todo={todo} users={users} onError={showError} onOpenDetail={(id) => navigate({ to: '/todos/$todoId', params: { todoId: id } })} />
           ))}
         </ul>
       )}

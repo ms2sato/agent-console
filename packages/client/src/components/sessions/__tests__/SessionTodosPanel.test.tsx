@@ -1,126 +1,83 @@
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
-import type { Todo } from '@agent-console/shared';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
+import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { installMockWebSocket } from '../../../test/mock-websocket';
+import { _reset as resetWebSocket } from '../../../lib/app-websocket';
+import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
 import { SessionTodosPanel } from '../SessionTodosPanel';
 
-// Fetch-level mock (testing.md Anti-Pattern #2: mock at the fetch boundary).
-const originalFetch = globalThis.fetch;
-const mockFetch = mock(() => Promise.resolve(new Response()));
-globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
+const ME = { id: 'user-me', username: 'me' };
+const BOB = { id: 'user-bob', username: 'bob' };
 
-afterAll(() => {
-  globalThis.fetch = originalFetch;
+let api: ReturnType<typeof createTodoApiMock>;
+let restoreFetch: () => void;
+let restoreWebSocket: () => void;
+
+beforeEach(() => {
+  api = createTodoApiMock();
+  restoreFetch = api.install();
+  restoreWebSocket = installMockWebSocket();
+  resetWebSocket();
 });
 
 afterEach(() => {
   cleanup();
+  restoreFetch();
+  restoreWebSocket();
 });
 
-function jsonResponse(data: unknown): Response {
-  return new Response(JSON.stringify(data), {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-function makeTodo(overrides: Partial<Todo> = {}): Todo {
-  return {
-    id: 'todo-1',
-    kind: 'action',
-    scope: 'session',
-    title: 'Run the migration',
-    body: '',
-    sessionId: 'session-1',
-    createdBy: { workerId: 'worker-1' },
-    assigneeUserId: null,
-    status: 'open',
-    resolutionText: null,
-    resolvedByUserId: null,
-    resolvedByWorkerId: null,
-    resolvedAt: null,
-    createdAt: '2026-10-15T00:00:00.000Z',
-    updatedAt: '2026-10-15T00:00:00.000Z',
-    ...overrides,
-  };
-}
-
-function renderPanel(props: { isExpanded?: boolean; compact?: boolean } = {}) {
-  return renderWithRouter(
-    <SessionTodosPanel
-      sessionId="session-1"
-      isExpanded={props.isExpanded ?? true}
-      onToggleExpanded={() => {}}
-      compact={props.compact ?? false}
-    />
+async function renderPanel(props: { isExpanded?: boolean; compact?: boolean; onToggle?: () => void } = {}) {
+  const rendered = await renderWithRouter(
+    <div data-testid="terminal-host">
+      <SessionTodosPanel
+        sessionId="session-1"
+        isExpanded={props.isExpanded ?? true}
+        onToggleExpanded={props.onToggle ?? (() => {})}
+        compact={props.compact ?? false}
+      />
+    </div>,
   );
+  return { ...rendered, user: userEvent.setup() };
 }
 
 /**
- * Measured reach, recorded by WHICH test failed (each mutation applied alone):
- *
- *   `openCount` counts every item (hooks/useSessionTodos.ts)
- *     -> 'renders nothing when the list holds only done items', 'counts only
- *        open items in the header ...', 'shows scope and kind badges ...',
- *        'renders nothing in compact mode at zero open items'
- *   the `openCount === 0` early return removed (SessionTodosPanel.tsx)
- *     -> 'renders nothing while the list is pending', 'renders nothing when
- *        the session has no items at all', 'renders nothing when the list
- *        holds only done items', 'renders nothing in compact mode at zero
- *        open items'
+ * Mutations noted per test (each applied alone):
+ *   - `openCount` counts every item (hooks/useSessionTodos.ts)
+ *     -> 'counts only open items in the header ...'
+ *   - the panel renders before the first fetch settles (the isPending return removed)
+ *     -> 'renders nothing while the list is pending'
+ *   - the add form sends the global default instead of the session scope
+ *     -> 'adds with the session preset and the session scope ...'
+ *   - the session field shown in the sidebar form -> 'the add form hides the session field ...'
+ *   - the rows render the body -> 'rows are summaries ...'
+ *   - the panel replaced by the dialog while one is open
+ *     -> 'opening the detail leaves the surrounding markup mounted'
  */
 describe('SessionTodosPanel', () => {
-  beforeEach(() => {
-    mockFetch.mockReset();
-  });
-
   it('renders nothing while the list is pending', async () => {
-    mockFetch.mockReturnValue(new Promise(() => {}));
+    api.fetchMock.mockImplementation(() => new Promise(() => {}));
 
-    const { container } = await renderPanel();
+    await renderPanel();
 
-    expect(container.textContent).toBe('');
-  });
-
-  it('renders nothing when the session has no items at all', async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ todos: [] }));
-
-    const { container } = await renderPanel();
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(container.textContent).toBe('');
     expect(screen.queryByLabelText('Collapse Todo')).toBeNull();
+    expect(screen.queryByRole('form', { name: 'Add Todo' })).toBeNull();
   });
 
-  it('renders nothing when the list holds only done items (zero OPEN items)', async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        todos: [
-          makeTodo({ id: 'a', status: 'done', resolutionText: 'Done it' }),
-          makeTodo({ id: 'b', status: 'dismissed', title: 'Dismissed one' }),
-        ],
-      })
-    );
+  it('with zero items renders "Todo (0)" and the add form', async () => {
+    await renderPanel();
 
-    const { container } = await renderPanel();
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(container.textContent).toBe('');
-    expect(screen.queryByText('Dismissed one')).toBeNull();
+    expect(await screen.findByText('Todo (0)')).toBeTruthy();
+    expect(screen.getByRole('form', { name: 'Add Todo' })).toBeTruthy();
+    expect(screen.queryByRole('listitem')).toBeNull();
   });
 
   it('counts only open items in the header while listing every item', async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        todos: [
-          makeTodo({ id: 'a', title: 'Open one' }),
-          makeTodo({ id: 'b', title: 'Done one', status: 'done', resolutionText: 'ok' }),
-          makeTodo({ id: 'c', title: 'Open global', scope: 'global' }),
-        ],
-      })
-    );
+    api.state.todos = [
+      makeTodo({ id: 'a', title: 'Open one' }),
+      makeTodo({ id: 'b', title: 'Done one', status: 'done', resolutionText: 'ok' }),
+      makeTodo({ id: 'c', title: 'Open global', scope: 'global' }),
+    ];
 
     await renderPanel();
 
@@ -130,86 +87,18 @@ describe('SessionTodosPanel', () => {
     expect(screen.getByText('Open global')).toBeTruthy();
   });
 
-  it('shows scope and kind badges on every item, and a status badge only on non-open items', async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        todos: [
-          makeTodo({ id: 'a', title: 'Open question', kind: 'question' }),
-          makeTodo({ id: 'b', title: 'Closed global', scope: 'global', status: 'superseded' }),
-        ],
-      })
-    );
-
-    await renderPanel();
-    await screen.findByText('Todo (1)');
-
-    expect(screen.getAllByLabelText('Scope: session')).toHaveLength(1);
-    expect(screen.getAllByLabelText('Scope: global')).toHaveLength(1);
-    expect(screen.getAllByLabelText('Kind: question')).toHaveLength(1);
-    expect(screen.getAllByLabelText('Kind: action')).toHaveLength(1);
-    expect(screen.getAllByLabelText(/^Status: /)).toHaveLength(1);
-    expect(screen.getByLabelText('Status: superseded')).toBeTruthy();
-    expect(screen.queryByLabelText('Status: open')).toBeNull();
-  });
-
-  it('renders the body as markdown, including a fenced block', async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        todos: [makeTodo({ body: '**bold text**\n\n```sh\nbun run migrate\n```' })],
-      })
-    );
-
-    await renderPanel();
-
-    const bold = await screen.findByText('bold text');
-    expect(bold.tagName).toBe('STRONG');
-    expect(screen.getByText('bun run migrate')).toBeTruthy();
-  });
-
-  it('takes body links out of the tab order only while the panel is collapsed', async () => {
-    mockFetch.mockImplementation(() =>
-      Promise.resolve(jsonResponse({ todos: [makeTodo({ body: 'See [the plan](https://example.com/plan)' })] }))
-    );
-
-    await renderPanel({ isExpanded: false });
-    const collapsedLink = (await screen.findByText('the plan', {}, { timeout: 2000 })).closest('a');
-    expect(collapsedLink?.getAttribute('tabindex')).toBe('-1');
-
-    cleanup();
-    await renderPanel({ isExpanded: true });
-    const expandedLink = (await screen.findByText('the plan')).closest('a');
-    expect(expandedLink?.getAttribute('tabindex')).toBeNull();
-  });
-
-  it('shows the resolution text of a resolved item', async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        todos: [
-          makeTodo({ id: 'a', title: 'Open one' }),
-          makeTodo({ id: 'b', status: 'done', resolutionText: 'Use option B' }),
-        ],
-      })
-    );
-
-    await renderPanel();
-
-    expect(await screen.findByText('Use option B')).toBeTruthy();
-  });
-
   it('collapses through the header toggle', async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ todos: [makeTodo()] }));
+    api.state.todos = [makeTodo()];
     const onToggle = mock(() => {});
 
-    await renderWithRouter(
-      <SessionTodosPanel sessionId="session-1" isExpanded onToggleExpanded={onToggle} compact={false} />
-    );
+    await renderPanel({ onToggle });
 
     fireEvent.click(await screen.findByLabelText('Collapse Todo'));
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
   it('shows only a labelled rail button with the open count in compact mode', async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ todos: [makeTodo()] }));
+    api.state.todos = [makeTodo()];
 
     await renderPanel({ compact: true });
 
@@ -218,13 +107,100 @@ describe('SessionTodosPanel', () => {
     expect(screen.queryByText('Run the migration')).toBeNull();
   });
 
-  it('renders nothing in compact mode at zero open items', async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ todos: [makeTodo({ status: 'done', resolutionText: 'x' })] }));
+  it('compact mode at zero open items still shows the rail button with (0)', async () => {
+    api.state.todos = [makeTodo({ status: 'done', resolutionText: 'x' })];
 
-    const { container } = await renderPanel({ compact: true });
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await renderPanel({ compact: true });
 
-    expect(container.textContent).toBe('');
+    expect(await screen.findByText('Todo (0)')).toBeTruthy();
+  });
+
+  describe('add form', () => {
+    it('hides the session field and the scope choice (the session is preset)', async () => {
+      await renderPanel();
+
+      await screen.findByRole('form', { name: 'Add Todo' });
+      expect(screen.queryByLabelText('Session id')).toBeNull();
+      expect(screen.queryByLabelText('Scope')).toBeNull();
+      expect(screen.getByLabelText('Kind')).toBeTruthy();
+    });
+
+    it('adds with the session preset and the session scope (not the global default)', async () => {
+      const { user } = await renderPanel();
+
+      await user.type(await screen.findByLabelText('Title'), 'Check the rollout');
+      await user.click(screen.getByRole('button', { name: 'Add' }));
+
+      await waitFor(() => expect(api.writes()).toHaveLength(1));
+      expect(api.writes()[0]).toMatchObject({ method: 'POST', path: '/api/todos' });
+      expect(api.writes()[0]?.body).toMatchObject({ sessionId: 'session-1', scope: 'session', title: 'Check the rollout' });
+    });
+
+    it('offers the assignee select only when the directory has several users', async () => {
+      api.state.users = [ME];
+      await renderPanel();
+      await screen.findByLabelText('Title');
+      await waitFor(() => expect(api.fetchMock.mock.calls.length).toBeGreaterThan(1));
+      expect(screen.queryByLabelText('Assignee')).toBeNull();
+      cleanup();
+
+      api.state.users = [ME, BOB];
+      await renderPanel();
+      expect(await screen.findByLabelText('Assignee')).toBeTruthy();
+    });
+  });
+
+  describe('rows', () => {
+    it('are summaries with resolve, dismiss and assignee controls, and no body or delete', async () => {
+      api.state.users = [ME, BOB];
+      api.state.todos = [makeTodo({ id: 'a', title: 'Row one', body: 'Long body text' })];
+
+      await renderPanel();
+
+      await screen.findByText('Row one');
+      expect(screen.getByRole('button', { name: 'Resolve' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+      expect(await screen.findByLabelText('Assignee for Row one')).toBeTruthy();
+      expect(screen.queryByText('Long body text')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+      expect(screen.queryByText('Open session')).toBeNull();
+    });
+
+    it('a refused action is shown in an error dialog', async () => {
+      api.state.refusal = { status: 409, error: 'The item is no longer open' };
+      api.state.todos = [makeTodo({ id: 'a', title: 'Raced one' })];
+      const { user } = await renderPanel();
+
+      await user.click(await screen.findByRole('button', { name: 'Dismiss' }));
+
+      expect(await screen.findByText('The item is no longer open')).toBeTruthy();
+    });
+  });
+
+  describe('detail dialog', () => {
+    it('Open shows the item\'s detail and leaves the surrounding markup mounted', async () => {
+      api.state.todos = [makeTodo({ id: 'todo-9', title: 'Look closer', body: 'The long body text' })];
+      const { user } = await renderPanel();
+
+      await user.click(await screen.findByRole('button', { name: 'Open Look closer' }));
+
+      expect(await screen.findByRole('dialog')).toBeTruthy();
+      expect(await screen.findByText('The long body text', { selector: 'p' })).toBeTruthy();
+      // The panel itself stays mounted under the dialog (its header is still there).
+      expect(screen.getByText('Todo (1)')).toBeTruthy();
+      expect(document.body.contains(screen.getByTestId('terminal-host'))).toBe(true);
+    });
+
+    it('closes through the dialog close control', async () => {
+      api.state.todos = [makeTodo({ id: 'todo-9', title: 'Look closer' })];
+      const { user } = await renderPanel();
+      await user.click(await screen.findByRole('button', { name: 'Open Look closer' }));
+      await screen.findByRole('dialog');
+
+      await user.keyboard('{Escape}');
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(screen.getByTestId('terminal-host')).toBeTruthy();
+    });
   });
 });

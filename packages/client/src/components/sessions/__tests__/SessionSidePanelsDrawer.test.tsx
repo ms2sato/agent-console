@@ -96,6 +96,14 @@ function routeFetchByPanel(): void {
 function routeFetchEmpty(): void {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
     const url = urlToString(input);
+    // The Todo panel renders (its add form lives there) once its list settles.
+    // These tests pin Memo/Bookmarks focus order, and user-event does not
+    // model `inert`, so the add form's controls would become extra tab stops
+    // a real browser skips. Keeping the todo list pending keeps that panel
+    // out of the tab order, as it was when an empty list rendered nothing.
+    if (url.includes('/todos')) {
+      return new Promise<Response>(() => {});
+    }
     if (url.includes('/memo')) {
       return Promise.resolve(jsonResponse({ content: '' }));
     }

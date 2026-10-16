@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchTodo } from '../lib/api';
+import { ApiError, fetchTodo } from '../lib/api';
 import { todoKeys } from '../lib/query-keys';
 import { useAppWsEvent } from './useAppWs';
 
@@ -28,4 +28,9 @@ export function useTodoDetail(id: string) {
     queryFn: () => fetchTodo(id),
     retry: false,
   });
+}
+
+/** True when the detail query failed because the item no longer exists (deleted, or never did). */
+export function isTodoGone(error: Error | null): boolean {
+  return error instanceof ApiError && error.status === 404;
 }
