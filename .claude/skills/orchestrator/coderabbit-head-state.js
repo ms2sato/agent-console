@@ -64,6 +64,8 @@ function isReviewPass(review) {
  *   matchingReviewAt: string | null,
  *   statusDescription: string | null,
  *   dispositionRecorded: boolean,
+ *   dispositionHeadSha: string | null,
+ *   dispositionMatchesHead: boolean,
  *   headReviewCount: number,
  *   headAckCount: number,
  * }}
@@ -90,9 +92,14 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
   // appearing somewhere in the body: a prose sentence like "No CodeRabbit
   // disposition has been recorded" would otherwise satisfy the check it is
   // describing the absence of.
-  const dispositionRecorded = /^#{1,6}\s+CodeRabbit disposition\b/im.test(body);
+  //
+  // The heading alone is not enough: it survives a push, while the record
+  // under it describes one specific commit. The record must carry a `Head:`
+  // line (inside the disposition section only) naming the PR's current head,
+  // otherwise it is a record about an earlier commit and counts as absent.
+  const disposition = parseDisposition(body, headSha);
   if (!headSha) {
-    return makeResult({ state: 'retrieval-failed', dispositionRecorded });
+    return makeResult({ state: 'retrieval-failed', ...disposition });
   }
 
   // Surface 5/6's underlying data: the PR's reviews, filtered to the bot.
@@ -114,16 +121,16 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
   // an array of page-arrays (even a single page comes back as `[[...]]`).
   const reviewsJson = execImpl(`gh api --paginate --slurp repos/{owner}/{repo}/pulls/${prNumber}/reviews`);
   if (!reviewsJson) {
-    return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
+    return makeResult({ state: 'retrieval-failed', headSha, ...disposition });
   }
   let reviewPages;
   try {
     reviewPages = JSON.parse(reviewsJson);
   } catch {
-    return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
+    return makeResult({ state: 'retrieval-failed', headSha, ...disposition });
   }
   if (!Array.isArray(reviewPages)) {
-    return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
+    return makeResult({ state: 'retrieval-failed', headSha, ...disposition });
   }
   const reviews = reviewPages.flat();
 
@@ -131,17 +138,17 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
   // this exact head SHA, read for its `description`.
   const statusJson = execImpl(`gh api repos/{owner}/{repo}/commits/${headSha}/status`);
   if (!statusJson) {
-    return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
+    return makeResult({ state: 'retrieval-failed', headSha, ...disposition });
   }
   let statusObj;
   try {
     statusObj = JSON.parse(statusJson);
   } catch {
-    return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
+    return makeResult({ state: 'retrieval-failed', headSha, ...disposition });
   }
   const statuses = Array.isArray(statusObj?.statuses) ? statusObj.statuses : null;
   if (statuses === null) {
-    return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
+    return makeResult({ state: 'retrieval-failed', headSha, ...disposition });
   }
 
   const crEntry = statuses.find((s) => s?.context === 'CodeRabbit');
@@ -165,10 +172,39 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
     headSha,
     matchingReviewAt,
     statusDescription,
-    dispositionRecorded,
+    ...disposition,
     headReviewCount,
     headAckCount,
   });
+}
+
+/**
+ * Reads the disposition record out of a PR body.
+ *
+ * The section runs from the `CodeRabbit disposition` heading to the next
+ * heading of any level, or to the end of the body. Only a `Head:` line inside
+ * that section is parsed; the same line elsewhere in the body (a summary, a
+ * quoted block) says nothing about the disposition. The match is a prefix
+ * compare of at least 7 hex characters against the current head, and is
+ * false whenever the head is unknown.
+ *
+ * @param {string} body
+ * @param {string | null} headSha
+ * @returns {{ dispositionRecorded: boolean, dispositionHeadSha: string | null, dispositionMatchesHead: boolean }}
+ */
+function parseDisposition(body, headSha) {
+  const heading = /^#{1,6}\s+CodeRabbit disposition\b.*$/im.exec(body);
+  if (!heading) {
+    return { dispositionRecorded: false, dispositionHeadSha: null, dispositionMatchesHead: false };
+  }
+  const rest = body.slice(heading.index + heading[0].length);
+  const nextHeading = /^#{1,6}\s/m.exec(rest);
+  const section = nextHeading ? rest.slice(0, nextHeading.index) : rest;
+  const headLine = /^Head:\s*([0-9a-f]{7,40})\b/m.exec(section);
+  const dispositionHeadSha = headLine ? headLine[1] : null;
+  const dispositionMatchesHead =
+    dispositionHeadSha !== null && headSha !== null && headSha.startsWith(dispositionHeadSha);
+  return { dispositionRecorded: dispositionMatchesHead, dispositionHeadSha, dispositionMatchesHead };
 }
 
 function makeResult({
@@ -177,8 +213,20 @@ function makeResult({
   matchingReviewAt = null,
   statusDescription = null,
   dispositionRecorded = false,
+  dispositionHeadSha = null,
+  dispositionMatchesHead = false,
   headReviewCount = 0,
   headAckCount = 0,
 }) {
-  return { state, headSha, matchingReviewAt, statusDescription, dispositionRecorded, headReviewCount, headAckCount };
+  return {
+    state,
+    headSha,
+    matchingReviewAt,
+    statusDescription,
+    dispositionRecorded,
+    dispositionHeadSha,
+    dispositionMatchesHead,
+    headReviewCount,
+    headAckCount,
+  };
 }
