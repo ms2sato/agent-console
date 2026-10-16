@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { screen, cleanup, waitFor, act, fireEvent, renderHook } from '@testing-library/react';
+import { screen, cleanup, waitFor, act, fireEvent, renderHook, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionSidePanelsDrawer } from '../SessionSidePanelsDrawer';
@@ -114,6 +114,19 @@ function routeFetchEmpty(): void {
       return Promise.resolve(jsonResponse({ bookmarks: [] }));
     }
     return Promise.resolve(jsonResponse({}, 404));
+  });
+}
+
+// The settled-empty Todo state: the list answered with no items, so the panel
+// is rendered (header and add form) -- unlike routeFetchEmpty's pending list.
+function routeFetchSettledEmptyTodos(): void {
+  routeFetchEmpty();
+  const base = mockFetch.getMockImplementation()!;
+  mockFetch.mockImplementation((input: RequestInfo | URL) => {
+    if (urlToString(input).includes('/todos')) {
+      return Promise.resolve(jsonResponse({ todos: [] }));
+    }
+    return base(input);
   });
 }
 
@@ -511,6 +524,36 @@ describe('SessionSidePanelsDrawer', () => {
       });
       await user.tab({ shift: true });
       expect(document.activeElement).toBe(bookmarksHeader);
+    });
+
+    it('walks forward and wraps Tab through the Todo header and add form once the Todo list has settled empty', async () => {
+      routeFetchSettledEmptyTodos();
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ railOpen: false, expanded: { memo: false, todos: true, artifacts: false, bookmarks: false } })
+      );
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      const memoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
+      const todoHeader = await waitFor(() => screen.getByLabelText('Collapse Todo'));
+      const bookmarksHeader = screen.getByLabelText('Expand Bookmarks');
+      const form = screen.getByRole('form', { name: 'Add Todo' });
+      const kind = within(form).getByLabelText('Kind');
+      const title = within(form).getByLabelText('Title');
+      const body = within(form).getByLabelText('Body');
+      const user = userEvent.setup();
+
+      act(() => {
+        memoHeader.focus();
+      });
+      for (const expected of [todoHeader, kind, title, body, bookmarksHeader, memoHeader]) {
+        await user.tab();
+        expect(document.activeElement).toBe(expected);
+      }
+
+      await user.tab({ shift: true });
+      expect(document.activeElement).toBe(bookmarksHeader);
+      await user.tab({ shift: true });
+      expect(document.activeElement).toBe(body);
     });
 
     it('tabs from the collapsed Memo header to the expanded Bookmarks header, and Memo\'s body stays inert throughout', async () => {

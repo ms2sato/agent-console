@@ -222,7 +222,11 @@ describe('SessionSidePanels', () => {
     expect(screen.getByText(TODO_TITLE)).toBeTruthy();
   });
 
-  it('renders the to-do section with a zero count and the add form when the session has no items (the default routing serves no to-do list)', async () => {
+  it('renders the to-do section with a zero count and the add form when the session list settles empty', async () => {
+    const base = mockFetch.getMockImplementation()!;
+    mockFetch.mockImplementation((input: RequestInfo | URL) =>
+      urlToString(input).includes('/todos') ? Promise.resolve(jsonResponse({ todos: [] })) : base(input)
+    );
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } }));
 
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);

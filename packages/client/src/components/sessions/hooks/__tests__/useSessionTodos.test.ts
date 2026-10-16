@@ -142,6 +142,17 @@ describe('useSessionTodos', () => {
     expect(result.current.openCount).toBe(0);
   });
 
+  it('reports isError on a failed list fetch, with no items', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ error: 'boom' }, 500));
+
+    const { result } = renderHook(() => useSessionTodos('session-1'), { wrapper: createWrapper() });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(result.current.todos).toEqual([]);
+    expect(result.current.openCount).toBe(0);
+    expect(typeof result.current.refetch).toBe('function');
+  });
+
   // Each realtime test is a positive control followed by the negative
   // assertion in the SAME test, so an absence cannot be a never-delivered frame.
   describe('realtime refresh (todos-updated)', () => {

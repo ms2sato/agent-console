@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { screen, cleanup, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
@@ -176,6 +177,30 @@ describe('TodoDetail', () => {
         path: `/api/todos/${todo.id}`,
         body: { title: 'New title', body: 'New body' },
       });
+    });
+
+    it('shows the server\'s new title and body when the item is updated elsewhere', async () => {
+      const first = makeTodo({ title: 'Old title', body: 'Old body', updatedAt: '2026-10-15T00:00:00.000Z' });
+      const second = { ...first, title: 'Other title', body: 'Other body', updatedAt: '2026-10-16T00:00:00.000Z' };
+      function Host() {
+        const [todo, setTodo] = useState(first);
+        return (
+          <>
+            <button type="button" onClick={() => setTodo(second)}>
+              simulate remote edit
+            </button>
+            <TodoDetail todo={todo} users={[ALICE]} onError={() => {}} runEnabled={false} onDeleted={() => {}} />
+          </>
+        );
+      }
+      const user = userEvent.setup();
+      await renderWithRouter(<Host />);
+      expect((screen.getByLabelText('Edit title') as HTMLInputElement).value).toBe('Old title');
+
+      await user.click(screen.getByRole('button', { name: 'simulate remote edit' }));
+
+      await waitFor(() => expect((screen.getByLabelText('Edit title') as HTMLInputElement).value).toBe('Other title'));
+      expect((screen.getByLabelText('Edit body') as HTMLTextAreaElement).value).toBe('Other body');
     });
 
     it('Save is disabled until something changed, and for a blank title', async () => {

@@ -55,6 +55,8 @@ async function renderPanel(props: { isExpanded?: boolean; compact?: boolean; onT
  *   - the rows render the body -> 'rows are summaries ...'
  *   - the `tabIndex` dropped from one control type (the Open button, the assignee select, the
  *     add-form controls, resolve/dismiss) -> 'excludes every control of the body from the tab order ...'
+ *   - the header always shows the count, or the error line / Retry dropped
+ *     -> 'a failed list fetch shows ...'
  *   - the panel replaced by the dialog while one is open
  *     -> 'opening the detail leaves the surrounding markup mounted'
  */
@@ -119,6 +121,39 @@ describe('SessionTodosPanel', () => {
     expect(await screen.findByText('Todo (0)')).toBeTruthy();
   });
 
+  it('a failed list fetch shows "Todo" without a count, the error line, Retry and the add form; Retry refetches', async () => {
+    let listCalls = 0;
+    const original = api.fetchMock.getMockImplementation();
+    api.fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
+      if (url.pathname === '/api/todos') {
+        listCalls += 1;
+        return new Response(JSON.stringify({ error: 'boom' }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+      return original!(input, init);
+    });
+    const { user } = await renderPanel();
+
+    expect(await screen.findByText('Failed to load Todo items')).toBeTruthy();
+    expect(screen.getByLabelText('Collapse Todo').textContent).toBe('Todo');
+    expect(screen.queryByText(/Todo \(/)).toBeNull();
+    expect(screen.getByRole('form', { name: 'Add Todo' })).toBeTruthy();
+    const callsBefore = listCalls;
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => expect(listCalls).toBe(callsBefore + 1));
+  });
+
+  it('a failed list fetch in compact mode labels the rail button "Todo" without a count', async () => {
+    api.fetchMock.mockImplementation(async () => new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } }));
+
+    await renderPanel({ compact: true });
+
+    const rail = await screen.findByLabelText('Expand Todo');
+    expect(rail.textContent).toBe('Todo');
+  });
+
   it('excludes every control of the body from the tab order while collapsed, and restores them when expanded', async () => {
     api.state.users = [ME, BOB];
     api.state.todos = [makeTodo({ id: 'a', title: 'Open one' })];
@@ -163,6 +198,15 @@ describe('SessionTodosPanel', () => {
     for (const control of everyControl) {
       expect(control.getAttribute('tabindex')).toBeNull();
     }
+  });
+
+  it('the Retry control is excluded from the tab order while collapsed', async () => {
+    api.fetchMock.mockImplementation(async () => new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } }));
+
+    await renderPanel({ isExpanded: false });
+
+    const retry = await screen.findByRole('button', { name: 'Retry', hidden: true });
+    expect(retry.getAttribute('tabindex')).toBe('-1');
   });
 
   describe('add form', () => {
@@ -251,6 +295,36 @@ describe('SessionTodosPanel', () => {
 
       await waitForAbsent(() => screen.queryByRole('dialog'));
       expect(screen.getByTestId('terminal-host')).toBeTruthy();
+    });
+
+    it('Escape returns focus to the Open button that opened the dialog', async () => {
+      api.state.todos = [makeTodo({ id: 'todo-9', title: 'Look closer' })];
+      const { user } = await renderPanel();
+      const opener = await screen.findByRole('button', { name: 'Open Look closer' });
+      await user.click(opener);
+      await screen.findByRole('dialog');
+
+      await user.keyboard('{Escape}');
+
+      await waitForAbsent(() => screen.queryByRole('dialog'));
+      await waitFor(() => expect(document.activeElement === opener).toBe(true));
+    });
+
+    it('after deleting from the detail, focus stays inside the panel (not on the body)', async () => {
+      api.state.todos = [makeTodo({ id: 'todo-9', title: 'Doomed' })];
+      const { user } = await renderPanel();
+      await user.click(await screen.findByRole('button', { name: 'Open Doomed' }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(await within(dialog).findByRole('button', { name: 'Delete' }));
+      const confirm = await screen.findByRole('alertdialog');
+      api.state.todos = [];
+      await user.click(within(confirm).getByRole('button', { name: 'Delete' }));
+
+      await waitForAbsent(() => screen.queryByRole('dialog'));
+      await waitForAbsent(() => screen.queryByText('Doomed'));
+      // The row that opened the dialog is gone, so focus lands on the add form's title input.
+      const titleInput = screen.getByLabelText('Title');
+      await waitFor(() => expect(document.activeElement === titleInput).toBe(true));
     });
   });
 });

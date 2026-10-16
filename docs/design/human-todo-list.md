@@ -152,7 +152,7 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 
 | operation | session sidebar (`SessionTodosPanel`) | `/todos` list (`TodosPage`) | detail (`TodoDetail`: page `/todos/:id` and in-session dialog) | MCP | REST |
 |---|---|---|---|---|---|
-| create | do: session-scoped create only; a global item is created on /todos or re-scoped from the detail | do: `AddTodoForm` | not here: a detail is one item | do: `create_todo` | do: POST |
+| create | do: session-scoped create only (narrowing pending owner confirmation, Refs #2136); a global item is created on /todos or re-scoped from the detail | do: `AddTodoForm` | not here: a detail is one item | do: `create_todo` | do: POST |
 | list / summary | do: `TodoRow` summary | do: `TodoRow` summary + filters | not here | do: `list_todos` | do: GET |
 | read detail (full body, resolution history, provenance, timestamps, session link) | not here: summary only; "Open" opens the dialog | not here: "Open" links to the page | do | do: `list_todos` carries the full item | do: GET /:id |
 | resolve | do | do | do | do: `resolve_todo` | do: POST /:id/resolve |

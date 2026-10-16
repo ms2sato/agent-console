@@ -235,7 +235,8 @@ export function TodoDetail({ todo, users, onError, runEnabled, onRun, onDeleted 
         </section>
       )}
 
-      {isOpen && <TodoEditForm todo={todo} onError={onError} />}
+      {/* Remount when the server's version changes: the inputs seed from props only on mount. */}
+      {isOpen && <TodoEditForm key={`${todo.id}:${todo.updatedAt}`} todo={todo} onError={onError} />}
 
       {canReScope && (
         <section>

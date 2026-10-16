@@ -41,7 +41,7 @@ async function renderDialog(todoId: string | null, run: SessionTerminalRun | nul
   const onClose = mock(() => {});
   await renderWithRouter(
     <SessionTerminalRunContext.Provider value={run}>
-      <TodoDetailDialog todoId={todoId} sessionId="session-1" users={USERS} onClose={onClose} />
+      <TodoDetailDialog todoId={todoId} sessionId="session-1" users={USERS} onClose={onClose} onCloseAutoFocus={() => {}} />
     </SessionTerminalRunContext.Provider>,
   );
   return { onClose, user: userEvent.setup() };

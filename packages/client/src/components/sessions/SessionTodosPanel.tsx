@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchUsers } from '../../lib/api';
 import { userKeys } from '../../lib/query-keys';
@@ -26,14 +26,37 @@ interface SessionTodosPanelProps {
  * can still receive one.
  */
 export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, compact }: SessionTodosPanelProps) {
-  const { todos, openCount, isPending } = useSessionTodos(sessionId);
+  const { todos, openCount, isPending, isError, refetch } = useSessionTodos(sessionId);
   const { data: users = [] } = useQuery({ queryKey: userKeys.list(), queryFn: fetchUsers });
   const { errorDialogProps, showError } = useErrorDialog();
   const [openTodoId, setOpenTodoId] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  const handleOpenDetail = (todoId: string) => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setOpenTodoId(todoId);
+  };
+
+  // The dialog has no trigger element, so return focus to the control that opened it;
+  // when that row is gone (the item was deleted) fall back to the add form's title input.
+  const handleDialogCloseAutoFocus = (event: Event) => {
+    event.preventDefault();
+    const opener = openerRef.current;
+    openerRef.current = null;
+    const target =
+      opener !== null && opener.isConnected && panelRef.current?.contains(opener)
+        ? opener
+        : panelRef.current?.querySelector<HTMLElement>('input[aria-label="Title"]');
+    target?.focus();
+  };
 
   if (isPending) {
     return null;
   }
+
+  // A failed fetch has no count to report: showing "(0)" would read as "nothing to do".
+  const headerLabel = isError ? 'Todo' : `Todo (${openCount})`;
 
   if (compact) {
     return (
@@ -43,13 +66,13 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
         title="Expand Todo"
         aria-label="Expand Todo"
       >
-        <span className="text-xs" style={{ writingMode: 'vertical-rl' }}>Todo ({openCount})</span>
+        <span className="text-xs" style={{ writingMode: 'vertical-rl' }}>{headerLabel}</span>
       </button>
     );
   }
 
   return (
-    <div className="flex flex-col border-b border-slate-700">
+    <div ref={panelRef} className="flex flex-col border-b border-slate-700">
       <div className="flex items-center justify-between px-3 py-1.5">
         <button
           type="button"
@@ -58,11 +81,24 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
           aria-label={isExpanded ? 'Collapse Todo' : 'Expand Todo'}
           className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
         >
-          Todo ({openCount})
+          {headerLabel}
         </button>
       </div>
       <AccordionSectionBody isExpanded={isExpanded}>
         <div className="min-w-0 max-h-96 overflow-y-auto">
+          {isError && (
+            <div className="flex items-center gap-2 px-3 py-1.5">
+              <p className="text-xs text-red-400">Failed to load Todo items</p>
+              <button
+                type="button"
+                onClick={() => void refetch()}
+                tabIndex={isExpanded ? undefined : -1}
+                className="text-xs text-gray-300 hover:text-white bg-transparent border border-slate-600 rounded px-2 py-0.5 cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          )}
           <AddTodoForm users={users} sessionId={sessionId} hideSessionField onError={showError} focusable={isExpanded} />
           <ul className="flex flex-col gap-2 list-none p-2 m-0">
             {todos.map((todo) => (
@@ -71,7 +107,7 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
                 todo={todo}
                 users={users}
                 onError={showError}
-                onOpenDetail={setOpenTodoId}
+                onOpenDetail={handleOpenDetail}
                 showSessionLink={false}
                 focusable={isExpanded}
               />
@@ -84,6 +120,7 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
         sessionId={sessionId}
         users={users}
         onClose={() => setOpenTodoId(null)}
+        onCloseAutoFocus={handleDialogCloseAutoFocus}
       />
       <ErrorDialog {...errorDialogProps} />
     </div>

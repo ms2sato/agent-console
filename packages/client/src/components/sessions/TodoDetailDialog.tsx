@@ -15,6 +15,8 @@ interface TodoDetailDialogProps {
   sessionId: string;
   users: UsersListResponse['users'];
   onClose: () => void;
+  /** Where focus goes when the dialog closes. The dialog has no trigger element, so Radix restores nothing on its own. */
+  onCloseAutoFocus: (event: Event) => void;
 }
 
 interface TodoDetailDialogBodyProps {
@@ -22,11 +24,12 @@ interface TodoDetailDialogBodyProps {
   sessionId: string;
   users: UsersListResponse['users'];
   onClose: () => void;
+  onCloseAutoFocus: (event: Event) => void;
 }
 
 // Mounted only while a dialog is open and keyed on the item, so the detail
 // query, the Run selection and the error state start fresh per item.
-function TodoDetailDialogBody({ todoId, sessionId, users, onClose }: TodoDetailDialogBodyProps) {
+function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFocus }: TodoDetailDialogBodyProps) {
   const { data: todo, error } = useTodoDetail(todoId);
   const terminalRun = useSessionTerminalRun();
   const [pendingRunCommand, setPendingRunCommand] = useState<string | null>(null);
@@ -34,7 +37,11 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose }: TodoDetailD
 
   return (
     <>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
+      <DialogContent
+        className="max-w-2xl max-h-[85vh] overflow-y-auto"
+        aria-describedby={undefined}
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <DialogHeader className="mb-4 flex-row items-center gap-3 space-y-0 pr-8">
           <DialogTitle>Todo</DialogTitle>
           <Link
@@ -83,11 +90,18 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose }: TodoDetailD
  * the session page, so the terminal behind it stays mounted. It owns the Run
  * wiring for ```terminal blocks, which only a session page can offer.
  */
-export function TodoDetailDialog({ todoId, sessionId, users, onClose }: TodoDetailDialogProps) {
+export function TodoDetailDialog({ todoId, sessionId, users, onClose, onCloseAutoFocus }: TodoDetailDialogProps) {
   return (
     <Dialog open={todoId !== null} onOpenChange={(open) => !open && onClose()}>
       {todoId !== null && (
-        <TodoDetailDialogBody key={todoId} todoId={todoId} sessionId={sessionId} users={users} onClose={onClose} />
+        <TodoDetailDialogBody
+          key={todoId}
+          todoId={todoId}
+          sessionId={sessionId}
+          users={users}
+          onClose={onClose}
+          onCloseAutoFocus={onCloseAutoFocus}
+        />
       )}
     </Dialog>
   );
