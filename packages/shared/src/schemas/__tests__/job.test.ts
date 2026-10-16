@@ -16,7 +16,8 @@ export type _JobStatsToWire = Assert<JobStats extends JobStatsWire ? true : fals
 export type _JobStatsFromWire = Assert<JobStatsWire extends JobStats ? true : false>;
 export type _JobsResponseToWire = Assert<JobsResponse extends JobsResponseWire ? true : false>;
 // No reverse pin for Job / JobsResponse: the wire payload is `unknown`, so the wire shape is
-// intentionally wider than the server's typed payload union.
+// intentionally wider than the server's typed payload union. A reverse pin cannot hold by
+// construction: `unknown` does not extend the server's payload union.
 
 const jobFixture = {
   id: 'job-1',

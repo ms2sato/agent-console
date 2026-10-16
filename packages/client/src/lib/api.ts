@@ -835,6 +835,8 @@ export async function deleteInvalidSession(sessionId: string): Promise<void> {
 // ===========================================================================
 
 // Re-export job types from shared package
+// These are the WIRE types (the job payload is `unknown`); the server-side `Job` lives in shared `types/job.ts`.
+// The two are deliberately distinct, so do not merge them.
 export type { JobWire as Job, JobsResponseWire as JobsResponse, JobStatsWire as JobStats, JobStatus, JobType };
 
 /**
