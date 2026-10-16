@@ -112,7 +112,7 @@ Owner approval: 2026-10-15, as written above (scope revision included). `LATEST_
 **MCP, for agents** (a session-claiming pair: `create_todo` and `list_todos` join `SESSION_CLAIMING_TOOLS`, `mcp/session-claiming-tools.ts:11`, and gate the claimed `sessionId` through `checkCallerOwnsSession`, like `create_conditional_wakeup`; a terminal agent passes its own session and worker ids, an embedded agent defaults to its own):
 
 - `create_todo({ kind, scope?, title, body, assigneeUsername?, supersedes? }) -> { id }`. Appends an `open` item. `assigneeUsername` is resolved to a user id server-side. `supersedes` names an open item of the same session and marks it `superseded` in the same transaction. A second call never overwrites the first.
-- `list_todos({ status?, scope?, mine? })`: the session's own items; `mine` means assigned to this session's user. This is also how an agent catches up when a notification could not be delivered.
+- `list_todos({ status?, scope?, mine? })`: the session's own items; `mine` means assigned to this session's user. This is also how an agent catches up when a notification could not be delivered (except for a hard-deleted item, which nothing reports).
 
 **REST, for the UI** (server-composed; the client renders only what these return, invariant N1 of `docs/design/notification-center.md`):
 
@@ -138,7 +138,7 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 
 ## 5. What changes for the Orchestrator skill
 
-The memo keeps status; the list takes requests. Owner-facing questions AND owner-facing commands go through `create_todo`, and the answer or the confirmation arrives as a notification (or through `list_todos`). The skill text changed in slice (c): the memo keeps status, owner-facing questions and commands go through `create_todo`, an owner-gated wait is an open `question` item, and the handoff's owner-pending judgments are `list_todos({ status: 'open' })`.
+The memo keeps status; the list takes requests. Owner-facing questions AND owner-facing commands go through `create_todo`, and the answer or the confirmation arrives as a notification (or through `list_todos`, except for a hard-deleted item, which nothing reports). The skill text changed in slice (c): the memo keeps status, owner-facing questions and commands go through `create_todo`, an owner-gated wait is an open `question` item, and the handoff memo lists each open item by title and todo id. `list_todos` is scoped to the calling session, so a successor session finds the predecessor's items on the global `/todos` page (and by id), not through `list_todos`; the common case is the SAME session surviving a context refresh or restart, where `list_todos({ status: 'open' })` is the catch-up.
 
 ## 6. Non-goals (v1)
 
