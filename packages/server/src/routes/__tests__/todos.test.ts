@@ -2,7 +2,7 @@
  * Sibling test for the human TODO list routes: real in-memory sqlite DB,
  * production layering (appContext -> authMiddleware -> route).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import * as v from 'valibot';
@@ -28,8 +28,11 @@ const LIVE_SESSION_IDS = new Set(['session-1', 'session-2', 's']);
 const PAUSED_SESSION_IDS = new Set(['paused-1']);
 const KNOWN_USERS = [ALICE, BOB];
 
-/** Only the two lookups the todo routes make; a paused session exists only as a persisted row. */
+const deliverWorkerNotificationMock = mock<SessionManager['deliverWorkerNotification']>(async () => ({ ok: true }));
+
+/** The lookups and the notification seam the todo routes use; a paused session exists only as a persisted row. */
 const sessionManagerStub: Partial<SessionManager> = {
+  deliverWorkerNotification: deliverWorkerNotificationMock,
   getSession: (id: string) => (LIVE_SESSION_IDS.has(id) ? ({ id } as Session) : undefined),
   getPersistedSession: async (id: string) => (PAUSED_SESSION_IDS.has(id) ? ({ id } as Session) : null),
 };
@@ -83,6 +86,8 @@ describe('Todo routes', () => {
   let app: Hono<AppBindings>;
 
   beforeEach(async () => {
+    deliverWorkerNotificationMock.mockReset();
+    deliverWorkerNotificationMock.mockImplementation(async () => ({ ok: true }));
     db = await createDatabaseForTest();
     repository = new SqliteTodoRepository(db);
     broadcasts = [];
@@ -467,6 +472,112 @@ describe('Todo routes', () => {
 
     it('404 for an unknown item', async () => {
       expect((await app.request('/api/todos/missing/resolve', json('POST', {}))).status).toBe(404);
+    });
+
+    describe('resolution delivery to the creating worker', () => {
+      const resolve = async (id: string, body: unknown): Promise<Response> =>
+        app.request(`/api/todos/${id}/resolve`, json('POST', body));
+
+      it('notifies the creating worker once with this call\'s trimmed text', async () => {
+        const item = await seedAgentItem({ kind: 'question', title: 'Which db?' });
+
+        const res = await resolve(item.id, { text: '  use sqlite  ' });
+
+        expect(res.status).toBe(200);
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledTimes(1);
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledWith('session-1', 'worker-1', {
+          kind: 'internal-todo-resolved',
+          tag: 'internal:todo-resolved',
+          fields: { todoId: item.id, todoKind: 'question', title: 'Which db?', resolution: 'use sqlite' },
+          intent: 'triage',
+        });
+      });
+
+      it('does not notify for a human-created item', async () => {
+        const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+
+        expect((await resolve(item.id, { text: 'done' })).status).toBe(200);
+
+        expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+      });
+
+      it('keeps the response 200 and the row done when the seam reports a failure', async () => {
+        deliverWorkerNotificationMock.mockImplementation(async () => ({ ok: false, error: 'gone', reason: 'not-found' }));
+        const item = await seedAgentItem();
+
+        const res = await resolve(item.id, { text: 'x' });
+        await new Promise((r) => setTimeout(r, 0));
+
+        expect(res.status).toBe(200);
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledTimes(1);
+        expect((await repository.findById(item.id))!.status).toBe('done');
+      });
+
+      it('keeps the response 200 and the row done when the seam rejects', async () => {
+        deliverWorkerNotificationMock.mockImplementation(async () => {
+          throw new Error('boom');
+        });
+        const item = await seedAgentItem();
+
+        const res = await resolve(item.id, { text: 'x' });
+        await new Promise((r) => setTimeout(r, 0));
+
+        expect(res.status).toBe(200);
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledTimes(1);
+        expect((await repository.findById(item.id))!.status).toBe('done');
+      });
+
+      it('keeps the response 200 when the seam throws synchronously', async () => {
+        deliverWorkerNotificationMock.mockImplementation(() => {
+          throw new Error('sync boom');
+        });
+        const item = await seedAgentItem();
+
+        const res = await resolve(item.id, { text: 'x' });
+
+        expect(res.status).toBe(200);
+        expect((await repository.findById(item.id))!.status).toBe('done');
+      });
+
+      it('a second resolve of a done item delivers again carrying only the second text', async () => {
+        const item = await seedAgentItem();
+        await resolve(item.id, { text: 'one' });
+        await resolve(item.id, { text: 'two' });
+
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledTimes(2);
+        const secondParams = deliverWorkerNotificationMock.mock.calls[1][2];
+        expect(secondParams).toMatchObject({ fields: { resolution: 'two' } });
+      });
+
+      it('delivers an empty resolution for an action resolved without text', async () => {
+        const item = await seedAgentItem({ kind: 'action' });
+
+        await resolve(item.id, {});
+
+        const params = deliverWorkerNotificationMock.mock.calls[0][2];
+        expect(params).toMatchObject({ fields: { todoKind: 'action', resolution: '' } });
+      });
+
+      it('truncates a 501-char resolution to 500 chars plus "..."', async () => {
+        const item = await seedAgentItem();
+
+        await resolve(item.id, { text: 'a'.repeat(501) });
+
+        const params = deliverWorkerNotificationMock.mock.calls[0][2];
+        const resolution = 'resolution' in params.fields ? params.fields.resolution : undefined;
+        expect(resolution).toBe(`${'a'.repeat(500)}...`);
+        expect(resolution?.length).toBe(503);
+      });
+
+      it('dismiss and delete never notify the creating worker', async () => {
+        const dismissed = await seedAgentItem();
+        const deleted = await seedAgentItem();
+
+        expect((await app.request(`/api/todos/${dismissed.id}/dismiss`, json('POST'))).status).toBe(200);
+        expect((await app.request(`/api/todos/${deleted.id}`, { method: 'DELETE' })).status).toBe(200);
+
+        expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+      });
     });
   });
 
