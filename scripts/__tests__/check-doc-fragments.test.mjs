@@ -260,6 +260,57 @@ describe('extractFragmentLinks', () => {
   });
 });
 
+// Reference-style link definitions (`[label]: dest`). Reach, measured by
+// disabling the definition extraction in extractFragmentLinks: exactly three
+// tests fail -- "extracts a same-file fragment definition", "extracts an
+// other.md#frag definition with its pathPart" (this block) and "reports a
+// dangling reference-style definition as a miss" (checkDocFragments block).
+// Every pre-existing test is unmodified and keeps passing. Second mutation,
+// measured: widening defRe's indent anchor `^ {0,3}` to `^ *` fails exactly
+// "ignores a definition indented four spaces (an indented code block)"
+// (68 pass / 0 fail -> 67 pass / 1 fail). The remaining cases (fence, line not
+// starting with "[", no fragment, external scheme) assert "nothing extracted"
+// and pass in both worlds by design: they guard against a wrong
+// implementation of the new extraction, not against its absence. The
+// "first non-space character is not [" case is NOT a maskInlineCode guard: a
+// code span cannot precede the "[" that opens a definition, so masking is
+// irrelevant to the definition path (reading the raw line instead of the
+// masked one passes every test, by construction).
+describe('extractFragmentLinks — reference-style definitions', () => {
+  it('extracts a same-file fragment definition', () => {
+    expect(extractFragmentLinks('[a][ref]\n\n[ref]: #zz\n')).toEqual([
+      { line: 3, frag: 'zz', pathPart: '' },
+    ]);
+  });
+
+  it('extracts an other.md#frag definition with its pathPart', () => {
+    expect(extractFragmentLinks('[ref]: other.md#topic "Title"\n')).toEqual([
+      { line: 1, frag: 'topic', pathPart: 'other.md' },
+    ]);
+  });
+
+  it('ignores a definition inside a fenced code block', () => {
+    expect(extractFragmentLinks('```\n[ref]: #zz\n```\n')).toEqual([]);
+  });
+
+  it('ignores a line whose first non-space character is not "[" (a code span cannot open a definition)', () => {
+    expect(extractFragmentLinks('`[ref]: #zz`\n')).toEqual([]);
+  });
+
+  it('ignores a definition indented four spaces (an indented code block)', () => {
+    // Reach (measured): widening defRe's indent anchor from `{0,3}` to `*` fails this test.
+    expect(extractFragmentLinks('    [ref]: #zz\n')).toEqual([]);
+  });
+
+  it('ignores a definition without a fragment', () => {
+    expect(extractFragmentLinks('[ref]: other.md\n')).toEqual([]);
+  });
+
+  it('ignores an external-scheme definition', () => {
+    expect(extractFragmentLinks('[ref]: https://example.com/page#frag\n')).toEqual([]);
+  });
+});
+
 describe('checkDocFragments — acceptance scenarios', () => {
   // (a) valid same-file + cross-file links -> no misses
   it('(a) reports no misses for valid same-file and cross-file links', () => {
@@ -417,5 +468,14 @@ describe('checkDocFragments — acceptance scenarios', () => {
     expect(err.name).toBe('UnreadableTargetError');
     expect(err.filePath).toBe('/some/path.md');
     expect(err.message).toContain('/some/path.md');
+  });
+
+  it('reports a dangling reference-style definition as a miss', () => {
+    writeFixture('ref-def.md', '# Real\n\n[a][ref]\n\n[ref]: #nope\n');
+
+    const result = checkDocFragments(tempDir, { cwd: tempDir });
+    expect(result.misses).toEqual([
+      { file: 'ref-def.md', line: 5, frag: 'nope', target: 'ref-def.md', reason: 'no-anchor' },
+    ]);
   });
 });
