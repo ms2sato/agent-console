@@ -385,6 +385,38 @@ describe('adopt_todo', () => {
     });
   });
 
+  describe('the adopting worker must be able to hear the resolution', () => {
+    it('a git-diff worker of the caller session is refused with create_todo\'s text; the row, status and broadcast are untouched', async () => {
+      const a = await createOwnedSession(9051, 'adopt-owner-x');
+      const b = await createOwnedSession(9052, 'adopt-owner-y');
+      const before = await seedAgentItem(a, 'gated', 'global');
+      const diffWorker = sessionManager.getSession(b.sessionId)!.workers.find((w) => w.type === 'git-diff')!;
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: broadcast });
+
+      const error = await toolError(await adoptViaTool({ id: 'gated', sessionId: b.sessionId, workerId: diffWorker.id }));
+
+      expect(error).toBe(
+        `Worker ${diffWorker.id} in session ${b.sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
+      );
+      expect(await todoRepository.findById('gated')).toEqual(before);
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    it('a terminal worker is admitted: it adopts, and the item now names that worker', async () => {
+      const a = await createOwnedSession(9053, 'adopt-owner-z');
+      const b = await createOwnedSession(9054, 'adopt-owner-zz');
+      await seedAgentItem(a, 'to-terminal', 'global');
+      const terminal = await sessionManager.createWorker(b.sessionId, { type: 'terminal', name: 'Shell' });
+      expect(terminal?.type).toBe('terminal');
+
+      const response = await adoptViaTool({ id: 'to-terminal', sessionId: b.sessionId, workerId: terminal!.id });
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(await todoRepository.findById('to-terminal')).toMatchObject({ sessionId: b.sessionId, createdBy: { workerId: terminal!.id } });
+    });
+  });
+
   describe('foreign owner', () => {
     async function enforceAs(caller: { sessionId: string; workerId: string; userId: string }) {
       const registry = new McpTokenRegistry();

@@ -3231,6 +3231,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
+        if (!canReceiveNotifications(worker)) {
+          return errorResult(
+            `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
+          );
+        }
 
         const authError = checkCallerOwnsSession(
           getMcpCallerIdentity(),
