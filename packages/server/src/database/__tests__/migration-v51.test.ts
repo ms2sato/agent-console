@@ -95,10 +95,13 @@ describe('migration v51 (todos.resolved_by_worker_id)', () => {
   it('a fresh database lands on the latest version with the column present', async () => {
     expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(51);
     const db = await initializeDatabase(':memory:');
-
-    const columns = (await sql.raw<PragmaTableInfoRow>('PRAGMA table_info(todos)').execute(db)).rows;
-    expect(columns.map((c) => c.name)).toContain('resolved_by_worker_id');
-    const version = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(version.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
+    try {
+      const columns = (await sql.raw<PragmaTableInfoRow>('PRAGMA table_info(todos)').execute(db)).rows;
+      expect(columns.map((c) => c.name)).toContain('resolved_by_worker_id');
+      const version = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+      expect(version.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
+    } finally {
+      await db.destroy();
+    }
   });
 });
