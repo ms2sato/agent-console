@@ -474,6 +474,13 @@ describe('Todo routes', () => {
       expect((await app.request('/api/todos/missing/resolve', json('POST', {}))).status).toBe(404);
     });
 
+    // Reach, measured by mutating the route/helper and naming the failing tests:
+    // - removing the helper call fails "notifies ... once", both "keeps the response 200" tests,
+    //   "a second resolve ...", "delivers an empty resolution" and "truncates a 501-char ...";
+    // - dropping the human-creator guard fails "does not notify for a human-created item"
+    //   (and the helper's own "does not call the seam for a human-created item");
+    // - passing the item's accumulated resolution instead of this call's text fails only
+    //   "a second resolve of a done item delivers again carrying only the second text".
     describe('resolution delivery to the creating worker', () => {
       const resolve = async (id: string, body: unknown): Promise<Response> =>
         app.request(`/api/todos/${id}/resolve`, json('POST', body));
