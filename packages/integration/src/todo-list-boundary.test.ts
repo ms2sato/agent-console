@@ -23,6 +23,9 @@ import {
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppBindings, AppContext } from '@agent-console/server/src/app-context';
 import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
+import { ApiError, fetchTodo } from '@agent-console/client/src/lib/api';
+
+import { createFetchBridge } from './test-utils';
 
 import {
   AppServerMessageSchema,
@@ -217,5 +220,43 @@ describe('Client-Server Boundary: human TODO list', () => {
     expect((await create({ kind: 'action', title: 't', body: '', assigneeUserId: 'ghost' })).status).toBe(404);
     expect((await create({ kind: 'action', title: 't', body: '', sessionId: 'ghost' })).status).toBe(404);
     expect((await list()).todos).toHaveLength(1);
+  });
+
+  it('fetchTodo reads one item through the real GET /api/todos/:id route and strict parse', async () => {
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
+    );
+    const created = v.parse(
+      TodoResponseSchema,
+      await post('/api/todos', { kind: 'question', title: 'Which port?', body: 'context', sessionId: session.id }),
+    ).todo;
+    await post('/api/todos', { kind: 'action', title: 'another', body: '' });
+
+    const bridge = createFetchBridge(app);
+    try {
+      const fetched = await fetchTodo(created.id);
+
+      expect(fetched).toEqual(created);
+      expect(bridge.capturedRequests.map((r) => `${r.method} ${new URL(r.url, 'http://localhost').pathname}`)).toEqual([
+        `GET /api/todos/${created.id}`,
+      ]);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it('fetchTodo rejects with an ApiError carrying the 404 message for a missing id', async () => {
+    const bridge = createFetchBridge(app);
+    try {
+      const error = await fetchTodo('missing').then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error).toMatchObject({ message: 'Todo not found', status: 404 });
+    } finally {
+      bridge.restore();
+    }
   });
 });
