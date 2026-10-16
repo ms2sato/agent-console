@@ -303,6 +303,7 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 | `create_todo` | Add an item to the human Todo list: a question that needs a human answer, or an action a human has to carry out |
 | `list_todos` | List this session's Todo items, newest first (to catch up on what humans resolved or dismissed) |
 | `resolve_todo` | Mark items of this session done on the strength of a human's words (the human's statement quoted), for example when the human answered in chat; several items can be resolved in one call |
+| `adopt_todo` | Take over an open Todo item of another session (a successor session after a handoff): the item moves to this session and worker, so the human's resolution reaches the live session; `list_todos` with `global: true` lists the other sessions' global items |
 
 #### Timer and Wakeup
 

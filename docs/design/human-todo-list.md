@@ -152,12 +152,13 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 
 **Realtime.** A trigger-only `todos-updated { type, sessionId }` app message (`sessionId` nullable) tells clients to refetch (N1). Do not copy `memo-updated`, which carries `content` (`schemas/app-server-message.ts:406`): it predates N1. The protocol-dispatch fixture rule applies at implementation. **Wire summary:** the `Todo` type and schema pair (`types/todo.ts`: `TODO_KINDS`, `TODO_SCOPES`, `TODO_STATUSES`; `schemas/todo.ts`: `TodoSchema`, `CreateTodoRequestSchema`, `UpdateTodoRequestSchema`, `ResolveTodoRequestSchema`), the new notification kind and `todos-updated` are all client-reaching; one owner decision covers the DDL and the wire, and all of them land in slice (a) so the todo wire shapes move `SCHEMA_VERSION` once. Slice (b) moves it a second time for the response schema of the new user directory endpoint; slice (c) moves nothing.
 
-**Surface by operation (decision table).** Every cell is a decision; none is undecided. This is its first instance in this document; slice (e1) adds its rows.
+**Surface by operation (decision table).** Every cell is a decision; none is undecided (`later` names the slice that implements it, `Refs #2136`). This is its first instance in this document; slice (e1) adds its rows.
 
 | operation | MCP (`/mcp`, terminal and embedded agents) | REST | UI: session sidebar panel | UI: `/todos` page | UI: item detail (e1) |
 |---|---|---|---|---|---|
 | list global items across sessions | do: `list_todos({ global: true })` | do: `GET /api/todos?scope=global` (exists) | not here: the panel is one session's items by design (UI (a)) | do: existing filters | not here: single item |
-| adopt (re-target an open item to my session and worker) | do: `adopt_todo({ id })` | not here: the human form is the `PATCH` re-scope, which cannot change a creator; a human "move to session" is not a recorded need, file an Issue if one appears | not here: no human need recorded | not here: same | not here: same |
+| adopt / move (re-target an open item to another session and worker) | do: `adopt_todo({ id })` (own session and worker; an item of a session owned by another user is refused) | later: slice (e1), `POST /api/todos/:id/move` (the team-tool rule, no owner check; the human form cannot be the `PATCH` re-scope, which must not change a creator) | not here: the move lives in the detail view | not here: the move lives in the detail view | later: slice (e1), a "Move to session" picker; an agent-created item requires choosing a notification-capable worker of the target session |
+| list default filter (which items a list shows by default) | not here: team-wide global items, the successor flow | later: slice (e1), `GET /api/todos?view=mine-and-shared` (absent = everyone) | n/a: the panel is one session's items | later: slice (e1), Mine + shared by default with an Everyone toggle | n/a: single item |
 
 ## 5. What changes for the Orchestrator skill
 
