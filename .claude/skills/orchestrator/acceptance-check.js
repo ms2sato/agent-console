@@ -4,7 +4,7 @@
  * Orchestrator Acceptance Check (Interactive STDIN/STDOUT Mode)
  *
  * Full acceptance check requiring human judgment. Guides the Orchestrator
- * through Q1-Q12 in an interactive session via run_process.
+ * through Q1-Q14 in an interactive session via run_process.
  *
  * For mechanical pre-merge checks (CI), use preflight-check.js instead.
  *
@@ -42,8 +42,8 @@ function usage() {
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> --answers <file.json>');
   console.error('');
-  console.error('This script runs a full interactive acceptance check (Q1-Q13).');
-  console.error('--answers: non-interactive mode. <file.json> is an object keyed q1..q13 whose values');
+  console.error('This script runs a full interactive acceptance check (Q1-Q14).');
+  console.error('--answers: non-interactive mode. <file.json> is an object keyed q1..q14 whose values');
   console.error('are the answers; stdin is not read. A missing key counts as unanswered; an unknown key is an error.');
   console.error('For mechanical pre-merge checks, use preflight-check.js instead.');
   process.exit(1);
@@ -573,7 +573,7 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
     },
     {
       key: 'q10',
-      text: 'Q10: Concerns Surfacing & Owner Communication Gate — Walk this 6-step procedure: (1) List entry points the PR introduces (new MCP tools / params, API endpoints, CLI flags, config keys, file types). (2) For each entry point, identify the bootstrap procedure that activates it (who registers it, when, where documented). (3) Enumerate ALL concerns surfaced during review (bootstrap gaps, runtime prerequisites, contract ambiguity, dead-code risk, integration fragility, etc.) — including ones you tentatively rationalized as "minor". (4) For any concern you plan to DEFER (leave for a follow-up Issue instead of blocking this PR), verify at code-level whether the deferred concern touches (a) an elevation path (multi-user mode / requestUsername / sudo boundary) or (b) a dogfood-only reachable code path — if either applies, the defer is unsafe without owner ack. Read the actual function bodies at the concern site, not just the caller. (5) For the concerns from Step 3, did you surface them to the owner with a structured report/consultation BEFORE this verdict? (6) If Step 5 is "no" or "partial", verdict MUST be HOLD; PASS is not allowed.',
+      text: 'Q10: Concerns Surfacing & Owner Communication Gate — Walk this 6-step procedure: (1) List entry points the PR introduces (new MCP tools / params, API endpoints, CLI flags, config keys, file types) and, for each user-facing entry point, the README line that describes it (workflow.md DoD 9). (2) For each entry point, identify the bootstrap procedure that activates it (who registers it, when, where documented). (3) Enumerate ALL concerns surfaced during review (bootstrap gaps, runtime prerequisites, contract ambiguity, dead-code risk, integration fragility, etc.) — including ones you tentatively rationalized as "minor". (4) For any concern you plan to DEFER (leave for a follow-up Issue instead of blocking this PR), verify at code-level whether the deferred concern touches (a) an elevation path (multi-user mode / requestUsername / sudo boundary) or (b) a dogfood-only reachable code path — if either applies, the defer is unsafe without owner ack. Read the actual function bodies at the concern site, not just the caller. (5) For the concerns from Step 3, did you surface them to the owner with a structured report/consultation BEFORE this verdict? (6) If Step 5 is "no" or "partial", verdict MUST be HOLD; PASS is not allowed.',
       focus: [
         'See `.claude/skills/orchestrator/core-responsibilities.md` "Concerns Surfacing Discipline".',
         'This question exists because passing Q1-Q9 + Q11 does not equal "feature is shippable". Bootstrap gaps, missing runtime prerequisites, dead-code risk, and contract ambiguity are PR-shape concerns the orchestrator must surface BEFORE the PASS verdict, not after.',
@@ -628,6 +628,20 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
       insufficient: '"All ACs verified by tests" (without matching each shipping-path AC item to the executed verification\'s entry point) — OR — "The smoke covers it" (when the smoke is a mechanism probe and no joint-skip decision is documented)',
       sufficient: '"AC item 2 names the send_session_message shipping path. Executed verification: integration test embedded-delivery.test.ts \'delivers via send_session_message to embedded worker\' — enters through the real MCP tool handler, production-real. Polarity: confirmed failing on pre-fix main in the delegate\'s TDD report. AC item 3 (UI toast) was verified by Browser QA screenshot in the PR body. No proxy substitutions. This PR surfaced no new environmental fact requiring retroactive application."',
     },
+    {
+      key: 'q14',
+      text: 'Q14: Decision Coverage -- If the PR exposes any operation on any surface: locate the surface-by-operation table (`.claude/rules/decision-table.md`). (1) Any `?` cell, or any operation present in the diff, the AC or the design doc with no row? (2) Any decision the diff makes that neither the table nor the AC contains (a control placed or omitted, a surface added)? Either -> HOLD; the decision goes to the AC author or the owner and into the design doc. A PR with no surface/operation answers N/A with one sentence.',
+      focus: [
+        'See `.claude/rules/decision-table.md` for the table format and the meaning of the `do` / `not here` / `?` cells.',
+        'Mechanical procedure:',
+        '  1. Locate the table in the design doc\'s Surfaces section named by the AC checklist line.',
+        '  2. Count the `?` cells, and count the operations the AC or the design doc names that have no row.',
+        '  3. Compare the diff\'s surfaces (components, MCP tools, REST routes) against the table\'s `do` and `not here` cells; any surface or control in the diff that the table does not account for is an undecided decision.',
+        '  4. A pure refactor or infrastructure change with no operation on any surface -> answer N/A with one sentence.',
+      ].join('\n  '),
+      insufficient: '"Matches the design" (without naming the table section and the counted cells)',
+      sufficient: '"Design doc docs/design/foo.md section \'Surfaces\' (named by the AC checklist line 2): 0 `?` cells of 12, every operation named by the AC or the design doc (create, rename, delete) has a row. Diff surfaces compared against the table: RenameDialog.tsx (UI, `do`), rename_session MCP tool (`do`), PATCH /api/sessions/:id (REST, `do`); the CLI cell is `not here` and no CLI file is in the diff. No control placed or omitted outside the table."',
+    },
   ];
 
   // Q13 is appended ONLY when the auto-detected CodeRabbit head state is
@@ -680,10 +694,10 @@ function isAnsweredValue(answer) {
   return typeof answer === 'string' && answer.trim().length > 0;
 }
 
-const ANSWER_KEYS = Array.from({ length: 13 }, (_, i) => `q${i + 1}`);
+const ANSWER_KEYS = Array.from({ length: 14 }, (_, i) => `q${i + 1}`);
 
 /**
- * Rejects an answers map carrying a key that is not q1..q13. A typo such as
+ * Rejects an answers map carrying a key that is not q1..q14. A typo such as
  * `q9a` must fail loudly: silently ignoring it would turn the intended
  * answer into "unanswered" with no hint of why.
  *
@@ -692,14 +706,14 @@ const ANSWER_KEYS = Array.from({ length: 13 }, (_, i) => `q${i + 1}`);
 function assertKnownAnswerKeys(answers) {
   const unknown = Object.keys(answers).filter((k) => !ANSWER_KEYS.includes(k));
   if (unknown.length > 0) {
-    throw new AnswersFileError(`Unknown key(s) in answers file: ${unknown.join(', ')} (expected keys: q1..q13)`);
+    throw new AnswersFileError(`Unknown key(s) in answers file: ${unknown.join(', ')} (expected keys: q1..q14)`);
   }
 }
 
 class AnswersFileError extends Error {}
 
 /**
- * Reads and validates an `--answers` file: a JSON object keyed q1..q13.
+ * Reads and validates an `--answers` file: a JSON object keyed q1..q14.
  *
  * @param {string} filePath
  * @returns {Record<string, unknown>}
@@ -712,7 +726,7 @@ function loadAnswersFile(filePath) {
     throw new AnswersFileError(`Cannot read answers file ${filePath}: ${err.message}`);
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new AnswersFileError(`Answers file ${filePath} must contain a JSON object keyed q1..q13`);
+    throw new AnswersFileError(`Answers file ${filePath} must contain a JSON object keyed q1..q14`);
   }
   assertKnownAnswerKeys(parsed);
   return parsed;
@@ -734,7 +748,7 @@ function printSummary(answers, questions, { ciStatus } = {}) {
   // coexist with a clean summary and exit 0. `ciStatus === undefined`
   // (the option key omitted entirely, not passed as null) means the
   // caller opted out of CI-STATUS display — preserved for callers that
-  // only want the Q1-Q12 summary.
+  // only want the question summary.
   if (ciStatus !== undefined) {
     const ciEvidence = classifyCiEvidence(ciStatus);
     if (ciEvidence === 'retrieval-failed') {

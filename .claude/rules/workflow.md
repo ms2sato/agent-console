@@ -52,7 +52,7 @@ Before completing any code changes, always verify:
 
 ## Definition of Done
 
-A task or PR is "done" only when ALL of the following hold. Reporting "ready for merge" or "implementation complete" without all eight causes Orchestrator hand-hold cycles and erodes trust in completion reports.
+A task or PR is "done" only when ALL of the following hold. Reporting "ready for merge" or "implementation complete" without all nine causes Orchestrator hand-hold cycles and erodes trust in completion reports.
 
 1. **Production code is implemented** — the feature / fix exists in the source tree.
 2. **Corresponding tests are added** — placed in the sibling `__tests__/` directory per `testing.md` "Test File Naming Convention" (production `path/to/foo.ts` → test `path/to/__tests__/foo.test.ts`). Parent-directory `__tests__/` placement does not satisfy `preflight`.
@@ -62,8 +62,9 @@ A task or PR is "done" only when ALL of the following hold. Reporting "ready for
 6. **PR is opened with linked Issue** — the body contains `Closes #NNN` (the title's `(closes #N)` does not auto-close the Issue; only the body's keyword does, and the script `acceptance-check.js` requires the body match).
 7. **CI is fully green** — verified via the rollup, not a single per-run event. Use `gh pr view <PR> --json statusCheckRollup` to confirm. (Issue #699 fixed the per-run vs rollup gap; before that fix the per-run event could falsely report "all passed" while the rollup had failures.)
 8. **CodeRabbit review state is clean** — walk the verdict-surface checklist in the [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) skill (its single writer) and apply any fallback exceptions documented there.
+9. **README describes it.** A PR that adds or changes a user-facing capability (a UI page/panel/control, an MCP tool, a REST capability users call, a config knob, a CLI flag) updates `README.md` in the same PR: the Features list and, for an MCP tool, the Available MCP Tools table. A capability that is not finished is described anyway and labelled `(in development)`; the label is removed by the PR that finishes it. Internal refactors, tests, rules and skills are out of scope. (Owner standing request 2026-10-16: the TODO list shipped through three slices and the README had no mention of it.)
 
-"Implementation complete" without all eight is **not** done. (Lesson: Sprint 2026-04-27 PR #703 — agent reported "Production ready" with no commit / no push / no PR, requiring three rounds of hand-holding before reaching actual mergeable state.)
+"Implementation complete" without all nine is **not** done. (Lesson: Sprint 2026-04-27 PR #703 — agent reported "Production ready" with no commit / no push / no PR, requiring three rounds of hand-holding before reaching actual mergeable state.)
 
 ## Inference vs Verification
 
