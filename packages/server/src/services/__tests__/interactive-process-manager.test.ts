@@ -1927,14 +1927,29 @@ describe('InteractiveProcessManager', () => {
       expect(onOutput.mock.calls.map((c) => c[1])).toEqual(['hi\n']);
     });
 
-    it('killing a process inside its window settles the inline result as null and routes nothing', async () => {
-      const info = await manager.runProcess({ ...target, command: 'echo held; sleep 30' });
-      await sleep(200);
+    // The promise is captured BEFORE the process is removed, which is the order the
+    // run_process tool uses: it awaits the inline result while another call (a kill,
+    // a session deletion, a shutdown) can remove the entry. A path that removes the
+    // entry without settling the window would leave that await pending forever.
+    // Reach (measured): deleting the closeInlineWindow call of the path under test
+    // fails exactly that case's row and the other two rows still pass.
+    describe.each([
+      ['killProcess', (m: InteractiveProcessManager, id: string) => void m.killProcess(id)],
+      ['deleteProcessesBySession', (m: InteractiveProcessManager) => void m.deleteProcessesBySession(target.sessionId)],
+      ['disposeAll', (m: InteractiveProcessManager) => void m.disposeAll()],
+    ] as const)('removing the process inside its window via %s', (_name, remove) => {
+      it('settles an already-captured inline result as null and routes nothing', async () => {
+        const info = await manager.runProcess({ ...target, command: 'echo held; sleep 30' });
+        const inline = manager.awaitInline(info.id);
+        await sleep(200);
 
-      manager.killProcess(info.id);
-      expect(await manager.awaitInline(info.id)).toBeNull();
-      await sleep(InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 150);
-      expect(onOutput).not.toHaveBeenCalled();
+        remove(manager, info.id);
+
+        expect(await inline).toBeNull();
+        await sleep(InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 150);
+        expect(onOutput).not.toHaveBeenCalled();
+        expect(onExit).not.toHaveBeenCalled();
+      });
     });
 
     it('awaitInline is null for an unknown process', async () => {
