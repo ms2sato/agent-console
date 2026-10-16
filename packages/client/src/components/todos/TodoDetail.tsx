@@ -1,0 +1,269 @@
+import { useState } from 'react';
+import { Link } from '@tanstack/react-router';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import type { Todo, UsersListResponse } from '@agent-console/shared';
+import { updateTodo, deleteTodo } from '../../lib/api';
+import { todoKeys } from '../../lib/query-keys';
+import { formatAbsoluteTimestamp } from '../../lib/format';
+import { ConfirmDialog } from '../ui/confirm-dialog';
+import { SectionHeader, DetailRow } from '../ui/detail-layout';
+import { TodoActions } from './TodoActions';
+import { TodoBodyMarkdown } from './TodoBodyMarkdown';
+import { usernameOf, creatorLabel } from './todo-labels';
+
+type DirectoryUsers = UsersListResponse['users'];
+
+interface TodoDetailProps {
+  todo: Todo;
+  users: DirectoryUsers;
+  /** Shows a refused or failed action; the message is the server's own. */
+  onError: (title: string, message: string) => void;
+  /** True where a terminal of the item's session can run a ```terminal block (the in-session dialog). */
+  runEnabled: boolean;
+  onRun?: (command: string) => void;
+  /** Called after the item is deleted (the page navigates away, the dialog closes). */
+  onDeleted: () => void;
+}
+
+function formatIso(iso: string): string {
+  return formatAbsoluteTimestamp(Date.parse(iso));
+}
+
+/**
+ * Who resolved the item, from the wire fields: a human resolved it directly
+ * (no worker), an agent recorded a human's statement (worker and user), or an
+ * agent recorded it with no known human. Null when nobody resolved it.
+ */
+function provenanceLabel(todo: Todo, users: DirectoryUsers): string | null {
+  const { resolvedByWorkerId, resolvedByUserId } = todo;
+  if (resolvedByWorkerId === null) {
+    return resolvedByUserId === null ? null : `resolved by ${usernameOf(users, resolvedByUserId)}`;
+  }
+  return resolvedByUserId === null
+    ? 'recorded by an agent'
+    : `recorded by an agent from ${usernameOf(users, resolvedByUserId)}'s statement`;
+}
+
+interface TodoEditFormProps {
+  todo: Todo;
+  onError: TodoDetailProps['onError'];
+}
+
+function TodoEditForm({ todo, onError }: TodoEditFormProps) {
+  const queryClient = useQueryClient();
+  const [title, setTitle] = useState(todo.title);
+  const [body, setBody] = useState(todo.body);
+
+  const saveMutation = useMutation({
+    mutationFn: () => updateTodo(todo.id, { title: title.trim(), body }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: todoKeys.root() }),
+    onError: (err: Error) => onError('Failed to Update Todo', err.message),
+  });
+  const unchanged = title.trim() === todo.title && body === todo.body;
+
+  return (
+    <div className="space-y-2">
+      <SectionHeader title="Edit" />
+      <input
+        type="text"
+        aria-label="Edit title"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        className="input text-sm w-full"
+      />
+      <textarea
+        aria-label="Edit body"
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        rows={5}
+        className="input text-sm w-full font-mono"
+      />
+      <button
+        type="button"
+        onClick={() => saveMutation.mutate()}
+        disabled={title.trim() === '' || unchanged || saveMutation.isPending}
+        className="btn text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+      >
+        Save
+      </button>
+    </div>
+  );
+}
+
+function TodoReScopeControls({ todo, onError }: TodoEditFormProps) {
+  const queryClient = useQueryClient();
+  const [askSessionId, setAskSessionId] = useState(false);
+  const [sessionIdInput, setSessionIdInput] = useState('');
+
+  const reScopeMutation = useMutation({
+    mutationFn: (patch: { scope: 'session' | 'global'; sessionId?: string }) => updateTodo(todo.id, patch),
+    onSuccess: async () => {
+      setAskSessionId(false);
+      setSessionIdInput('');
+      await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+    },
+    onError: (err: Error) => onError('Failed to Re-scope Todo', err.message),
+  });
+
+  const handleMakeSession = () => {
+    if (todo.sessionId) {
+      reScopeMutation.mutate({ scope: 'session' });
+    } else {
+      setAskSessionId(true);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      {todo.scope === 'session' && (
+        <button
+          type="button"
+          onClick={() => reScopeMutation.mutate({ scope: 'global' })}
+          disabled={reScopeMutation.isPending}
+          className="btn text-xs bg-slate-700 hover:bg-slate-600"
+        >
+          Make global
+        </button>
+      )}
+      {todo.scope === 'global' && !askSessionId && (
+        <button
+          type="button"
+          onClick={handleMakeSession}
+          disabled={reScopeMutation.isPending}
+          className="btn text-xs bg-slate-700 hover:bg-slate-600"
+        >
+          Attach to a session
+        </button>
+      )}
+      {todo.scope === 'global' && askSessionId && (
+        <span className="flex items-center gap-1.5">
+          <input
+            type="text"
+            aria-label={`Session id for ${todo.title}`}
+            placeholder="Session id"
+            value={sessionIdInput}
+            onChange={(e) => setSessionIdInput(e.target.value)}
+            className="input text-xs"
+          />
+          <button
+            type="button"
+            onClick={() => reScopeMutation.mutate({ scope: 'session', sessionId: sessionIdInput.trim() })}
+            disabled={sessionIdInput.trim() === '' || reScopeMutation.isPending}
+            className="btn text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+          >
+            Attach
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One Todo item in full: every field, the full body, the resolution history
+ * with its provenance, and the actions the summary row does not carry (edit,
+ * re-scope, delete). Hosted by the `/todos/:id` page and the in-session dialog.
+ */
+export function TodoDetail({ todo, users, onError, runEnabled, onRun, onDeleted }: TodoDetailProps) {
+  const queryClient = useQueryClient();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const isOpen = todo.status === 'open';
+  // A question is always session-scoped; only an open action can be re-scoped.
+  const canReScope = isOpen && todo.kind === 'action';
+  const provenance = provenanceLabel(todo, users);
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteTodo(todo.id),
+    onSuccess: async () => {
+      setConfirmDelete(false);
+      await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+      onDeleted();
+    },
+    onError: (err: Error) => {
+      setConfirmDelete(false);
+      onError('Failed to Delete Todo', err.message);
+    },
+  });
+
+  return (
+    <div className="space-y-6" data-testid={`todo-detail-${todo.id}`}>
+      <h2 className="text-lg font-semibold text-gray-100 break-words">{todo.title}</h2>
+
+      <section>
+        <SectionHeader title="Details" />
+        <div className="space-y-1 text-sm">
+          <DetailRow label="Kind" value={todo.kind} />
+          <DetailRow label="Scope" value={todo.scope} />
+          <DetailRow label="Status" value={todo.status} />
+          <DetailRow label="Created by" value={creatorLabel(todo, users)} />
+          {todo.assigneeUserId !== null && (
+            <DetailRow label="Assigned to" value={usernameOf(users, todo.assigneeUserId)} />
+          )}
+          <DetailRow label="Created at" value={formatIso(todo.createdAt)} />
+          {todo.resolvedAt !== null && <DetailRow label="Resolved at" value={formatIso(todo.resolvedAt)} />}
+        </div>
+      </section>
+
+      {todo.body !== '' && (
+        <section>
+          <SectionHeader title="Body" />
+          <div className="text-sm text-gray-300 break-words">
+            <TodoBodyMarkdown body={todo.body} focusable onRun={runEnabled ? onRun : undefined} />
+          </div>
+        </section>
+      )}
+
+      {!runEnabled && todo.sessionId !== null && (
+        <Link
+          to="/sessions/$sessionId"
+          params={{ sessionId: todo.sessionId }}
+          className="inline-block text-sm text-slate-400 hover:text-white underline"
+        >
+          Open in session
+        </Link>
+      )}
+
+      {(todo.resolutionText || provenance !== null) && (
+        <section>
+          <SectionHeader title="Resolution" />
+          {todo.resolutionText && (
+            <p className="text-sm text-gray-300 whitespace-pre-wrap break-words">{todo.resolutionText}</p>
+          )}
+          {provenance !== null && <p className="mt-1 text-xs text-gray-500">{provenance}</p>}
+        </section>
+      )}
+
+      {isOpen && <TodoEditForm todo={todo} onError={onError} />}
+
+      {canReScope && (
+        <section>
+          <SectionHeader title="Scope" />
+          <TodoReScopeControls todo={todo} onError={onError} />
+        </section>
+      )}
+
+      <section>
+        <SectionHeader title="Actions" />
+        <TodoActions todo={todo} users={users} onError={onError} />
+      </section>
+
+      <div>
+        <button type="button" onClick={() => setConfirmDelete(true)} className="btn btn-danger text-xs">
+          Delete
+        </button>
+      </div>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={(open) => !open && setConfirmDelete(false)}
+        title="Delete Todo"
+        description={`Are you sure you want to delete "${todo.title}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => deleteMutation.mutate()}
+        isLoading={deleteMutation.isPending}
+      />
+    </div>
+  );
+}

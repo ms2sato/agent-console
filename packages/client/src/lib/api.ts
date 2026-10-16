@@ -1493,6 +1493,14 @@ export async function deleteTodo(id: string): Promise<void> {
   }
 }
 
+export async function fetchTodo(id: string): Promise<Todo> {
+  const res = await api.todos[':id'].$get({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch Todo item');
+  }
+  return v.parse(TodoResponseSchema, await res.json()).todo;
+}
+
 /** The member directory (id and username only) that backs the assignee pickers. */
 export async function fetchUsers(): Promise<UsersListResponse['users']> {
   const res = await api.users.$get();

@@ -144,6 +144,8 @@ export const todoKeys = {
   list: (filters: FetchTodosFilter) => ['todos', 'filtered', filters] as const,
   /** Prefix of every `list(filters)` key, for invalidating them all at once */
   listRoot: () => ['todos', 'filtered'] as const,
+  /** A single Todo item's detail view */
+  detail: (id: string) => ['todos', 'detail', id] as const,
 } as const;
 
 export const userKeys = {

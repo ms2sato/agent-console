@@ -260,6 +260,12 @@ describe('Query Keys', () => {
       expect(open.slice(0, 2)).toEqual([...todoKeys.listRoot()]);
       expect(todoKeys.listRoot()).not.toEqual(todoKeys.listBySession('filtered'));
     });
+
+    it('keys a detail by id, under the shared root so a root invalidation reaches it', () => {
+      // Mutation: a detail key outside the 'todos' root -> the first expectation fails.
+      expect(todoKeys.detail('a').slice(0, 1)).toEqual([...todoKeys.root()]);
+      expect(todoKeys.detail('a')).not.toEqual(todoKeys.detail('b'));
+    });
   });
 
   describe('userKeys', () => {

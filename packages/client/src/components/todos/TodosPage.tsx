@@ -144,7 +144,7 @@ export function TodosPage() {
       {!isLoading && !error && visible.length > 0 && (
         <ul className="flex flex-col gap-3 list-none p-0 m-0">
           {visible.map((todo) => (
-            <TodoRow key={todo.id} todo={todo} users={users} onError={showError} />
+            <TodoRow key={todo.id} todo={todo} users={users} onError={showError} onOpenDetail={() => {}} />
           ))}
         </ul>
       )}

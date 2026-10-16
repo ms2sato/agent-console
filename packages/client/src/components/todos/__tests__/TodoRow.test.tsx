@@ -1,8 +1,7 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
-import { screen, cleanup, waitFor, within } from '@testing-library/react';
+import { screen, cleanup, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
-import { waitForAbsent } from '../../../test/waitForAbsent';
 import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
 import { TodoRow } from '../TodoRow';
 
@@ -22,21 +21,26 @@ afterEach(() => {
   restoreFetch();
 });
 
-async function renderRow(overrides: Parameters<typeof makeTodo>[0] = {}, users = [ME]) {
+async function renderRow(
+  overrides: Parameters<typeof makeTodo>[0] = {},
+  users = [ME],
+  extra: { showSessionLink?: boolean } = {},
+) {
   const todo = makeTodo(overrides);
   api.state.todos = [todo];
   const onError = mock((_title: string, _message: string) => {});
+  const onOpenDetail = mock((_todoId: string) => {});
   await renderWithRouter(
     <ul>
-      <TodoRow todo={todo} users={users} onError={onError} />
+      <TodoRow todo={todo} users={users} onError={onError} onOpenDetail={onOpenDetail} {...extra} />
     </ul>,
   );
-  return { todo, onError, user: userEvent.setup() };
+  return { todo, onError, onOpenDetail, user: userEvent.setup() };
 }
 
 /**
  * Measured reach, recorded by WHICH test failed (each mutation applied alone to
- * TodoRow.tsx, every to-do test file re-run, production file restored after):
+ * TodoActions.tsx, every Todo test file re-run, production file restored after):
  *
  *   the assignee control shown at one user (`users.length > 1` gate removed)
  *     -> here, alone: 'hides the assignee control when the directory has one user'
@@ -57,10 +61,33 @@ describe('TodoRow', () => {
       expect(screen.getByLabelText('Status: open')).toBeTruthy();
     });
 
-    it('renders the body as markdown', async () => {
-      await renderRow({ body: 'Check **this** now' });
+    it('renders neither the body nor the resolution history (those live in the detail view)', async () => {
+      // Mutation: render the body (TodoBodyMarkdown) in the row -> this test fails.
+      // Mutation: render the resolution block in the row -> this test fails.
+      await renderRow({ body: 'Check **this** now', status: 'done', resolutionText: 'Applied in prod' });
 
-      expect(screen.getByText('this').tagName).toBe('STRONG');
+      expect(screen.getByText('Run the migration')).toBeTruthy();
+      expect(screen.queryByText('this')).toBeNull();
+      expect(screen.queryByText(/Check/)).toBeNull();
+      expect(screen.queryByText('Applied in prod')).toBeNull();
+    });
+
+    it('offers no delete and no re-scope control (those live in the detail view)', async () => {
+      // Mutation: put Delete back on the row -> fails.
+      await renderRow({ kind: 'action', scope: 'session' });
+
+      expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Make global' })).toBeNull();
+    });
+
+    it('Open calls onOpenDetail with the item id', async () => {
+      // Mutation: call onOpenDetail with the title instead of the id -> fails.
+      const { todo, onOpenDetail, user } = await renderRow({ id: 'todo-xyz', title: 'Ship it' });
+
+      await user.click(screen.getByRole('button', { name: `Open ${todo.title}` }));
+
+      expect(onOpenDetail).toHaveBeenCalledTimes(1);
+      expect(onOpenDetail).toHaveBeenCalledWith('todo-xyz');
     });
 
     it('labels a human creator by username and an agent creator as an agent', async () => {
@@ -84,16 +111,17 @@ describe('TodoRow', () => {
       expect(screen.getByText('Open session').closest('a')?.getAttribute('href')).toBe('/sessions/session-42');
     });
 
-    it('has no session link for an item without a session', async () => {
-      await renderRow({ scope: 'global', sessionId: null });
+    it('hides the session link when the host is the session itself (showSessionLink false)', async () => {
+      // Mutation: ignore showSessionLink -> fails.
+      await renderRow({ sessionId: 'session-42' }, [ME], { showSessionLink: false });
 
       expect(screen.queryByText('Open session')).toBeNull();
     });
 
-    it('shows the existing resolution text', async () => {
-      await renderRow({ status: 'done', resolutionText: 'Applied in prod' });
+    it('has no session link for an item without a session', async () => {
+      await renderRow({ scope: 'global', sessionId: null });
 
-      expect(screen.getByText('Applied in prod')).toBeTruthy();
+      expect(screen.queryByText('Open session')).toBeNull();
     });
   });
 
@@ -198,44 +226,6 @@ describe('TodoRow', () => {
     });
   });
 
-  describe('delete', () => {
-    it('asks for confirmation and only deletes after the confirm', async () => {
-      const { todo, user } = await renderRow({ title: 'Doomed' });
-
-      await user.click(screen.getByRole('button', { name: 'Delete' }));
-      await waitFor(() => expect(screen.getByText(/Are you sure you want to delete "Doomed"/)).toBeTruthy());
-      expect(api.writes()).toHaveLength(0);
-
-      const dialog = screen.getByRole('alertdialog');
-      await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
-
-      await waitFor(() => expect(api.writes()).toHaveLength(1));
-      expect(api.writes()[0]).toMatchObject({ method: 'DELETE', path: `/api/todos/${todo.id}` });
-    });
-
-    it('cancelling the confirmation deletes nothing', async () => {
-      const { user } = await renderRow({ title: 'Spared' });
-
-      await user.click(screen.getByRole('button', { name: 'Delete' }));
-      const dialog = await screen.findByRole('alertdialog');
-      await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-
-      await waitForAbsent(() => screen.queryByRole('alertdialog'));
-      expect(api.writes()).toHaveLength(0);
-    });
-
-    it('shows the server\'s message when the delete is refused (404)', async () => {
-      api.state.refusal = { status: 404, error: 'Todo not found' };
-      const { onError, user } = await renderRow({ title: 'Gone' });
-
-      await user.click(screen.getByRole('button', { name: 'Delete' }));
-      const dialog = await screen.findByRole('alertdialog');
-      await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
-
-      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Delete Todo', 'Todo not found'));
-    });
-  });
-
   describe('assign', () => {
     it('hides the assignee control when the directory has one user', async () => {
       const { todo } = await renderRow({}, [ME]);
@@ -277,62 +267,6 @@ describe('TodoRow', () => {
       await user.selectOptions(screen.getByLabelText(`Assignee for ${todo.title}`), BOB.id);
 
       await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Assign Todo', 'User not found'));
-    });
-  });
-
-  describe('re-scope', () => {
-    it('makes an open session-scoped action global', async () => {
-      const { todo, user } = await renderRow({ kind: 'action', scope: 'session' });
-
-      await user.click(screen.getByRole('button', { name: 'Make global' }));
-
-      await waitFor(() => expect(api.writes()).toHaveLength(1));
-      expect(api.writes()[0]).toMatchObject({ method: 'PATCH', path: `/api/todos/${todo.id}`, body: { scope: 'global' } });
-    });
-
-    it('attaches a global action to its stored session without asking for one', async () => {
-      const { user } = await renderRow({ kind: 'action', scope: 'global', sessionId: 'session-stored' });
-
-      await user.click(screen.getByRole('button', { name: 'Attach to a session' }));
-
-      await waitFor(() => expect(api.writes()).toHaveLength(1));
-      expect(api.writes()[0]?.body).toEqual({ scope: 'session' });
-    });
-
-    it('asks for a session id when a global action has none stored, then sends it', async () => {
-      const { todo, user } = await renderRow({ kind: 'action', scope: 'global', sessionId: null });
-
-      await user.click(screen.getByRole('button', { name: 'Attach to a session' }));
-      expect(api.writes()).toHaveLength(0);
-      const attach = screen.getByRole('button', { name: 'Attach' }) as HTMLButtonElement;
-      expect(attach.disabled).toBe(true);
-
-      await user.type(screen.getByLabelText(`Session id for ${todo.title}`), ' session-new ');
-      await user.click(attach);
-
-      await waitFor(() => expect(api.writes()).toHaveLength(1));
-      expect(api.writes()[0]?.body).toEqual({ scope: 'session', sessionId: 'session-new' });
-    });
-
-    it('shows the server\'s refusal message', async () => {
-      api.state.refusal = { status: 404, error: 'Session not found' };
-      const { onError, user } = await renderRow({ kind: 'action', scope: 'session' });
-
-      await user.click(screen.getByRole('button', { name: 'Make global' }));
-
-      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Re-scope Todo', 'Session not found'));
-    });
-
-    it('offers no re-scope for a question (always session-scoped)', async () => {
-      await renderRow({ kind: 'question', scope: 'session' });
-
-      expect(screen.queryByRole('button', { name: 'Make global' })).toBeNull();
-    });
-
-    it('offers no re-scope for an item that is not open', async () => {
-      await renderRow({ kind: 'action', scope: 'session', status: 'done', resolutionText: 'ok' });
-
-      expect(screen.queryByRole('button', { name: 'Make global' })).toBeNull();
     });
   });
 });
