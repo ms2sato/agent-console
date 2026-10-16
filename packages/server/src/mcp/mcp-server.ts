@@ -38,7 +38,7 @@ import type { InterSessionMessageService } from '../services/inter-session-messa
 import { buildReplyInstructions, stripControlChars } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
-import { PROCESS_STILL_RUNNING_NOTICE } from '../services/process-output-router.js';
+import { TIMER_REFUSED_PROCESS_RUNNING } from '../services/process-output-router.js';
 import {
   emitArtifactCreated,
   emitArtifactUpdated,
@@ -1790,7 +1790,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           interactiveProcessManager.listProcesses(sessionId).some((p) => p.status === 'running')
         ) {
           logger.info({ sessionId, workerId, intervalSeconds }, 'create_timer refused: live run_process');
-          return errorResult(PROCESS_STILL_RUNNING_NOTICE);
+          return errorResult(TIMER_REFUSED_PROCESS_RUNNING);
         }
 
         const timer = timerManager.createTimer({

@@ -8,6 +8,7 @@ import {
   splitContentIntoChunks,
   MESSAGE_CHUNK_TARGET_BYTES,
   PROCESS_STILL_RUNNING_NOTICE,
+  PROCESS_WAKES_ITSELF,
   type ProcessOutputRouterDeps,
 } from '../process-output-router.js';
 import type { WorkerNotificationResult } from '../session-manager.js';
@@ -198,8 +199,10 @@ describe('routeProcessContent (pty mode)', () => {
       ([, , params]) => (params.fields as { message: string }).message,
     );
     expect(messages[0]).toContain(
-      'This process reports back on its own: its remaining output and its exit arrive as new turns, bounded by its timeoutSeconds. Do not poll get_session_status or list_processes, and do not create a timer to wait for it -- end your turn with no further tool call.',
+      'This process reports back on its own: its remaining output and its exit arrive as new turns, bounded by its timeoutSeconds. Do not poll get_session_status or list_processes, and do not create a timer to wait for it. If this output is asking for input, answer it with write_process_response; otherwise end your turn with no further tool call.',
     );
+    expect(messages[0]).toContain('write_process_response');
+    expect(messages[0]).toContain(PROCESS_WAKES_ITSELF);
     expect(messages[1]).toBe('out');
     expect(messages[2]).toBe('reply');
   });
@@ -216,6 +219,8 @@ describe('routeProcessContent (pty mode)', () => {
     const message = (deliverNotification.mock.calls[0][2].fields as { message: string }).message;
     expect(message).toContain('stdout via message');
     expect(message).toContain(PROCESS_STILL_RUNNING_NOTICE);
+    expect(PROCESS_STILL_RUNNING_NOTICE).toContain(PROCESS_WAKES_ITSELF);
+    expect(PROCESS_STILL_RUNNING_NOTICE).toContain('write_process_response');
   });
 
   it('does nothing for empty content', async () => {

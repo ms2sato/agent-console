@@ -33,7 +33,7 @@ import { ConditionalWakeupManager } from '../../services/conditional-wakeup-mana
 import { InteractiveProcessManager } from '../../services/interactive-process-manager.js';
 import { AnnotationService } from '../../services/annotation-service.js';
 import { InterSessionMessageService } from '../../services/inter-session-message-service.js';
-import { PROCESS_STILL_RUNNING_NOTICE } from '../../services/process-output-router.js';
+import { PROCESS_WAKES_ITSELF, TIMER_REFUSED_PROCESS_RUNNING } from '../../services/process-output-router.js';
 import { SingleUserMode } from '../../services/user-mode.js';
 import { createMcpApp } from '../mcp-server.js';
 import { McpTokenRegistry, type McpAuthMode } from '../mcp-auth.js';
@@ -5075,7 +5075,11 @@ describe('MCP Server Tools', () => {
           const data = parseToolResult(response) as { error: string };
 
           expect(response.result?.isError).toBe(true);
-          expect(data.error).toBe(PROCESS_STILL_RUNNING_NOTICE);
+          expect(data.error).toBe(
+            'This process reports back on its own: its remaining output and its exit arrive as new turns, bounded by its timeoutSeconds. Do not poll get_session_status or list_processes, and do not create a timer to wait for it. End your turn; if the process is waiting for input, answer it with write_process_response instead of a timer.',
+          );
+          expect(data.error).toBe(TIMER_REFUSED_PROCESS_RUNNING);
+          expect(data.error).toContain(PROCESS_WAKES_ITSELF);
           expect(createSpy).not.toHaveBeenCalled();
           expect(timerManager.listTimers(sessionId)).toHaveLength(0);
         } finally {
