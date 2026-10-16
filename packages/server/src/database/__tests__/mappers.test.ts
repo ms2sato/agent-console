@@ -2501,6 +2501,7 @@ describe('toTodo', () => {
       resolved_at: null,
       created_at: '2026-10-15T00:00:00.000Z',
       updated_at: '2026-10-15T00:00:00.000Z',
+      resolved_by_worker_id: null,
       ...overrides,
     };
   }
@@ -2518,6 +2519,7 @@ describe('toTodo', () => {
       status: 'open',
       resolutionText: null,
       resolvedByUserId: null,
+      resolvedByWorkerId: null,
       resolvedAt: null,
       createdAt: '2026-10-15T00:00:00.000Z',
       updatedAt: '2026-10-15T00:00:00.000Z',

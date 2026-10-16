@@ -27,6 +27,7 @@ export const TodoSchema = v.strictObject({
   status: v.picklist(TODO_STATUSES),
   resolutionText: v.nullable(v.string()),
   resolvedByUserId: v.nullable(v.string()),
+  resolvedByWorkerId: v.nullable(v.string()),
   resolvedAt: v.nullable(v.string()),
   createdAt: v.string(),
   updatedAt: v.string(),

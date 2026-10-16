@@ -1378,6 +1378,23 @@ describe('MCP Server Tools', () => {
       expect(names).toContain('list_todos');
       expect(names).toContain('get_session_status');
     });
+
+    it('advertises resolve_todo in tools/list, beside list_todos', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      const listBody = (await listRes.json()) as { result?: { tools?: Array<{ name: string }> } };
+      const names = (listBody.result?.tools ?? []).map((t) => t.name);
+
+      expect(names).toContain('resolve_todo');
+      expect(names).toContain('list_todos');
+    });
   });
 
   describe('get_session_status', () => {

@@ -6,8 +6,10 @@ import { toTodo } from '../database/mappers.js';
 import { createLogger } from '../lib/logger.js';
 import {
   TODO_RESOLUTION_SEPARATOR,
+  TodoResolveRefusedError,
   TodoSupersedeRefusedError,
   type CreateTodoParams,
+  type ResolveManyOpenParams,
   type ResolveTodoParams,
   type TodoExecutor,
   type TodoListFilters,
@@ -118,6 +120,7 @@ export class SqliteTodoRepository implements TodoRepository {
         status: 'done',
         resolution_text: resolutionText,
         resolved_by_user_id: params.resolvedByUserId,
+        resolved_by_worker_id: params.resolvedByWorkerId ?? null,
         resolved_at: now,
         updated_at: now,
       })
@@ -126,6 +129,39 @@ export class SqliteTodoRepository implements TodoRepository {
       .executeTakeFirst();
     if (affectedRows(result) === 0n) return null;
     return this.findById(id, executor);
+  }
+
+  async resolveManyOpen(ids: string[], params: ResolveManyOpenParams, executor?: TodoExecutor): Promise<Todo[]> {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return [];
+    const run = async (trx: Kysely<Database>): Promise<Todo[]> => {
+      const now = new Date().toISOString();
+      const text = params.text ?? '';
+      const rows = await trx
+        .updateTable('todos')
+        .set({
+          status: 'done',
+          resolution_text: text === '' ? null : text,
+          resolved_by_user_id: params.resolvedByUserId,
+          resolved_by_worker_id: params.resolvedByWorkerId ?? null,
+          resolved_at: now,
+          updated_at: now,
+        })
+        .where('id', 'in', uniqueIds)
+        .where('session_id', '=', params.sessionId)
+        .where('status', '=', 'open')
+        .returningAll()
+        .execute();
+      if (rows.length !== uniqueIds.length) {
+        const resolvedIds = new Set(rows.map((row) => row.id));
+        throw new TodoResolveRefusedError(uniqueIds.filter((id) => !resolvedIds.has(id)));
+      }
+      return rows.map(toTodo);
+    };
+    if (executor?.isTransaction) {
+      return run(executor as Transaction<Database>);
+    }
+    return (executor ?? this.db).transaction().execute(run);
   }
 
   async dismiss(id: string, executor?: TodoExecutor): Promise<Todo | null> {
