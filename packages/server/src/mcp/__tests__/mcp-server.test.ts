@@ -405,6 +405,10 @@ async function callToolExpectTransportRejection(
 
 // ---------- Tests ----------
 
+// Shortened from the production default so the tests that run a long command
+// through run_process do not each wait the full production window.
+const RUN_PROCESS_INLINE_WINDOW_MS = 1500;
+
 describe('MCP Server Tools', () => {
   let app: Hono;
   let sessionManager: SessionManager;
@@ -598,7 +602,16 @@ describe('MCP Server Tools', () => {
     conditionalWakeupManager = new ConditionalWakeupManager(() => {});
 
     // Create InteractiveProcessManager (no-op callbacks for tests)
-    interactiveProcessManager = new InteractiveProcessManager(() => {}, () => {});
+    interactiveProcessManager = new InteractiveProcessManager(
+      () => {},
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      RUN_PROCESS_INLINE_WINDOW_MS,
+    );
 
     // Create WorktreeService with in-memory database. Inject a stub
     // `runAsUser` that pretends `git worktree add` succeeded. The
@@ -5662,6 +5675,79 @@ describe('MCP Server Tools', () => {
         expect(data.sessionId).toBe(sessionId);
         expect(data.workerId).toBe(workerId);
         expect(data.command).toBe('echo hello');
+      });
+
+      it('returns the output and exit code in the result for a command that finishes inside the window', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(parseToolResult(response)).toMatchObject({
+          sessionId,
+          workerId,
+          command: 'echo hello',
+          outputMode: 'pty',
+          exited: true,
+          exitCode: 0,
+          timedOut: false,
+          output: 'hello\n',
+        });
+      });
+
+      it('reports exited: true with a "(no output)" placeholder when a finished command printed nothing', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'exit 3',
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        expect(parseToolResult(response)).toMatchObject({
+          exited: true,
+          exitCode: 3,
+          output: '(no output)',
+        });
+      });
+
+      it('returns the output in the result in message mode too', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId,
+          workerId,
+          outputMode: 'message',
+        }, nextId++);
+
+        expect(parseToolResult(response)).toMatchObject({
+          outputMode: 'message',
+          exited: true,
+          exitCode: 0,
+          output: 'hello\n',
+        });
+      });
+
+      it('reports exited: false with the wake-up class sentence for a command that outlives the window', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'sleep 60',
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        const data = parseToolResult(response) as Record<string, unknown>;
+        expect(data.processId).toBeString();
+        expect(data.exited).toBe(false);
+        expect(data).not.toHaveProperty('output');
+        expect(data).not.toHaveProperty('exitCode');
+        expect(data.note).toBe(`Still running after 1.5 s. ${PROCESS_WAKES_ITSELF}`);
       });
 
       it('should pass cwd to the spawned process when provided', async () => {
