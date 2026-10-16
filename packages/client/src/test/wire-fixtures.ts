@@ -66,6 +66,30 @@ function completeSession(session: unknown): unknown {
   };
 }
 
+function completeWorker(worker: unknown): unknown {
+  if (!isEntity(worker)) return worker;
+  const base: Entity = { name: 'Worker', createdAt: FIXED_CREATED_AT, ...worker };
+  switch (base.type) {
+    case 'agent':
+      return { agentId: 'claude-code-builtin', activated: true, ...base };
+    case 'terminal':
+      return { activated: true, ...base };
+    case 'git-diff':
+      return { baseCommit: 'abc123', ...base };
+    case 'embedded-agent':
+      return {
+        embeddedAgentId: 'embedded-1',
+        activated: true,
+        autoCompaction: true,
+        reasoningEffort: null,
+        hasParameterOverride: false,
+        ...base,
+      };
+    default:
+      return base;
+  }
+}
+
 function completeValidationResult(result: unknown): unknown {
   if (!isEntity(result)) return result;
   return {
@@ -99,7 +123,7 @@ function completeReviewGroup(group: unknown): unknown {
 }
 
 /**
- * Fill the schema-required fields a partial `agents` / `repositories` / `session` / `results`
+ * Fill the schema-required fields a partial `agents` / `repositories` / `session` / `worker` / `results`
  * (session validation) envelope, or a bare review-queue array of groups, leaves out.
  */
 export function completeWireBody(body: unknown): unknown {
@@ -110,5 +134,6 @@ export function completeWireBody(body: unknown): unknown {
   if (Array.isArray(out.agents)) out.agents = out.agents.map(completeAgent);
   if (Array.isArray(out.repositories)) out.repositories = out.repositories.map(completeRepository);
   if (isEntity(out.session)) out.session = completeSession(out.session);
+  if (isEntity(out.worker)) out.worker = completeWorker(out.worker);
   return out;
 }

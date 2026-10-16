@@ -4,7 +4,8 @@
  * Dangling Markdown link-fragment checker.
  *
  * Validates every `](#frag)` (same-file) and `](relative.md#frag)`
- * (cross-file) Markdown link against the heading-anchor set the target
+ * (cross-file) Markdown link, and every reference-style link definition
+ * (`[label]: #frag` / `[label]: relative.md#frag`), against the heading-anchor set the target
  * file actually generates, using GitHub's heading-slug rule:
  *
  *   - lowercase
@@ -213,10 +214,42 @@ export function buildAnchorSet(content) {
 }
 
 /**
- * Extract every `](#frag)` / `](path#frag)` link from a file's content,
- * skipping fenced code blocks, inline code spans, and external
- * (`scheme://`) URLs. A link with no `#` in its destination is out of
- * scope (nothing to validate).
+ * Parse one link destination (`url`, `url "title"`) into `{ frag, pathPart }`,
+ * or `null` when it is out of scope (empty, external scheme, no fragment).
+ *
+ * @param {string} rawDest
+ * @returns {{frag: string, pathPart: string}|null}
+ */
+function parseFragmentDestination(rawDest) {
+  // Drop an optional trailing "title" (](url "title")).
+  const dest = rawDest.trim().split(/\s+/)[0] ?? '';
+  if (dest === '') return null;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(dest)) return null; // external scheme (http:, mailto:, ...)
+  const hashIdx = dest.indexOf('#');
+  if (hashIdx === -1) return null; // no fragment: out of scope
+  const pathPart = dest.slice(0, hashIdx);
+  const rawFrag = dest.slice(hashIdx + 1);
+  // Heading anchors are literal Unicode text; a link's fragment may
+  // be percent-encoded (e.g. `#%E6%97%A5%E6%9C%AC%E8%AA%9E`). Decode
+  // before comparison, same as a browser resolving the URL fragment.
+  // A malformed escape falls back to the raw text rather than
+  // throwing -- this is link-text parsing, not a trust boundary.
+  let frag;
+  try {
+    frag = decodeURIComponent(rawFrag);
+  } catch {
+    frag = rawFrag;
+  }
+  return { frag, pathPart };
+}
+
+/**
+ * Extract every `](#frag)` / `](path#frag)` inline link and every
+ * reference-style link definition (`[label]: #frag` / `[label]: path#frag`
+ * on its own line) from a file's content, skipping fenced code blocks,
+ * inline code spans, and external (`scheme://`) URLs. A link with no `#`
+ * in its destination is out of scope (nothing to validate). Reference-style
+ * USES (`[text][label]`) carry no destination and are not extracted.
  *
  * @param {string} content
  * @returns {Array<{line: number, frag: string, pathPart: string}>}
@@ -226,33 +259,20 @@ export function extractFragmentLinks(content) {
   const fenceMask = computeFenceMask(lines);
   const links = [];
   const re = /\]\(([^)]*)\)/g;
+  const defRe = /^ {0,3}\[[^\]]+\]:\s*(\S+)/;
   for (let i = 0; i < lines.length; i++) {
     if (fenceMask[i]) continue;
     const line = maskInlineCode(lines[i]);
     let m;
     const lineRe = new RegExp(re.source, re.flags);
     while ((m = lineRe.exec(line)) !== null) {
-      const raw = m[1].trim();
-      // Drop an optional trailing "title" (](url "title")).
-      const dest = raw.split(/\s+/)[0] ?? '';
-      if (dest === '') continue;
-      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(dest)) continue; // external scheme (http:, mailto:, ...)
-      const hashIdx = dest.indexOf('#');
-      if (hashIdx === -1) continue; // no fragment: out of scope
-      const pathPart = dest.slice(0, hashIdx);
-      const rawFrag = dest.slice(hashIdx + 1);
-      // Heading anchors are literal Unicode text; a link's fragment may
-      // be percent-encoded (e.g. `#%E6%97%A5%E6%9C%AC%E8%AA%9E`). Decode
-      // before comparison, same as a browser resolving the URL fragment.
-      // A malformed escape falls back to the raw text rather than
-      // throwing -- this is link-text parsing, not a trust boundary.
-      let frag;
-      try {
-        frag = decodeURIComponent(rawFrag);
-      } catch {
-        frag = rawFrag;
-      }
-      links.push({ line: i + 1, frag, pathPart });
+      const parsed = parseFragmentDestination(m[1]);
+      if (parsed) links.push({ line: i + 1, ...parsed });
+    }
+    const def = defRe.exec(line);
+    if (def) {
+      const parsed = parseFragmentDestination(def[1]);
+      if (parsed) links.push({ line: i + 1, ...parsed });
     }
   }
   return links;

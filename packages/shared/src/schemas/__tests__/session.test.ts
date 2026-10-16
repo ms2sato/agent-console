@@ -11,6 +11,11 @@ import {
   SessionResponseSchema,
   SessionsValidationResponseSchema,
   SessionMemoResponseSchema,
+  RestartAllAgentsResponseSchema,
+  OrchestratorDesignationResponseSchema,
+  ClearOrchestratorDesignationResponseSchema,
+  UpdateSessionResponseSchema,
+  type UpdateSessionResponse,
 } from '../session';
 
 describe('CreateWorktreeSessionRequestSchema', () => {
@@ -1187,5 +1192,76 @@ describe('SessionMemoResponseSchema', () => {
     expect(v.safeParse(SessionMemoResponseSchema, {}).success).toBe(false);
     expect(v.safeParse(SessionMemoResponseSchema, { content: 1 }).success).toBe(false);
     expect(v.safeParse(SessionMemoResponseSchema, { content: 'x', extra: 1 }).success).toBe(false);
+  });
+});
+
+describe('RestartAllAgentsResponseSchema', () => {
+  const row = { sessionId: 's1', workerId: 'w1', workerType: 'agent', outcome: 'restarted' };
+
+  it('accepts an empty results list and rows with and without error', () => {
+    const empty = { restarted: 0, failed: 0, skipped: 0, results: [] };
+    expect(v.safeParse(RestartAllAgentsResponseSchema, empty).success).toBe(true);
+    const body = { restarted: 1, failed: 1, skipped: 0, results: [row, { ...row, outcome: 'failed', error: 'boom' }] };
+    expect(v.safeParse(RestartAllAgentsResponseSchema, body).success).toBe(true);
+  });
+
+  it('rejects an extra top-level key, and a row with an extra field, no outcome or an unknown workerType', () => {
+    const base = { restarted: 1, failed: 0, skipped: 0, results: [row] };
+    const { outcome: _outcome, ...withoutOutcome } = row;
+    expect(v.safeParse(RestartAllAgentsResponseSchema, { ...base, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(RestartAllAgentsResponseSchema, { ...base, results: [{ ...row, extra: 1 }] }).success).toBe(false);
+    expect(v.safeParse(RestartAllAgentsResponseSchema, { ...base, results: [withoutOutcome] }).success).toBe(false);
+    expect(
+      v.safeParse(RestartAllAgentsResponseSchema, { ...base, results: [{ ...row, workerType: 'git-diff' }] }).success,
+    ).toBe(false);
+  });
+});
+
+describe('OrchestratorDesignationResponseSchema', () => {
+  const body = { repositoryId: 'repo-1', orchestratorSessionIds: ['s1'] };
+
+  it('accepts the documented shape, including an empty id list', () => {
+    expect(v.safeParse(OrchestratorDesignationResponseSchema, body).success).toBe(true);
+    expect(v.safeParse(OrchestratorDesignationResponseSchema, { ...body, orchestratorSessionIds: [] }).success).toBe(true);
+  });
+
+  it('rejects an extra field and a dropped required field', () => {
+    expect(v.safeParse(OrchestratorDesignationResponseSchema, { ...body, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(OrchestratorDesignationResponseSchema, { repositoryId: 'repo-1' }).success).toBe(false);
+  });
+});
+
+describe('ClearOrchestratorDesignationResponseSchema', () => {
+  const body = { repositoryId: 'repo-1', removed: true, orchestratorSessionIds: [] };
+
+  it('accepts removed: true and the idempotent no-op removed: false', () => {
+    expect(v.safeParse(ClearOrchestratorDesignationResponseSchema, body).success).toBe(true);
+    expect(v.safeParse(ClearOrchestratorDesignationResponseSchema, { ...body, removed: false }).success).toBe(true);
+  });
+
+  it('rejects an extra field and a dropped removed flag', () => {
+    const { removed: _removed, ...withoutRemoved } = body;
+    expect(v.safeParse(ClearOrchestratorDesignationResponseSchema, { ...body, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(ClearOrchestratorDesignationResponseSchema, withoutRemoved).success).toBe(false);
+  });
+});
+
+// The route sends `success: true` on every 2xx (failures throw), so the schema's `success` is the
+// literal, not a boolean. `Assert<Equals<...>>` fails `tsc` (TS2344) if it widens.
+type AssertTrue<T extends true> = T;
+type SameType<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _UpdateSessionResponseIsExact = AssertTrue<SameType<UpdateSessionResponse, { success: true; title?: string }>>;
+
+describe('UpdateSessionResponseSchema', () => {
+  it('accepts { success: true } alone and with a title', () => {
+    expect(v.safeParse(UpdateSessionResponseSchema, { success: true }).success).toBe(true);
+    expect(v.safeParse(UpdateSessionResponseSchema, { success: true, title: 'T' }).success).toBe(true);
+  });
+
+  it('rejects success: false, a null title, a missing success and an extra field', () => {
+    expect(v.safeParse(UpdateSessionResponseSchema, { success: false }).success).toBe(false);
+    expect(v.safeParse(UpdateSessionResponseSchema, { success: true, title: null }).success).toBe(false);
+    expect(v.safeParse(UpdateSessionResponseSchema, { title: 'T' }).success).toBe(false);
+    expect(v.safeParse(UpdateSessionResponseSchema, { success: true, extra: 1 }).success).toBe(false);
   });
 });

@@ -2,11 +2,14 @@ import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
 import {
   WorkersResponseSchema,
+  WorkerResponseSchema,
+  type WorkerResponse,
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
   UpdateEmbeddedAgentWorkerRequestSchema,
   SetMcpServerPermissionsRequestSchema,
 } from '../worker';
+import type { AgentWorker, TerminalWorker, GitDiffWorker, EmbeddedAgentWorker } from '../app-server-message';
 
 describe('CreateWorkerRequestSchema', () => {
   // CreateWorkerRequestSchema accepts terminal, embedded-agent, and (since
@@ -747,5 +750,41 @@ describe('WorkersResponseSchema', () => {
     expect(v.safeParse(WorkersResponseSchema, { workers: [{ ...terminal, type: 'bogus' }] }).success).toBe(false);
     expect(v.safeParse(WorkersResponseSchema, { workers: [{ ...terminal, extra: 1 }] }).success).toBe(false);
     expect(v.safeParse(WorkersResponseSchema, { workers: [], extra: 1 }).success).toBe(false);
+  });
+});
+
+// `WorkerResponse` is `{ worker }` over the four wire worker variants; the pin fixes it to that union exactly.
+// `Assert<Equals<...>>` fails `tsc` (TS2344) under drift in either direction.
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _WorkerResponseIsExact = Assert<
+  Equals<WorkerResponse, { worker: AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker }>
+>;
+
+describe('WorkerResponseSchema', () => {
+  const terminal = { id: 'w1', name: 'T', createdAt: '2026-01-01T00:00:00.000Z', type: 'terminal', activated: true };
+  const embedded = {
+    id: 'w2',
+    name: 'E',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    type: 'embedded-agent',
+    embeddedAgentId: 'e1',
+    activated: false,
+    autoCompaction: true,
+    reasoningEffort: null,
+    hasParameterOverride: false,
+  };
+
+  it('accepts a terminal and an embedded-agent worker envelope', () => {
+    expect(v.safeParse(WorkerResponseSchema, { worker: terminal }).success).toBe(true);
+    expect(v.safeParse(WorkerResponseSchema, { worker: embedded }).success).toBe(true);
+  });
+
+  it('rejects a missing worker, a dropped required field, an unknown worker field and an extra top-level key', () => {
+    const { activated: _activated, ...withoutActivated } = terminal;
+    expect(v.safeParse(WorkerResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(WorkerResponseSchema, { worker: withoutActivated }).success).toBe(false);
+    expect(v.safeParse(WorkerResponseSchema, { worker: { ...terminal, extra: 1 } }).success).toBe(false);
+    expect(v.safeParse(WorkerResponseSchema, { worker: terminal, extra: 1 }).success).toBe(false);
   });
 });

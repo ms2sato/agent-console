@@ -1,30 +1,41 @@
 # Agent Console
 
-> **Note**: Currently only tested on macOS & Claude Code.
+> **Note**: Developed and tested on macOS with Claude Code. The multi-user server mode is also verified on Linux (Ubuntu, systemd): CI runs a Docker verification of multi-user mode and a systemd-based stack on GitHub-hosted Linux runners, and the project's own deployment runs on Ubuntu 24.04. Other distributions are not verified. See [Multi-user Mode](#multi-user-mode).
 
-> **Security Note**: This tool is designed for **local personal use only**. It provides terminal access to your system and should not be deployed as a shared server or exposed to untrusted networks. The server binds to `localhost` by default.
+> **Security Note**: Agent Console is designed for local use by an individual or a team on a trusted network. It provides terminal access to the host and must not be exposed to the public internet or untrusted networks, in single-user and multi-user mode alike. The server binds to `localhost` by default.
 
 A web application for managing multiple AI coding agent instances running in different git worktrees. Control all your agents through a unified browser interface instead of scattered terminal windows.
 
-Currently supports **[Claude Code](https://claude.ai/code)** as the default agent, with plans to support additional agents (Gemini CLI, Codex, etc.) in the future.
+**[Claude Code](https://claude.ai/code)** is the built-in agent. Other terminal-based agents can be registered as custom agents on the Agents page, and an experimental *embedded agent* (an agent loop that runs inside Agent Console instead of in a terminal, still in development) is available as an option alongside the terminal model.
 
 ## Features
 
 - **Unified Dashboard**: View and manage all repositories, worktrees, and agent sessions in one place
 - **Browser-based Terminal**: Full terminal access via [xterm.js](https://xtermjs.org) - no need for separate terminal windows
 - **Session Persistence**: Sessions continue running even when you close the browser tab (tmux-like behavior)
-- **Multiple Workers per Session**: Run agent and terminal workers side-by-side within a single session
+- **Multiple Workers per Session**: Run agent, terminal, git-diff and (experimental) embedded-agent workers side-by-side within a single session
 - **Inter-worker Messaging**: Send messages between workers in the same session via an embedded message panel
-- **Git Worktree Integration**: Create and delete git worktrees directly from the UI
+- **Git Worktree Integration**: Create and delete git worktrees directly from the UI; add a repository by cloning from a URL (optionally as a bare repository) or by registering an existing path
+- **Diff Review with Annotations**: A git-diff worker shows a worktree's changes; agents can push review annotations that appear in the diff in real time, and the Review page lists pending reviews
+- **Session Memo**: Agents write Markdown memos for a session; fenced code blocks have a one-click Copy control, and the memo's command blocks can be run in the session's terminal after a confirmation
+- **Human Todo List**: A Todo page and a per-session panel where agents leave questions and actions that need a human, and humans resolve or dismiss them
+- **Bookmarks and HTML Artifacts**: Agents register URLs as session bookmarks and publish self-contained HTML pages that you open from the session sidebar or the Artifacts page
+- **Timers and Conditional Wakeups**: Periodic timers (with optional exponential backoff) and silent polling wakeups that notify an agent only when a shell condition becomes true
+- **Notifications and Integrations**: A notification center, per-repository Slack notifications, and inbound GitHub webhook events (see [GitHub Webhook Integration](#github-webhook-integration-inbound-events))
+- **Custom Agents and Jobs**: Manage agent definitions on the Agents page and watch background jobs on the Jobs page
+- **Multi-user Mode**: One server shared by several OS users on the same machine, each running as their own user, with optional shared accounts (see [Multi-user Mode](#multi-user-mode))
 - **Real-time Updates**: WebSocket-based notifications for session and worker lifecycle changes
 - **Orchestration via MCP**: Agents can delegate tasks, coordinate workflows, and manage other agents programmatically via [MCP](https://modelcontextprotocol.io) tools
 
 ## Key Concepts
 
 - **Session**: A working context tied to a git worktree or arbitrary directory. Each session can have multiple workers.
-- **Worker**: A PTY process running within a session. Two types:
-  - **Agent Worker**: Runs an AI agent (e.g., Claude Code)
+- **Worker**: A process or view running within a session. Types:
+  - **Agent Worker**: Runs an AI agent (e.g., Claude Code) in a PTY
   - **Terminal Worker**: A plain terminal shell
+  - **Git-diff Worker**: A diff view of the worktree's changes, with review annotations
+  - **Embedded-agent Worker** (experimental): An agent loop owned by Agent Console itself rather than a terminal program; see [docs/design/embedded-agent-worker.md](docs/design/embedded-agent-worker.md)
+- **Agent**: The definition of an AI tool (command, activity patterns, etc.). Claude Code is built in; custom agents can be registered.
 
 ## Architecture
 
@@ -39,6 +50,8 @@ Backend (Bun + Hono)                Frontend (React + Vite)
 │     └── AgentWorker      │        │                          │
 └──────────────────────────┘        └──────────────────────────┘
 ```
+
+The diagram shows the two terminal-based worker types; git-diff and embedded-agent workers live in the same session model and use the same WebSocket and state-sync layer. The server is the source of truth for session and worker state.
 
 ## Requirements
 
@@ -272,6 +285,7 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 | `list_sessions` | List all active sessions with worker activity states |
 | `get_session_status` | Get a specific session's status, workers, and parent info |
 | `close_session` | Close a session and clean up its workers |
+| `restart_all_agents` | Restart all workers with a live process across the sessions you may operate (PTY agent workers and active embedded-agent workers) |
 
 #### Worktree Delegation
 
@@ -286,8 +300,11 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 |------|-------------|
 | `send_session_message` | Send a message to a worker in another session (file-based with PTY notification) |
 | `write_memo` | Write a Markdown memo for a session, visible in the UI |
+| `create_todo` | Add an item to the human Todo list: a question that needs a human answer, or an action a human has to carry out |
+| `list_todos` | List this session's Todo items, newest first (to catch up on what humans resolved or dismissed) |
+| `resolve_todo` | Mark items of this session done on the strength of a human's words (the human's statement quoted), for example when the human answered in chat; several items can be resolved in one call |
 
-#### Timer
+#### Timer and Wakeup
 
 | Tool | Description |
 |------|-------------|
@@ -295,6 +312,8 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 | `delete_timer` | Delete a periodic timer |
 | `reset_timer` | Reset a timer to its base interval (restarts exponential backoff) |
 | `list_timers` | List active timers, optionally filtered by session |
+| `create_conditional_wakeup` | Check a shell command at intervals and notify only when the condition becomes true (exit 0) or a timeout is reached |
+| `delete_conditional_wakeup` | Delete a conditional wakeup; the condition checking stops immediately |
 
 #### Interactive Process
 
@@ -312,12 +331,37 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 | `write_review_annotations` | Write review annotations for a git-diff worker, pushed to the client in real-time |
 | `clear_review_annotations` | Clear all review annotations for a git-diff worker |
 
+#### Bookmarks and HTML Artifacts
+
+| Tool | Description |
+|------|-------------|
+| `create_bookmark` | Register an http(s) URL (with an optional title) as a bookmark in the session sidebar |
+| `delete_bookmark` | Permanently delete a bookmark |
+| `create_html_artifact` | Upload an HTML document (optionally with inline JavaScript/CSS) and receive a URL to view it in a browser; stored per user until deleted |
+| `update_html_artifact` | Replace the content of an artifact in place (same id and URL); only the owner may update it |
+| `delete_html_artifact` | Permanently delete an artifact; any URL already shared for it stops working |
+
 #### Agent & Repository Registry
 
 | Tool | Description |
 |------|-------------|
 | `list_agents` | Discover available agents (built-in + custom) with capabilities |
 | `list_repositories` | Discover available repositories with IDs and remote URLs |
+| `update_repository` | Update a registered repository's setup command, cleanup command, environment variables, description, or default agent |
+
+#### Orchestrator Designation
+
+| Tool | Description |
+|------|-------------|
+| `set_orchestrator_session` | Add this session to its repository's designated-Orchestrator set, so webhook-triggered inbound events are delivered to it |
+| `clear_orchestrator_session` | Remove this session from the designated-Orchestrator set (idempotent) |
+
+#### Embedded Agents (experimental)
+
+| Tool | Description |
+|------|-------------|
+| `set_agent_parameters` | Change your own embedded-agent worker's model, reasoning effort, or context window while it runs |
+| `set_mcp_server_permission` | Decide whether a project-scope MCP server declared in a worktree's `.mcp.json` may start for an embedded-agent worker |
 
 ### Patterns in Practice
 
@@ -379,6 +423,12 @@ write_memo(sessionId, content: "## Status\n- Feature complete\n- Tests passing\n
 ```
 
 See [docs/design/self-worktree-delegation.md](docs/design/self-worktree-delegation.md) for the full design document.
+
+## Multi-user Mode
+
+By default Agent Console runs in single-user mode (`AUTH_MODE=none`). In multi-user mode (`AUTH_MODE=multi-user`) one server, running as a dedicated service user, is shared by several OS users on the same machine: each user logs in through the browser with their own OS account, and their terminals, agents and git worktrees run as that user (file permissions, SSH keys and API keys work as usual). Repositories can be cloned once into a shared source directory and worktrees are created per user, and *shared accounts* let a team run a shared session as a common OS account bound to a repository.
+
+Setup is documented in [docs/multi-user-setup-guide.md](docs/multi-user-setup-guide.md), with a bootstrap script for Linux (`scripts/setup-multiuser-for-ubuntu.sh`) and a deploy script (`scripts/update-and-deploy-for-multiuser-ubuntu.sh`). It is verified on Linux (Ubuntu, systemd): a Docker verification (`scripts/verify-multiuser-docker.sh`) and a systemd-as-PID-1 stack (`scripts/verify-multiuser-systemd.sh`) run in CI, and a macOS (launchd) recipe is in the guide. Multi-user mode is still meant for a trusted network, not the public internet.
 
 ## GitHub Webhook Integration (Inbound Events)
 

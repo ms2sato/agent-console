@@ -1,6 +1,7 @@
 /**
- * Client-Server Boundary Test: the twenty-three fetchers that parse their
- * response through a strict wire schema (#1367 pass 1, pass 2 and pass 3).
+ * Client-Server Boundary Test: the thirty-one client functions that parse
+ * their response through a strict wire schema (#1367 pass 1, pass 2, pass 3 and pass 4;
+ * two more pass-4 functions are pinned in sibling files, see below).
  *
  * Pass 1: `fetchRepository`, `fetchWorkers`, `fetchWorktrees`, `fetchBranches`,
  * `fetchAgent`, `fetchMessageTemplates`, `fetchSkills`, `fetchCurrentUser`.
@@ -10,6 +11,12 @@
  * Pass 3: `fetchCloneJobStatus`, `validateSessions`, `fetchSessionMemo` and
  * `updateSessionMemo` (the same `{ content }` envelope), `fetchRepositorySlackIntegration`,
  * `fetchNotificationStatus`, `fetchReviewQueue` (a bare array of groups).
+ * Pass 4 (the ten MUTATION responses): `createSession`, `createWorker`,
+ * `restartAgentWorker`, `updateEmbeddedAgentWorker`, `restartAllAgentWorkers`,
+ * `raiseOrchestratorDesignation`, `clearOrchestratorDesignation`,
+ * `updateSessionMetadata`. `restartWorkerAsEmbeddedAgent` and `setMcpServerPermissions`
+ * need a live embedded subprocess; their real-POST strict controls live in
+ * `cross-type-restart-boundary.test.ts` and `embedded-agent-mcp-permission-boundary.test.ts`.
  *
  * Each fetcher used to cast the JSON and trust it. They now `v.parse`
  * a `v.strictObject` schema, so a server body that gains or renames a field
@@ -27,10 +34,10 @@
  *      the schema, so (1) is attributable to the schema's strictness and not
  *      to a schema that accepts anything.
  *
- * Reach, measured (see the PR body): reverting one fetcher to the old cast
- * keeps (1) green for that function but the unit tests for its malformed-body
- * case fail; adding a field to the route's body fails (1) AND (2)'s plain-body
- * half for that function.
+ * For the pass-4 mutations the (2) half is a second, raw call of the same mutation
+ * (`rawCall`), because the client function consumes its body.
+ *
+ * Reach: see the PR body for the measured results.
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { mkdir, rmdir } from 'node:fs/promises';
@@ -71,6 +78,14 @@ import {
   fetchMessageTemplates,
   fetchSkills,
   fetchCurrentUser,
+  createSession,
+  createWorker,
+  restartAgentWorker,
+  updateEmbeddedAgentWorker,
+  restartAllAgentWorkers,
+  raiseOrchestratorDesignation,
+  clearOrchestratorDesignation,
+  updateSessionMetadata,
 } from '@agent-console/client/src/lib/api';
 import {
   SessionResponseSchema,
@@ -96,13 +111,18 @@ import {
   MessageTemplatesResponseSchema,
   SkillsResponseSchema,
   CurrentUserResponseSchema,
+  WorkerResponseSchema,
+  RestartAllAgentsResponseSchema,
+  OrchestratorDesignationResponseSchema,
+  ClearOrchestratorDesignationResponseSchema,
+  UpdateSessionResponseSchema,
 } from '@agent-console/shared';
 import { serverConfig } from '@agent-console/server/src/lib/server-config';
 import { createFetchBridge } from './test-utils';
 
 const TEST_REPO_PATH = '/test/repo-response-schemas';
 
-describe('Client-Server Boundary: strict response schemas on the pass-1, pass-2 and pass-3 fetchers', () => {
+describe('Client-Server Boundary: strict response schemas on the pass-1 to pass-4 client functions', () => {
   let ctx: AppContext;
   let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
@@ -156,6 +176,19 @@ describe('Client-Server Boundary: strict response schemas on the pass-1, pass-2 
   async function rawBody(path: string): Promise<unknown> {
     const res = await app.request(path, { method: 'GET' });
     expect(res.status).toBe(200);
+    return res.json();
+  }
+
+  /** Performs a mutation on the real route and returns the parsed JSON body (status 200 or 201). */
+  async function rawCall(path: string, init: { method: string; body?: unknown }): Promise<unknown> {
+    const res = await app.request(path, {
+      method: init.method,
+      ...(init.body !== undefined && {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(init.body),
+      }),
+    });
+    expect([200, 201]).toContain(res.status);
     return res.json();
   }
 
@@ -525,5 +558,107 @@ describe('Client-Server Boundary: strict response schemas on the pass-1, pass-2 
     const groups = body as Array<Record<string, unknown>>;
     expect(v.safeParse(ReviewQueueResponseSchema, groups).success).toBe(true);
     expect(v.safeParse(ReviewQueueResponseSchema, [{ ...groups[0], extra: true }]).success).toBe(false);
+  });
+
+  // ---- pass 4: mutation responses ----
+
+  it('createSession: the real 201 body parses, and an extra field is rejected', async () => {
+    const request = { type: 'quick' as const, locationPath: TEST_REPO_PATH, agentId: 'claude-code-builtin' };
+    const result = await createSession(request);
+    expect(result.session.type).toBe('quick');
+    expect(ctx.sessionManager.getSession(result.session.id)).toBeDefined();
+
+    const body = await rawCall('/api/sessions', { method: 'POST', body: request });
+    expectStrictControl(SessionResponseSchema, body);
+  });
+
+  it('createWorker: a terminal worker is created, and the real 201 body parses with an extra field rejected', async () => {
+    const result = await createWorker(sessionId, { type: 'terminal', name: 'Shell A' });
+    expect(result.worker.type).toBe('terminal');
+    expect(ctx.sessionManager.getSession(sessionId)?.workers.some((w) => w.id === result.worker.id)).toBe(true);
+
+    const body = await rawCall(`/api/sessions/${sessionId}/workers`, {
+      method: 'POST',
+      body: { type: 'terminal', name: 'Shell B' },
+    });
+    expectStrictControl(WorkerResponseSchema, body);
+  });
+
+  it('restartAgentWorker: the agent worker is restarted, and the real body parses with an extra field rejected', async () => {
+    const agentWorker = ctx.sessionManager.getSession(sessionId)?.workers.find((w) => w.type === 'agent');
+    if (!agentWorker) throw new Error('fixture session must have an agent worker');
+
+    const result = await restartAgentWorker(sessionId, agentWorker.id);
+    expect(result.worker.type).toBe('agent');
+    expect(result.worker.id).toBe(agentWorker.id);
+
+    const body = await rawCall(`/api/sessions/${sessionId}/workers/${agentWorker.id}/restart`, {
+      method: 'POST',
+      body: { continueConversation: false },
+    });
+    expectStrictControl(WorkerResponseSchema, body);
+  });
+
+  it('updateEmbeddedAgentWorker: a dormant embedded worker is updated, and the real body parses with an extra field rejected', async () => {
+    // The worker is created but never activated: no subprocess is involved, the PATCH only
+    // writes and persists `autoCompaction`.
+    const created = await ctx.sessionManager.createWorker(sessionId, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'claude-sdk-builtin',
+    });
+    if (!created) throw new Error('embedded worker creation must succeed');
+
+    const result = await updateEmbeddedAgentWorker(sessionId, created.id, { autoCompaction: false });
+    expect(result.worker.type).toBe('embedded-agent');
+    expect(result.worker.type === 'embedded-agent' && result.worker.autoCompaction).toBe(false);
+
+    const body = await rawCall(`/api/sessions/${sessionId}/workers/${created.id}`, {
+      method: 'PATCH',
+      body: { autoCompaction: true },
+    });
+    expectStrictControl(WorkerResponseSchema, body);
+  });
+
+  it('restartAllAgentWorkers: the real body parses (per-worker results), and an extra field is rejected', async () => {
+    const result = await restartAllAgentWorkers();
+    expect(result.results.length).toBeGreaterThanOrEqual(1);
+    expect(result.restarted + result.failed + result.skipped).toBe(result.results.length);
+
+    const body = await rawCall('/api/sessions/restart-all-agents', { method: 'POST' });
+    expectStrictControl(RestartAllAgentsResponseSchema, body);
+  });
+
+  it('raise/clearOrchestratorDesignation: the real bodies parse, including clearing a non-designated session (removed: false)', async () => {
+    const path = `/api/sessions/${worktreeSessionId}/orchestrator-designation`;
+
+    const raised = await raiseOrchestratorDesignation(worktreeSessionId);
+    expect(raised.orchestratorSessionIds).toContain(worktreeSessionId);
+    expectStrictControl(
+      OrchestratorDesignationResponseSchema,
+      await rawCall(path, { method: 'POST' }),
+    );
+
+    const cleared = await clearOrchestratorDesignation(worktreeSessionId);
+    expect(cleared.removed).toBe(true);
+    expect(cleared.orchestratorSessionIds).not.toContain(worktreeSessionId);
+
+    // Clearing a session that is no longer designated answers `removed: false`; that body
+    // must parse too (the client function would throw on a schema mismatch).
+    const again = await rawCall(path, { method: 'DELETE' });
+    expect((again as { removed: boolean }).removed).toBe(false);
+    expectStrictControl(ClearOrchestratorDesignationResponseSchema, again);
+  });
+
+  it('updateSessionMetadata: a title update echoes the title, an empty update answers success alone, and an extra field is rejected', async () => {
+    const result = await updateSessionMetadata(sessionId, { title: 'x' });
+    expect(result.title).toBe('x');
+    expectStrictControl(
+      UpdateSessionResponseSchema,
+      await rawCall(`/api/sessions/${sessionId}`, { method: 'PATCH', body: { title: 'y' } }),
+    );
+
+    const empty = await rawCall(`/api/sessions/${sessionId}`, { method: 'PATCH', body: {} });
+    expect(empty).toEqual({ success: true });
+    expectStrictControl(UpdateSessionResponseSchema, empty);
   });
 });

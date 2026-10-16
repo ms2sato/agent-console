@@ -1,11 +1,9 @@
 import type {
   Session,
-  Worker,
   Repository,
   WorktreesResponse,
   CreateWorktreeRequest,
   CreateWorkerRequest,
-  CreateWorkerResponse,
   CreateSessionRequest,
   CreateRepositoryRequest,
   CreateAgentRequest,
@@ -78,6 +76,11 @@ import {
   TodoResponseSchema,
   UsersListResponseSchema,
   ListSharedAccountsResponseSchema,
+  WorkerResponseSchema,
+  RestartAllAgentsResponseSchema,
+  OrchestratorDesignationResponseSchema,
+  ClearOrchestratorDesignationResponseSchema,
+  UpdateSessionResponseSchema,
 } from '@agent-console/shared';
 import type {
   WorkersResponse,
@@ -96,6 +99,13 @@ import type {
   AgentResponse,
   SkillsResponse,
   MessageTemplatesResponse,
+  SessionResponse,
+  WorkerResponse,
+  RestartAllAgentsResponse,
+  OrchestratorDesignationResponse,
+  ClearOrchestratorDesignationResponse,
+  UpdateSessionRequest,
+  UpdateSessionResponse,
 } from '@agent-console/shared';
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
@@ -153,18 +163,14 @@ export async function fetchConfig(): Promise<ConfigResponse> {
   return v.parse(ConfigResponseSchema, await res.json());
 }
 
-export interface CreateSessionResponse {
-  session: Session;
-}
-
 export async function createSession(
   request: CreateSessionRequest
-): Promise<CreateSessionResponse> {
+): Promise<SessionResponse> {
   const res = await api.sessions.$post({ json: request });
   if (!res.ok) {
     await handleApiError(res, 'Failed to create session');
   }
-  return res.json() as Promise<CreateSessionResponse>;
+  return v.parse(SessionResponseSchema, await res.json());
 }
 
 export async function getSession(sessionId: string): Promise<Session | null> {
@@ -210,7 +216,7 @@ export async function fetchWorkers(sessionId: string): Promise<WorkersResponse> 
 export async function createWorker(
   sessionId: string,
   request: CreateWorkerRequest & { continueConversation?: boolean }
-): Promise<CreateWorkerResponse> {
+): Promise<WorkerResponse> {
   const res = await api.sessions[':sessionId'].workers.$post({
     param: { sessionId },
     json: request,
@@ -218,7 +224,7 @@ export async function createWorker(
   if (!res.ok) {
     await handleApiError(res, 'Failed to create worker');
   }
-  return res.json() as Promise<CreateWorkerResponse>;
+  return v.parse(WorkerResponseSchema, await res.json());
 }
 
 export async function deleteWorker(sessionId: string, workerId: string): Promise<void> {
@@ -236,7 +242,7 @@ export async function restartAgentWorker(
   continueConversation: boolean = false,
   agentId?: string,
   branch?: string
-): Promise<{ worker: Worker }> {
+): Promise<WorkerResponse> {
   const res = await api.sessions[':sessionId'].workers[':workerId'].restart.$post({
     param: { sessionId, workerId },
     json: { continueConversation, ...(agentId ? { agentId } : {}), ...(branch ? { branch } : {}) },
@@ -244,7 +250,7 @@ export async function restartAgentWorker(
   if (!res.ok) {
     await handleApiError(res, 'Failed to restart worker');
   }
-  return res.json() as Promise<{ worker: Worker }>;
+  return v.parse(WorkerResponseSchema, await res.json());
 }
 
 /**
@@ -261,7 +267,7 @@ export async function restartWorkerAsEmbeddedAgent(
   workerId: string,
   embeddedAgentId: string,
   branch?: string
-): Promise<{ worker: Worker }> {
+): Promise<WorkerResponse> {
   const res = await api.sessions[':sessionId'].workers[':workerId'].restart.$post({
     param: { sessionId, workerId },
     json: { embeddedAgentId, ...(branch ? { branch } : {}) },
@@ -269,7 +275,7 @@ export async function restartWorkerAsEmbeddedAgent(
   if (!res.ok) {
     await handleApiError(res, 'Failed to restart worker');
   }
-  return res.json() as Promise<{ worker: Worker }>;
+  return v.parse(WorkerResponseSchema, await res.json());
 }
 
 /**
@@ -314,7 +320,7 @@ export async function updateEmbeddedAgentWorker(
   sessionId: string,
   workerId: string,
   update: UpdateEmbeddedAgentWorkerBody
-): Promise<{ worker: Worker }> {
+): Promise<WorkerResponse> {
   const res = await api.sessions[':sessionId'].workers[':workerId'].$patch({
     param: { sessionId, workerId },
     json: update,
@@ -322,7 +328,7 @@ export async function updateEmbeddedAgentWorker(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update worker');
   }
-  return res.json() as Promise<{ worker: Worker }>;
+  return v.parse(WorkerResponseSchema, await res.json());
 }
 
 /**
@@ -336,7 +342,7 @@ export async function setMcpServerPermissions(
   sessionId: string,
   workerId: string,
   body: SetMcpServerPermissionsRequest,
-): Promise<{ worker: Worker }> {
+): Promise<WorkerResponse> {
   const res = await api.sessions[':sessionId'].workers[':workerId']['mcp-permissions'].$post({
     param: { sessionId, workerId },
     json: body,
@@ -344,28 +350,15 @@ export async function setMcpServerPermissions(
   if (!res.ok) {
     await handleApiError(res, 'Failed to record the MCP server decision');
   }
-  return res.json() as Promise<{ worker: Worker }>;
+  return v.parse(WorkerResponseSchema, await res.json());
 }
 
-export interface RestartAllAgentsResult {
-  restarted: number;
-  failed: number;
-  skipped: number;
-  results: Array<{
-    sessionId: string;
-    workerId: string;
-    workerType: 'agent' | 'terminal' | 'embedded-agent';
-    outcome: 'restarted' | 'failed' | 'skipped';
-    error?: string;
-  }>;
-}
-
-export async function restartAllAgentWorkers(): Promise<RestartAllAgentsResult> {
+export async function restartAllAgentWorkers(): Promise<RestartAllAgentsResponse> {
   const res = await api.sessions['restart-all-agents'].$post();
   if (!res.ok) {
     await handleApiError(res, 'Failed to restart all agents');
   }
-  return res.json() as Promise<RestartAllAgentsResult>;
+  return v.parse(RestartAllAgentsResponseSchema, await res.json());
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
@@ -400,11 +393,6 @@ export async function resumeSession(sessionId: string): Promise<Session> {
 }
 
 
-export interface OrchestratorDesignationResponse {
-  repositoryId: string;
-  orchestratorSessionIds: string[];
-}
-
 /**
  * Add this session to its repository's set of designated Orchestrator
  * sessions. Other sessions' designations (if any) are unaffected -- a
@@ -416,14 +404,7 @@ export async function raiseOrchestratorDesignation(sessionId: string): Promise<O
   if (!res.ok) {
     await handleApiError(res, 'Failed to set Orchestrator designation');
   }
-  return res.json() as Promise<OrchestratorDesignationResponse>;
-}
-
-export interface ClearOrchestratorDesignationResponse {
-  repositoryId: string;
-  /** `false` is the idempotent no-op response (this session was not in the designated set), not an error. */
-  removed: boolean;
-  orchestratorSessionIds: string[];
+  return v.parse(OrchestratorDesignationResponseSchema, await res.json());
 }
 
 /**
@@ -435,22 +416,13 @@ export async function clearOrchestratorDesignation(sessionId: string): Promise<C
   if (!res.ok) {
     await handleApiError(res, 'Failed to clear Orchestrator designation');
   }
-  return res.json() as Promise<ClearOrchestratorDesignationResponse>;
-}
-
-export interface UpdateSessionMetadataRequest {
-  title?: string;
-}
-
-export interface UpdateSessionMetadataResponse {
-  success: boolean;
-  title?: string;
+  return v.parse(ClearOrchestratorDesignationResponseSchema, await res.json());
 }
 
 export async function updateSessionMetadata(
   sessionId: string,
-  updates: UpdateSessionMetadataRequest
-): Promise<UpdateSessionMetadataResponse> {
+  updates: UpdateSessionRequest
+): Promise<UpdateSessionResponse> {
   const res = await api.sessions[':id'].$patch({
     param: { id: sessionId },
     json: updates,
@@ -458,7 +430,7 @@ export async function updateSessionMetadata(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update session');
   }
-  return res.json() as Promise<UpdateSessionMetadataResponse>;
+  return v.parse(UpdateSessionResponseSchema, await res.json());
 }
 
 export interface CreateRepositoryResponse {

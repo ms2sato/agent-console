@@ -284,6 +284,55 @@ export const SessionResponseSchema = v.strictObject({
 
 export type SessionResponse = v.InferOutput<typeof SessionResponseSchema>;
 
+/** Schema for `POST /api/sessions/restart-all-agents`'s response (one `results` row per worker visited). */
+export const RestartAllAgentsResponseSchema = v.strictObject({
+  restarted: v.number(),
+  failed: v.number(),
+  skipped: v.number(),
+  results: v.array(
+    v.strictObject({
+      sessionId: v.string(),
+      workerId: v.string(),
+      workerType: v.picklist(['agent', 'terminal', 'embedded-agent']),
+      outcome: v.picklist(['restarted', 'failed', 'skipped']),
+      error: v.optional(v.string()),
+    }),
+  ),
+});
+
+export type RestartAllAgentsResponse = v.InferOutput<typeof RestartAllAgentsResponseSchema>;
+
+/** Schema for `POST /api/sessions/:id/orchestrator-designation`'s response. */
+export const OrchestratorDesignationResponseSchema = v.strictObject({
+  repositoryId: v.string(),
+  orchestratorSessionIds: v.array(v.string()),
+});
+
+export type OrchestratorDesignationResponse = v.InferOutput<typeof OrchestratorDesignationResponseSchema>;
+
+/**
+ * Schema for `DELETE /api/sessions/:id/orchestrator-designation`'s response.
+ * `removed: false` is the idempotent no-op (the session was not in the designated set), not an error.
+ */
+export const ClearOrchestratorDesignationResponseSchema = v.strictObject({
+  repositoryId: v.string(),
+  removed: v.boolean(),
+  orchestratorSessionIds: v.array(v.string()),
+});
+
+export type ClearOrchestratorDesignationResponse = v.InferOutput<typeof ClearOrchestratorDesignationResponseSchema>;
+
+/**
+ * Schema for `PATCH /api/sessions/:id`'s response. The route throws on failure, so a 2xx body
+ * is always `success: true`; `title` is echoed only when the request set one.
+ */
+export const UpdateSessionResponseSchema = v.strictObject({
+  success: v.literal(true),
+  title: v.optional(v.string()),
+});
+
+export type UpdateSessionResponse = v.InferOutput<typeof UpdateSessionResponseSchema>;
+
 /**
  * Schema for `GET /api/sessions/validate`'s response. The route returns the
  * validation service's result as is; the field set mirrors

@@ -70,6 +70,7 @@ import {
   EmbeddedAgentCommandSchema,
   EmbeddedAgentEventSchema,
   AppServerMessageSchema,
+  WorkerResponseSchema,
   type AppServerMessage,
 } from '@agent-console/shared';
 import { getOrCreateEmbeddedAgentWorker, _resetEmbeddedAgentWorkers } from '@agent-console/client/src/components/workers/embedded-agent-store';
@@ -446,7 +447,12 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     // status of 404 (`"MCP server 'chrome-devtools' with hash 'hash-1' not
     // found"`). Reverted after confirming the failure.
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const rawResponseBody = await res.json();
+    // The real route body passes the strict wire schema the client parses it with, and the
+    // same body plus one extra field does not.
+    expect(v.safeParse(WorkerResponseSchema, rawResponseBody).success).toBe(true);
+    expect(v.safeParse(WorkerResponseSchema, { ...(rawResponseBody as object), extra: true }).success).toBe(false);
+    const body = rawResponseBody as {
       worker: { type: string; mcpServers?: Array<{ name: string; scope: string; hash?: string; decision?: string }> };
     };
     expect(body.worker.type).toBe('embedded-agent');
@@ -478,7 +484,12 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     });
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const rawResponseBody = await res.json();
+    // The real route body passes the strict wire schema the client parses it with, and the
+    // same body plus one extra field does not.
+    expect(v.safeParse(WorkerResponseSchema, rawResponseBody).success).toBe(true);
+    expect(v.safeParse(WorkerResponseSchema, { ...(rawResponseBody as object), extra: true }).success).toBe(false);
+    const body = rawResponseBody as {
       worker: { type: string; mcpServers?: Array<{ name: string; scope: string; hash?: string; decision?: string }> };
     };
     expect(body.worker.type).toBe('embedded-agent');
