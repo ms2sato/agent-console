@@ -7,6 +7,7 @@ import { installMockWebSocket } from '../../../test/mock-websocket';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
 import { SessionTodosPanel } from '../SessionTodosPanel';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 
 const ME = { id: 'user-me', username: 'me' };
 const BOB = { id: 'user-bob', username: 'bob' };
@@ -248,7 +249,7 @@ describe('SessionTodosPanel', () => {
 
       await user.keyboard('{Escape}');
 
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitForAbsent(() => screen.queryByRole('dialog'));
       expect(screen.getByTestId('terminal-host')).toBeTruthy();
     });
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
-import { screen, cleanup, waitFor, within } from '@testing-library/react';
+import { screen, cleanup, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { installMockWebSocket } from '../../../test/mock-websocket';
@@ -7,6 +7,7 @@ import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
 import { SessionTerminalRunContext, type SessionTerminalRun } from '../SessionTerminalRunContext';
 import { TodoDetailDialog } from '../TodoDetailDialog';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 
 const TERMINAL_BODY = 'Run it:\n\n```terminal\nbun run migrate\n```\n';
 const USERS = [{ id: 'user-me', username: 'me' }];
@@ -127,6 +128,6 @@ describe('TodoDetailDialog', () => {
     await renderDialog('todo-1', null);
 
     await screen.findByRole('button', { name: 'Copy code' });
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Run command in terminal' })).toBeNull());
+    await waitForAbsent(() => screen.queryByRole('button', { name: 'Run command in terminal' }));
   });
 });
