@@ -80,6 +80,11 @@ export function createTodoApiMock() {
 
     state.calls.push({ method, path: url.pathname, search: url.searchParams, body });
     if (method === 'GET') {
+      const detailId = url.pathname.split('/')[3];
+      if (detailId !== undefined) {
+        const found = state.todos.find((todo) => todo.id === detailId);
+        return found ? jsonResponse({ todo: found }) : jsonResponse({ error: 'Todo not found' }, 404);
+      }
       return jsonResponse({ todos: state.todos });
     }
     if (state.refusal) {

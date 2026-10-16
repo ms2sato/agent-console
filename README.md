@@ -18,7 +18,7 @@ A web application for managing multiple AI coding agent instances running in dif
 - **Git Worktree Integration**: Create and delete git worktrees directly from the UI; add a repository by cloning from a URL (optionally as a bare repository) or by registering an existing path
 - **Diff Review with Annotations**: A git-diff worker shows a worktree's changes; agents can push review annotations that appear in the diff in real time, and the Review page lists pending reviews
 - **Session Memo**: Agents write Markdown memos for a session; fenced code blocks have a one-click Copy control, and the memo's command blocks can be run in the session's terminal after a confirmation
-- **Human Todo List**: A Todo page and a per-session panel where agents leave questions and actions that need a human, and humans resolve or dismiss them
+- **Human Todo List**: A Todo page, a per-item detail page (`/todos/:id`) and a per-session panel where agents leave questions and actions that need a human, and humans resolve or dismiss them
 - **Bookmarks and HTML Artifacts**: Agents register URLs as session bookmarks and publish self-contained HTML pages that you open from the session sidebar or the Artifacts page
 - **Timers and Conditional Wakeups**: Periodic timers (with optional exponential backoff) and silent polling wakeups that notify an agent only when a shell condition becomes true
 - **Notifications and Integrations**: A notification center, per-repository Slack notifications, and inbound GitHub webhook events (see [GitHub Webhook Integration](#github-webhook-integration-inbound-events))

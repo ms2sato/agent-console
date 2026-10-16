@@ -553,7 +553,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('Worker Interrupted')).toBeTruthy();
     });
 
-    it('renders the "To-do Resolved" label for a notification kind of internal-todo-resolved', async () => {
+    it('renders the "Todo Resolved" label for a notification kind of internal-todo-resolved', async () => {
       renderView({ sessionId: 's-notif-5', workerId: 'w-notif-5' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -573,7 +573,7 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.getByText('To-do Resolved')).toBeTruthy();
+      expect(screen.getByText('Todo Resolved')).toBeTruthy();
     });
   });
 

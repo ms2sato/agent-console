@@ -1444,7 +1444,7 @@ export async function fetchTodos(filter: FetchTodosFilter = {}): Promise<Todo[]>
   }
   const res = await api.todos.$get({ query });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to fetch to-do items');
+    await handleApiError(res, 'Failed to fetch Todo items');
   }
   const parsed = v.parse(TodosListResponseSchema, await res.json());
   return parsed.todos;
@@ -1458,7 +1458,7 @@ export async function fetchTodos(filter: FetchTodosFilter = {}): Promise<Todo[]>
 export async function createTodo(request: CreateTodoRequest): Promise<Todo> {
   const res = await api.todos.$post({ json: request });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to create to-do item');
+    await handleApiError(res, 'Failed to create Todo item');
   }
   return v.parse(TodoResponseSchema, await res.json()).todo;
 }
@@ -1466,7 +1466,7 @@ export async function createTodo(request: CreateTodoRequest): Promise<Todo> {
 export async function updateTodo(id: string, patch: UpdateTodoRequest): Promise<Todo> {
   const res = await api.todos[':id'].$patch({ param: { id }, json: patch });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to update to-do item');
+    await handleApiError(res, 'Failed to update Todo item');
   }
   return v.parse(TodoResponseSchema, await res.json()).todo;
 }
@@ -1475,7 +1475,7 @@ export async function updateTodo(id: string, patch: UpdateTodoRequest): Promise<
 export async function resolveTodo(id: string, text?: string): Promise<Todo> {
   const res = await api.todos[':id'].resolve.$post({ param: { id }, json: { text } });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to resolve to-do item');
+    await handleApiError(res, 'Failed to resolve Todo item');
   }
   return v.parse(TodoResponseSchema, await res.json()).todo;
 }
@@ -1483,7 +1483,7 @@ export async function resolveTodo(id: string, text?: string): Promise<Todo> {
 export async function dismissTodo(id: string): Promise<Todo> {
   const res = await api.todos[':id'].dismiss.$post({ param: { id } });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to dismiss to-do item');
+    await handleApiError(res, 'Failed to dismiss Todo item');
   }
   return v.parse(TodoResponseSchema, await res.json()).todo;
 }
@@ -1491,8 +1491,16 @@ export async function dismissTodo(id: string): Promise<Todo> {
 export async function deleteTodo(id: string): Promise<void> {
   const res = await api.todos[':id'].$delete({ param: { id } });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to delete to-do item');
+    await handleApiError(res, 'Failed to delete Todo item');
   }
+}
+
+export async function fetchTodo(id: string): Promise<Todo> {
+  const res = await api.todos[':id'].$get({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch Todo item');
+  }
+  return v.parse(TodoResponseSchema, await res.json()).todo;
 }
 
 /** The member directory (id and username only) that backs the assignee pickers. */

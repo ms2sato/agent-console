@@ -48,6 +48,7 @@ import {
   openInVSCode,
   fetchArtifacts,
   fetchTodos,
+  fetchTodo,
   createTodo,
   updateTodo,
   resolveTodo,
@@ -1602,7 +1603,49 @@ describe('API Client', () => {
     it('throws error on failure', async () => {
       mockFetch.mockResolvedValue(createMockResponse({}, { status: 500, ok: false }));
 
-      await expect(fetchTodos()).rejects.toThrow('Failed to fetch to-do items');
+      await expect(fetchTodos()).rejects.toThrow('Failed to fetch Todo items');
+    });
+  });
+
+  describe('fetchTodo', () => {
+    const wireTodo = {
+      id: 'todo-1',
+      kind: 'action',
+      scope: 'session',
+      title: 'Run the migration',
+      body: 'body',
+      sessionId: 'session-1',
+      createdBy: { workerId: 'worker-1' },
+      assigneeUserId: null,
+      status: 'open',
+      resolutionText: null,
+      resolvedByUserId: null,
+      resolvedByWorkerId: null,
+      resolvedAt: null,
+      createdAt: '2026-10-15T00:00:00.000Z',
+      updatedAt: '2026-10-15T00:00:00.000Z',
+    };
+
+    it('GETs the item by id and returns the parsed todo', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
+
+      const result = await fetchTodo('todo-1');
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos/todo-1');
+      expect(getLastFetchMethod()).toBe('GET');
+      expect(result).toEqual(wireTodo);
+    });
+
+    it('throws when the response fails schema validation (e.g. an unwrapped item)', async () => {
+      mockFetch.mockResolvedValue(createMockResponse(wireTodo));
+
+      await expect(fetchTodo('todo-1')).rejects.toThrow();
+    });
+
+    it('throws the Todo item message on failure', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({}, { status: 500, ok: false }));
+
+      await expect(fetchTodo('todo-1')).rejects.toThrow('Failed to fetch Todo item');
     });
   });
 

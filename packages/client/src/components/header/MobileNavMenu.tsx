@@ -7,7 +7,7 @@ interface MobileNavMenuProps {
   onClose: () => void;
 }
 
-/** Mobile navigation dropdown for To-do, Jobs, Agents, Artifacts, Repositories, and Settings links. */
+/** Mobile navigation dropdown for Todo, Jobs, Agents, Artifacts, Repositories, and Settings links. */
 export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
   const location = useLocation();
 
@@ -39,7 +39,7 @@ export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
           onClick={onClose}
         >
           <span className="flex items-center gap-1.5">
-            To-do
+            Todo
             <TodoCountBadge />
           </span>
         </NavMenuItem>
