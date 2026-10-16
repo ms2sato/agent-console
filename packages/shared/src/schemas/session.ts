@@ -283,3 +283,37 @@ export const SessionResponseSchema = v.strictObject({
 });
 
 export type SessionResponse = v.InferOutput<typeof SessionResponseSchema>;
+
+/**
+ * Schema for `GET /api/sessions/validate`'s response. The route returns the
+ * validation service's result as is; the field set mirrors
+ * `SessionsValidationResponse` in `types/session.ts` (pinned in the schema test).
+ */
+export const SessionsValidationResponseSchema = v.strictObject({
+  results: v.array(
+    v.strictObject({
+      sessionId: v.string(),
+      session: v.strictObject({
+        type: v.picklist(['worktree', 'quick']),
+        locationPath: v.string(),
+        worktreeId: v.optional(v.string()),
+        title: v.optional(v.string()),
+      }),
+      valid: v.boolean(),
+      issues: v.array(
+        v.strictObject({
+          type: v.picklist(['directory_not_found', 'not_git_repository', 'branch_not_found']),
+          message: v.string(),
+        }),
+      ),
+    }),
+  ),
+  hasIssues: v.boolean(),
+});
+
+/** Schema for the `{ content }` response of `GET` / `PUT /api/sessions/:id/memo`; `null` when the session has no memo. */
+export const SessionMemoResponseSchema = v.strictObject({
+  content: v.nullable(v.string()),
+});
+
+export type SessionMemoResponse = v.InferOutput<typeof SessionMemoResponseSchema>;

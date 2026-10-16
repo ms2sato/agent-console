@@ -66,10 +66,47 @@ function completeSession(session: unknown): unknown {
   };
 }
 
-/** Fill the schema-required fields a partial `agents` / `repositories` / `session` envelope leaves out. */
+function completeValidationResult(result: unknown): unknown {
+  if (!isEntity(result)) return result;
+  return {
+    session: { type: 'quick', locationPath: '/path' },
+    valid: true,
+    issues: [],
+    ...result,
+  };
+}
+
+function completeReviewItem(item: unknown): unknown {
+  if (!isEntity(item)) return item;
+  return {
+    workerId: 'worker-1',
+    sessionId: 'session-1',
+    sessionTitle: 'Session',
+    sourceSessionId: 'source-1',
+    sourceSessionTitle: 'Source',
+    annotationCount: 0,
+    summary: { totalFiles: 0, reviewFiles: 0, mechanicalFiles: 0, confidence: 'high' },
+    status: 'pending',
+    commentCount: 0,
+    createdAt: FIXED_CREATED_AT,
+    ...item,
+  };
+}
+
+function completeReviewGroup(group: unknown): unknown {
+  if (!isEntity(group) || !Array.isArray(group.items)) return group;
+  return { ...group, items: group.items.map(completeReviewItem) };
+}
+
+/**
+ * Fill the schema-required fields a partial `agents` / `repositories` / `session` / `results`
+ * (session validation) envelope, or a bare review-queue array of groups, leaves out.
+ */
 export function completeWireBody(body: unknown): unknown {
+  if (Array.isArray(body)) return body.map(completeReviewGroup);
   if (!isEntity(body)) return body;
   const out: Entity = { ...body };
+  if (Array.isArray(out.results)) out.results = out.results.map(completeValidationResult);
   if (Array.isArray(out.agents)) out.agents = out.agents.map(completeAgent);
   if (Array.isArray(out.repositories)) out.repositories = out.repositories.map(completeRepository);
   if (isEntity(out.session)) out.session = completeSession(out.session);

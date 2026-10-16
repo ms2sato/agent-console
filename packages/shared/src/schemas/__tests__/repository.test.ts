@@ -10,6 +10,7 @@ import {
   CommitInfoSchema,
   GitHubIssueResponseSchema,
   SessionPrLinkResponseSchema,
+  CloneJobStatusResponseSchema,
   CreateRepositoryRequestSchema,
   CloneRepositoryRequestSchema,
   CreateWorktreeRequestSchema,
@@ -22,6 +23,7 @@ import {
   FetchGitHubIssueRequestSchema,
   UpdateRepositoryRequestSchema,
 } from '../repository';
+import { CLONE_JOB_STATUS, CLONE_ERROR_CODES } from '../repository';
 
 describe('strict-parse contract (unknown-key rejection)', () => {
   it('CreateRepositoryRequestSchema rejects an unknown key', () => {
@@ -1363,5 +1365,53 @@ describe('read-response envelopes (#1367 pass 2)', () => {
     expect(v.safeParse(SessionPrLinkResponseSchema, { prUrl: null, branchName: null, orgRepo: null }).success).toBe(false);
     expect(v.safeParse(SessionPrLinkResponseSchema, { prUrl: null, orgRepo: null }).success).toBe(false);
     expect(v.safeParse(SessionPrLinkResponseSchema, { prUrl: null, branchName: 'b', orgRepo: null, extra: 1 }).success).toBe(false);
+  });
+});
+
+describe('CloneJobStatusResponseSchema', () => {
+  it('accepts pending and cloning with no optional keys', () => {
+    expect(v.safeParse(CloneJobStatusResponseSchema, { jobId: 'j', status: 'pending' }).success).toBe(true);
+    expect(v.safeParse(CloneJobStatusResponseSchema, { jobId: 'j', status: 'cloning' }).success).toBe(true);
+  });
+
+  it('accepts succeeded with repositoryId only', () => {
+    const body = { jobId: 'j', status: 'succeeded', repositoryId: 'repo-1' };
+    const result = v.safeParse(CloneJobStatusResponseSchema, body);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.output).toEqual(body as typeof result.output);
+  });
+
+  it('accepts failed with error only, for every documented error code', () => {
+    for (const code of Object.values(CLONE_ERROR_CODES)) {
+      const body = { jobId: 'j', status: CLONE_JOB_STATUS.FAILED, error: { code, message: 'stderr' } };
+      expect(v.safeParse(CloneJobStatusResponseSchema, body).success).toBe(true);
+    }
+  });
+
+  it('rejects repositoryId: null (that is the POST response shape, a different type)', () => {
+    expect(
+      v.safeParse(CloneJobStatusResponseSchema, { jobId: 'j', status: 'pending', repositoryId: null }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unknown status, an unknown error code, an extra field and an error extra field', () => {
+    expect(v.safeParse(CloneJobStatusResponseSchema, { jobId: 'j', status: 'done' }).success).toBe(false);
+    expect(
+      v.safeParse(CloneJobStatusResponseSchema, { jobId: 'j', status: 'failed', error: { code: 'x', message: 'm' } })
+        .success,
+    ).toBe(false);
+    expect(v.safeParse(CloneJobStatusResponseSchema, { jobId: 'j', status: 'pending', extra: 1 }).success).toBe(false);
+    expect(
+      v.safeParse(CloneJobStatusResponseSchema, {
+        jobId: 'j',
+        status: 'failed',
+        error: { code: 'unknown', message: 'm', extra: 1 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a missing jobId or status', () => {
+    expect(v.safeParse(CloneJobStatusResponseSchema, { status: 'pending' }).success).toBe(false);
+    expect(v.safeParse(CloneJobStatusResponseSchema, { jobId: 'j' }).success).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
+import type { SessionsValidationResponse } from '../../types/session';
 import {
   CreateSessionRequestSchema,
   CreateWorktreeSessionRequestSchema,
@@ -8,6 +9,8 @@ import {
   UpdateSessionMemoRequestSchema,
   RestoreInfoMessageSchema,
   SessionResponseSchema,
+  SessionsValidationResponseSchema,
+  SessionMemoResponseSchema,
 } from '../session';
 
 describe('CreateWorktreeSessionRequestSchema', () => {
@@ -1096,5 +1099,93 @@ describe('SessionResponseSchema', () => {
     expect(v.safeParse(SessionResponseSchema, { session: { id: 's1' } }).success).toBe(false);
     expect(v.safeParse(SessionResponseSchema, { session: { ...quick, extra: 1 } }).success).toBe(false);
     expect(v.safeParse(SessionResponseSchema, { session: quick, extra: 1 }).success).toBe(false);
+  });
+});
+
+// `SessionsValidationResponse` stays a hand-written interface the server imports; this pin
+// fixes the schema's output to it exactly. `Assert<Equals<...>>` fails `tsc` (TS2344) under
+// drift in either direction.
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _SessionsValidationResponseIsExact = Assert<
+  Equals<v.InferOutput<typeof SessionsValidationResponseSchema>, SessionsValidationResponse>
+>;
+
+describe('SessionsValidationResponseSchema', () => {
+  const issue = { type: 'branch_not_found', message: 'Branch does not exist: feat/x' };
+  const worktreeResult = {
+    sessionId: 's1',
+    session: { type: 'worktree', locationPath: '/p', worktreeId: 'feat/x', title: 'T' },
+    valid: false,
+    issues: [issue],
+  };
+  const quickResult = { sessionId: 's2', session: { type: 'quick', locationPath: '/q' }, valid: true, issues: [] };
+
+  it('accepts the documented shape: a valid quick session without optional keys and an invalid worktree one', () => {
+    const body = { results: [worktreeResult, quickResult], hasIssues: true };
+    const result = v.safeParse(SessionsValidationResponseSchema, body);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.output).toEqual(body as typeof result.output);
+  });
+
+  it('accepts an empty result list', () => {
+    expect(v.safeParse(SessionsValidationResponseSchema, { results: [], hasIssues: false }).success).toBe(true);
+  });
+
+  it('accepts every documented issue type', () => {
+    for (const type of ['directory_not_found', 'not_git_repository', 'branch_not_found']) {
+      const body = { results: [{ ...worktreeResult, issues: [{ type, message: 'm' }] }], hasIssues: true };
+      expect(v.safeParse(SessionsValidationResponseSchema, body).success).toBe(true);
+    }
+  });
+
+  it('rejects an extra field at the top level, on a result, on the session and on an issue', () => {
+    const base = { results: [worktreeResult], hasIssues: true };
+    expect(v.safeParse(SessionsValidationResponseSchema, { ...base, extra: 1 }).success).toBe(false);
+    expect(
+      v.safeParse(SessionsValidationResponseSchema, { ...base, results: [{ ...worktreeResult, extra: 1 }] }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(SessionsValidationResponseSchema, {
+        ...base,
+        results: [{ ...worktreeResult, session: { ...worktreeResult.session, extra: 1 } }],
+      }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(SessionsValidationResponseSchema, {
+        ...base,
+        results: [{ ...worktreeResult, issues: [{ ...issue, extra: 1 }] }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unknown session type or issue type and a missing hasIssues', () => {
+    expect(
+      v.safeParse(SessionsValidationResponseSchema, {
+        results: [{ ...worktreeResult, session: { ...worktreeResult.session, type: 'other' } }],
+        hasIssues: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(SessionsValidationResponseSchema, {
+        results: [{ ...worktreeResult, issues: [{ type: 'other', message: 'm' }] }],
+        hasIssues: true,
+      }).success,
+    ).toBe(false);
+    expect(v.safeParse(SessionsValidationResponseSchema, { results: [] }).success).toBe(false);
+  });
+});
+
+describe('SessionMemoResponseSchema', () => {
+  it('accepts a string and null content', () => {
+    expect(v.safeParse(SessionMemoResponseSchema, { content: 'notes' }).success).toBe(true);
+    expect(v.safeParse(SessionMemoResponseSchema, { content: '' }).success).toBe(true);
+    expect(v.safeParse(SessionMemoResponseSchema, { content: null }).success).toBe(true);
+  });
+
+  it('rejects a missing content, a non-string content and an extra field', () => {
+    expect(v.safeParse(SessionMemoResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(SessionMemoResponseSchema, { content: 1 }).success).toBe(false);
+    expect(v.safeParse(SessionMemoResponseSchema, { content: 'x', extra: 1 }).success).toBe(false);
   });
 });
