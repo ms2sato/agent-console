@@ -2,6 +2,7 @@ import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { screen, cleanup, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { completeWireBody } from '../../../test/wire-fixtures';
 import { setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 import {
   JobsNavLink,
@@ -55,11 +56,11 @@ const mockFetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
   }
 
   if (url.includes('/review-queue')) {
-    return jsonResponse(reviewQueueResponse);
+    return jsonResponse(completeWireBody(reviewQueueResponse));
   }
 
   if (url.includes('/sessions/validate')) {
-    return jsonResponse(validateSessionsResponse);
+    return jsonResponse(completeWireBody(validateSessionsResponse));
   }
 
   if (url.includes('/auth/logout')) {
@@ -259,12 +260,12 @@ describe('ReviewNavLink', () => {
       {
         sourceSessionId: 's1',
         sourceSessionTitle: 'Session 1',
-        items: [{ id: 'item-1' }, { id: 'item-2' }],
+        items: [{ workerId: 'item-1' }, { workerId: 'item-2' }],
       },
       {
         sourceSessionId: 's2',
         sourceSessionTitle: 'Session 2',
-        items: [{ id: 'item-3' }],
+        items: [{ workerId: 'item-3' }],
       },
     ];
     await renderWithRouter(<ReviewNavLink />);
@@ -321,9 +322,9 @@ describe('ValidationWarningIndicator', () => {
     validateSessionsResponse = {
       hasIssues: true,
       results: [
-        { sessionId: 's1', valid: false, errors: ['error'] },
-        { sessionId: 's2', valid: true, errors: [] },
-        { sessionId: 's3', valid: false, errors: ['error'] },
+        { sessionId: 's1', valid: false },
+        { sessionId: 's2', valid: true },
+        { sessionId: 's3', valid: false },
       ],
     };
     await renderWithRouter(<ValidationWarningIndicator />);
@@ -336,7 +337,7 @@ describe('ValidationWarningIndicator', () => {
   it('should link to /maintenance page', async () => {
     validateSessionsResponse = {
       hasIssues: true,
-      results: [{ sessionId: 's1', valid: false, errors: ['error'] }],
+      results: [{ sessionId: 's1', valid: false }],
     };
     await renderWithRouter(<ValidationWarningIndicator />);
 
@@ -350,7 +351,7 @@ describe('ValidationWarningIndicator', () => {
   it('should show correct title for single invalid session', async () => {
     validateSessionsResponse = {
       hasIssues: true,
-      results: [{ sessionId: 's1', valid: false, errors: ['error'] }],
+      results: [{ sessionId: 's1', valid: false }],
     };
     await renderWithRouter(<ValidationWarningIndicator />);
 
@@ -364,8 +365,8 @@ describe('ValidationWarningIndicator', () => {
     validateSessionsResponse = {
       hasIssues: true,
       results: [
-        { sessionId: 's1', valid: false, errors: ['error'] },
-        { sessionId: 's2', valid: false, errors: ['error'] },
+        { sessionId: 's1', valid: false },
+        { sessionId: 's2', valid: false },
       ],
     };
     await renderWithRouter(<ValidationWarningIndicator />);

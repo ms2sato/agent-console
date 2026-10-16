@@ -140,6 +140,8 @@ export {
   UpdateSessionMemoRequestSchema,
   DeleteSessionRequestSchema,
   SessionResponseSchema,
+  SessionsValidationResponseSchema,
+  SessionMemoResponseSchema,
   RestoreInfoMessageSchema,
   branchNamePattern,
   branchNameErrorMessage,
@@ -150,6 +152,7 @@ export {
   type UpdateSessionMemoRequest,
   type DeleteSessionRequest,
   type SessionResponse,
+  type SessionMemoResponse,
 } from './session.js';
 
 // Repository schemas
@@ -174,6 +177,7 @@ export {
   type CloneRepositoryRequest,
   type CloneRepositoryResponse,
   type CloneJobStatus,
+  CloneJobStatusResponseSchema,
   type CloneJobStatusResponse,
   type CloneJobError,
   type CloneErrorCode,
@@ -279,8 +283,19 @@ export {
 // Notification schemas
 export {
   RepositorySlackIntegrationInputSchema,
+  RepositorySlackIntegrationSchema,
+  NotificationStatusResponseSchema,
   type RepositorySlackIntegrationInput,
+  type NotificationStatus,
 } from './notification.js';
+
+// Review queue schemas
+export {
+  AnnotationSummarySchema,
+  ReviewQueueItemSchema,
+  ReviewQueueGroupSchema,
+  ReviewQueueResponseSchema,
+} from './review-queue.js';
 
 // Message template schemas
 export {

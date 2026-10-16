@@ -27,6 +27,13 @@ import {
   fetchGitHubIssue,
   fetchSessionPrLink,
   getRemoteBranchStatus,
+  fetchCloneJobStatus,
+  validateSessions,
+  fetchSessionMemo,
+  updateSessionMemo,
+  fetchRepositorySlackIntegration,
+  fetchNotificationStatus,
+  fetchReviewQueue,
   fetchAgent,
   fetchMessageTemplates,
   fetchSkills,
@@ -2032,6 +2039,180 @@ describe('API Client', () => {
       const nested = valid[requiredKey] as Record<string, unknown>;
       mockFetch.mockResolvedValue(createMockResponse({ [requiredKey]: { ...nested, id: 42 } }));
       await expect(call()).rejects.toThrow();
+    });
+  });
+
+  // #1367 pass 3: six more read fetchers (and the session-memo write that returns the same
+  // envelope) parse a strict wire schema. The same table is run against the REAL routes in
+  // packages/integration's api-response-schemas-boundary.test.ts.
+  describe('strict response parsing (pass 3)', () => {
+    const slackIntegration = {
+      id: 'slack-1',
+      repositoryId: 'repo-1',
+      webhookUrl: 'https://hooks.slack.com/services/T00/B00/XXXX',
+      enabled: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const reviewItem = {
+      workerId: 'w1',
+      sessionId: 's1',
+      sessionTitle: 'Session',
+      sourceSessionId: 's0',
+      sourceSessionTitle: 'Source',
+      annotationCount: 2,
+      summary: { totalFiles: 3, reviewFiles: 1, mechanicalFiles: 2, confidence: 'high' },
+      status: 'pending',
+      commentCount: 0,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const reviewGroup = { sourceSessionId: 's0', sourceSessionTitle: 'Source', items: [reviewItem] };
+    const validation = {
+      results: [
+        {
+          sessionId: 's1',
+          session: { type: 'worktree', locationPath: '/p', worktreeId: 'feat/x', title: 'T' },
+          valid: false,
+          issues: [{ type: 'branch_not_found', message: 'Branch does not exist: feat/x' }],
+        },
+      ],
+      hasIssues: true,
+    };
+
+    // [name, call, valid body, key whose removal must fail, what the call resolves with]
+    const cases: Array<[string, () => Promise<unknown>, unknown, string | null, unknown]> = [
+      [
+        'fetchCloneJobStatus',
+        () => fetchCloneJobStatus('job-1'),
+        { jobId: 'job-1', status: 'succeeded', repositoryId: 'repo-1' },
+        'jobId',
+        { jobId: 'job-1', status: 'succeeded', repositoryId: 'repo-1' },
+      ],
+      ['validateSessions', () => validateSessions(), validation, 'hasIssues', validation],
+      ['fetchSessionMemo', () => fetchSessionMemo('s1'), { content: 'notes' }, 'content', 'notes'],
+      ['updateSessionMemo', () => updateSessionMemo('s1', 'notes'), { content: 'notes' }, 'content', { content: 'notes' }],
+      [
+        'fetchRepositorySlackIntegration',
+        () => fetchRepositorySlackIntegration('repo-1'),
+        slackIntegration,
+        'webhookUrl',
+        slackIntegration,
+      ],
+      [
+        'fetchNotificationStatus',
+        () => fetchNotificationStatus(),
+        { baseUrl: 'https://example.com', isBaseUrlConfigured: true },
+        'baseUrl',
+        { baseUrl: 'https://example.com', isBaseUrlConfigured: true },
+      ],
+      ['fetchReviewQueue', () => fetchReviewQueue(), [reviewGroup], null, [reviewGroup]],
+    ];
+
+    it.each(cases)('%s resolves with a valid body', async (_name, call, valid, _key, expected) => {
+      mockFetch.mockResolvedValue(createMockResponse(valid));
+      expect(await call()).toEqual(expected);
+    });
+
+    // An object envelope gets an extra top-level key; the review queue is a bare array, so its
+    // extra field goes on a group (below).
+    const objectCases = cases.filter(([, , , key]) => key !== null);
+
+    it.each(objectCases)('%s throws on a body with an unknown extra field', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse({ ...(valid as object), extra: true }));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it.each(objectCases)('%s throws when a required key is missing', async (_name, call, valid, key) => {
+      const { [key as string]: _dropped, ...rest } = valid as Record<string, unknown>;
+      mockFetch.mockResolvedValue(createMockResponse(rest));
+      await expect(call()).rejects.toThrow();
+    });
+
+    describe('fetchCloneJobStatus', () => {
+      it('accepts pending (no optional keys) and failed (error only)', async () => {
+        mockFetch.mockResolvedValue(createMockResponse({ jobId: 'j', status: 'pending' }));
+        expect(await fetchCloneJobStatus('j')).toEqual({ jobId: 'j', status: 'pending' });
+
+        const failed = { jobId: 'j', status: 'failed', error: { code: 'auth_failed', message: 'denied' } };
+        mockFetch.mockResolvedValue(createMockResponse(failed));
+        expect(await fetchCloneJobStatus('j')).toEqual(failed);
+      });
+
+      it('throws on an unknown status, an unknown error code and a null repositoryId', async () => {
+        for (const body of [
+          { jobId: 'j', status: 'exploded' },
+          { jobId: 'j', status: 'failed', error: { code: 'nope', message: 'x' } },
+          { jobId: 'j', status: 'pending', repositoryId: null },
+        ]) {
+          mockFetch.mockResolvedValue(createMockResponse(body));
+          await expect(fetchCloneJobStatus('j')).rejects.toThrow();
+        }
+      });
+    });
+
+    describe('validateSessions', () => {
+      it('throws when ONE result carries an unknown field or an unknown issue type', async () => {
+        const [first] = validation.results;
+        mockFetch.mockResolvedValue(createMockResponse({ ...validation, results: [{ ...first, extra: 1 }] }));
+        await expect(validateSessions()).rejects.toThrow();
+
+        const badIssue = { ...first, issues: [{ type: 'not_a_code', message: 'm' }] };
+        mockFetch.mockResolvedValue(createMockResponse({ ...validation, results: [badIssue] }));
+        await expect(validateSessions()).rejects.toThrow();
+      });
+
+      it('accepts an empty result list', async () => {
+        mockFetch.mockResolvedValue(createMockResponse({ results: [], hasIssues: false }));
+        expect(await validateSessions()).toEqual({ results: [], hasIssues: false });
+      });
+    });
+
+    describe('session memo', () => {
+      it('fetchSessionMemo resolves null when the session has no memo', async () => {
+        mockFetch.mockResolvedValue(createMockResponse({ content: null }));
+        expect(await fetchSessionMemo('s1')).toBeNull();
+      });
+
+      it('throws when content is not a string or null', async () => {
+        mockFetch.mockResolvedValue(createMockResponse({ content: 42 }));
+        await expect(fetchSessionMemo('s1')).rejects.toThrow();
+        await expect(updateSessionMemo('s1', 'x')).rejects.toThrow();
+      });
+    });
+
+    describe('fetchRepositorySlackIntegration', () => {
+      it('resolves null on a 404 without parsing the body', async () => {
+        mockFetch.mockResolvedValue(createMockResponse({ error: 'not found' }, { status: 404, ok: false }));
+        expect(await fetchRepositorySlackIntegration('repo-1')).toBeNull();
+      });
+    });
+
+    describe('fetchReviewQueue', () => {
+      it('accepts an empty queue and an item with parent session fields', async () => {
+        mockFetch.mockResolvedValue(createMockResponse([]));
+        expect(await fetchReviewQueue()).toEqual([]);
+
+        const withParent = [
+          { ...reviewGroup, items: [{ ...reviewItem, parentSessionId: 'p1', parentSessionTitle: 'Parent' }] },
+        ];
+        mockFetch.mockResolvedValue(createMockResponse(withParent));
+        expect(await fetchReviewQueue()).toEqual(withParent);
+      });
+
+      it('throws on a non-array body, a group extra field, an item extra field and a dropped item field', async () => {
+        const { createdAt: _createdAt, ...itemWithoutCreatedAt } = reviewItem;
+        for (const body of [
+          { groups: [reviewGroup] },
+          [{ ...reviewGroup, extra: 1 }],
+          [{ ...reviewGroup, items: [{ ...reviewItem, extra: 1 }] }],
+          [{ ...reviewGroup, items: [itemWithoutCreatedAt] }],
+          [{ ...reviewGroup, items: [{ ...reviewItem, status: 'archived' }] }],
+          [{ ...reviewGroup, items: [{ ...reviewItem, summary: { ...reviewItem.summary, confidence: 'certain' } }] }],
+        ]) {
+          mockFetch.mockResolvedValue(createMockResponse(body));
+          await expect(fetchReviewQueue()).rejects.toThrow();
+        }
+      });
     });
   });
 });

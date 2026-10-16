@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { RepositorySlackIntegrationInputSchema } from '../notification';
+import type { RepositorySlackIntegration } from '../../types/notification';
+import {
+  RepositorySlackIntegrationInputSchema,
+  RepositorySlackIntegrationSchema,
+  NotificationStatusResponseSchema,
+} from '../notification';
 
 describe('RepositorySlackIntegrationInputSchema', () => {
   it('should accept a valid webhook URL and default enabled to true', () => {
@@ -48,5 +53,63 @@ describe('RepositorySlackIntegrationInputSchema', () => {
     if (!result.success) {
       expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
     }
+  });
+});
+
+// `RepositorySlackIntegration` stays a hand-written interface the server imports; this pin
+// fixes the schema's output to it exactly. `Assert<Equals<...>>` fails `tsc` (TS2344) under
+// drift in either direction.
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _RepositorySlackIntegrationIsExact = Assert<
+  Equals<v.InferOutput<typeof RepositorySlackIntegrationSchema>, RepositorySlackIntegration>
+>;
+
+describe('RepositorySlackIntegrationSchema', () => {
+  const entity = {
+    id: 'slack-1',
+    repositoryId: 'repo-1',
+    webhookUrl: 'https://hooks.slack.com/services/T00/B00/XXXX',
+    enabled: false,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+  };
+
+  it('accepts the documented entity and round-trips it unchanged', () => {
+    const result = v.safeParse(RepositorySlackIntegrationSchema, entity);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.output).toEqual(entity);
+  });
+
+  it('rejects an extra field and each dropped field', () => {
+    expect(v.safeParse(RepositorySlackIntegrationSchema, { ...entity, extra: 1 }).success).toBe(false);
+    for (const key of Object.keys(entity)) {
+      const { [key]: _dropped, ...rest } = entity as Record<string, unknown>;
+      expect(v.safeParse(RepositorySlackIntegrationSchema, rest).success).toBe(false);
+    }
+  });
+
+  it('rejects a non-boolean enabled (the database integer must be converted before the wire)', () => {
+    expect(v.safeParse(RepositorySlackIntegrationSchema, { ...entity, enabled: 1 }).success).toBe(false);
+  });
+});
+
+describe('NotificationStatusResponseSchema', () => {
+  it('accepts a configured and an unconfigured status', () => {
+    expect(
+      v.safeParse(NotificationStatusResponseSchema, { baseUrl: 'https://x.example', isBaseUrlConfigured: true })
+        .success,
+    ).toBe(true);
+    expect(v.safeParse(NotificationStatusResponseSchema, { baseUrl: '', isBaseUrlConfigured: false }).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects an extra field and each dropped field', () => {
+    expect(
+      v.safeParse(NotificationStatusResponseSchema, { baseUrl: '', isBaseUrlConfigured: false, extra: 1 }).success,
+    ).toBe(false);
+    expect(v.safeParse(NotificationStatusResponseSchema, { isBaseUrlConfigured: false }).success).toBe(false);
+    expect(v.safeParse(NotificationStatusResponseSchema, { baseUrl: '' }).success).toBe(false);
   });
 });
