@@ -265,10 +265,17 @@ describe('extractFragmentLinks', () => {
 // tests fail -- "extracts a same-file fragment definition", "extracts an
 // other.md#frag definition with its pathPart" (this block) and "reports a
 // dangling reference-style definition as a miss" (checkDocFragments block).
-// Every pre-existing test is unmodified and keeps passing. The remaining
-// four cases here (fence, inline code, no fragment, external scheme) assert
-// "nothing extracted" and pass in both worlds by design: they guard against a
-// wrong implementation of the new extraction, not against its absence.
+// Every pre-existing test is unmodified and keeps passing. Second mutation,
+// measured: widening defRe's indent anchor `^ {0,3}` to `^ *` fails exactly
+// "ignores a definition indented four spaces (an indented code block)"
+// (68 pass / 0 fail -> 67 pass / 1 fail). The remaining cases (fence, line not
+// starting with "[", no fragment, external scheme) assert "nothing extracted"
+// and pass in both worlds by design: they guard against a wrong
+// implementation of the new extraction, not against its absence. The
+// "first non-space character is not [" case is NOT a maskInlineCode guard: a
+// code span cannot precede the "[" that opens a definition, so masking is
+// irrelevant to the definition path (reading the raw line instead of the
+// masked one passes every test, by construction).
 describe('extractFragmentLinks — reference-style definitions', () => {
   it('extracts a same-file fragment definition', () => {
     expect(extractFragmentLinks('[a][ref]\n\n[ref]: #zz\n')).toEqual([
@@ -286,8 +293,13 @@ describe('extractFragmentLinks — reference-style definitions', () => {
     expect(extractFragmentLinks('```\n[ref]: #zz\n```\n')).toEqual([]);
   });
 
-  it('ignores a definition inside an inline code span', () => {
+  it('ignores a line whose first non-space character is not "[" (a code span cannot open a definition)', () => {
     expect(extractFragmentLinks('`[ref]: #zz`\n')).toEqual([]);
+  });
+
+  it('ignores a definition indented four spaces (an indented code block)', () => {
+    // Reach (measured): widening defRe's indent anchor from `{0,3}` to `*` fails this test.
+    expect(extractFragmentLinks('    [ref]: #zz\n')).toEqual([]);
   });
 
   it('ignores a definition without a fragment', () => {
