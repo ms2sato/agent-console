@@ -1931,8 +1931,10 @@ describe('InteractiveProcessManager', () => {
     // run_process tool uses: it awaits the inline result while another call (a kill,
     // a session deletion, a shutdown) can remove the entry. A path that removes the
     // entry without settling the window would leave that await pending forever.
-    // Reach (measured): deleting the closeInlineWindow call of the path under test
-    // fails exactly that case's row and the other two rows still pass.
+    // Reach (measured, one mutation per row): deleting the closeInlineWindow call of
+    // killProcess fails only the killProcess row; the same call in
+    // deleteProcessesBySession fails only that row; in disposeAll only that row. Each
+    // failing row hangs until the 5 s test timeout, which is the production hang.
     describe.each([
       ['killProcess', (m: InteractiveProcessManager, id: string) => void m.killProcess(id)],
       ['deleteProcessesBySession', (m: InteractiveProcessManager) => void m.deleteProcessesBySession(target.sessionId)],

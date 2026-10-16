@@ -145,6 +145,8 @@ Run 6 (the refusal of a short no-backoff `create_timer` while a `run_process` is
 
 The contract that follows from it: `run_process` waits up to a bounded 5-second window. A process that finishes inside the window returns its output and exit code in the tool result itself (`exited: true`) and sends no further turn; a longer process behaves as before (`exited: false`, stdout and exit arrive as new turns, the timer refusal applies while it is live). The model is therefore never in a position to wait for a process that is already over. The inline return exists only on the MCP tool; REST and the UI do not start processes.
 
+One consequence to know: a process that prompts on stdin inside the window has its prompt held for up to 5 seconds (the model cannot answer in the middle of the tool call anyway), and a terminal-agent caller no longer sees a short process's output echoed in its PTY, only in the tool result.
+
 ### F9. Process discipline for the embedded Orchestrator itself
 
 Phase 0 item 2 asked where the delegation-prompt discipline comes from when the Orchestrator has no dispatch prompt. Answer, by reading: the skill-listed steps come from the skill text via the skills index + `Read` (F4); the hygiene block still reaches delegates through `delegation-prompt.js` (F4); the TUI-only lessons stored in `memory/feedback_*.md` do not reach it (disjoint store, F4). The run plan below therefore delivers the two Phase-0 items (host slot request, stale-base check) in the run's own scripted message rather than assuming they are anywhere the builtin can read, and records "seed or not" as a Phase 6 observation, not a pre-decision.
