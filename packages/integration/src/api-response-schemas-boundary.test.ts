@@ -1,12 +1,15 @@
 /**
- * Client-Server Boundary Test: the sixteen read fetchers that parse their
- * response through a strict wire schema (#1367 pass 1 and pass 2).
+ * Client-Server Boundary Test: the twenty-three fetchers that parse their
+ * response through a strict wire schema (#1367 pass 1, pass 2 and pass 3).
  *
  * Pass 1: `fetchRepository`, `fetchWorkers`, `fetchWorktrees`, `fetchBranches`,
  * `fetchAgent`, `fetchMessageTemplates`, `fetchSkills`, `fetchCurrentUser`.
  * Pass 2: `getSession` (live AND paused), `fetchRepositories`,
  * `fetchSessionBranches`, `fetchBranchCommits`, `fetchGitHubIssue`,
  * `fetchAgents`, `fetchSessionPrLink`, `getRemoteBranchStatus`.
+ * Pass 3: `fetchCloneJobStatus`, `validateSessions`, `fetchSessionMemo` and
+ * `updateSessionMemo` (the same `{ content }` envelope), `fetchRepositorySlackIntegration`,
+ * `fetchNotificationStatus`, `fetchReviewQueue` (a bare array of groups).
  *
  * Each fetcher used to cast the JSON and trust it. They now `v.parse`
  * a `v.strictObject` schema, so a server body that gains or renames a field
@@ -29,7 +32,8 @@
  * case fail; adding a field to the route's body fails (1) AND (2)'s plain-body
  * half for that function.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { mkdir, rmdir } from 'node:fs/promises';
 import { Hono } from 'hono';
 import * as v from 'valibot';
 import {
@@ -52,6 +56,13 @@ import {
   fetchAgents,
   fetchSessionPrLink,
   getRemoteBranchStatus,
+  fetchCloneJobStatus,
+  validateSessions,
+  fetchSessionMemo,
+  updateSessionMemo,
+  fetchRepositorySlackIntegration,
+  fetchNotificationStatus,
+  fetchReviewQueue,
   fetchRepository,
   fetchWorkers,
   fetchWorktrees,
@@ -69,6 +80,14 @@ import {
   AgentsResponseSchema,
   SessionPrLinkResponseSchema,
   RemoteBranchStatusSchema,
+  CloneJobStatusResponseSchema,
+  SessionsValidationResponseSchema,
+  SessionMemoResponseSchema,
+  RepositorySlackIntegrationSchema,
+  NotificationStatusResponseSchema,
+  ReviewQueueResponseSchema,
+  CLONE_JOB_STATUS,
+  CLONE_ERROR_CODES,
   RepositoryResponseSchema,
   WorkersResponseSchema,
   WorktreesResponseSchema,
@@ -78,11 +97,12 @@ import {
   SkillsResponseSchema,
   CurrentUserResponseSchema,
 } from '@agent-console/shared';
+import { serverConfig } from '@agent-console/server/src/lib/server-config';
 import { createFetchBridge } from './test-utils';
 
 const TEST_REPO_PATH = '/test/repo-response-schemas';
 
-describe('Client-Server Boundary: strict response schemas on the pass-1 and pass-2 read fetchers', () => {
+describe('Client-Server Boundary: strict response schemas on the pass-1, pass-2 and pass-3 fetchers', () => {
   let ctx: AppContext;
   let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
@@ -333,5 +353,177 @@ describe('Client-Server Boundary: strict response schemas on the pass-1 and pass
     expect(result).toEqual(body as typeof result);
     expect(result).toEqual({ behind: 3, ahead: 2 });
     expectStrictControl(RemoteBranchStatusSchema, body);
+  });
+
+  // ---- pass 3 ----
+
+  it('fetchCloneJobStatus: every job status shape parses, and an extra field is rejected', async () => {
+    // Recorded proxy: the clone job table is substituted (`getJob`), because a real job needs a
+    // `git clone` run as the requesting user. Still real: the GET route that builds the body
+    // (optional keys omitted when absent), its JSON serialization, the fetch bridge and the
+    // client schema parse.
+    const now = Date.now();
+    const states = {
+      'job-pending': { id: 'job-pending', status: CLONE_JOB_STATUS.PENDING, createdAt: now, updatedAt: now },
+      'job-done': {
+        id: 'job-done',
+        status: CLONE_JOB_STATUS.SUCCEEDED,
+        repositoryId: 'repo-cloned',
+        createdAt: now,
+        updatedAt: now,
+      },
+      'job-failed': {
+        id: 'job-failed',
+        status: CLONE_JOB_STATUS.FAILED,
+        error: { code: CLONE_ERROR_CODES.AUTH_FAILED, message: 'Permission denied (publickey).' },
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+    const getJob = spyOn(ctx.repositoryCloneService, 'getJob').mockImplementation(
+      (jobId: string) => states[jobId as keyof typeof states],
+    );
+    try {
+      for (const jobId of Object.keys(states)) {
+        const result = await fetchCloneJobStatus(jobId);
+        const body = await rawBody(`/api/repositories/clone/${jobId}`);
+
+        expect(result).toEqual(body as typeof result);
+        expect(result.jobId).toBe(jobId);
+        expectStrictControl(CloneJobStatusResponseSchema, body);
+      }
+    } finally {
+      getJob.mockRestore();
+    }
+  });
+
+  it('validateSessions: the real body parses (valid and invalid sessions), and an extra field is rejected', async () => {
+    // A persisted session whose directory is gone yields a real `directory_not_found` issue.
+    const vanishing = '/test/session-dir-removed-later';
+    await mkdir(vanishing, { recursive: true });
+    const missing = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: vanishing, agentId: 'claude-code-builtin' },
+      { createdBy: authUserId },
+    );
+    await rmdir(vanishing);
+
+    const result = await validateSessions();
+    const body = await rawBody('/api/sessions/validate');
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.results.length).toBeGreaterThanOrEqual(3);
+    const invalid = result.results.find((r) => r.sessionId === missing.id);
+    expect(invalid?.valid).toBe(false);
+    expect(invalid?.issues.map((i) => i.type)).toEqual(['directory_not_found']);
+    expect(result.hasIssues).toBe(true);
+    expectStrictControl(SessionsValidationResponseSchema, body);
+  });
+
+  it('fetchSessionMemo: the real body parses (no memo, then a stored memo), and an extra field is rejected', async () => {
+    const emptyBody = await rawBody(`/api/sessions/${sessionId}/memo`);
+    expect(await fetchSessionMemo(sessionId)).toBeNull();
+    expect(emptyBody).toEqual({ content: null });
+    expectStrictControl(SessionMemoResponseSchema, emptyBody);
+
+    await updateSessionMemo(sessionId, 'remember this');
+    const storedBody = await rawBody(`/api/sessions/${sessionId}/memo`);
+
+    expect(await fetchSessionMemo(sessionId)).toBe('remember this');
+    expect(storedBody).toEqual({ content: 'remember this' });
+    expectStrictControl(SessionMemoResponseSchema, storedBody);
+  });
+
+  it('updateSessionMemo: the real body parses (write, then delete on empty content), and an extra field is rejected', async () => {
+    const put = (content: string) =>
+      app.request(`/api/sessions/${sessionId}/memo`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+
+    const written = await updateSessionMemo(sessionId, 'first');
+    const writtenBody = await (await put('first')).json();
+    expect(written).toEqual(writtenBody as typeof written);
+    expect(written.content).toBe('first');
+    expectStrictControl(SessionMemoResponseSchema, writtenBody);
+
+    // An empty save deletes the memo; the server answers `{ content: null }`, not the argument.
+    const deleted = await updateSessionMemo(sessionId, '   ');
+    const deletedBody = await (await put('   ')).json();
+    expect(deleted).toEqual(deletedBody as typeof deleted);
+    expect(deleted.content).toBeNull();
+    expectStrictControl(SessionMemoResponseSchema, deletedBody);
+  });
+
+  it('fetchRepositorySlackIntegration: 404 resolves null; the real body parses, and an extra field is rejected', async () => {
+    expect(await fetchRepositorySlackIntegration(repoId)).toBeNull();
+
+    const putRes = await app.request(`/api/repositories/${repoId}/integrations/slack`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ webhookUrl: 'https://hooks.slack.com/services/T00/B00/XXXX', enabled: false }),
+    });
+    expect(putRes.status).toBe(200);
+
+    const result = await fetchRepositorySlackIntegration(repoId);
+    const body = await rawBody(`/api/repositories/${repoId}/integrations/slack`);
+
+    expect(result).toEqual(body as NonNullable<typeof result>);
+    expect(result?.repositoryId).toBe(repoId);
+    expect(result?.enabled).toBe(false);
+    expectStrictControl(RepositorySlackIntegrationSchema, body);
+  });
+
+  it('fetchNotificationStatus: the real body parses (configured and unconfigured), and an extra field is rejected', async () => {
+    // `serverConfig` is a readonly constant; the route reads `APP_URL` on every request.
+    const config = serverConfig as { APP_URL: string };
+    const original = config.APP_URL;
+    try {
+      for (const appUrl of ['https://console.example.com', '']) {
+        config.APP_URL = appUrl;
+
+        const result = await fetchNotificationStatus();
+        const body = await rawBody('/api/settings/notifications/status');
+
+        expect(result).toEqual(body as typeof result);
+        expect(result.baseUrl).toBe(appUrl);
+        expect(result.isBaseUrlConfigured).toBe(appUrl !== '');
+        expectStrictControl(NotificationStatusResponseSchema, body);
+      }
+    } finally {
+      config.APP_URL = original;
+    }
+  });
+
+  it('fetchReviewQueue: the real body parses (with and without a parent session), and an extra field is rejected', async () => {
+    const child = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: TEST_REPO_PATH, agentId: 'claude-code-builtin', parentSessionId: sessionId },
+      { createdBy: authUserId },
+    );
+    const summary = { totalFiles: 3, reviewFiles: 1, mechanicalFiles: 2, confidence: 'high' as const };
+    // Two review queue items for the same source session: one on a session with a parent
+    // (parent fields present), one on a parentless session (parent fields omitted).
+    ctx.annotationService.setAnnotations('worker-with-parent', { annotations: [], summary }, {
+      sessionId: child.id,
+      sourceSessionId: worktreeSessionId,
+    });
+    ctx.annotationService.setAnnotations('worker-no-parent', { annotations: [], summary }, {
+      sessionId,
+      sourceSessionId: worktreeSessionId,
+    });
+
+    const result = await fetchReviewQueue();
+    const body = await rawBody('/api/review-queue');
+
+    expect(result).toEqual(body as typeof result);
+    expect(result).toHaveLength(1);
+    const items = result[0]?.items ?? [];
+    expect(items.find((i) => i.workerId === 'worker-with-parent')?.parentSessionId).toBe(sessionId);
+    expect(items.find((i) => i.workerId === 'worker-no-parent')?.parentSessionId).toBeUndefined();
+
+    // A bare array, not an envelope: the control adds the extra field to the first group.
+    const groups = body as Array<Record<string, unknown>>;
+    expect(v.safeParse(ReviewQueueResponseSchema, groups).success).toBe(true);
+    expect(v.safeParse(ReviewQueueResponseSchema, [{ ...groups[0], extra: true }]).success).toBe(false);
   });
 });

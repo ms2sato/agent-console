@@ -26,14 +26,12 @@ import type {
   GenerateRepositoryDescriptionResponse,
   CloneRepositoryRequest,
   CloneRepositoryResponse,
-  CloneJobStatusResponse,
   ConfigResponse,
   LoginRequest,
   LoginResponse,
   CurrentUserResponse,
   UserPreferences,
   UpdateUserPreferencesResponse,
-  ReviewQueueGroup,
   ReviewComment,
   MessageTemplate,
   Artifact,
@@ -63,6 +61,12 @@ import {
   AgentsResponseSchema,
   SessionPrLinkResponseSchema,
   RemoteBranchStatusSchema,
+  CloneJobStatusResponseSchema,
+  SessionsValidationResponseSchema,
+  SessionMemoResponseSchema,
+  RepositorySlackIntegrationSchema,
+  NotificationStatusResponseSchema,
+  ReviewQueueResponseSchema,
   MessageTemplatesResponseSchema,
   SkillsResponseSchema,
   CurrentUserResponseSchema,
@@ -84,6 +88,11 @@ import type {
   GitHubIssueResponse,
   AgentsResponse,
   SessionPrLinkResponse,
+  CloneJobStatusResponse,
+  SessionMemoResponse,
+  ReviewQueueGroup,
+  NotificationStatus,
+  RepositorySlackIntegration,
   AgentResponse,
   SkillsResponse,
   MessageTemplatesResponse,
@@ -538,7 +547,7 @@ export async function fetchCloneJobStatus(jobId: string): Promise<CloneJobStatus
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch clone job status');
   }
-  return res.json() as Promise<CloneJobStatusResponse>;
+  return v.parse(CloneJobStatusResponseSchema, await res.json());
 }
 
 export interface UpdateRepositoryResponse {
@@ -839,7 +848,7 @@ export async function validateSessions(): Promise<SessionsValidationResponse> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to validate sessions');
   }
-  return res.json() as Promise<SessionsValidationResponse>;
+  return v.parse(SessionsValidationResponseSchema, await res.json());
 }
 
 export async function deleteInvalidSession(sessionId: string): Promise<void> {
@@ -989,8 +998,7 @@ export async function fetchSessionMemo(sessionId: string): Promise<string | null
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch session memo');
   }
-  const data = await res.json() as { content: string | null };
-  return data.content;
+  return v.parse(SessionMemoResponseSchema, await res.json()).content;
 }
 
 /**
@@ -999,12 +1007,12 @@ export async function fetchSessionMemo(sessionId: string): Promise<string | null
  * argument) is what callers must write into the query cache -- see R4/R6 in
  * docs/design/session-worker-design.md#session-memo.
  */
-export async function updateSessionMemo(sessionId: string, content: string): Promise<{ content: string | null }> {
+export async function updateSessionMemo(sessionId: string, content: string): Promise<SessionMemoResponse> {
   const res = await api.sessions[':id'].memo.$put({ param: { id: sessionId }, json: { content } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to update session memo');
   }
-  return res.json() as Promise<{ content: string | null }>;
+  return v.parse(SessionMemoResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -1040,22 +1048,13 @@ export async function getRemoteBranchStatus(
 // Repository Slack Integration
 // ===========================================================================
 
-export interface RepositorySlackIntegrationResponse {
-  id: string;
-  repositoryId: string;
-  webhookUrl: string;
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
 /**
  * Fetch Slack integration settings for a repository.
  * Returns null if no integration exists (404 response).
  */
 export async function fetchRepositorySlackIntegration(
   repositoryId: string
-): Promise<RepositorySlackIntegrationResponse | null> {
+): Promise<RepositorySlackIntegration | null> {
   const res = await api.repositories[':id'].integrations.slack.$get({
     param: { id: repositoryId },
   });
@@ -1065,7 +1064,7 @@ export async function fetchRepositorySlackIntegration(
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch Slack integration');
   }
-  return res.json() as Promise<RepositorySlackIntegrationResponse>;
+  return v.parse(RepositorySlackIntegrationSchema, await res.json());
 }
 
 export interface UpdateRepositorySlackIntegrationRequest {
@@ -1079,7 +1078,7 @@ export interface UpdateRepositorySlackIntegrationRequest {
 export async function updateRepositorySlackIntegration(
   repositoryId: string,
   data: UpdateRepositorySlackIntegrationRequest
-): Promise<RepositorySlackIntegrationResponse> {
+): Promise<RepositorySlackIntegration> {
   const res = await api.repositories[':id'].integrations.slack.$put({
     param: { id: repositoryId },
     json: data,
@@ -1087,7 +1086,7 @@ export async function updateRepositorySlackIntegration(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update Slack integration');
   }
-  return res.json() as Promise<RepositorySlackIntegrationResponse>;
+  return res.json() as Promise<RepositorySlackIntegration>;
 }
 
 /**
@@ -1106,17 +1105,12 @@ export async function testRepositorySlackIntegration(repositoryId: string): Prom
 // Notification Settings
 // ===========================================================================
 
-export interface NotificationStatus {
-  baseUrl: string;
-  isBaseUrlConfigured: boolean;
-}
-
 export async function fetchNotificationStatus(): Promise<NotificationStatus> {
   const res = await api.settings.notifications.status.$get();
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch notification status');
   }
-  return res.json() as Promise<NotificationStatus>;
+  return v.parse(NotificationStatusResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -1203,7 +1197,7 @@ export async function fetchReviewQueue(): Promise<ReviewQueueGroup[]> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch review queue');
   }
-  return res.json() as Promise<ReviewQueueGroup[]>;
+  return v.parse(ReviewQueueResponseSchema, await res.json());
 }
 
 export async function addReviewComment(

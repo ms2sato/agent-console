@@ -12,6 +12,7 @@ import * as messageTemplate from '../message-template.js';
 import * as message from '../message.js';
 import * as notification from '../notification.js';
 import * as repository from '../repository.js';
+import * as reviewQueue from '../review-queue.js';
 import * as session from '../session.js';
 import * as sharedAccount from '../shared-account.js';
 import * as system from '../system.js';
@@ -29,6 +30,7 @@ const MODULES: Record<string, Record<string, unknown>> = {
   message,
   notification,
   repository,
+  'review-queue': reviewQueue,
   session,
   'shared-account': sharedAccount,
   system,

@@ -4,6 +4,8 @@ import {
   AgentsResponseSchema,
   RepositoriesResponseSchema,
   SessionResponseSchema,
+  SessionsValidationResponseSchema,
+  ReviewQueueResponseSchema,
 } from '@agent-console/shared';
 import { completeWireBody } from '../wire-fixtures';
 
@@ -37,5 +39,21 @@ describe('completeWireBody', () => {
     expect(completeWireBody({ error: 'boom' })).toEqual({ error: 'boom' });
     expect(completeWireBody({ agents: [] })).toEqual({ agents: [] });
     expect(completeWireBody(null)).toBeNull();
+  });
+
+  it('completes a partial session-validation envelope and a bare review-queue array', () => {
+    expect(
+      v.safeParse(
+        SessionsValidationResponseSchema,
+        completeWireBody({ hasIssues: true, results: [{ sessionId: 's1', valid: false }] }),
+      ).success,
+    ).toBe(true);
+    expect(
+      v.safeParse(
+        ReviewQueueResponseSchema,
+        completeWireBody([{ sourceSessionId: 's1', sourceSessionTitle: 'S', items: [{ workerId: 'w1' }] }]),
+      ).success,
+    ).toBe(true);
+    expect(completeWireBody([])).toEqual([]);
   });
 });

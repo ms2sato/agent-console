@@ -160,20 +160,30 @@ export interface CloneRepositoryResponse {
 }
 
 /**
- * Response shape for `GET /api/repositories/clone/:jobId`.
+ * Wire schema for `GET /api/repositories/clone/:jobId`.
  *
  * - `pending` / `cloning`: no `error`, no `repositoryId` yet
  * - `succeeded`: `repositoryId` populated; no `error`
  * - `failed`: `error` populated; no `repositoryId`
+ *
+ * The route omits the optional keys when absent, so they are `optional`, never
+ * `nullable` (the `null` of `CloneRepositoryResponse` is a different shape).
  */
-export interface CloneJobStatusResponse {
-  jobId: string;
-  status: CloneJobStatus;
+export const CloneJobStatusResponseSchema = v.strictObject({
+  jobId: v.string(),
+  status: v.picklist(Object.values(CLONE_JOB_STATUS)),
   /** Present only when `status === 'failed'`. */
-  error?: CloneJobError;
+  error: v.optional(
+    v.strictObject({
+      code: v.picklist(Object.values(CLONE_ERROR_CODES)),
+      message: v.string(),
+    }),
+  ),
   /** Present only when `status === 'succeeded'`. */
-  repositoryId?: string;
-}
+  repositoryId: v.optional(v.string()),
+});
+
+export type CloneJobStatusResponse = v.InferOutput<typeof CloneJobStatusResponseSchema>;
 
 /**
  * Optional branch name schema - validates format only when provided and non-empty
