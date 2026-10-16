@@ -39,6 +39,7 @@ import type { InterSessionMessageService } from '../services/inter-session-messa
 import { buildReplyInstructions, stripControlChars } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { TIMER_REFUSED_PROCESS_RUNNING } from '../services/process-output-router.js';
 import {
   emitArtifactCreated,
   emitArtifactUpdated,
@@ -86,6 +87,16 @@ import {
 import { resolvePermissionDecisions } from '../lib/mcp-server-permissions.js';
 
 const logger = createLogger('mcp');
+
+/**
+ * `create_timer` is refused for a session with a running `run_process` when the
+ * interval is under this many seconds and no `backoffFactor` above 1 is given. A
+ * measured run used 20-30 s timers (created and deleted in pairs, 51 of them)
+ * as a no-op wait for a pending process exit, which the process delivers by
+ * itself. Long or backoff timers (the delegate-wait shape, 900 s with
+ * `backoffFactor` 2) stay allowed.
+ */
+const RUN_PROCESS_WAKEUP_REFUSAL_BELOW_SECONDS = 120;
 
 // ---------- Response helpers ----------
 
@@ -1703,7 +1714,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'The worker can be an agent, terminal, or embedded-agent worker. ' +
       'The timer fires an [internal:timer] notification on each tick -- delivered as a PTY write for ' +
       'agent/terminal workers, or as a queued turn for embedded-agent workers. ' +
-      'Not for waiting on `run_process` output -- that always arrives on its own. One standing timer per delegate; call `list_timers` first. ' +
+      'Not for waiting on `run_process` output -- that always arrives on its own. ' +
+      `Refused while this session has a running run_process and intervalSeconds is under ${RUN_PROCESS_WAKEUP_REFUSAL_BELOW_SECONDS} and no backoffFactor above 1: that process wakes you itself. ` +
+      'One standing timer per delegate; call `list_timers` first. ' +
       'Timers persist across server restarts (fireCount and backoff restart from the base interval). ' +
       'When waiting on a human decision or anything whose expected time-to-change grows with the time already waited, ' +
       'set backoffFactor (e.g. 2) so the interval stretches up to maxIntervalSeconds, and call reset_timer when the situation changes.',
@@ -1781,6 +1794,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(
             `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
           );
+        }
+
+        if (
+          intervalSeconds < RUN_PROCESS_WAKEUP_REFUSAL_BELOW_SECONDS &&
+          (backoffFactor === undefined || backoffFactor <= 1) &&
+          interactiveProcessManager.listProcesses(sessionId).some((p) => p.status === 'running')
+        ) {
+          logger.info({ sessionId, workerId, intervalSeconds }, 'create_timer refused: live run_process');
+          return errorResult(TIMER_REFUSED_PROCESS_RUNNING);
         }
 
         const timer = timerManager.createTimer({

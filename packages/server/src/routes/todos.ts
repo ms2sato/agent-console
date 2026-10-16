@@ -11,7 +11,8 @@ import { Hono } from 'hono';
 import * as v from 'valibot';
 import type { AppBindings, AppContext } from '../app-context.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
-import { emitTodosUpdated } from '../lib/todo-triggers.js';
+import { createLogger } from '../lib/logger.js';
+import { deliverTodoResolution, emitTodosUpdated } from '../lib/todo-triggers.js';
 import { vQueryValidator, vValidator } from '../middleware/validation.js';
 import type { UpdateTodoParams } from '../repositories/todo-repository.js';
 import {
@@ -21,6 +22,8 @@ import {
   TODO_STATUSES,
   UpdateTodoRequestSchema,
 } from '@agent-console/shared';
+
+const logger = createLogger('api:todos');
 
 const ListTodosQuerySchema = v.object({
   status: v.optional(v.picklist(TODO_STATUSES)),
@@ -156,7 +159,7 @@ const todos = new Hono<AppBindings>()
   .post('/:id/resolve', vValidator(ResolveTodoRequestSchema), async (c) => {
     const id = c.req.param('id');
     const body = c.req.valid('json');
-    const { todoRepository, broadcastToApp } = c.get('appContext');
+    const { todoRepository, broadcastToApp, sessionManager } = c.get('appContext');
     const authUser = c.get('authUser');
 
     const existing = await todoRepository.findById(id);
@@ -175,6 +178,22 @@ const todos = new Hono<AppBindings>()
     }
 
     emitTodosUpdated(broadcastToApp, resolved.sessionId);
+
+    // Best effort and not awaited: the response never depends on the worker.
+    const workerId = 'workerId' in resolved.createdBy ? resolved.createdBy.workerId : undefined;
+    void deliverTodoResolution(sessionManager, resolved, text)
+      .then((result) => {
+        if (result && !result.ok) {
+          logger.warn(
+            { todoId: id, sessionId: resolved.sessionId, workerId, reason: result.reason, error: result.error },
+            'Failed to deliver todo resolution',
+          );
+        }
+      })
+      .catch((err) => {
+        logger.warn({ todoId: id, sessionId: resolved.sessionId, workerId, err }, 'Failed to deliver todo resolution');
+      });
+
     return c.json({ todo: resolved });
   })
   .post('/:id/dismiss', async (c) => {

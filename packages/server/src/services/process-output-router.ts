@@ -60,14 +60,30 @@ export interface ProcessOutputRouterDeps {
 }
 
 /**
- * Appended to a stdout notice while the process is still running. The model
- * otherwise tends to poll `get_session_status` for a process that reports back
- * on its own.
+ * The class sentence, single writer: a live run_process is its own wake-up, so
+ * the model must not substitute any wake-up of its own for it (polling a
+ * status tool, listing processes, or buying a timer); naming one tool at a
+ * time only moves the substitute to the next channel.
+ */
+export const PROCESS_WAKES_ITSELF =
+  'This process reports back on its own: its remaining output and its exit arrive as new turns, bounded by its timeoutSeconds. ' +
+  'Do not poll get_session_status or list_processes, and do not create a timer to wait for it.';
+
+/**
+ * Appended to a stdout notice while the process is still running. The reader
+ * may be looking at a stdin prompt, so the notice names the one exception:
+ * input is answered with `write_process_response`.
  */
 export const PROCESS_STILL_RUNNING_NOTICE =
-  'This process is still running; its remaining output and its exit notice arrive as further turns. ' +
-  'Do not poll get_session_status -- it cannot see processes; end your turn. ' +
-  'If no exit notice has arrived by the timeout, check list_processes once.';
+  `${PROCESS_WAKES_ITSELF} If this output is asking for input, answer it with write_process_response; otherwise end your turn with no further tool call.`;
+
+/**
+ * Returned verbatim as the `create_timer` refusal while a run_process of the
+ * session is live. The caller is not looking at output, so it is told to end
+ * its turn, with `write_process_response` named for a pending prompt.
+ */
+export const TIMER_REFUSED_PROCESS_RUNNING =
+  `${PROCESS_WAKES_ITSELF} End your turn; if the process is waiting for input, answer it with write_process_response instead of a timer.`;
 
 function withStillRunningNotice(
   text: string,
