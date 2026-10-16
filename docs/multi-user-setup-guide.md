@@ -1034,13 +1034,17 @@ directory:
 
 ```bash
 git fetch origin
-git fetch origin main:main
+if git worktree list --porcelain | grep -qx 'branch refs/heads/main'; then
+  echo "main is checked out in a linked worktree; local main left as is"
+else
+  git fetch origin main:main
+fi
 ```
 
-Nothing can drift on a bare repository (no index, no working tree). Git refuses
-the second command (non-zero exit, "refusing to fetch into branch") only while a
-linked worktree has `main` checked out; skip it then, the first command has
-already updated the remote-tracking refs.
+Nothing can drift on a bare repository itself (no index, no working tree), but
+a linked worktree that has `main` checked out can: git 2.35 and later (production and this host run 2.43) refuse the second fetch while a linked worktree has `main` checked out (`refusing to fetch into branch`); git 2.34 does not check a bare repository at all and would move the branch under that worktree, which is why the procedure checks `git worktree list --porcelain` first instead of depending on a git version floor nobody pins. The skipped
+step costs nothing, the first command has already updated the remote-tracking
+refs.
 
 ### Manual fallback (operator step)
 

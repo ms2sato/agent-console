@@ -880,6 +880,10 @@ describe('advancing the local default branch on a bare clone', () => {
 
     // Measured on git 2.43.0 (git version output on this host):
     //   fatal: refusing to fetch into branch 'refs/heads/main' checked out at '<worktree path>'
+    // Version boundary: this refusal is the behaviour of git 2.35 and later; git
+    // 2.34 and older do not check a bare repository at all, so on those this arm
+    // fails, by design. It pins the git version the suite runs on, not production,
+    // and it does not claim the refusal holds on every git.
     const refused = await shell('git fetch origin main:main', bare);
     expect(refused.code).not.toBe(0);
     expect(refused.err).toContain('refusing to fetch into branch');
@@ -888,5 +892,28 @@ describe('advancing the local default branch on a bare clone', () => {
     expect(plain.code).toBe(0);
     expect((await shell('git rev-parse refs/remotes/origin/main', bare)).out).toBe(tip);
     expect((await shell('git rev-parse refs/heads/main', bare)).out).not.toBe(tip);
+  });
+
+  it('(c) `git worktree list --porcelain` shows `branch refs/heads/main` exactly once after a worktree is added on main, and never before', async () => {
+    // This is the instrument the Orchestrator procedure's guard relies on: it runs
+    // `grep -qx 'branch refs/heads/main'` over this output to decide whether the
+    // local default branch is checked out somewhere. Version-independent: it pins
+    // the porcelain format, not the refusal in (b).
+    const countBranchLines = (porcelain: string): number =>
+      porcelain.split('\n').filter((line) => line === 'branch refs/heads/main').length;
+    const hasBareLine = (porcelain: string): boolean => porcelain.split('\n').some((line) => line === 'bare');
+
+    const bare = await cloneBare('advance-bare-c');
+    const worktree = join(root, 'advance-bare-c-wt');
+
+    const before = (await shell('git worktree list --porcelain', bare)).out;
+    expect(hasBareLine(before)).toBe(true);
+    expect(countBranchLines(before)).toBe(0);
+
+    expect((await shell(`git worktree add '${worktree}' main`, bare)).code).toBe(0);
+
+    const after = (await shell('git worktree list --porcelain', bare)).out;
+    expect(hasBareLine(after)).toBe(true);
+    expect(countBranchLines(after)).toBe(1);
   });
 });
