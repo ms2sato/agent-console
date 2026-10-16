@@ -39,7 +39,7 @@ import type { InterSessionMessageService } from '../services/inter-session-messa
 import { buildReplyInstructions, stripControlChars } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
-import { TIMER_REFUSED_PROCESS_RUNNING } from '../services/process-output-router.js';
+import { PROCESS_WAKES_ITSELF, TIMER_REFUSED_PROCESS_RUNNING } from '../services/process-output-router.js';
 import {
   emitArtifactCreated,
   emitArtifactUpdated,
@@ -2059,11 +2059,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'run_process',
-    'Start an interactive script connected to a session. ' +
-      'The script drives workflow via STDOUT and blocks on STDIN waiting for responses via write_process_response. ' +
+    'Runs a command connected to a session. ' +
+      'A process that finishes within 5 seconds returns its output and exit code HERE, in this result, and sends no further turn, unless its output passes 60 KB inside the window, in which case it is delivered as turns like a longer process. ' +
+      'A longer process reports back on its own as new turns: its output as it runs, then an exit notice -- or a timeout notice if it runs past timeoutSeconds (default 600), in which case it is killed. ' +
+      'The script can drive a workflow via STDOUT and block on STDIN waiting for responses via write_process_response. ' +
       'The worker can be an agent, terminal, or embedded-agent worker. ' +
-      'Set outputMode="message" to keep long-paragraph script I/O out of the calling agent\'s conversation. ' +
-      'The process ALWAYS reports back as a new turn: its output as it runs, then an exit notice -- or a timeout notice if it runs past timeoutSeconds (default 600), in which case it is killed. ' +
+      'Set outputMode="message" to keep long-paragraph script I/O out of the calling agent\'s conversation; ' +
+      'a process that finishes within 5 seconds still returns its output in this result in that mode (up to 60 KB), because it is your own call and not a conversation turn. ' +
       'Processes are volatile and will not survive server restarts.',
     {
       command: z
@@ -2166,13 +2168,36 @@ export function createMcpApp(deps: McpDependencies): Hono {
           requestUser: requestUsername,
           timeoutSeconds,
         });
-
-        return textResult({
+        const started = {
           processId: process.id,
           sessionId: process.sessionId,
           workerId: process.workerId,
           command: process.command,
           outputMode: process.outputMode,
+        };
+
+        const inline = await interactiveProcessManager.awaitInline(process.id);
+        if (inline && 'removed' in inline) {
+          return textResult({
+            ...started,
+            exited: false,
+            removed: true,
+            note: 'The process was removed (killed, or its session was deleted) before it finished; nothing further will arrive.',
+          });
+        }
+        if (inline) {
+          return textResult({
+            ...started,
+            exited: true,
+            exitCode: inline.exitCode,
+            timedOut: inline.timedOut,
+            output: inline.output === '' ? '(no output)' : inline.output,
+          });
+        }
+        return textResult({
+          ...started,
+          exited: false,
+          note: `Still running: ${PROCESS_WAKES_ITSELF}`,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';

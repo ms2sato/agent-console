@@ -88,18 +88,18 @@ afterEach(() => {
 });
 
 describe('TodosNavLink', () => {
-  it('links to /todos with the label "To-do"', async () => {
+  it('links to /todos with the label "Todo"', async () => {
     await renderWithRouter(<TodosNavLink />);
-    const link = screen.getByText('To-do').closest('a');
+    const link = screen.getByText('Todo').closest('a');
     expect(link?.getAttribute('href')).toBe('/todos');
   });
 
   it('is active on /todos and inactive elsewhere', async () => {
     await renderWithRouter(<TodosNavLink />, '/todos');
-    expect(screen.getByText('To-do').closest('a')?.className).toContain('bg-white/10');
+    expect(screen.getByText('Todo').closest('a')?.className).toContain('bg-white/10');
     cleanup();
     await renderWithRouter(<TodosNavLink />, '/jobs');
-    expect(screen.getByText('To-do').closest('a')?.className).not.toContain('bg-white/10');
+    expect(screen.getByText('Todo').closest('a')?.className).not.toContain('bg-white/10');
   });
 
   it('shows the number of open items assigned to the current user', async () => {
@@ -113,7 +113,7 @@ describe('TodosNavLink', () => {
     await renderWithRouter(<TodosNavLink />);
     await waitFor(() => {
       expect(
-        screen.getByRole('link', { name: /2 open to-do items assigned to you/ }).getAttribute('href'),
+        screen.getByRole('link', { name: /2 open Todo items assigned to you/ }).getAttribute('href'),
       ).toBe('/todos');
     });
   });

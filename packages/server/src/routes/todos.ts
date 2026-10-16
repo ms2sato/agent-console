@@ -65,6 +65,12 @@ const todos = new Hono<AppBindings>()
     });
     return c.json({ todos: list });
   })
+  .get('/:id', async (c) => {
+    const { todoRepository } = c.get('appContext');
+    const todo = await todoRepository.findById(c.req.param('id'));
+    if (!todo) throw new NotFoundError('Todo');
+    return c.json({ todo });
+  })
   // Human create. An explicit `scope` wins; otherwise `session` when the
   // request carries a sessionId (the per-session panel) and `global` when it
   // does not (the global page).
