@@ -156,6 +156,10 @@ const scheduleFrame: (fn: () => void) => void =
         setTimeout(fn, 16);
       };
 
+// Upper bounds for the test-only idle wait (whenIdleForTest).
+const IDLE_WAIT_MAX_MS = 5000;
+const IDLE_WAIT_MAX_ROUNDS = 10;
+
 class TerminalController implements TerminalInstance {
   private terminal: Terminal;
   private ws: WebSocket | null = null;
@@ -514,6 +518,41 @@ class TerminalController implements TerminalInstance {
 
   get noticeTimerForTest(): ReturnType<typeof setTimeout> | null {
     return this.noticeTimer;
+  }
+
+  /**
+   * Resolves once the headless parser has drained every write issued so far and
+   * no snapshot frame is pending. Rejects (instead of hanging) after
+   * IDLE_WAIT_MAX_MS or IDLE_WAIT_MAX_ROUNDS.
+   */
+  whenIdleForTest(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      // Set once the promise has settled so the background polling stops.
+      let cancelled = false;
+      const timer = setTimeout(() => {
+        cancelled = true;
+        reject(new Error(`terminal-store: not idle after ${IDLE_WAIT_MAX_MS}ms`));
+      }, IDLE_WAIT_MAX_MS);
+      const settle = async (): Promise<void> => {
+        for (let round = 0; round < IDLE_WAIT_MAX_ROUNDS; round++) {
+          if (this.disposed || cancelled) return;
+          // A write is queued behind every earlier write, so its callback marks
+          // the point where all earlier parsing (and its scheduleNotify) is done.
+          await new Promise<void>((done) => this.terminal.write('', done));
+          if (!this.frameScheduled) return;
+          while (this.frameScheduled && !cancelled) {
+            await new Promise<void>((done) => setTimeout(done, 4));
+          }
+        }
+        throw new Error(`terminal-store: not idle after ${IDLE_WAIT_MAX_ROUNDS} rounds`);
+      };
+      settle()
+        .then(resolve, reject)
+        .finally(() => {
+          cancelled = true;
+          clearTimeout(timer);
+        });
+    });
   }
 
   get pagingStateForTest(): {
@@ -1722,6 +1761,11 @@ export function _resetTerminals(): void {
   instances.clear();
   timings = { ...DEFAULT_TIMINGS };
   appSubscribeImpl = subscribeApp;
+}
+
+/** @internal Test helper: resolve once every live instance has parsed all pending output and flushed its snapshot frame. */
+export function _whenIdle(): Promise<void> {
+  return Promise.all(Array.from(instances.values(), (i) => i.whenIdleForTest())).then(() => {});
 }
 
 /** @internal Test helper: override memory-management / reconnect timings. */
