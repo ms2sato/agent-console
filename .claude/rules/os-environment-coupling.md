@@ -119,7 +119,7 @@ Code that runs, renders, installs, or reads the multi-user systemd unit, the ele
 | Tier | Where | What belongs there |
 |---|---|---|
 | 1 | unit / memfs, every PR's CI | pure logic with injectable io (`assessEmbeddedAgentBunPath`, `ensureMemoryDir`, the `scripts/lib/setup-multiuser-checks.sh` helpers via fixtures) |
-| 2 | the verification container, no systemd (`scripts/verify-multiuser-docker.sh --smokes`) | the seven real-host smokes, PTY / elevation isolation, uploads, worktrees, shared sessions |
+| 2 | the verification container, no systemd (`scripts/verify-multiuser-docker.sh --smokes`) | the seven real-host smokes, PTY / elevation isolation, uploads, worktrees, shared sessions, bare source repositories (clone path + second-user worktree) |
 | 3 | the systemd stack, systemd as PID 1 in a privileged container (`scripts/verify-multiuser-systemd.sh`), **ephemeral runner or personal workstation ONLY** | the setup script, the deploy script, unit render + drift detection, elevation-rules install, `MainPID` identity, wrong-gid / right-gid classification |
 | 4 | the production host, owner-run, once per deploy | the deploy command with its built-in post-deploy verification; billable smokes |
 

@@ -822,3 +822,98 @@ describe('buildCloneCommand (repository-clone-service) run for real against a sc
     });
   });
 });
+
+describe('advancing the local default branch on a bare clone', () => {
+  // These pin git's own behaviour (what `fetch origin main:main` does in a bare
+  // clone made by the builder's command), not code of ours, so there is no
+  // production mutation to apply; the checks below can fail by flipping an
+  // expectation. Proxy, recorded: the builder's command runs through `sh -c`.
+  let root: string;
+  let upstream: ScratchGitRepo;
+
+  const shell = async (command: string, cwd: string): Promise<{ code: number; out: string; err: string }> => {
+    const proc = Bun.spawn(['sh', '-c', command], { cwd, env: upstream.env, stdout: 'pipe', stderr: 'pipe' });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, out: out.trim(), err: err.trim() };
+  };
+
+  const advanceUpstream = async (message: string): Promise<string> => {
+    await upstream.git(['commit', '--allow-empty', '-q', '-m', message]);
+    return upstream.git(['rev-parse', 'refs/heads/main']);
+  };
+
+  const cloneBare = async (name: string): Promise<string> => {
+    const target = join(root, name);
+    expect((await shell(buildCloneCommand({ url: upstream.dir, targetDir: target, bare: true }), root)).code).toBe(0);
+    return target;
+  };
+
+  beforeAll(async () => {
+    await assertRealFs('git-bare-repository.test.ts advancing the local default branch setup');
+    root = await mkdtemp(join(tmpdir(), 'git-bare-advance-default-'));
+    upstream = await createScratchGitRepo({ parentDir: root, name: 'advance-upstream-' });
+  });
+
+  afterAll(async () => {
+    if (upstream) await upstream.cleanup();
+    if (root) await rm(root, { recursive: true, force: true });
+  });
+
+  it('(a) with no worktree on the branch, `fetch origin main:main` moves refs/heads/main to the upstream tip', async () => {
+    const bare = await cloneBare('advance-bare-a');
+    expect((await shell('git rev-parse --is-bare-repository', bare)).out).toBe('true');
+
+    const tip = await advanceUpstream('advance a');
+    expect((await shell('git rev-parse refs/heads/main', bare)).out).not.toBe(tip);
+
+    const fetched = await shell('git fetch origin main:main', bare);
+    expect(fetched.code).toBe(0);
+    expect((await shell('git rev-parse refs/heads/main', bare)).out).toBe(tip);
+  });
+
+  it('(b) with a worktree on the branch, `fetch origin main:main` is refused while a plain `fetch origin` still moves the tracking ref', async () => {
+    const bare = await cloneBare('advance-bare-b');
+    const worktree = join(root, 'advance-bare-b-wt');
+    expect((await shell(`git worktree add '${worktree}' main`, bare)).code).toBe(0);
+
+    const tip = await advanceUpstream('advance b');
+
+    // Measured on git 2.43.0 (git version output on this host):
+    //   fatal: refusing to fetch into branch 'refs/heads/main' checked out at '<worktree path>'
+    // Version boundary: this refusal is the behaviour of git 2.35 and later; git
+    // 2.34 and older do not check a bare repository at all, so on those this arm
+    // fails, by design. It pins the git version the suite runs on, not production,
+    // and it does not claim the refusal holds on every git.
+    const refused = await shell('git fetch origin main:main', bare);
+    expect(refused.code).not.toBe(0);
+    expect(refused.err).toContain('refusing to fetch into branch');
+
+    const plain = await shell('git fetch origin', bare);
+    expect(plain.code).toBe(0);
+    expect((await shell('git rev-parse refs/remotes/origin/main', bare)).out).toBe(tip);
+    expect((await shell('git rev-parse refs/heads/main', bare)).out).not.toBe(tip);
+  });
+
+  it('(c) `git worktree list --porcelain` shows `branch refs/heads/main` exactly once after a worktree is added on main, and never before', async () => {
+    // This is the instrument the Orchestrator procedure's guard relies on: it runs
+    // `grep -qx 'branch refs/heads/main'` over this output to decide whether the
+    // local default branch is checked out somewhere. Version-independent: it pins
+    // the porcelain format, not the refusal in (b).
+    const countBranchLines = (porcelain: string): number =>
+      porcelain.split('\n').filter((line) => line === 'branch refs/heads/main').length;
+    const hasBareLine = (porcelain: string): boolean => porcelain.split('\n').some((line) => line === 'bare');
+
+    const bare = await cloneBare('advance-bare-c');
+    const worktree = join(root, 'advance-bare-c-wt');
+
+    const before = (await shell('git worktree list --porcelain', bare)).out;
+    expect(hasBareLine(before)).toBe(true);
+    expect(countBranchLines(before)).toBe(0);
+
+    expect((await shell(`git worktree add '${worktree}' main`, bare)).code).toBe(0);
+
+    const after = (await shell('git worktree list --porcelain', bare)).out;
+    expect(hasBareLine(after)).toBe(true);
+    expect(countBranchLines(after)).toBe(1);
+  });
+});
