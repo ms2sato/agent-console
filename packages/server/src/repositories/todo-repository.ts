@@ -64,9 +64,9 @@ export class TodoSupersedeRefusedError extends Error {
 }
 
 /**
- * Thrown by a caller of {@link TodoRepository.resolveManyOpen} when some ids
- * were not open items of the session; throwing inside the transaction rolls
- * the whole resolution back.
+ * Thrown by {@link TodoRepository.resolveManyOpen} when some ids are not open
+ * items of the session (unknown, not open, or another session's). Nothing is
+ * written.
  */
 export class TodoResolveRefusedError extends Error {
   constructor(public readonly refusedIds: string[]) {
@@ -106,16 +106,12 @@ export interface TodoRepository {
   resolve(id: string, params: ResolveTodoParams, executor?: TodoExecutor): Promise<Todo | null>;
 
   /**
-   * Resolve every item of `ids` that is `open` and belongs to `params.sessionId`
-   * in the caller's transaction, and return the rows actually updated. Any
-   * other id (unknown, not open, another session's) is silently skipped, so
-   * the caller refuses when `rows.length !== ids.length` (after deduplicating)
-   * and lets its transaction roll back.
+   * Resolve every item of `ids` (deduplicated) in ONE transaction and return
+   * the updated rows. Throws {@link TodoResolveRefusedError} (and writes
+   * nothing) unless every id is an `open` item of `params.sessionId`. An empty
+   * list is a no-op returning `[]`.
    */
-  resolveManyOpen(ids: string[], params: ResolveManyOpenParams, executor: TodoExecutor): Promise<Todo[]>;
-
-  /** Run `fn` in ONE transaction: it commits when `fn` resolves and rolls back when it throws. */
-  inTransaction<T>(fn: (trx: TodoExecutor) => Promise<T>): Promise<T>;
+  resolveManyOpen(ids: string[], params: ResolveManyOpenParams, executor?: TodoExecutor): Promise<Todo[]>;
 
   /** `open` to `dismissed`. Null when the item does not exist or is not open. */
   dismiss(id: string, executor?: TodoExecutor): Promise<Todo | null>;

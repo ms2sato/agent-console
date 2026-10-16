@@ -8,6 +8,7 @@ import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteTodoRepository } from '../sqlite-todo-repository.js';
 import {
   TODO_RESOLUTION_SEPARATOR,
+  TodoResolveRefusedError,
   TodoSupersedeRefusedError,
   type CreateTodoParams,
 } from '../todo-repository.js';
@@ -258,11 +259,11 @@ describe('SqliteTodoRepository', () => {
       sessionId,
     });
 
-    it('resolves the open items of one session in the caller transaction and returns the updated rows', async () => {
+    it('resolves the open items of one session and returns the updated rows', async () => {
       await repository.create(params({ id: 'a' }));
       await repository.create(params({ id: 'b', kind: 'question' }));
 
-      const rows = await repository.inTransaction((trx) => repository.resolveManyOpen(['a', 'b'], agentParams(), trx));
+      const rows = await repository.resolveManyOpen(['a', 'b'], agentParams());
 
       expect(rows.map((r) => r.id).sort()).toEqual(['a', 'b']);
       for (const row of rows) {
@@ -276,50 +277,80 @@ describe('SqliteTodoRepository', () => {
       }
     });
 
-    it('skips a done row and the caller sees the short count', async () => {
+    it('refuses when an id is already done, naming it, and leaves the valid ids open', async () => {
       await repository.create(params({ id: 'a' }));
       await repository.create(params({ id: 'b' }));
       await repository.resolve('b', { text: 'earlier human answer', resolvedByUserId: 'user-3' });
 
-      const rows = await repository.inTransaction((trx) => repository.resolveManyOpen(['a', 'b'], agentParams(), trx));
+      const error = await repository.resolveManyOpen(['a', 'b'], agentParams()).catch((e: unknown) => e);
 
-      expect(rows.map((r) => r.id)).toEqual(['a']);
-      const untouched = (await repository.findById('b'))!;
-      expect(untouched).toMatchObject({ resolutionText: 'earlier human answer', resolvedByUserId: 'user-3', resolvedByWorkerId: null });
+      expect(error).toBeInstanceOf(TodoResolveRefusedError);
+      expect((error as TodoResolveRefusedError).refusedIds).toEqual(['b']);
+      expect((error as TodoResolveRefusedError).message).toContain('b');
+      expect(await repository.findById('a')).toMatchObject({ status: 'open', resolvedByWorkerId: null });
+      expect(await repository.findById('b')).toMatchObject({
+        resolutionText: 'earlier human answer',
+        resolvedByUserId: 'user-3',
+        resolvedByWorkerId: null,
+      });
     });
 
-    it("does not touch another session's rows, nor dismissed or unknown ids", async () => {
+    it("refuses another session's, dismissed and unknown ids together and changes nothing", async () => {
       await repository.create(params({ id: 'mine' }));
       await repository.create(params({ id: 'theirs', sessionId: 'session-2' }));
       await repository.create(params({ id: 'gone' }));
       await repository.dismiss('gone');
 
-      const rows = await repository.inTransaction((trx) =>
-        repository.resolveManyOpen(['mine', 'theirs', 'gone', 'missing'], agentParams(), trx),
-      );
+      const error = await repository
+        .resolveManyOpen(['mine', 'theirs', 'gone', 'missing'], agentParams())
+        .catch((e: unknown) => e);
 
-      expect(rows.map((r) => r.id)).toEqual(['mine']);
+      expect(error).toBeInstanceOf(TodoResolveRefusedError);
+      expect((error as TodoResolveRefusedError).refusedIds.sort()).toEqual(['gone', 'missing', 'theirs']);
+      expect((await repository.findById('mine'))!.status).toBe('open');
       expect((await repository.findById('theirs'))!.status).toBe('open');
       expect((await repository.findById('gone'))!.status).toBe('dismissed');
     });
 
-    it('rolls back with the enclosing transaction when the caller refuses a short count', async () => {
+    it('counts a repeated id once', async () => {
       await repository.create(params({ id: 'a' }));
 
-      await repository
-        .inTransaction(async (trx) => {
-          const rows = await repository.resolveManyOpen(['a', 'missing'], agentParams(), trx);
-          if (rows.length !== 2) throw new Error('refused');
+      const rows = await repository.resolveManyOpen(['a', 'a'], agentParams());
+
+      expect(rows.map((r) => r.id)).toEqual(['a']);
+    });
+
+    it('re-enters an enclosing transaction: the caller rolling back restores the rows', async () => {
+      await repository.create(params({ id: 'a' }));
+
+      await db
+        .transaction()
+        .execute(async (trx) => {
+          const rows = await repository.resolveManyOpen(['a'], agentParams(), trx);
+          expect(rows.map((r) => r.id)).toEqual(['a']);
+          throw new Error('caller rolls back');
         })
         .catch(() => undefined);
 
-      expect((await repository.findById('a'))).toMatchObject({ status: 'open', resolvedByWorkerId: null });
+      expect(await repository.findById('a')).toMatchObject({ status: 'open', resolvedByWorkerId: null });
     });
 
-    it('an empty id list updates nothing and returns an empty list', async () => {
+    it('a refusal inside an enclosing transaction throws to the caller without committing the valid ids', async () => {
       await repository.create(params({ id: 'a' }));
 
-      const rows = await repository.inTransaction((trx) => repository.resolveManyOpen([], agentParams(), trx));
+      const error = await db
+        .transaction()
+        .execute((trx) => repository.resolveManyOpen(['a', 'missing'], agentParams(), trx))
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(TodoResolveRefusedError);
+      expect((await repository.findById('a'))!.status).toBe('open');
+    });
+
+    it('an empty id list is a no-op: updates nothing and returns an empty list', async () => {
+      await repository.create(params({ id: 'a' }));
+
+      const rows = await repository.resolveManyOpen([], agentParams());
 
       expect(rows).toEqual([]);
       expect((await repository.findById('a'))!.status).toBe('open');

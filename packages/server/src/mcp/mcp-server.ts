@@ -3155,19 +3155,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
           resolvedByUserId = stater.id;
         }
 
-        const resolved = await todoRepository.inTransaction(async (trx) => {
-          const rows = await todoRepository.resolveManyOpen(
-            uniqueIds,
-            { text, resolvedByUserId, resolvedByWorkerId: workerId, sessionId },
-            trx,
-          );
-          if (rows.length !== uniqueIds.length) {
-            const resolvedIds = new Set(rows.map((row) => row.id));
-            const refused = uniqueIds.filter((id) => !resolvedIds.has(id));
-            throw new TodoResolveRefusedError(refused);
-          }
-          return rows;
-        });
+        const resolved = await todoRepository.resolveManyOpen(
+          uniqueIds,
+          { text, resolvedByUserId, resolvedByWorkerId: workerId, sessionId },
+        );
 
         logger.info({ sessionId, workerId, count: resolved.length }, 'Todos resolved via MCP');
         emitTodosUpdated(broadcastToApp, sessionId);
