@@ -968,6 +968,8 @@ export class WorkerOutputFileManager {
    *   recent window, which lies entirely below the request (`startOffset < fromOffset`).
    *
    * @param recentWindowLines line cap for the recent-window fallback branches.
+   * @param recentWindowMinBytes byte floor for the same branches (the window is the
+   *   longer of the line cap and this many trailing bytes); ignored without a line cap.
    */
   /**
    * Public read. Takes the worker lock, then delegates to the core below.
@@ -986,10 +988,11 @@ export class WorkerOutputFileManager {
     resolver: SessionDataPathResolver,
     fromOffset?: number,
     recentWindowLines?: number,
+    recentWindowMinBytes: number = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES,
   ): Promise<HistoryReadResult> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () =>
-      this.readHistoryWithOffsetLocked(sessionId, workerId, resolver, fromOffset, recentWindowLines),
+      this.readHistoryWithOffsetLocked(sessionId, workerId, resolver, fromOffset, recentWindowLines, recentWindowMinBytes),
     );
   }
 
@@ -1004,6 +1007,7 @@ export class WorkerOutputFileManager {
     resolver: SessionDataPathResolver,
     fromOffset?: number,
     recentWindowLines?: number,
+    recentWindowMinBytes: number = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES,
   ): Promise<HistoryReadResult> {
     const key = this.getKey(sessionId, workerId);
     try {
@@ -1027,7 +1031,7 @@ export class WorkerOutputFileManager {
 
       if (fromOffset < base || fromOffset > total) {
         // Archived-out or stale/diverged — return the recent window.
-        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, recentWindowLines, epoch);
+        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, recentWindowLines, epoch, recentWindowMinBytes);
       }
 
       if (fromOffset === total) {
@@ -1311,6 +1315,7 @@ export class WorkerOutputFileManager {
     workerId: string,
     maxLines: number,
     resolver: SessionDataPathResolver,
+    minBytes: number = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES,
   ): Promise<HistoryReadResult> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
@@ -1327,7 +1332,7 @@ export class WorkerOutputFileManager {
         const fileSize = liveBuffer.length;
         const total = base + fileSize + pendingByteLength;
 
-        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch);
+        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch, minBytes);
       } catch (error) {
         logger.error({ sessionId, workerId, err: error }, 'Failed to read output file for last N lines');
         return { data: '', offset: 0, startOffset: 0, epoch: 0 };
@@ -1336,8 +1341,11 @@ export class WorkerOutputFileManager {
   }
 
   /**
-   * Build the recent-window result: the last `maxLines` lines of the live
-   * window (live file + pending buffer). `startOffset` is derived from the byte
+   * Build the recent-window result: the longer of the last `maxLines` lines
+   * and the last `minBytes` bytes (line-head aligned) of the live window (live
+   * file + pending buffer). `maxLines === undefined` returns the whole window
+   * and the floor is irrelevant. Single writer of this rule for every
+   * lines-only recent window. `startOffset` is derived from the byte
    * length of the returned data so it is an honest absolute position.
    */
   private buildRecentWindow(
@@ -1346,7 +1354,7 @@ export class WorkerOutputFileManager {
     total: number,
     maxLines: number | undefined,
     epoch: number,
-    minBytes: number = 0,
+    minBytes: number,
   ): HistoryReadResult {
     const fullContent = liveBuffer.toString('utf-8') + pendingBuffer;
     const data = maxLines === undefined ? fullContent : this.selectDisplayWindow(fullContent, maxLines, minBytes);

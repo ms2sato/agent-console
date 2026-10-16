@@ -1482,7 +1482,7 @@ describe('WorkerOutputFileManager', () => {
       vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-lines`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\nline2\nline3\nline4\nline5');
 
-      const result = await manager.readLastNLines('session-lines', 'worker-1', 3, quickResolver);
+      const result = await manager.readLastNLines('session-lines', 'worker-1', 3, quickResolver, 0);
 
       expect(result).not.toBeNull();
       expect(result!.data).toBe('line3\nline4\nline5');
@@ -1506,7 +1506,7 @@ describe('WorkerOutputFileManager', () => {
       vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-crlf`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\r\nline2\r\nline3\r\nline4');
 
-      const result = await manager.readLastNLines('session-crlf', 'worker-1', 2, quickResolver);
+      const result = await manager.readLastNLines('session-crlf', 'worker-1', 2, quickResolver, 0);
 
       expect(result).not.toBeNull();
       expect(result!.data).toBe('line3\r\nline4');
@@ -1517,7 +1517,7 @@ describe('WorkerOutputFileManager', () => {
       vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-empty`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\n\nline3\nline4');
 
-      const result = await manager.readLastNLines('session-empty', 'worker-1', 3, quickResolver);
+      const result = await manager.readLastNLines('session-empty', 'worker-1', 3, quickResolver, 0);
 
       expect(result).not.toBeNull();
       // Empty line counts as a line
@@ -1535,7 +1535,7 @@ describe('WorkerOutputFileManager', () => {
     it('should apply line limit to pending buffer', async () => {
       manager.bufferOutput('session-buffer-lines', 'worker-1', 'line1\nline2\nline3\nline4', quickResolver);
 
-      const result = await manager.readLastNLines('session-buffer-lines', 'worker-1', 2, quickResolver);
+      const result = await manager.readLastNLines('session-buffer-lines', 'worker-1', 2, quickResolver, 0);
 
       expect(result).not.toBeNull();
       expect(result!.data).toBe('line3\nline4');
@@ -1546,7 +1546,7 @@ describe('WorkerOutputFileManager', () => {
       vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-zero`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\nline2');
 
-      const result = await manager.readLastNLines('session-zero', 'worker-1', 0, quickResolver);
+      const result = await manager.readLastNLines('session-zero', 'worker-1', 0, quickResolver, 0);
 
       expect(result).not.toBeNull();
       expect(result!.data).toBe('');
@@ -1557,7 +1557,7 @@ describe('WorkerOutputFileManager', () => {
       vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-trailing`, { recursive: true });
       vol.writeFileSync(filePath, 'line1\nline2\nline3\n');
 
-      const result = await manager.readLastNLines('session-trailing', 'worker-1', 2, quickResolver);
+      const result = await manager.readLastNLines('session-trailing', 'worker-1', 2, quickResolver, 0);
 
       expect(result).not.toBeNull();
       // Last 2 lines: "line3" and empty line after last \n
@@ -1572,7 +1572,7 @@ describe('WorkerOutputFileManager', () => {
       // Buffer more data (not flushed yet)
       manager.bufferOutput('session-pending-file', 'worker-1', '\nline4\nline5', quickResolver); // 12 bytes
 
-      const result = await manager.readLastNLines('session-pending-file', 'worker-1', 3, quickResolver);
+      const result = await manager.readLastNLines('session-pending-file', 'worker-1', 3, quickResolver, 0);
 
       expect(result).not.toBeNull();
       // Should get last 3 lines from combined content (file + pending)
@@ -1590,7 +1590,7 @@ describe('WorkerOutputFileManager', () => {
       manager.bufferOutput('session-pending-fewer', 'worker-1', '\nnew1\nnew2', quickResolver); // 10 bytes
 
       // Request only last 2 lines - should be from pending buffer
-      const result = await manager.readLastNLines('session-pending-fewer', 'worker-1', 2, quickResolver);
+      const result = await manager.readLastNLines('session-pending-fewer', 'worker-1', 2, quickResolver, 0);
 
       expect(result).not.toBeNull();
       expect(result!.data).toBe('new1\nnew2');
@@ -1613,6 +1613,125 @@ describe('WorkerOutputFileManager', () => {
       expect(result!.data).toBe('hello\nテスト');
       // Offset should be file size (6) + pending buffer byte length (9)
       expect(result!.offset).toBe(15);
+    });
+  });
+
+  describe('byte floor on the recent window (readLastNLines / readHistoryWithOffset)', () => {
+    // A line is `r` + 8 digits + `\n` = 10 bytes, so offsets are checkable by arithmetic.
+    const rows = (count: number, pad = 0, from = 0): string =>
+      Array.from({ length: count }, (_, i) => `r${String(from + i).padStart(8, '0')}${'.'.repeat(pad)}\n`).join('');
+    const countLinesOf = (data: string): number => data.split('\n').length - 1;
+    // `getLastNLines` counts the empty piece after a trailing newline as a line.
+    const lastNPieces = (full: string, n: number): string => full.split('\n').slice(-n).join('\n');
+    const byteLen = (s: string): number => Buffer.byteLength(s, 'utf-8');
+
+    // Measured reach (mutation: `getLastBytesLineAligned` returns ''), by name.
+    // Failing: (1) readLastNLines floor above the line window; (3) readLastNLines
+    // floor larger than the whole output; (6) readHistoryWithOffset archived-out
+    // fallback honours the floor. Still passing: (2) floor below the line window,
+    // (5) floor 0 / default, (7) no recentWindowLines -> full content. (3) fails
+    // because its fixture has more lines than the budget; with fewer it would pass
+    // in both worlds.
+    let big: WorkerOutputFileManager;
+    const S = 'session-floor';
+    const W = 'worker-1';
+
+    beforeEach(() => {
+      big = new WorkerOutputFileManager({ flushThreshold: 100_000_000, flushInterval: 100_000, fileMaxSize: 100_000_000, maxSegments: 0 });
+    });
+
+    async function writeLive(content: string): Promise<void> {
+      big.bufferOutput(S, W, content, quickResolver);
+      await big.flushAll();
+    }
+
+    it('(1) readLastNLines: a byte floor above the line window extends it, starting at a line head', async () => {
+      const full = rows(6000); // 60,000 bytes
+      await writeLive(full);
+
+      // 55,005 is not a multiple of the line width: the raw start falls
+      // mid-line and must be moved BACKWARD to the previous line head.
+      const result = await big.readLastNLines(S, W, 5000, quickResolver, 55_005);
+
+      expect(byteLen(result.data)).toBeGreaterThanOrEqual(55_005);
+      expect(Math.abs(countLinesOf(result.data) - 5500)).toBeLessThanOrEqual(1);
+      expect(result.startOffset).toBe(60_000 - byteLen(result.data));
+      expect(full[result.startOffset - 1]).toBe('\n');
+      expect(full.slice(result.startOffset)).toBe(result.data);
+    });
+
+    it('(2) readLastNLines: a floor below the line window is inactive -- exactly the last N lines', async () => {
+      const full = rows(6000);
+      await writeLive(full);
+
+      const result = await big.readLastNLines(S, W, 5000, quickResolver, 10 * 1024);
+
+      const expected = lastNPieces(full, 5000);
+      expect(result.data).toBe(expected);
+      expect(result.startOffset).toBe(60_000 - byteLen(expected));
+    });
+
+    it('(3) readLastNLines: a floor larger than the whole output returns everything from the live base', async () => {
+      const full = rows(6000);
+      await writeLive(full);
+
+      const result = await big.readLastNLines(S, W, 5000, quickResolver, 10_000_000);
+
+      expect(result.data).toBe(full);
+      expect(result.startOffset).toBe(0);
+    });
+
+    it('(5) readLastNLines: a floor of 0 is the line-only window, identical to the default when the default floor is inactive', async () => {
+      // 6000 x 120-byte lines: the last 5000 lines are 600,000 bytes, above
+      // the default floor (512 KiB), so the default is inactive here too.
+      const full = rows(6000, 110);
+      await writeLive(full);
+
+      const withZero = await big.readLastNLines(S, W, 5000, quickResolver, 0);
+      const withDefault = await big.readLastNLines(S, W, 5000, quickResolver);
+
+      expect(withZero.data).toBe(lastNPieces(full, 5000));
+      expect(withZero).toEqual(withDefault);
+    });
+
+    it('(6) readHistoryWithOffset: the archived-out fallback (fromOffset < liveBaseOffset) honours the floor', async () => {
+      // fileMaxSize=400: each 300-byte flush past the first rotates, leaving a
+      // live window of ~320 bytes.
+      const rotating = new WorkerOutputFileManager({ flushThreshold: 100_000_000, flushInterval: 100_000, fileMaxSize: 400, maxSegments: 0 });
+      for (let chunk = 0; chunk < 10; chunk++) {
+        rotating.bufferOutput(S, W, rows(30, 0, chunk * 30), quickResolver);
+        await rotating.flushAll();
+      }
+      const total = await rotating.getCurrentOffset(S, W, quickResolver);
+      const live = await rotating.readLastNLines(S, W, 100_000, quickResolver, 0);
+      // Premise control: the client's offset (1) is genuinely archived out, and
+      // the live window is wider than the floor used below.
+      expect(live.startOffset).toBeGreaterThan(1);
+      expect(byteLen(live.data)).toBeGreaterThan(200);
+
+      const lineOnly = await rotating.readHistoryWithOffset(S, W, quickResolver, 1, 5, 0);
+      const floored = await rotating.readHistoryWithOffset(S, W, quickResolver, 1, 5, 200);
+
+      expect(lineOnly.data.split('\n').length).toBe(5);
+      expect(byteLen(floored.data)).toBeGreaterThanOrEqual(200);
+      expect(floored.data[0]).toBe('r');
+      expect(floored.startOffset).toBe(total - byteLen(floored.data));
+      expect(floored.startOffset).toBeGreaterThan(1); // honest: still above the stale request
+      expect(live.data.endsWith(floored.data)).toBe(true);
+    });
+
+    it('(7) readHistoryWithOffset: no recentWindowLines returns the FULL content, byte-identical (the restore-side shape)', async () => {
+      const full = rows(6000);
+      await writeLive(full);
+
+      // Stale offset beyond total drives the recent-window branch; with no line
+      // cap the floor is irrelevant and nothing may be trimmed.
+      const stale = await big.readHistoryWithOffset(S, W, quickResolver, 9_999_999);
+      const initial = await big.readHistoryWithOffset(S, W, quickResolver);
+
+      expect(stale.data).toBe(full);
+      expect(stale.startOffset).toBe(0);
+      expect(initial.data).toBe(full);
     });
   });
 

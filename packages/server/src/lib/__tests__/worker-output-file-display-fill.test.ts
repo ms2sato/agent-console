@@ -552,6 +552,8 @@ describe('readHistoryForDisplay -- byte floor on the display window', () => {
  *   - (3) a floor larger than the whole output returns everything ...
  *   - (4) archive: lines are satisfied after one segment but the byte floor
  *     is not -> a further segment is read; ...
+ *   - (6) archive: the live window already satisfies the line budget but not
+ *     the byte floor -> the walk is entered (no fast path)
  * Still passing under that mutation: (2) floor below the line window, and
  * (5) floor of 0 / default. (3) fails too because its fixture has more lines
  * than the line budget, so the line-only window is strictly shorter than the
