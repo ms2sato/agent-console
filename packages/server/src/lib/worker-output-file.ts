@@ -968,6 +968,8 @@ export class WorkerOutputFileManager {
    *   recent window, which lies entirely below the request (`startOffset < fromOffset`).
    *
    * @param recentWindowLines line cap for the recent-window fallback branches.
+   * @param recentWindowMinBytes byte floor for the same branches (the window is the
+   *   longer of the line cap and this many trailing bytes); ignored without a line cap.
    */
   /**
    * Public read. Takes the worker lock, then delegates to the core below.
@@ -986,10 +988,11 @@ export class WorkerOutputFileManager {
     resolver: SessionDataPathResolver,
     fromOffset?: number,
     recentWindowLines?: number,
+    recentWindowMinBytes: number = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES,
   ): Promise<HistoryReadResult> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () =>
-      this.readHistoryWithOffsetLocked(sessionId, workerId, resolver, fromOffset, recentWindowLines),
+      this.readHistoryWithOffsetLocked(sessionId, workerId, resolver, fromOffset, recentWindowLines, recentWindowMinBytes),
     );
   }
 
@@ -1004,6 +1007,7 @@ export class WorkerOutputFileManager {
     resolver: SessionDataPathResolver,
     fromOffset?: number,
     recentWindowLines?: number,
+    recentWindowMinBytes: number = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES,
   ): Promise<HistoryReadResult> {
     const key = this.getKey(sessionId, workerId);
     try {
@@ -1027,7 +1031,7 @@ export class WorkerOutputFileManager {
 
       if (fromOffset < base || fromOffset > total) {
         // Archived-out or stale/diverged — return the recent window.
-        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, recentWindowLines, epoch);
+        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, recentWindowLines, epoch, recentWindowMinBytes);
       }
 
       if (fromOffset === total) {
@@ -1071,6 +1075,7 @@ export class WorkerOutputFileManager {
     maxLines: number,
     fromOffset?: number,
     maxBytes: number = serverConfig.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES,
+    minBytes: number = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES,
   ): Promise<HistoryReadResult> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
@@ -1090,7 +1095,7 @@ export class WorkerOutputFileManager {
         if (fromOffset === undefined || fromOffset <= 0 || fromOffset < base || fromOffset > total) {
           // Initial load, or archived-out/stale: the live window alone may
           // not hold enough to render a non-misleading transcript.
-          return this.buildDisplayWindow(sessionId, workerId, resolver, manifest, liveBuffer, pendingBuffer, total, maxLines, maxBytes, epoch);
+          return this.buildDisplayWindow(sessionId, workerId, resolver, manifest, liveBuffer, pendingBuffer, total, maxLines, maxBytes, minBytes, epoch);
         }
 
         if (fromOffset === total) {
@@ -1138,13 +1143,15 @@ export class WorkerOutputFileManager {
     total: number,
     maxLines: number,
     maxBytes: number,
+    minBytes: number,
     epoch: number,
   ): Promise<HistoryReadResult> {
     const liveContent = liveBuffer.toString('utf-8') + pendingBuffer;
     const liveLineCount = this.countLines(liveContent);
+    const liveBytes = Buffer.byteLength(liveContent, 'utf-8');
 
-    if (liveLineCount >= maxLines || manifest.segments.length === 0) {
-      return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch);
+    if ((liveLineCount >= maxLines && liveBytes >= minBytes) || manifest.segments.length === 0) {
+      return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch, minBytes);
     }
 
     const parts: string[] = [liveContent];
@@ -1184,7 +1191,17 @@ export class WorkerOutputFileManager {
         // the 5s HISTORY_REQUEST_TIMEOUT_MS in routes.ts -- kept as the
         // simple, obviously-correct form rather than an incrementally-
         // corrected counter (2026-08-30 measurement).
-        () => this.countLines(parts.join('')) >= maxLines,
+        //
+        // The window has two budgets (lines and bytes); the walk stops only
+        // once BOTH are satisfied, since the served window is the longer of
+        // the two trims.
+        () => {
+          const assembledSoFar = parts.join('');
+          return (
+            this.countLines(assembledSoFar) >= maxLines &&
+            Buffer.byteLength(assembledSoFar, 'utf-8') >= minBytes
+          );
+        },
       );
     } catch (error) {
       // A damaged archive segment (non-ENOENT decompression failure) must not
@@ -1205,11 +1222,11 @@ export class WorkerOutputFileManager {
       // ENOENT/pruned/cap/exhausted are unaffected: they resolve normally
       // through `walkArchiveSegmentsBackward` and never reach here.
       logger.warn({ sessionId, workerId, err: error }, 'Archive fill failed for display; serving live window only');
-      return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch);
+      return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch, minBytes);
     }
 
     const assembled = parts.join('');
-    const data = this.getLastNLines(assembled, maxLines);
+    const data = this.selectDisplayWindow(assembled, maxLines, minBytes);
     const startOffset = total - Buffer.byteLength(data, 'utf-8');
     return { data, offset: total, startOffset, epoch };
   }
@@ -1298,6 +1315,7 @@ export class WorkerOutputFileManager {
     workerId: string,
     maxLines: number,
     resolver: SessionDataPathResolver,
+    minBytes: number = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES,
   ): Promise<HistoryReadResult> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
@@ -1314,7 +1332,7 @@ export class WorkerOutputFileManager {
         const fileSize = liveBuffer.length;
         const total = base + fileSize + pendingByteLength;
 
-        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch);
+        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch, minBytes);
       } catch (error) {
         logger.error({ sessionId, workerId, err: error }, 'Failed to read output file for last N lines');
         return { data: '', offset: 0, startOffset: 0, epoch: 0 };
@@ -1323,8 +1341,11 @@ export class WorkerOutputFileManager {
   }
 
   /**
-   * Build the recent-window result: the last `maxLines` lines of the live
-   * window (live file + pending buffer). `startOffset` is derived from the byte
+   * Build the recent-window result: the longer of the last `maxLines` lines
+   * and the last `minBytes` bytes (line-head aligned) of the live window (live
+   * file + pending buffer). `maxLines === undefined` returns the whole window
+   * and the floor is irrelevant. Single writer of this rule for every
+   * lines-only recent window. `startOffset` is derived from the byte
    * length of the returned data so it is an honest absolute position.
    */
   private buildRecentWindow(
@@ -1333,11 +1354,46 @@ export class WorkerOutputFileManager {
     total: number,
     maxLines: number | undefined,
     epoch: number,
+    minBytes: number,
   ): HistoryReadResult {
     const fullContent = liveBuffer.toString('utf-8') + pendingBuffer;
-    const data = maxLines === undefined ? fullContent : this.getLastNLines(fullContent, maxLines);
+    const data = maxLines === undefined ? fullContent : this.selectDisplayWindow(fullContent, maxLines, minBytes);
     const startOffset = total - Buffer.byteLength(data, 'utf-8');
     return { data, offset: total, startOffset, epoch };
+  }
+
+  /**
+   * The display window: the LONGER of the last `maxLines` lines and the last
+   * `minBytes` bytes (line-head aligned). Both candidates are suffixes of
+   * `content`, so the longer one is simply the one that starts earlier.
+   * `minBytes <= 0` disables the floor and yields exactly `getLastNLines`.
+   */
+  private selectDisplayWindow(content: string, maxLines: number, minBytes: number): string {
+    const byLines = this.getLastNLines(content, maxLines);
+    const byBytes = this.getLastBytesLineAligned(content, minBytes);
+    return byBytes.length > byLines.length ? byBytes : byLines;
+  }
+
+  /**
+   * Get the trailing `minBytes` UTF-8 bytes of a string, with the start moved
+   * BACKWARD to just after the previous `\n` so the result begins at a line
+   * head (0x0A is ASCII, so this is also a character boundary). No earlier
+   * `\n` -> start at 0 (the whole content). Never trims forward: that would
+   * shrink the result below the floor. `minBytes <= 0` returns ''.
+   */
+  private getLastBytesLineAligned(content: string, minBytes: number): string {
+    if (minBytes <= 0) {
+      return '';
+    }
+    const buf = Buffer.from(content, 'utf-8');
+    if (buf.length <= minBytes) {
+      return content;
+    }
+    const rawStart = buf.length - minBytes;
+    // The byte at rawStart - 1 being '\n' means rawStart is already a line head.
+    const prevNewline = buf.lastIndexOf(0x0a, rawStart - 1);
+    const start = prevNewline < 0 ? 0 : prevNewline + 1;
+    return buf.subarray(start).toString('utf-8');
   }
 
   /**

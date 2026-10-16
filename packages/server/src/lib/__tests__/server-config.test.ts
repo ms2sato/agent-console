@@ -539,6 +539,7 @@ describe('worker output env vars (positive-int contract)', () => {
     { name: 'WORKER_OUTPUT_FLUSH_INTERVAL', default: 100 },
     { name: 'WORKER_OUTPUT_FLUSH_THRESHOLD', default: 64 * 1024 },
     { name: 'WORKER_OUTPUT_INITIAL_HISTORY_LINES', default: 5000 },
+    { name: 'WORKER_OUTPUT_INITIAL_HISTORY_MIN_BYTES', default: 512 * 1024 },
   ] as const;
 
   it('falls back to the default for each when unset', async () => {

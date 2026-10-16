@@ -9,6 +9,7 @@ import {
   _setTimings,
   _setAppSubscribe,
   _inspect,
+  _whenIdle,
 } from '../terminal-store';
 import { joinSelectedRows } from '../copy-text';
 
@@ -28,9 +29,15 @@ function makeAppBus() {
   return { subscribe, emit };
 }
 
-/** Let write callbacks + the rAF/timeout snapshot flush run. */
-function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 40));
+/**
+ * Wait deterministically for xterm parsing + the snapshot frame (the race that
+ * made a bare fixed sleep load-flaky), then keep the original short real-time
+ * sleep because some tests also depend on timers set via _setTimings
+ * (reconnect / idle / notice) that need wall-clock time to pass.
+ */
+async function flush(): Promise<void> {
+  await _whenIdle();
+  await new Promise((resolve) => setTimeout(resolve, 40));
 }
 
 function lastSentMessages(ws: MockWebSocket): unknown[] {
@@ -353,6 +360,23 @@ describe('terminal-store', () => {
     ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1049l', offset: 8 }));
     await flush();
     expect(instance.getSnapshot().bufferType).toBe('normal');
+  });
+
+  it('_whenIdle makes an output frame visible in the snapshot with no sleep', async () => {
+    const instance = getOrCreateTerminal('sidle', 'widle');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    expect(instance.getSnapshot().bufferType).toBe('normal');
+
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1049h', offset: 0 }));
+    await _whenIdle();
+    expect(instance.getSnapshot().bufferType).toBe('alternate');
+  });
+
+  it('_whenIdle resolves when nothing is pending, with and without instances', async () => {
+    await _whenIdle();
+    getOrCreateTerminal('sidle2', 'widle2');
+    await _whenIdle();
   });
 
   it('reportMouseButton emits SGR left-button press/release when tracking is on', async () => {

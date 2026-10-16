@@ -139,7 +139,10 @@ describe('#1506 — readHistoryForDisplay walks the archive to fill the line bud
 
     // A budget small enough that the live window (2 lines + trailing) already
     // satisfies it.
-    const display = await manager.readHistoryForDisplay(S, W, resolver, 2);
+    // minBytes=0: this fixture is a few hundred bytes, far below the default
+    // byte floor, which would (correctly) force a walk; this test is about the
+    // line budget alone.
+    const display = await manager.readHistoryForDisplay(S, W, resolver, 2, undefined, undefined, 0);
     // Read the call count BEFORE mockRestore() -- bun:test's mockRestore()
     // clears `.mock.calls`, so a read afterward is always 0 regardless of
     // what actually happened and would silently stop measuring anything
@@ -347,6 +350,162 @@ describe('#1506 — readHistoryForDisplay walks the archive to fill the line bud
   });
 });
 
+describe('readHistoryForDisplay -- byte floor on the display window', () => {
+  // Fixed-width lines make every offset checkable by arithmetic: a line is
+  // `r` + 8 digits + `\n` = 10 bytes.
+  const rows = (count: number, pad = 0): string =>
+    Array.from({ length: count }, (_, i) => `r${String(i).padStart(8, '0')}${'.'.repeat(pad)}\n`).join('');
+  const countLinesOf = (data: string): number => data.split('\n').length - 1;
+  // `getLastNLines` counts the empty piece after a trailing newline as a line,
+  // so "the last N lines" of newline-terminated content is the last N pieces.
+  const lastNPieces = (full: string, n: number): string => full.split('\n').slice(-n).join('\n');
+
+  let big: WorkerOutputFileManager;
+
+  beforeEach(() => {
+    setupMemfs({ [CONFIG_DIR]: null });
+    process.env.AGENT_CONSOLE_HOME = CONFIG_DIR;
+    // Rotation never triggers for the live-only cases.
+    big = makeManager(100_000_000);
+  });
+
+  afterEach(() => {
+    cleanupMemfs();
+  });
+
+  async function writeLive(content: string): Promise<void> {
+    big.bufferOutput(S, W, content, resolver);
+    await big.flushAll();
+  }
+
+  it('(1) live only: a byte floor above the line window extends it, starting at a line head', async () => {
+    const full = rows(6000); // 60,000 bytes
+    await writeLive(full);
+
+    // 55,005 is deliberately NOT a multiple of the line width, so the raw
+    // start falls mid-line and must be moved BACKWARD to the previous head.
+    const display = await big.readHistoryForDisplay(S, W, resolver, 5000, undefined, undefined, 55_005);
+
+    expect(Buffer.byteLength(display.data, 'utf-8')).toBeGreaterThanOrEqual(55_005);
+    expect(Math.abs(countLinesOf(display.data) - 5500)).toBeLessThanOrEqual(1);
+    expect(display.data[0]).toBe('r');
+    // The byte before startOffset in the file is a newline: a line head.
+    expect(display.startOffset).toBe(60_000 - Buffer.byteLength(display.data, 'utf-8'));
+    expect(full[display.startOffset - 1]).toBe('\n');
+    expect(full.slice(display.startOffset)).toBe(display.data);
+  });
+
+  it('(2) live only: a floor below the line window is inactive -- exactly the last N lines', async () => {
+    const full = rows(6000);
+    await writeLive(full);
+
+    const display = await big.readHistoryForDisplay(S, W, resolver, 5000, undefined, undefined, 10 * 1024);
+
+    const expected = lastNPieces(full, 5000);
+    expect(display.data).toBe(expected);
+    expect(display.startOffset).toBe(60_000 - Buffer.byteLength(expected, 'utf-8'));
+  });
+
+  it('(3) a floor larger than the whole output returns everything from the live base', async () => {
+    const full = rows(6000);
+    await writeLive(full);
+
+    const display = await big.readHistoryForDisplay(S, W, resolver, 5000, undefined, undefined, 10_000_000);
+
+    expect(display.data).toBe(full);
+    expect(display.startOffset).toBe(0);
+  });
+
+  it('(4) archive: lines are satisfied after one segment but the byte floor is not -> a further segment is read; maxBytes still bounds the walk', async () => {
+    // fileMaxSize=400: each 300-byte flush past the first rotates, leaving a
+    // live window of ~320 bytes and archiving the rest as a segment.
+    const rotating = makeManager(400);
+    for (let chunk = 0; chunk < 10; chunk++) {
+      const start = chunk * 30;
+      const body = Array.from({ length: 30 }, (_, i) => `r${String(start + i).padStart(8, '0')}\n`).join('');
+      rotating.bufferOutput(S, W, body, resolver);
+      await rotating.flushAll();
+    }
+    const total = await rotating.getCurrentOffset(S, W, resolver);
+
+    type WithDecompress = WorkerOutputFileManager & {
+      getDecompressedSegment: (...args: never[]) => Promise<Buffer>;
+    };
+    const segmentsRead = async (minBytes: number, maxBytes?: number) => {
+      const spy = spyOn(rotating as WithDecompress, 'getDecompressedSegment');
+      const display = await rotating.readHistoryForDisplay(S, W, resolver, 40, undefined, maxBytes, minBytes);
+      // Read the count BEFORE mockRestore() -- it clears `.mock.calls`.
+      const calls = spy.mock.calls.length;
+      spy.mockRestore();
+      return { calls, display };
+    };
+
+    // Premise control: the live window alone is shorter than the line budget
+    // (so the walk is genuinely entered), and rotation produced >= 3 segments.
+    const live = await rotating.readLastNLines(S, W, 100_000, resolver);
+    expect(countLinesOf(live.data)).toBeLessThan(40);
+    expect(live.startOffset).toBeGreaterThan(0);
+
+    // Floor inactive: the line budget is met after one segment.
+    const lineOnly = await segmentsRead(0);
+    expect(lineOnly.calls).toBe(1);
+    // The walk's own line definition counts the piece after a trailing newline.
+    expect(lineOnly.display.data.split('\n').length).toBeGreaterThanOrEqual(40);
+
+    // One segment (~280 bytes) on top of the ~320-byte live window assembles
+    // ~600 bytes; a 700-byte floor is therefore NOT met after one segment, and
+    // a second must be read (the line budget alone would have stopped at one).
+    const floored = await segmentsRead(700);
+    expect(floored.calls).toBe(2);
+    expect(Buffer.byteLength(floored.display.data, 'utf-8')).toBeGreaterThanOrEqual(700);
+    expect(floored.display.startOffset).toBe(total - Buffer.byteLength(floored.display.data, 'utf-8'));
+
+    // maxBytes still bounds the walk: an unreachable floor with a cap that
+    // admits only the first segment stops after one read.
+    const capped = await segmentsRead(10_000_000, Buffer.byteLength(live.data, 'utf-8') + 300);
+    expect(capped.calls).toBe(1);
+  });
+
+  it('(6) archive: the live window already satisfies the line budget but not the byte floor -> the walk is entered (no fast path)', async () => {
+    const rotating = makeManager(400);
+    for (let chunk = 0; chunk < 10; chunk++) {
+      const start = chunk * 30;
+      const body = Array.from({ length: 30 }, (_, i) => `r${String(start + i).padStart(8, '0')}\n`).join('');
+      rotating.bufferOutput(S, W, body, resolver);
+      await rotating.flushAll();
+    }
+    type WithDecompress = WorkerOutputFileManager & {
+      getDecompressedSegment: (...args: never[]) => Promise<Buffer>;
+    };
+    const live = await rotating.readLastNLines(S, W, 100_000, resolver);
+    // Premise control: the live window alone holds more than 10 lines but fewer than 700 bytes.
+    expect(countLinesOf(live.data)).toBeGreaterThan(10);
+    expect(Buffer.byteLength(live.data, 'utf-8')).toBeLessThan(700);
+
+    const spy = spyOn(rotating as WithDecompress, 'getDecompressedSegment');
+    const display = await rotating.readHistoryForDisplay(S, W, resolver, 10, undefined, undefined, 700);
+    const calls = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(Buffer.byteLength(display.data, 'utf-8')).toBeGreaterThanOrEqual(700);
+  });
+
+  it('(5) a floor of 0 reproduces the line-only window, identically to a call without the parameter', async () => {
+    // 6000 x 120-byte lines: the last 5000 lines are 600,000 bytes, above the
+    // default floor (512 KiB), so the DEFAULT floor is inactive here too and
+    // the two calls must agree with each other and with the line-only window.
+    const full = rows(6000, 110);
+    await writeLive(full);
+
+    const withZero = await big.readHistoryForDisplay(S, W, resolver, 5000, undefined, undefined, 0);
+    const withDefault = await big.readHistoryForDisplay(S, W, resolver, 5000);
+
+    const expected = lastNPieces(full, 5000);
+    expect(withZero.data).toBe(expected);
+    expect(withZero).toEqual(withDefault);
+  });
+});
+
 /**
  * Measured reach, recorded by WHICH test failed (following #1202's
  * "reach recorded by which test failed" convention).
@@ -381,4 +540,32 @@ describe('#1506 — readHistoryForDisplay walks the archive to fill the line bud
  * assertion was not reached; the call-count assertion is checked first).
  * The other 8 tests in this file are unaffected by that same mutation.
  * Restoring the fix passes again. Measured 2026-08-30.
+ */
+
+/**
+ * Measured reach of the byte floor ("readHistoryForDisplay -- byte floor on
+ * the display window"), recorded by WHICH test failed.
+ *
+ * Mutation: `getLastBytesLineAligned` returns '' unconditionally (the floor
+ * never contributes a window). Failing tests, by name:
+ *   - (1) live only: a byte floor above the line window extends it, ...
+ *   - (3) a floor larger than the whole output returns everything ...
+ *   - (4) archive: lines are satisfied after one segment but the byte floor
+ *     is not -> a further segment is read; ...
+ *   - (6) archive: the live window already satisfies the line budget but not
+ *     the byte floor -> the walk is entered (no fast path)
+ * Still passing under that mutation: (2) floor below the line window, and
+ * (5) floor of 0 / default. (3) fails too because its fixture has more lines
+ * than the line budget, so the line-only window is strictly shorter than the
+ * whole output -- a fixture with fewer lines than the budget would pass in
+ * both worlds and guard nothing.
+ *
+ * Further measured reach of the byte floor (each mutation alone, tests that
+ * failed, by name):
+ *   - selectDisplayWindow always returns the line window: (1), (3), (4).
+ *   - the fast path ignores the byte floor (`liveBytes >= minBytes` dropped):
+ *     only (6).
+ *   - the archive walk's stop condition ignores the byte floor: only (4).
+ *   - the byte window is trimmed FORWARD to a line head instead of backward:
+ *     (1), (4).
  */
