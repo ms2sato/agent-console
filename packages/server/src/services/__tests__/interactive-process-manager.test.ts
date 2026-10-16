@@ -14,6 +14,21 @@ import type {
 } from '../privilege-elevation.js';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 
+// The suite below pins the routing contract (output and exit arrive through the
+// callbacks), so its processes opt out of the inline window; the inline window
+// has its own describe at the end of the file.
+const NO_INLINE = { inlineWindowMs: 0 } as const;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function waitFor(condition: () => boolean, timeoutMs = 8000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await sleep(20);
+  }
+  expect(condition()).toBe(true);
+}
+
 describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
   let onOutput: Mock<ProcessOutputCallback>;
@@ -45,7 +60,7 @@ describe('InteractiveProcessManager', () => {
 
   describe('runProcess', () => {
     it('should return InteractiveProcessInfo with correct fields', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo hello',
@@ -61,7 +76,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should default outputMode to "pty" when omitted', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo hello',
@@ -71,7 +86,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should propagate explicit outputMode "pty"', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo hello',
@@ -82,7 +97,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should propagate explicit outputMode "message"', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo hello',
@@ -93,7 +108,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should expose outputMode on subsequent getProcess and listProcesses queries', async () => {
-      const created = await manager.runProcess({
+      const created = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
@@ -107,7 +122,7 @@ describe('InteractiveProcessManager', () => {
 
     it('should throw when session reaches the per-session process limit', async () => {
       for (let i = 0; i < MAX_PROCESSES_PER_SESSION; i++) {
-        await manager.runProcess({
+        await manager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: `sleep 60`,
@@ -115,7 +130,7 @@ describe('InteractiveProcessManager', () => {
       }
 
       expect(
-        manager.runProcess({
+        manager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: 'sleep 60',
@@ -125,14 +140,14 @@ describe('InteractiveProcessManager', () => {
 
     it('should allow processes in different sessions independently', async () => {
       for (let i = 0; i < MAX_PROCESSES_PER_SESSION; i++) {
-        await manager.runProcess({
+        await manager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: 'sleep 60',
         });
       }
 
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-2',
         workerId: 'worker-2',
         command: 'sleep 60',
@@ -144,7 +159,7 @@ describe('InteractiveProcessManager', () => {
       // Use the real current directory as cwd to avoid memfs/symlink issues in CI
       const cwd = process.cwd();
 
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'pwd',
@@ -164,7 +179,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should call onOutput when process writes to stdout', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo "test output"',
@@ -179,7 +194,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should call onExit when process terminates', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo done',
@@ -204,7 +219,7 @@ describe('InteractiveProcessManager', () => {
         console.log('received: ' + input);
         process.exit(0);
       `;
-      const processInfo = await manager.runProcess({
+      const processInfo = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: `bun -e "${script.replace(/"/g, '\\"')}"`,
@@ -347,7 +362,7 @@ describe('InteractiveProcessManager', () => {
         fake.fn,
       );
 
-      await elevatedManager.runProcess({
+      await elevatedManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo hi',
@@ -373,7 +388,7 @@ describe('InteractiveProcessManager', () => {
       );
       const command = "MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')\necho \"$MAIN_DIR\"";
 
-      await multiLineManager.runProcess({
+      await multiLineManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command,
@@ -399,7 +414,7 @@ describe('InteractiveProcessManager', () => {
         fake.fn,
       );
 
-      await elevatedManager.runProcess({
+      await elevatedManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo hi',
@@ -424,7 +439,7 @@ describe('InteractiveProcessManager', () => {
         fake.fn,
       );
 
-      const info = await elevatedManager.runProcess({
+      const info = await elevatedManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'whoami',
@@ -456,7 +471,7 @@ describe('InteractiveProcessManager', () => {
         fake.fn,
       );
 
-      const info = await elevatedManager.runProcess({
+      const info = await elevatedManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat',
@@ -483,7 +498,7 @@ describe('InteractiveProcessManager', () => {
         fake.fn,
       );
 
-      const info = await elevatedManager.runProcess({
+      const info = await elevatedManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
@@ -517,7 +532,7 @@ describe('InteractiveProcessManager', () => {
           fake.fn,
         );
 
-        const info = await elevatedManager.runProcess({
+        const info = await elevatedManager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: 'sleep 60',
@@ -540,7 +555,7 @@ describe('InteractiveProcessManager', () => {
           fake.fn,
         );
 
-        await elevatedManager.runProcess({
+        await elevatedManager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: 'sleep 60',
@@ -564,7 +579,7 @@ describe('InteractiveProcessManager', () => {
           fake.fn,
         );
 
-        await elevatedManager.runProcess({
+        await elevatedManager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: 'sleep 60',
@@ -587,7 +602,7 @@ describe('InteractiveProcessManager', () => {
           fake.fn,
         );
 
-        const info = await elevatedManager.runProcess({
+        const info = await elevatedManager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: 'sleep 60',
@@ -619,12 +634,12 @@ describe('InteractiveProcessManager', () => {
           fake.fn,
         );
 
-        const infoA = await elevatedManager.runProcess({
+        const infoA = await elevatedManager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: 'sleep 60',
         });
-        const infoB = await elevatedManager.runProcess({
+        const infoB = await elevatedManager.runProcess({ ...NO_INLINE,
           sessionId: 'session-1',
           workerId: 'worker-1',
           command: 'sleep 61',
@@ -650,7 +665,7 @@ describe('InteractiveProcessManager', () => {
     }
 
     it('kills a process running past its timeout and reports it once through onExit with timedOut', async () => {
-      const started = await manager.runProcess({
+      const started = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 30',
@@ -671,7 +686,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('does not mark a process that exits before its timeout, and never fires onExit twice', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'exit 0',
@@ -689,7 +704,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('applies the 600 s default when timeoutSeconds is omitted', async () => {
-      const started = await manager.runProcess({
+      const started = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 30',
@@ -700,7 +715,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('does not report a timeout for a process killed explicitly before it expires', async () => {
-      const started = await manager.runProcess({
+      const started = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 30',
@@ -714,7 +729,7 @@ describe('InteractiveProcessManager', () => {
 
   describe('killProcess', () => {
     it('should return true and remove an existing process', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
@@ -785,7 +800,7 @@ describe('InteractiveProcessManager', () => {
 
     it('killProcess takes the grandchild down with the shell', async () => {
       const pidFile = pidFilePath();
-      const started = await manager.runProcess({
+      const started = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: GRANDCHILD_CMD(pidFile),
@@ -802,7 +817,7 @@ describe('InteractiveProcessManager', () => {
 
     it('never signals the group of an entry whose shell has already exited', async () => {
       const m = new InteractiveProcessManager(() => {}, () => {});
-      const started = await m.runProcess({
+      const started = await m.runProcess({ ...NO_INLINE,
         sessionId: 'session-gone',
         workerId: 'worker-1',
         command: 'exit 0',
@@ -826,7 +841,7 @@ describe('InteractiveProcessManager', () => {
 
     it('the timeout path takes the grandchild down with the shell', async () => {
       const pidFile = pidFilePath();
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: GRANDCHILD_CMD(pidFile),
@@ -850,7 +865,7 @@ describe('InteractiveProcessManager', () => {
         return real({ ...opts, username: null, command: 'exit 0' });
       };
       const m = new InteractiveProcessManager(() => {}, () => {}, undefined, undefined, spy, () => 'http://localhost:4321');
-      await m.runProcess({
+      await m.runProcess({ ...NO_INLINE,
         sessionId: 'sess-id',
         workerId: 'work-id',
         command: 'echo hi',
@@ -943,7 +958,7 @@ describe('InteractiveProcessManager', () => {
 
     it('killProcess signals the wrapper pid, returns synchronously, and kills the discovered group as the user', async () => {
       const t = setup();
-      const started = await t.m.runProcess({
+      const started = await t.m.runProcess({ ...NO_INLINE,
         sessionId: 's',
         workerId: 'w',
         command: 'sleep 30 & wait',
@@ -965,7 +980,7 @@ describe('InteractiveProcessManager', () => {
 
     it('the timeout path kills the discovered group with SIGKILL', async () => {
       const t = setup();
-      await t.m.runProcess({
+      await t.m.runProcess({ ...NO_INLINE,
         sessionId: 's',
         workerId: 'w',
         command: 'sleep 30 & wait',
@@ -981,7 +996,7 @@ describe('InteractiveProcessManager', () => {
 
     it('falls back to the wrapper-pid signal alone when no qualifying group id is found', async () => {
       const t = setup({ discoverStdout: '', discoverExit: 1 });
-      const started = await t.m.runProcess({
+      const started = await t.m.runProcess({ ...NO_INLINE,
         sessionId: 's',
         workerId: 'w',
         command: 'sleep 30 & wait',
@@ -1000,7 +1015,7 @@ describe('InteractiveProcessManager', () => {
     it('a kill that arrives before discovery settles signals the group first and the wrapper after it', async () => {
       // Two empty discoveries (the leader does not exist yet), then success.
       const t = setup({ discoverFailuresFirst: 2 });
-      const started = await t.m.runProcess({
+      const started = await t.m.runProcess({ ...NO_INLINE,
         sessionId: 's',
         workerId: 'w',
         command: 'sleep 30 & wait',
@@ -1022,7 +1037,7 @@ describe('InteractiveProcessManager', () => {
 
     it('stops retrying discovery once the wrapper has exited', async () => {
       const t = setup({ discoverStdout: '', discoverExit: 1 });
-      await t.m.runProcess({
+      await t.m.runProcess({ ...NO_INLINE,
         sessionId: 's',
         workerId: 'w',
         command: 'exit 0',
@@ -1040,7 +1055,7 @@ describe('InteractiveProcessManager', () => {
 
     it('never sends a group signal for an entry whose shell has already exited', async () => {
       const t = setup();
-      const started = await t.m.runProcess({
+      const started = await t.m.runProcess({ ...NO_INLINE,
         sessionId: 's',
         workerId: 'w',
         command: 'exit 0',
@@ -1064,7 +1079,7 @@ describe('InteractiveProcessManager', () => {
         runCalls.push(o);
         return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
       });
-      const started = await m.runProcess({ sessionId: 's', workerId: 'w', command: 'sleep 30' });
+      const started = await m.runProcess({ ...NO_INLINE, sessionId: 's', workerId: 'w', command: 'sleep 30' });
       m.killProcess(started.id);
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(runCalls).toEqual([]);
@@ -1074,7 +1089,7 @@ describe('InteractiveProcessManager', () => {
 
   describe('getProcess', () => {
     it('should return InteractiveProcessInfo for an existing process', async () => {
-      const created = await manager.runProcess({
+      const created = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
@@ -1093,12 +1108,12 @@ describe('InteractiveProcessManager', () => {
 
   describe('listProcesses', () => {
     it('should list all processes when no sessionId filter is provided', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
       });
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-2',
         workerId: 'worker-2',
         command: 'sleep 60',
@@ -1109,17 +1124,17 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should filter by sessionId when provided', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
       });
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-2',
         workerId: 'worker-2',
         command: 'sleep 60',
       });
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 61',
@@ -1135,7 +1150,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should return an empty array when filtering by a session with no processes', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
@@ -1147,17 +1162,17 @@ describe('InteractiveProcessManager', () => {
 
   describe('deleteProcessesBySession', () => {
     it('should delete all processes for a session and return the count', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
       });
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 61',
       });
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-2',
         workerId: 'worker-2',
         command: 'sleep 60',
@@ -1173,12 +1188,12 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should not affect other sessions', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
       });
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-2',
         workerId: 'worker-2',
         command: 'sleep 60',
@@ -1194,12 +1209,12 @@ describe('InteractiveProcessManager', () => {
 
   describe('disposeAll', () => {
     it('should clear all processes', async () => {
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
       });
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-2',
         workerId: 'worker-2',
         command: 'sleep 60',
@@ -1218,7 +1233,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should return false for a killed process', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
@@ -1232,7 +1247,7 @@ describe('InteractiveProcessManager', () => {
 
     it('should return true when writing to a running process', async () => {
       // Use a long-running process that stays alive to accept stdin
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1254,7 +1269,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should call writePtyData with content echoed to PTY on successful write', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1278,7 +1293,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should preserve LF newlines as soft newlines when echoing multi-line response (Issue #660)', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1303,7 +1318,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should normalize CRLF newlines to LF when echoing response', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1326,7 +1341,7 @@ describe('InteractiveProcessManager', () => {
 
     it('should not call writePtyData when ptyMessageInjector is not provided', async () => {
       const managerNoPty = new InteractiveProcessManager(onOutput, onExit);
-      const process = await managerNoPty.runProcess({
+      const process = await managerNoPty.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1349,7 +1364,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should skip PTY echo via writePtyData when outputMode is "message"', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1374,7 +1389,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should call onResponse with content after stdin write succeeds (pty mode)', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1400,7 +1415,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should call onResponse with content after stdin write succeeds (message mode)', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1432,7 +1447,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should not call onResponse when writeResponse returns false (process killed)', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
@@ -1457,7 +1472,7 @@ describe('InteractiveProcessManager', () => {
         throwingOnResponse,
       );
 
-      const process = await isolatedManager.runProcess({
+      const process = await isolatedManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1496,7 +1511,7 @@ describe('InteractiveProcessManager', () => {
         rejectingOnResponse,
       );
 
-      const process = await isolatedManager.runProcess({
+      const process = await isolatedManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1538,7 +1553,7 @@ describe('InteractiveProcessManager', () => {
         slowOnResponse,
       );
 
-      const process = await isolatedManager.runProcess({
+      const process = await isolatedManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'cat > /dev/null',
@@ -1571,7 +1586,7 @@ describe('InteractiveProcessManager', () => {
       });
       const errorManager = new InteractiveProcessManager(onOutput, throwingOnExit);
 
-      await errorManager.runProcess({
+      await errorManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo done',
@@ -1594,7 +1609,7 @@ describe('InteractiveProcessManager', () => {
       // readStream internally catches stream read errors, so the outer .catch()
       // acts as a safety net. Verify that a process with stdout/stderr
       // completes without unhandled rejections even when the process exits abruptly.
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo hello && exit 1',
@@ -1635,7 +1650,7 @@ describe('InteractiveProcessManager', () => {
         { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
       );
 
-      await orderManager.runProcess({
+      await orderManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'echo "error-output" && exit 1',
@@ -1682,7 +1697,7 @@ describe('InteractiveProcessManager', () => {
         console.log('received: ' + input);
         process.exit(1);
       `;
-      const processInfo = await orderManager.runProcess({
+      const processInfo = await orderManager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: `bun -e "${script.replace(/"/g, '\\"')}"`,
@@ -1720,7 +1735,7 @@ describe('InteractiveProcessManager', () => {
       // Script outputs 10 lines rapidly with no delay between them.
       // Without buffering, each chunk would trigger a separate onOutput call.
       // With buffering, they are combined into one (or very few) calls.
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'for i in $(seq 1 10); do echo "rapid-line-$i"; done',
@@ -1742,7 +1757,7 @@ describe('InteractiveProcessManager', () => {
     });
 
     it('should not call onOutput for a killed process with pending buffer', async () => {
-      const process = await manager.runProcess({
+      const process = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'sleep 60',
@@ -1776,7 +1791,7 @@ describe('InteractiveProcessManager', () => {
         console.log('done!');
         process.exit(0);
       `;
-      const processInfo = await manager.runProcess({
+      const processInfo = await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: `bun -e "${script.replace(/"/g, '\\"')}"`,
@@ -1807,7 +1822,7 @@ describe('InteractiveProcessManager', () => {
 
     it('should handle large output without losing data', async () => {
       // Generate a script that outputs 100 lines rapidly
-      await manager.runProcess({
+      await manager.runProcess({ ...NO_INLINE,
         sessionId: 'session-1',
         workerId: 'worker-1',
         command: 'for i in $(seq 1 100); do echo "bulk-$i"; done',
@@ -1824,6 +1839,147 @@ describe('InteractiveProcessManager', () => {
 
       // With buffering, 100 lines should be batched into very few onOutput calls
       expect(onOutput.mock.calls.length).toBeLessThanOrEqual(5);
+    });
+  });
+
+  describe('inline result window', () => {
+    const target = { sessionId: 'session-1', workerId: 'worker-1' } as const;
+
+    it('(a) a process that exits inside the window resolves inline and routes nothing', async () => {
+      const info = await manager.runProcess({ ...target, command: 'echo hi' });
+      const inline = await manager.awaitInline(info.id);
+
+      expect(inline).toEqual({ output: 'hi\n', exitCode: 0, timedOut: false });
+      expect(manager.getProcess(info.id)?.status).toBe('exited');
+
+      await sleep(InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 150);
+      expect(onOutput).not.toHaveBeenCalled();
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('(b) a process that outlives the window gets its held text flushed once, then routes as before', async () => {
+      const info = await manager.runProcess({
+        ...target,
+        command: 'echo a; sleep 2; echo b',
+        inlineWindowMs: 500,
+      });
+
+      expect(await manager.awaitInline(info.id)).toBeNull();
+      expect(onOutput).toHaveBeenCalledTimes(1);
+      expect(onOutput.mock.calls[0][1]).toBe('a\n');
+
+      await waitFor(() => onExit.mock.calls.length > 0);
+      expect(onOutput.mock.calls.map((c) => c[1])).toEqual(['a\n', 'b\n']);
+      expect(onExit).toHaveBeenCalledTimes(1);
+    });
+
+    it('(c) a process that exits before its streams drain still resolves inline with all the output', async () => {
+      // The shell exits at once; a background child keeps stdout open for 300 ms.
+      const info = await manager.runProcess({
+        ...target,
+        command: '(sleep 0.3; echo late) & echo early; exit 0',
+      });
+
+      expect(await manager.awaitInline(info.id)).toEqual({
+        output: 'early\nlate\n',
+        exitCode: 0,
+        timedOut: false,
+      });
+      expect(onOutput).not.toHaveBeenCalled();
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('(d) output past the hold cap ends the hold early and flushes what was held', async () => {
+      const info = await manager.runProcess({
+        ...target,
+        command: "head -c 70000 /dev/zero | tr '\\0' a; sleep 1",
+      });
+
+      expect(await manager.awaitInline(info.id)).toBeNull();
+      expect(onOutput).toHaveBeenCalled();
+      expect(onOutput.mock.calls[0][1].length).toBeGreaterThan(60 * 1024);
+
+      await waitFor(() => onExit.mock.calls.length > 0);
+      const total = onOutput.mock.calls.map((c) => c[1]).join('');
+      expect(total).toBe('a'.repeat(70000));
+    });
+
+    it('(e) the window is clamped below the timeout, so a process the timeout kills is never an inline result', async () => {
+      const info = await manager.runProcess({
+        ...target,
+        command: 'sleep 30',
+        timeoutSeconds: 1,
+        inlineWindowMs: 5000,
+      });
+
+      expect(await manager.awaitInline(info.id)).toBeNull();
+
+      await waitFor(() => onExit.mock.calls.length > 0);
+      const [exitInfo] = onExit.mock.calls[0] as [{ timedOut?: boolean }];
+      expect(exitInfo.timedOut).toBe(true);
+    });
+
+    it('inlineWindowMs: 0 never holds: awaitInline is null at once and output routes through the debounce', async () => {
+      const info = await manager.runProcess({ ...target, command: 'echo hi', inlineWindowMs: 0 });
+
+      expect(await manager.awaitInline(info.id)).toBeNull();
+      await waitFor(() => onExit.mock.calls.length > 0);
+      expect(onOutput.mock.calls.map((c) => c[1])).toEqual(['hi\n']);
+    });
+
+    // The promise is captured BEFORE the process is removed, which is the order the
+    // run_process tool uses: it awaits the inline result while another call (a kill,
+    // a session deletion, a shutdown) can remove the entry. A path that removes the
+    // entry without settling the window would leave that await pending forever.
+    // Reach (measured, one mutation per row): deleting the closeInlineWindow call of
+    // killProcess fails only the killProcess row; the same call in
+    // deleteProcessesBySession fails only that row; in disposeAll only that row. Each
+    // failing row hangs until the 5 s test timeout, which is the production hang.
+    describe.each([
+      ['killProcess', (m: InteractiveProcessManager, id: string) => void m.killProcess(id)],
+      ['deleteProcessesBySession', (m: InteractiveProcessManager) => void m.deleteProcessesBySession(target.sessionId)],
+      ['disposeAll', (m: InteractiveProcessManager) => void m.disposeAll()],
+    ] as const)('removing the process inside its window via %s', (_name, remove) => {
+      it('settles an already-captured inline result as removed and routes nothing', async () => {
+        const info = await manager.runProcess({ ...target, command: 'echo held; sleep 30' });
+        const inline = manager.awaitInline(info.id);
+        await sleep(200);
+
+        remove(manager, info.id);
+
+        expect(await inline).toEqual({ removed: true });
+        await sleep(InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 150);
+        expect(onOutput).not.toHaveBeenCalled();
+        expect(onExit).not.toHaveBeenCalled();
+      });
+    });
+
+    it('awaitInline is null for an unknown process', async () => {
+      expect(await manager.awaitInline('missing')).toBeNull();
+    });
+  });
+
+  // The same ordering/routing contract with and without a window, for a process
+  // that outlives it: the window must not change what the callbacks observe.
+  describe.each([0, 200])('output-before-exit ordering with inlineWindowMs %d', (inlineWindowMs) => {
+    it('delivers every output before the exit for a process that outlives the window', async () => {
+      const calls: string[] = [];
+      const m = new InteractiveProcessManager(
+        (_info, text) => calls.push(`out:${text}`),
+        () => calls.push('exit'),
+      );
+      try {
+        await m.runProcess({
+          sessionId: 'session-1',
+          workerId: 'worker-1',
+          command: 'echo a; sleep 1; echo b',
+          inlineWindowMs,
+        });
+        await waitFor(() => calls.includes('exit'));
+        expect(calls).toEqual(['out:a\n', 'out:b\n', 'exit']);
+      } finally {
+        m.disposeAll();
+      }
     });
   });
 });

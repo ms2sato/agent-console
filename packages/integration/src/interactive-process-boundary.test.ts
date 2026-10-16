@@ -50,6 +50,11 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const TEST_CONFIG_DIR = '/test/config';
+
+// Shortened from the production inline window (5 s) so the tests that must
+// outlive it stay fast; the production default is pinned separately below.
+const PTY_DESCRIBE_INLINE_WINDOW_MS = 300;
+const EMBEDDED_DESCRIBE_INLINE_WINDOW_MS = 1500;
 const ptyFactory = createMockPtyFactory();
 
 // ---------- MCP helpers (from mcp-server.test.ts) ----------
@@ -161,7 +166,16 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
       annotationService: new AnnotationService(),
     });
 
-    interactiveProcessManager = new InteractiveProcessManager(() => {}, () => {});
+    interactiveProcessManager = new InteractiveProcessManager(
+      () => {},
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      PTY_DESCRIBE_INLINE_WINDOW_MS,
+    );
 
     const mcpApp = createMcpApp({
       sessionManager,
@@ -403,7 +417,7 @@ function makeFakeSpawn(): {
   return { fn, captured, stdinWrites, pushStdout: stdout.push };
 }
 
-async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {
+async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 8000): Promise<void> {
   const start = Date.now();
   while (!(await cond())) {
     if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out');
@@ -494,6 +508,10 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
           direction: 'response',
         });
       },
+      undefined,
+      undefined,
+      undefined,
+      EMBEDDED_DESCRIBE_INLINE_WINDOW_MS,
     );
 
     const mcpApp = createMcpApp({
@@ -566,7 +584,8 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
     const stdinWritesBeforeRun = fake.stdinWrites.length;
 
     const response = await callTool(app, mcpSessionId, 'run_process', {
-      command: 'echo notify-embedded-pty',
+      // Outlives the inline window so the output reaches the worker as a turn.
+      command: 'echo notify-embedded-pty; sleep 2',
       sessionId,
       workerId,
       outputMode: 'pty',
@@ -588,7 +607,7 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
     const stdinWritesBeforeRun = fake.stdinWrites.length;
 
     const response = await callTool(app, mcpSessionId, 'run_process', {
-      command: 'echo notify-embedded-message',
+      command: 'echo notify-embedded-message; sleep 2',
       sessionId,
       workerId,
       outputMode: 'message',
@@ -651,7 +670,7 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
     const stdinWritesBeforeRun = fake.stdinWrites.length;
 
     const response = await callTool(app, mcpSessionId, 'run_process', {
-      command: 'printf "line one\\nline two\\n"',
+      command: 'printf "line one\\nline two\\n"; sleep 2',
       sessionId,
       workerId,
       outputMode: 'message',
@@ -681,5 +700,62 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
     expect(stdoutIndex).toBeGreaterThanOrEqual(0);
     expect(exitIndex).toBeGreaterThanOrEqual(0);
     expect(exitIndex).toBeGreaterThan(stdoutIndex);
+  });
+
+  it('the production inline window is 5 s', () => {
+    expect(InteractiveProcessManager.INLINE_RESULT_WINDOW_MS).toBe(5000);
+    expect(new InteractiveProcessManager(() => {}, () => {}).inlineWindowMs).toBe(5000);
+  });
+
+  it('run_process of a command that finishes inside the window returns its result and queues no turn for that process', async () => {
+    const { sessionId, workerId } = await createActivatedEmbeddedWorker(31005, 'proc-inline-owner');
+    const stdinWritesBeforeRun = fake.stdinWrites.length;
+
+    const response = await callTool(app, mcpSessionId, 'run_process', {
+      command: 'echo inline-hello',
+      sessionId,
+      workerId,
+    }, nextId++);
+
+    expect(response.result?.isError).toBeUndefined();
+    expect(parseToolResult(response)).toMatchObject({
+      exited: true,
+      exitCode: 0,
+      timedOut: false,
+      output: 'inline-hello\n',
+    });
+
+    // Absence snapshot, scoped by the baseline index: let the worker report
+    // idle (which would flush a parked notification) and wait past the output
+    // debounce, then require that nothing was written for this process. The
+    // two slow-command tests below are the positive control: the same fake
+    // does record these turns when they are sent.
+    fake.pushStdout(`${JSON.stringify({ v: 1, type: 'state', state: 'idle' })}\n`);
+    await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 400));
+    const sinceRun = fake.stdinWrites.slice(stdinWritesBeforeRun);
+    expect(sinceRun.filter((raw) => raw.includes('[internal:process]'))).toEqual([]);
+  });
+
+  it('run_process of a command that outlives the window reports exited: false and its output and exit arrive as two turns', async () => {
+    const { sessionId, workerId } = await createActivatedEmbeddedWorker(31006, 'proc-slow-owner');
+    const stdinWritesBeforeRun = fake.stdinWrites.length;
+
+    const response = await callTool(app, mcpSessionId, 'run_process', {
+      command: 'echo slow-hello; sleep 2',
+      sessionId,
+      workerId,
+    }, nextId++);
+
+    const data = parseToolResult(response) as { exited: boolean; note: string };
+    expect(data.exited).toBe(false);
+    expect(data.note).toContain('This process reports back on its own');
+
+    await waitFor(() => fake.stdinWrites.length >= stdinWritesBeforeRun + 1);
+    fake.pushStdout(`${JSON.stringify({ v: 1, type: 'state', state: 'idle' })}\n`);
+    await waitFor(() => fake.stdinWrites.length >= stdinWritesBeforeRun + 2);
+
+    const turns = fake.stdinWrites.slice(stdinWritesBeforeRun).map((raw) => (JSON.parse(raw) as { text: string }).text);
+    expect(turns[0]).toContain('slow-hello');
+    expect(turns[1]).toContain('Process exited');
   });
 });

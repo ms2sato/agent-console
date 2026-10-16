@@ -132,11 +132,16 @@ describe('assembleSystemPrompt', () => {
   //       -> 4 fail: (a), (b), (c) below and main.test.ts's SDK hand-off pin.
   //   m2  keep the push but move it after the sandboxed-preview entry
   //       -> 1 fail: (c) only; (a)/(b) and the hand-off pin still pass.
-  it('states that run_process always reports back and forbids a create_timer fallback for it', () => {
+  it('states that a short run_process returns inline, a longer one reports back as turns, and forbids a create_timer fallback for it', () => {
     // Pinned as literals: the constant-vs-constant assertions around this test
     // would stay green if these sentences were deleted from the constant.
     const prompt = assembleSystemPrompt({ context, instructions: emptyInstructions });
-    expect(prompt).toContain('`run_process` ALWAYS reports back');
+    expect(prompt).toContain('Output from a `run_process` that runs longer than 5 seconds');
+    expect(prompt).toContain(
+      'A `run_process` that finishes within 5 seconds returns its output and exit code in its own result (`exited: true`) and NOTHING further arrives, so do not end the turn to wait for it',
+    );
+    expect(prompt).toContain('a longer one (`exited: false`) reports back as new turns');
+    expect(prompt).not.toContain('ALWAYS reports back');
     expect(prompt).toContain('a timeout notice if it runs past `timeoutSeconds` (default 600 s)');
     expect(prompt).toContain('Do NOT create a `create_timer` fallback to wait for `run_process`');
     expect(prompt).toContain('ONE standing follow-up timer per delegate');

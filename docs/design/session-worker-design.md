@@ -381,7 +381,10 @@ immediate PTY exit 127").
 
 ### Delivery of `run_process` notices
 
-Delivery of `run_process` notices (stdout chunks and the exit notice) to the
+A process that finishes within the 5-second inline window (`INLINE_RESULT_WINDOW_MS`)
+sends no notices at all: its output and exit code are returned in the `run_process`
+tool result and nothing is routed as a turn. For a process that outlives the
+window, delivery of `run_process` notices (stdout chunks and the exit notice) to the
 calling worker is best-effort with a bounded retry: at most 3 attempts, waiting
 1 s and then 2 s between them, for the two transient shapes a still-live
 worker can hit. After the last attempt the notice is dropped with one warning

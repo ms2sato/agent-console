@@ -10,6 +10,7 @@ import {
 } from './privilege-elevation.js';
 import { buildAgentConsoleEnv } from './agent-console-env.js';
 import { serverConfig } from '../lib/server-config.js';
+import { MESSAGE_CHUNK_TARGET_BYTES } from './process-output-router.js';
 
 const logger = createLogger('interactive-process-manager');
 
@@ -64,6 +65,39 @@ interface StoredProcess {
   streamsDone: Promise<void>;
   /** The single per-process timeout timer; cleared on every teardown path. */
   timeoutTimer?: ReturnType<typeof setTimeout>;
+  /** Open while output is held for an inline result; undefined once released or settled. */
+  inlineWindow?: InlineWindow;
+  /** Settles with the inline result, or null when the process did not finish inside the window. */
+  inlineResult: Promise<InlineProcessResult | InlineProcessRemoved | null>;
+}
+
+/**
+ * A process that exited inside its inline window: the whole captured output
+ * and the exit code, handed to the caller instead of being routed as turns.
+ */
+export interface InlineProcessResult {
+  output: string;
+  exitCode: number | null;
+  timedOut: boolean;
+}
+
+/**
+ * Outcome of `awaitInline` when the process was removed (killed, or its session
+ * was deleted) while the window was open: removal suppresses the exit
+ * callback, so nothing further will ever arrive for it.
+ */
+export interface InlineProcessRemoved {
+  removed: true;
+}
+
+const INLINE_PROCESS_REMOVED: InlineProcessRemoved = { removed: true };
+
+/** The open inline window of one process: output is held, not routed. */
+interface InlineWindow {
+  held: string;
+  heldBytes: number;
+  timer: ReturnType<typeof setTimeout>;
+  settle: (result: InlineProcessResult | InlineProcessRemoved | null) => void;
 }
 
 export interface ProcessOutputCallback {
@@ -104,6 +138,14 @@ export class InteractiveProcessManager {
   static readonly DEBOUNCE_OUTPUT_MS = 150;
 
   /**
+   * How long `runProcess` holds a new process's output waiting for it to
+   * exit, so a short command can return its result to the caller instead of
+   * arriving later as turns. Callers that never read the result must pass
+   * `inlineWindowMs: 0`, otherwise their output is delayed by up to this long.
+   */
+  static readonly INLINE_RESULT_WINDOW_MS = 5000;
+
+  /**
    * After a timeout kill, how long the exit handler waits for the output
    * streams to drain. The kill hits the shell; a grandchild (`sh -c 'sleep 30'`
    * without exec) can keep the pipes open, and the timeout notice must not
@@ -132,6 +174,8 @@ export class InteractiveProcessManager {
   private getBaseUrl: () => string;
   /** Elevated-exec seam for the process-group discovery / signal helpers. */
   private runAsUserImpl: typeof runAsUser;
+  /** Inline window applied to a `runProcess` call that does not pass its own. */
+  readonly inlineWindowMs: number;
 
   constructor(
     onOutput: ProcessOutputCallback,
@@ -141,7 +185,9 @@ export class InteractiveProcessManager {
     spawnAsUserFn: SpawnAsUserFn = spawnAsUser,
     getBaseUrl: () => string = () => `http://localhost:${serverConfig.PORT}`,
     runAsUserImpl: typeof runAsUser = runAsUser,
+    inlineWindowMs: number = InteractiveProcessManager.INLINE_RESULT_WINDOW_MS,
   ) {
+    this.inlineWindowMs = inlineWindowMs;
     this.onOutput = onOutput;
     this.onExit = onExit;
     this.ptyMessageInjector = ptyMessageInjector;
@@ -172,6 +218,14 @@ export class InteractiveProcessManager {
      * `DEFAULT_PROCESS_TIMEOUT_SECONDS`.
      */
     timeoutSeconds?: number;
+    /**
+     * Inline window in milliseconds (default: the manager's `inlineWindowMs`,
+     * `INLINE_RESULT_WINDOW_MS` unless constructed otherwise; 0 = none). While it is open output is held and neither `onOutput` nor
+     * `onExit` is called; read the outcome with `awaitInline`. The window is
+     * clamped below the timeout, so a process the timeout kills is never an
+     * inline result.
+     */
+    inlineWindowMs?: number;
   }): Promise<InteractiveProcessInfo> {
     const { sessionId, workerId, command, cwd, requestUser } = params;
     const timeoutSeconds = params.timeoutSeconds ?? DEFAULT_PROCESS_TIMEOUT_SECONDS;
@@ -187,6 +241,25 @@ export class InteractiveProcessManager {
     }
 
     const id = crypto.randomUUID();
+    const inlineMs = Math.min(
+      params.inlineWindowMs ?? this.inlineWindowMs,
+      timeoutSeconds * 1000 - 1,
+    );
+    let inlineWindow: InlineWindow | undefined;
+    let inlineResult: Promise<InlineProcessResult | InlineProcessRemoved | null> = Promise.resolve(null);
+    if (inlineMs > 0) {
+      inlineResult = new Promise((settle) => {
+        inlineWindow = {
+          held: '',
+          heldBytes: 0,
+          timer: setTimeout(() => {
+            const open = this.processes.get(id);
+            if (open) this.releaseHeldOutput(open);
+          }, inlineMs),
+          settle,
+        };
+      });
+    }
     const info: InteractiveProcessInfo = {
       id,
       sessionId,
@@ -235,6 +308,8 @@ export class InteractiveProcessManager {
       elevatedPgidSettled: false,
       wrapperExited: false,
       streamsDone,
+      inlineWindow,
+      inlineResult,
     };
     this.processes.set(id, stored);
     if (stored.elevatedGroup) {
@@ -255,7 +330,8 @@ export class InteractiveProcessManager {
     // `subprocess.exited` handler below is the single route that fires
     // `onExit`, so the timeout notice travels the same path as a natural exit.
     // SIGKILL (not SIGTERM): a child that ignores SIGTERM would defeat the
-    // "always reports back" guarantee this timeout exists to give.
+    // guarantee this timeout exists to give: a process past its timeout is
+    // always ended and reported.
     stored.timeoutTimer = setTimeout(() => {
       const current = this.processes.get(id);
       if (!current || current.info.status !== 'running') return;
@@ -288,7 +364,18 @@ export class InteractiveProcessManager {
         current.info.status = 'exited';
         current.info.exitCode = exitCode;
         logger.info({ processId: id, exitCode }, 'Process exited');
-        this.onExit({ ...current.info });
+        const heldWindow = current.inlineWindow;
+        if (heldWindow) {
+          // Exited with its streams drained inside the window: the caller gets
+          // the output and the code, and nothing is routed as a turn.
+          this.closeInlineWindow(current, {
+            output: heldWindow.held,
+            exitCode,
+            timedOut: current.info.timedOut === true,
+          });
+        } else {
+          this.onExit({ ...current.info });
+        }
         // A timed-out process is gone once reported; a naturally exited one
         // stays listed with status 'exited' as before.
         if (current.info.timedOut) {
@@ -305,6 +392,38 @@ export class InteractiveProcessManager {
     );
 
     return { ...info };
+  }
+
+  /**
+   * Resolves with the captured result when the process exited and its streams
+   * drained inside the inline window; `{ removed: true }` when it was removed
+   * while the window was open (nothing will arrive for it); null when the
+   * window ended first -- by expiry or by the hold cap, in which case the held
+   * output has been routed and more follows -- or there was none, or the
+   * process is unknown. Never rejects.
+   */
+  awaitInline(processId: string): Promise<InlineProcessResult | InlineProcessRemoved | null> {
+    return this.processes.get(processId)?.inlineResult ?? Promise.resolve(null);
+  }
+
+  private closeInlineWindow(
+    stored: StoredProcess,
+    result: InlineProcessResult | InlineProcessRemoved | null,
+  ): void {
+    const window = stored.inlineWindow;
+    if (!window) return;
+    stored.inlineWindow = undefined;
+    clearTimeout(window.timer);
+    window.settle(result);
+  }
+
+  /** End the hold without a result: flush the held text once through `onOutput` and route normally from here. */
+  private releaseHeldOutput(stored: StoredProcess): void {
+    const held = stored.inlineWindow?.held ?? '';
+    this.closeInlineWindow(stored, null);
+    if (held) {
+      this.onOutput({ ...stored.info }, held);
+    }
   }
 
   private async readStream(
@@ -390,6 +509,7 @@ export class InteractiveProcessManager {
     }
 
     this.clearOutputBuffer(processId);
+    this.closeInlineWindow(stored, INLINE_PROCESS_REMOVED);
     clearTimeout(stored.timeoutTimer);
 
     try {
@@ -522,6 +642,7 @@ export class InteractiveProcessManager {
     for (const [id, stored] of this.processes) {
       if (stored.info.sessionId === sessionId) {
         this.clearOutputBuffer(id);
+        this.closeInlineWindow(stored, INLINE_PROCESS_REMOVED);
         clearTimeout(stored.timeoutTimer);
         try {
           this.signalStored(stored, 15);
@@ -546,6 +667,7 @@ export class InteractiveProcessManager {
     this.outputBuffers.clear();
 
     for (const stored of this.processes.values()) {
+      this.closeInlineWindow(stored, INLINE_PROCESS_REMOVED);
       clearTimeout(stored.timeoutTimer);
       try {
         this.signalStored(stored, 15);
@@ -560,6 +682,17 @@ export class InteractiveProcessManager {
   }
 
   private bufferOutput(processId: string, text: string): void {
+    const stored = this.processes.get(processId);
+    const window = stored?.inlineWindow;
+    if (stored && window) {
+      window.held += text;
+      window.heldBytes += Buffer.byteLength(text);
+      // A chatty process must not pin memory for the whole window.
+      if (window.heldBytes > MESSAGE_CHUNK_TARGET_BYTES) {
+        this.releaseHeldOutput(stored);
+      }
+      return;
+    }
     let buffer = this.outputBuffers.get(processId);
     if (!buffer) {
       buffer = { text: '', timer: setTimeout(() => this.flushOutputBuffer(processId), InteractiveProcessManager.DEBOUNCE_OUTPUT_MS) };
