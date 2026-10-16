@@ -337,6 +337,13 @@ export {
   type ResolveTodoRequest,
 } from './todo.js';
 
+// User directory schemas
+export {
+  DirectoryUserSchema,
+  UsersListResponseSchema,
+  type UsersListResponse,
+} from './user.js';
+
 // Notification center schemas
 export {
   NotificationItemSchema,

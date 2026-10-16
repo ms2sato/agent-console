@@ -9,7 +9,7 @@
  */
 import { Hono } from 'hono';
 import * as v from 'valibot';
-import type { AppBindings } from '../app-context.js';
+import type { AppBindings, AppContext } from '../app-context.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { emitTodosUpdated } from '../lib/todo-triggers.js';
 import { vQueryValidator, vValidator } from '../middleware/validation.js';
@@ -29,6 +29,27 @@ const ListTodosQuerySchema = v.object({
   sessionId: v.optional(v.pipe(v.string(), v.minLength(1))),
 });
 
+/**
+ * Existence checks for the references a write carries. A persisted (paused)
+ * session counts as known. Run AFTER the request's own validation refusals,
+ * and before anything is written.
+ */
+async function assertReferencesExist(
+  ctx: Pick<AppContext, 'sessionManager' | 'userRepository'>,
+  refs: { sessionId?: string | null; assigneeUserId?: string | null },
+): Promise<void> {
+  if (refs.sessionId) {
+    const known =
+      ctx.sessionManager.getSession(refs.sessionId) ??
+      (await ctx.sessionManager.getPersistedSession(refs.sessionId));
+    if (!known) throw new NotFoundError('Session');
+  }
+  if (refs.assigneeUserId) {
+    const user = await ctx.userRepository.findById(refs.assigneeUserId);
+    if (!user) throw new NotFoundError('User');
+  }
+}
+
 const todos = new Hono<AppBindings>()
   .get('/', vQueryValidator(ListTodosQuerySchema), async (c) => {
     const { todoRepository } = c.get('appContext');
@@ -46,7 +67,8 @@ const todos = new Hono<AppBindings>()
   // does not (the global page).
   .post('/', vValidator(CreateTodoRequestSchema), async (c) => {
     const body = c.req.valid('json');
-    const { todoRepository, broadcastToApp } = c.get('appContext');
+    const appContext = c.get('appContext');
+    const { todoRepository, broadcastToApp } = appContext;
     const authUser = c.get('authUser');
 
     const scope = body.scope ?? (body.sessionId ? 'session' : 'global');
@@ -56,6 +78,11 @@ const todos = new Hono<AppBindings>()
     if (scope === 'session' && !body.sessionId) {
       throw new ValidationError('sessionId is required for a session-scoped item');
     }
+
+    await assertReferencesExist(appContext, {
+      sessionId: body.sessionId,
+      assigneeUserId: body.assigneeUserId,
+    });
 
     const todo = await todoRepository.create({
       id: crypto.randomUUID(),
@@ -74,7 +101,8 @@ const todos = new Hono<AppBindings>()
   .patch('/:id', vValidator(UpdateTodoRequestSchema), async (c) => {
     const id = c.req.param('id');
     const body = c.req.valid('json');
-    const { todoRepository, broadcastToApp } = c.get('appContext');
+    const appContext = c.get('appContext');
+    const { todoRepository, broadcastToApp } = appContext;
 
     const existing = await todoRepository.findById(id);
     if (!existing) throw new NotFoundError('Todo');
@@ -105,6 +133,11 @@ const todos = new Hono<AppBindings>()
       }
       patch.scope = body.scope;
     }
+
+    await assertReferencesExist(appContext, {
+      sessionId: patch.sessionId,
+      assigneeUserId: body.assigneeUserId,
+    });
 
     const updated = await todoRepository.update(id, patch);
     if (!updated) {

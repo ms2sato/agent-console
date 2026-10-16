@@ -9,6 +9,7 @@ import { useAuth, setCurrentUser } from '../../lib/auth';
 import { disconnect as disconnectAppWs } from '../../lib/app-websocket';
 import { clearStoredFilterMode } from '../../hooks/useSessionFilter';
 import { setHomeDir } from '../../lib/path';
+import { TodoCountBadge } from './TodoCountBadge';
 
 export function JobsNavLink() {
   const location = useLocation();
@@ -22,6 +23,23 @@ export function JobsNavLink() {
       }`}
     >
       Jobs
+    </Link>
+  );
+}
+
+export function TodosNavLink() {
+  const location = useLocation();
+  const isActive = location.pathname.startsWith('/todos');
+
+  return (
+    <Link
+      to="/todos"
+      className={`text-sm py-1 px-2 rounded no-underline flex items-center gap-1.5 ${
+        isActive ? 'text-white bg-white/10' : 'text-slate-400'
+      }`}
+    >
+      To-do
+      <TodoCountBadge />
     </Link>
   );
 }

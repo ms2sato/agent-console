@@ -37,14 +37,22 @@ describe('TodoSchema', () => {
   });
 
   it('accepts an agent creator, a global item with null sessionId, and the withdrawn status', () => {
-    const agentTodo: Todo = {
+    const globalHumanTodo: Todo = {
       ...humanTodo,
       scope: 'global',
       sessionId: null,
       createdBy: { userId: 'user-1' },
       status: 'withdrawn',
     };
-    expect(v.safeParse(TodoSchema, agentTodo).success).toBe(true);
+    const globalAgentTodo: Todo = {
+      ...humanTodo,
+      scope: 'global',
+      sessionId: 'session-1',
+      createdBy: { workerId: 'worker-1' },
+      status: 'withdrawn',
+    };
+    expect(v.safeParse(TodoSchema, globalHumanTodo).success).toBe(true);
+    expect(v.safeParse(TodoSchema, globalAgentTodo).success).toBe(true);
     expect(v.safeParse(TodoSchema, { ...humanTodo, createdBy: { workerId: 'worker-1' } }).success).toBe(true);
   });
 

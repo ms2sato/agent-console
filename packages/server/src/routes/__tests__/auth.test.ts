@@ -55,6 +55,7 @@ function createMockUserRepository(seed: Record<string, UserPreferences> = {}): U
       throw new Error('findById not implemented in mock');
     },
     findByUsername: async () => null,
+    findAll: async () => [],
     getOsUidById: async () => {
       throw new Error('getOsUidById not implemented in mock');
     },
@@ -479,6 +480,7 @@ describe('Auth Routes', () => {
         },
         findById: async () => null,
         findByUsername: async () => null,
+        findAll: async () => [],
         getOsUidById: async () => {
           throw new Error('getOsUidById not used by this test');
         },

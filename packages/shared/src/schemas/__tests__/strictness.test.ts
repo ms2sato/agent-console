@@ -16,6 +16,7 @@ import * as session from '../session.js';
 import * as sharedAccount from '../shared-account.js';
 import * as system from '../system.js';
 import * as todo from '../todo.js';
+import * as user from '../user.js';
 import * as worker from '../worker.js';
 
 const MODULES: Record<string, Record<string, unknown>> = {
@@ -32,6 +33,7 @@ const MODULES: Record<string, Record<string, unknown>> = {
   'shared-account': sharedAccount,
   system,
   todo,
+  user,
   worker,
 };
 

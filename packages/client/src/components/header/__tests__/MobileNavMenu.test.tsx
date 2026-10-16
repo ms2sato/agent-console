@@ -1,11 +1,17 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
-import { screen, fireEvent, cleanup } from '@testing-library/react';
+import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { MobileNavMenu } from '../MobileNavMenu';
+import { setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
+import { makeTodo, jsonResponse } from '../../../test/todo-fixtures';
 
 describe('MobileNavMenu', () => {
+  const originalFetch = globalThis.fetch;
+
   afterEach(() => {
     cleanup();
+    globalThis.fetch = originalFetch;
+    resetAuth();
   });
 
   describe('Rendering', () => {
@@ -58,6 +64,43 @@ describe('MobileNavMenu', () => {
       await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />);
       const nav = screen.getByRole('navigation');
       expect(nav.getAttribute('aria-label')).toBe('Main navigation');
+    });
+  });
+
+  describe('To-do link', () => {
+    it('links to /todos and is active on /todos', async () => {
+      await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />, '/todos');
+      const link = screen.getByText('To-do').closest('a')!;
+      expect(link.getAttribute('href')).toBe('/todos');
+      expect(link.className).toContain('bg-white/10');
+    });
+
+    it('shows the count of open items assigned to the current user', async () => {
+      setCurrentUser({ id: 'user-me', username: 'me', homeDir: '/home/me' });
+      globalThis.fetch = Object.assign(
+        mock(async () =>
+          jsonResponse({
+            todos: [
+              makeTodo({ id: 'a', assigneeUserId: 'user-me' }),
+              makeTodo({ id: 'b', assigneeUserId: 'user-me', status: 'dismissed' }),
+            ],
+          }),
+        ),
+        { preconnect: () => {} },
+      ) as typeof fetch;
+
+      await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('link', { name: /1 open to-do items assigned to you/ }).getAttribute('href'),
+        ).toBe('/todos');
+      });
+    });
+
+    it('shows no badge without a current user', async () => {
+      await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />);
+      expect(screen.queryByText(/open to-do items assigned to you/)).toBeNull();
     });
   });
 

@@ -136,6 +136,7 @@ describe('Shared-accounts Release 2: worktree creation uses the repository\'s bo
         getPreferences: mock(() => Promise.resolve(null)),
         setPreferences: mock(() => Promise.resolve(true)),
         findByUsername: async () => null,
+        findAll: async () => [],
         getOsUidById: mock((id: string) =>
           Promise.resolve(id === ACCOUNT_A_USER_ID ? 7001 : id === ACCOUNT_B_USER_ID ? 7002 : undefined),
         ),

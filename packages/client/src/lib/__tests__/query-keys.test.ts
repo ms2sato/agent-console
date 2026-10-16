@@ -9,6 +9,7 @@ import {
   systemKeys,
   notificationKeys,
   todoKeys,
+  userKeys,
 } from '../query-keys';
 
 describe('Query Keys', () => {
@@ -249,6 +250,22 @@ describe('Query Keys', () => {
       expect(todoKeys.root()).toEqual(['todos']);
       expect(todoKeys.listBySession('session-1')).toEqual(['todos', 'list', 'session-1']);
       expect(todoKeys.listBySession('session-1')).not.toEqual(todoKeys.listBySession('session-2'));
+    });
+
+    it('keys a filtered list by its filters, under a prefix that invalidates all of them', () => {
+      const open = todoKeys.list({ status: 'open' });
+      const done = todoKeys.list({ status: 'done' });
+      expect(open).toEqual(['todos', 'filtered', { status: 'open' }]);
+      expect(open).not.toEqual(done);
+      expect(open.slice(0, 2)).toEqual([...todoKeys.listRoot()]);
+      expect(todoKeys.listRoot()).not.toEqual(todoKeys.listBySession('filtered'));
+    });
+  });
+
+  describe('userKeys', () => {
+    it('has a single directory key distinct from the todo keys', () => {
+      expect(userKeys.list()).toEqual(['users', 'list']);
+      expect(userKeys.list()[0]).not.toBe(todoKeys.root()[0]);
     });
   });
 });

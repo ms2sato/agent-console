@@ -361,4 +361,30 @@ describe('SqliteUserRepository', () => {
       expect(rowBefore?.updated_at).toBeDefined();
     });
   });
+
+  describe('findAll', () => {
+    it('returns an empty array when there are no users', async () => {
+      expect(await repository.findAll()).toEqual([]);
+    });
+
+    it('returns every user ordered by username, regardless of insertion order', async () => {
+      await repository.upsertByOsUid(1003, 'carol', '/home/carol');
+      await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      await repository.upsertByOsUid(1002, 'bob', '/home/bob');
+
+      const all = await repository.findAll();
+
+      expect(all.map((u) => u.username)).toEqual(['alice', 'bob', 'carol']);
+      expect(all[0]).toMatchObject({ username: 'alice', homeDir: '/home/alice' });
+    });
+
+    it('orders users sharing a username by id, so the order is stable', async () => {
+      await db.insertInto('users').values([
+        { id: 'b-id', os_uid: null, username: 'same', home_dir: '/h', created_at: 't', updated_at: 't' },
+        { id: 'a-id', os_uid: null, username: 'same', home_dir: '/h', created_at: 't', updated_at: 't' },
+      ]).execute();
+
+      expect((await repository.findAll()).map((u) => u.id)).toEqual(['a-id', 'b-id']);
+    });
+  });
 });

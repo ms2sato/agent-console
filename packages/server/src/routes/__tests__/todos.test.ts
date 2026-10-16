@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import * as v from 'valibot';
-import type { AppServerMessage, AuthUser, Todo } from '@agent-console/shared';
+import type { AppServerMessage, AuthUser, Session, Todo } from '@agent-console/shared';
 import { TodoSchema, TodosListResponseSchema } from '@agent-console/shared';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
@@ -18,9 +18,26 @@ import { onApiError } from '../../lib/error-handler.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
 import type { UserMode, PtySpawnRequest } from '../../services/user-mode.js';
 import type { PtyInstance } from '../../lib/pty-provider.js';
+import type { SessionManager } from '../../services/session-manager.js';
+import type { UserRepository } from '../../repositories/user-repository.js';
 
 const ALICE: AuthUser = { id: 'alice-1', username: 'alice', homeDir: '/home/alice' };
 const BOB: AuthUser = { id: 'bob-1', username: 'bob', homeDir: '/home/bob' };
+
+const LIVE_SESSION_IDS = new Set(['session-1', 'session-2', 's']);
+const PAUSED_SESSION_IDS = new Set(['paused-1']);
+const KNOWN_USERS = [ALICE, BOB];
+
+/** Only the two lookups the todo routes make; a paused session exists only as a persisted row. */
+const sessionManagerStub: Partial<SessionManager> = {
+  getSession: (id: string) => (LIVE_SESSION_IDS.has(id) ? ({ id } as Session) : undefined),
+  getPersistedSession: async (id: string) => (PAUSED_SESSION_IDS.has(id) ? ({ id } as Session) : null),
+};
+const stubSessionManager = sessionManagerStub as SessionManager;
+
+const stubUserRepository = {
+  findById: async (id: string) => KNOWN_USERS.find((u) => u.id === id) ?? null,
+} as Pick<UserRepository, 'findById'> as UserRepository;
 
 function mockUserMode(user: AuthUser | null): UserMode {
   return {
@@ -39,6 +56,8 @@ function buildApp(
 ): Hono<AppBindings> {
   const partialContext: Partial<AppContext> = {
     todoRepository,
+    sessionManager: stubSessionManager,
+    userRepository: stubUserRepository,
     userMode: mockUserMode(user),
     broadcastToApp,
   };
@@ -103,6 +122,86 @@ describe('Todo routes', () => {
       const unauthenticated = buildApp(repository, null);
       expect((await unauthenticated.request('/api/todos')).status).toBe(401);
       expect((await unauthenticated.request('/api/todos', json('POST', { kind: 'action', title: 't', body: '' }))).status).toBe(401);
+    });
+  });
+
+  describe('reference existence (404)', () => {
+    async function count(): Promise<number> {
+      return (await repository.list({})).length;
+    }
+
+    it('POST with an unknown sessionId is 404 and writes nothing', async () => {
+      const res = await post({ kind: 'action', title: 't', body: '', sessionId: 'nope' });
+      expect(res.status).toBe(404);
+      expect(await count()).toBe(0);
+      expect(broadcasts).toEqual([]);
+    });
+
+    it('POST with a paused (persisted-only) session is accepted', async () => {
+      const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'paused-1' });
+      expect(todo).toMatchObject({ scope: 'session', sessionId: 'paused-1' });
+    });
+
+    it('POST with an unknown assigneeUserId is 404 and writes nothing', async () => {
+      const res = await post({ kind: 'action', title: 't', body: '', assigneeUserId: 'ghost' });
+      expect(res.status).toBe(404);
+      expect(await count()).toBe(0);
+    });
+
+    it('POST with a known assigneeUserId is accepted', async () => {
+      const todo = await createTodo({ kind: 'action', title: 't', body: '', assigneeUserId: BOB.id });
+      expect(todo.assigneeUserId).toBe(BOB.id);
+    });
+
+    it('keeps the 400 refusals ahead of the existence checks', async () => {
+      const res = await post({ kind: 'question', scope: 'global', title: 't', body: '', sessionId: 'nope', assigneeUserId: 'ghost' });
+      expect(res.status).toBe(400);
+    });
+
+    describe('PATCH', () => {
+      it('re-scoping to session with an unknown sessionId is 404 and changes nothing', async () => {
+        const todo = await createTodo({ kind: 'action', scope: 'global', title: 't', body: '' });
+        broadcasts.length = 0;
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'session', sessionId: 'nope', title: 'changed' }));
+        expect(res.status).toBe(404);
+        expect(await repository.findById(todo.id)).toMatchObject({ scope: 'global', sessionId: null, title: 't' });
+        expect(broadcasts).toEqual([]);
+      });
+
+      it('re-scoping to session with a paused session is accepted', async () => {
+        const todo = await createTodo({ kind: 'action', scope: 'global', title: 't', body: '' });
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'session', sessionId: 'paused-1' }));
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { todo: Todo }).todo).toMatchObject({ scope: 'session', sessionId: 'paused-1' });
+      });
+
+      it('re-scoping to session with a stored provenance sessionId that no longer exists is 404', async () => {
+        const todo = await seedAgentItem({ scope: 'global', sessionId: 'gone' });
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { scope: 'session' }));
+        expect(res.status).toBe(404);
+      });
+
+      it('an unknown assigneeUserId is 404 and changes nothing', async () => {
+        const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { title: 'changed', assigneeUserId: 'ghost' }));
+        expect(res.status).toBe(404);
+        expect(await repository.findById(todo.id)).toMatchObject({ title: 't', assigneeUserId: null });
+      });
+
+      it('a known assigneeUserId is accepted, and null clears without a lookup', async () => {
+        const todo = await createTodo({ kind: 'action', title: 't', body: '' });
+        const set = await app.request(`/api/todos/${todo.id}`, json('PATCH', { assigneeUserId: BOB.id }));
+        expect(set.status).toBe(200);
+        const cleared = await app.request(`/api/todos/${todo.id}`, json('PATCH', { assigneeUserId: null }));
+        expect(cleared.status).toBe(200);
+        expect(((await cleared.json()) as { todo: Todo }).todo.assigneeUserId).toBeNull();
+      });
+
+      it('keeps the 400 refusals ahead of the existence checks', async () => {
+        const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+        const res = await app.request(`/api/todos/${todo.id}`, json('PATCH', { sessionId: 'nope' }));
+        expect(res.status).toBe(400);
+      });
     });
   });
 

@@ -78,6 +78,17 @@ export class SqliteUserRepository implements UserRepository {
     return { id, username, homeDir };
   }
 
+  async findAll(): Promise<AuthUser[]> {
+    const rows = await this.db
+      .selectFrom('users')
+      .selectAll()
+      .orderBy('username')
+      .orderBy('id')
+      .execute();
+
+    return rows.map((row) => ({ id: row.id, username: row.username, homeDir: row.home_dir }));
+  }
+
   async findByUsername(username: string): Promise<AuthUser | null> {
     const row = await this.db
       .selectFrom('users')

@@ -28,6 +28,7 @@ import {
   AppServerMessageSchema,
   TodoResponseSchema,
   TodosListResponseSchema,
+  UsersListResponseSchema,
   type AppServerMessage,
 } from '@agent-console/shared';
 
@@ -121,7 +122,10 @@ describe('Client-Server Boundary: human TODO list', () => {
   });
 
   it('the todos-updated trigger passes the strict app-message schema, with a session id and with null', async () => {
-    await post('/api/todos', { kind: 'action', title: 'a', body: '', sessionId: 'session-1' });
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
+    );
+    await post('/api/todos', { kind: 'action', title: 'a', body: '', sessionId: session.id });
     await post('/api/todos', { kind: 'action', title: 'b', body: '' });
 
     const todoMessages = broadcasts.filter((m) => m.type === 'todos-updated');
@@ -129,17 +133,49 @@ describe('Client-Server Boundary: human TODO list', () => {
     // Serialize as the WebSocket does, then parse with the client's parser.
     const parsed = todoMessages.map((m) => v.safeParse(AppServerMessageSchema, JSON.parse(JSON.stringify(m))));
     for (const result of parsed) expect(result.success).toBe(true);
-    expect(parsed.map((r) => (r.success && r.output.type === 'todos-updated' ? r.output.sessionId : 'wrong'))).toEqual(['session-1', null]);
+    expect(parsed.map((r) => (r.success && r.output.type === 'todos-updated' ? r.output.sessionId : 'wrong'))).toEqual([session.id, null]);
   });
 
   it('an empty list parses and a resolved item keeps its resolution across the wire', async () => {
     expect((await list()).todos).toEqual([]);
 
-    const created = v.parse(TodoResponseSchema, await post('/api/todos', { kind: 'question', title: 'q', body: '', sessionId: 's' })).todo;
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
+    );
+    const created = v.parse(TodoResponseSchema, await post('/api/todos', { kind: 'question', title: 'q', body: '', sessionId: session.id })).todo;
     const resolved = v.parse(TodoResponseSchema, await post(`/api/todos/${created.id}/resolve`, { text: 'the answer' })).todo;
 
     expect(resolved).toMatchObject({ status: 'done', resolutionText: 'the answer' });
     expect(resolved.resolvedAt).not.toBeNull();
     expect(resolved.resolvedByUserId).not.toBeNull();
+  });
+
+  it('the user directory survives populate -> serialize -> strict parse with only id and username', async () => {
+    const alice = await ctx.userRepository.upsertByOsUid(54321, 'alice', '/home/alice');
+    const bob = await ctx.userRepository.upsertByOsUid(54322, 'bob', '/home/bob');
+
+    const res = await app.request('/api/users');
+    expect(res.status).toBe(200);
+    const parsed = v.parse(UsersListResponseSchema, await res.json());
+
+    const byId = new Map(parsed.users.map((u) => [u.id, u]));
+    expect(byId.get(alice.id)).toEqual({ id: alice.id, username: 'alice' });
+    expect(byId.get(bob.id)).toEqual({ id: bob.id, username: 'bob' });
+    const names = parsed.users.map((u) => u.username);
+    expect(names).toEqual([...names].sort());
+  });
+
+  it('a known assignee is accepted and an unknown session or assignee is a 404 over the real wiring', async () => {
+    const alice = await ctx.userRepository.upsertByOsUid(54321, 'alice', '/home/alice');
+    const create = (body: unknown) =>
+      app.request('/api/todos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+    const ok = await create({ kind: 'action', title: 't', body: '', assigneeUserId: alice.id });
+    expect(ok.status).toBe(201);
+    expect(v.parse(TodoResponseSchema, await ok.json()).todo.assigneeUserId).toBe(alice.id);
+
+    expect((await create({ kind: 'action', title: 't', body: '', assigneeUserId: 'ghost' })).status).toBe(404);
+    expect((await create({ kind: 'action', title: 't', body: '', sessionId: 'ghost' })).status).toBe(404);
+    expect((await list()).todos).toHaveLength(1);
   });
 });
