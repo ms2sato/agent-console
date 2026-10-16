@@ -360,6 +360,7 @@ describe('getQuestions', () => {
     expect(q10.text).toContain('HOLD');
     expect(q10.focus).toContain('core-responsibilities.md');
     expect(q10.focus).toContain('Concerns Surfacing Discipline');
+    expect(q10.text).toContain('README line that describes it');
   });
 
   it('Q9 references the glossary-maintenance rule', () => {
