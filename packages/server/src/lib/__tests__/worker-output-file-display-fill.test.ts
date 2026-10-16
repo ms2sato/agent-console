@@ -466,6 +466,30 @@ describe('readHistoryForDisplay -- byte floor on the display window', () => {
     expect(capped.calls).toBe(1);
   });
 
+  it('(6) archive: the live window already satisfies the line budget but not the byte floor -> the walk is entered (no fast path)', async () => {
+    const rotating = makeManager(400);
+    for (let chunk = 0; chunk < 10; chunk++) {
+      const start = chunk * 30;
+      const body = Array.from({ length: 30 }, (_, i) => `r${String(start + i).padStart(8, '0')}\n`).join('');
+      rotating.bufferOutput(S, W, body, resolver);
+      await rotating.flushAll();
+    }
+    type WithDecompress = WorkerOutputFileManager & {
+      getDecompressedSegment: (...args: never[]) => Promise<Buffer>;
+    };
+    const live = await rotating.readLastNLines(S, W, 100_000, resolver);
+    // Premise control: the live window alone holds more than 10 lines but fewer than 700 bytes.
+    expect(countLinesOf(live.data)).toBeGreaterThan(10);
+    expect(Buffer.byteLength(live.data, 'utf-8')).toBeLessThan(700);
+
+    const spy = spyOn(rotating as WithDecompress, 'getDecompressedSegment');
+    const display = await rotating.readHistoryForDisplay(S, W, resolver, 10, undefined, undefined, 700);
+    const calls = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(Buffer.byteLength(display.data, 'utf-8')).toBeGreaterThanOrEqual(700);
+  });
+
   it('(5) a floor of 0 reproduces the line-only window, identically to a call without the parameter', async () => {
     // 6000 x 120-byte lines: the last 5000 lines are 600,000 bytes, above the
     // default floor (512 KiB), so the DEFAULT floor is inactive here too and
@@ -533,4 +557,13 @@ describe('readHistoryForDisplay -- byte floor on the display window', () => {
  * than the line budget, so the line-only window is strictly shorter than the
  * whole output -- a fixture with fewer lines than the budget would pass in
  * both worlds and guard nothing.
+ *
+ * Further measured reach of the byte floor (each mutation alone, tests that
+ * failed, by name):
+ *   - selectDisplayWindow always returns the line window: (1), (3), (4).
+ *   - the fast path ignores the byte floor (`liveBytes >= minBytes` dropped):
+ *     only (6).
+ *   - the archive walk's stop condition ignores the byte floor: only (4).
+ *   - the byte window is trimmed FORWARD to a line head instead of backward:
+ *     (1), (4).
  */
