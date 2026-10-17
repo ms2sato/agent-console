@@ -11,6 +11,7 @@ import { renderWithRouter } from '../../test/renderWithRouter';
 import { waitForAbsent } from '../../test/waitForAbsent';
 import { installMockWebSocket } from '../../test/mock-websocket';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
+import { _reset as resetAuth } from '../../lib/auth';
 import { Route as RootRoute, useSessionStopTasksContext } from '../__root';
 import { MobileHeaderControls, type MobileHeaderControlsProps } from '../../components/header/MobileHeaderControls';
 
@@ -114,12 +115,17 @@ describe('RootLayout hook failure dialog', () => {
     ) as typeof fetch;
     restoreWebSocket = installMockWebSocket();
     resetWebSocket();
+    // RootLayout redirects an unauthenticated user to /login in multi-user mode, and the
+    // auth state is module-global: a file that ran earlier in the same process and left it
+    // in multi-user mode would send this harness to a route it does not define.
+    resetAuth();
   });
 
   afterEach(() => {
     cleanup();
     globalThis.fetch = originalFetch;
     restoreWebSocket();
+    resetAuth();
   });
 
   async function mountRootLayout(kind: 'pause' | 'resume') {
