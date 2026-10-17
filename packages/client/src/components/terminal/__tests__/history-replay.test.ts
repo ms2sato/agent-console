@@ -270,6 +270,23 @@ describe('replayHistoryJoint (triple seam correction §6.2, #994)', () => {
     ).toEqual([...textOf(sa.rows), ...textOf(sb.rows), ...textOf(sc.rows)]);
   });
 
+  it('lastHasNewerNeighbor ends the last partition at its recorded baseY and leaves the on-screen tail to the newer chunk', async () => {
+    const A = Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const B = Array.from({ length: 30 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const C = Array.from({ length: 30 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const newest = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, false);
+    const withNewer = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, true);
+    // Boundaries before the last are untouched.
+    expect(textOf(withNewer.partitions[0])).toEqual(textOf(newest.partitions[0]));
+    expect(textOf(withNewer.partitions[1])).toEqual(textOf(newest.partitions[1]));
+    // The last chunk keeps its settled scrollback only: it drops exactly the tail
+    // that stays on the replay screen (up to rows - 1 rows).
+    const dropped = newest.partitions[2].length - withNewer.partitions[2].length;
+    expect(dropped).toBeGreaterThan(0);
+    expect(dropped).toBeLessThanOrEqual(23);
+    expect(textOf(newest.partitions[2]).slice(0, withNewer.partitions[2].length)).toEqual(textOf(withNewer.partitions[2]));
+  });
+
   it('reports overflow (empty partitions) when the joined triple exceeds the scrollback cap', async () => {
     _setReplayScrollbackForTest(50);
     // Each chunk alone stays under the cap; all three together exceed it.

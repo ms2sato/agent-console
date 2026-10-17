@@ -9,6 +9,7 @@ import {
   _setSeamCorrectionForTest,
   _inspect,
 } from '../terminal-store';
+import { generateInkRepaintStream, inkContentLabel } from './fixtures/ink-repaint-stream';
 
 /** Capturable app-WS subscribe seam (worker-restarted emission). */
 function makeAppBus() {
@@ -886,6 +887,62 @@ describe('terminal-store paging', () => {
       // Test-1 invariant: pagedRowCount === number of negative-key rows in the
       // snapshot (counts stay in lockstep with the DOM after the replacement).
       expect(p.pagedRowCount).toBe(negKeys(instance).length);
+    });
+
+    // Paging an Ink-style relative-repaint stream cut right after a full chrome
+    // repaint (the next chunk begins with CSI 2 A, climbing into the chrome).
+    // Chunk 4 of CHUNKS is the live window; chunks 0..3 are paged oldest-last.
+    const FRAMES_PER_CHUNK = 4;
+    const CHUNKS = 5;
+    const CONTENT_LINES = 20;
+    const inkStream = (frames: number) =>
+      generateInkRepaintStream({ frames, cols: 80, statusBar: 'ctx:4% | Sonnet 5', contentLinesPerFrame: CONTENT_LINES, chromeRepaintsPerFrame: 3 });
+    const inkFull = inkStream(FRAMES_PER_CHUNK * CHUNKS);
+    const inkCuts = Array.from({ length: CHUNKS + 1 }, (_, i) => inkStream(i * FRAMES_PER_CHUNK).length);
+    const inkSegment = (i: number) => inkFull.slice(inkCuts[i], inkCuts[i + 1]);
+    const pageInk = (ws: MockWebSocket, instance: ReturnType<typeof getOrCreateTerminal>, i: number) =>
+      pageChunk(ws, instance, { data: inkSegment(i), startOffset: inkCuts[i], endOffset: inkCuts[i + 1], hasMore: i > 0, epoch: 1000 });
+    const pagedLabels = (instance: ReturnType<typeof getOrCreateTerminal>): string[] => {
+      const found: string[] = [];
+      for (const r of instance.getSnapshot().rows) {
+        if (r.key >= 0) continue;
+        const m = r.segments.map((s) => s.text).join('').match(/\[F\d{3}:L\d{2}\]/);
+        if (m) found.push(m[0]);
+      }
+      return found;
+    };
+    const expectedLabels = (fromChunk: number): string[] => {
+      const out: string[] = [];
+      for (let f = fromChunk * FRAMES_PER_CHUNK + 1; f <= FRAMES_PER_CHUNK * (CHUNKS - 1); f++) {
+        for (let l = 1; l <= CONTENT_LINES; l++) out.push(inkContentLabel(f, l));
+      }
+      return out;
+    };
+    const openInk = async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { data: inkSegment(CHUNKS - 1), offset: inkCuts[CHUNKS], startOffset: inkCuts[CHUNKS - 1] });
+      return { instance, ws };
+    };
+
+    // Two consecutive joint replays (4 fetches: standalone, pair, triple, triple)
+    // through the real store path. Every content line is held exactly once, in
+    // stream order, so paged content is also monotonic (no label runs backwards).
+    it('keeps every content line once and in order across four paged chunks (two consecutive joint replays)', async () => {
+      const { instance, ws } = await openInk();
+      for (let i = CHUNKS - 2; i >= 0; i--) await pageInk(ws, instance, i);
+      expect(_inspect(instance).paging.pagedChunkCount).toBe(CHUNKS - 1);
+      expect(pagedLabels(instance)).toEqual(expectedLabels(0));
+    });
+
+    // Evicting the top chunk leaves a newer neighbour with no retained raw, so the
+    // re-fetch of the evicted range takes the PAIR path with a newer neighbour.
+    it('keeps every content line once and in order when a pair re-replay has a newer paged neighbour', async () => {
+      const { instance, ws } = await openInk();
+      for (let i = CHUNKS - 2; i >= 0; i--) await pageInk(ws, instance, i);
+      instance.evictTopChunk();
+      expect(_inspect(instance).paging.pagedChunkCount).toBe(CHUNKS - 2);
+      await pageInk(ws, instance, 0);
+      expect(pagedLabels(instance)).toEqual(expectedLabels(0));
     });
 
     it('eviction after a pair re-replay restores the exact byte offset and preserves A raw on the new top (#994 invariant)', async () => {
