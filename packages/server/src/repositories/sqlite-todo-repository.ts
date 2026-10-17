@@ -8,6 +8,7 @@ import {
   TODO_RESOLUTION_SEPARATOR,
   TodoResolveRefusedError,
   TodoSupersedeRefusedError,
+  type AdoptTodoParams,
   type CreateTodoParams,
   type ResolveManyOpenParams,
   type ResolveTodoParams,
@@ -99,6 +100,24 @@ export class SqliteTodoRepository implements TodoRepository {
       .set(set)
       .where('id', '=', id)
       .where('status', '=', 'open')
+      .executeTakeFirst();
+    if (affectedRows(result) === 0n) return null;
+    return this.findById(id, executor);
+  }
+
+  async adopt(id: string, params: AdoptTodoParams, executor?: TodoExecutor): Promise<Todo | null> {
+    const result = await (executor ?? this.db)
+      .updateTable('todos')
+      .set({
+        session_id: params.sessionId,
+        // A human-created item has no creating worker and must keep none (todos_creator_check).
+        created_worker_id: sql<string | null>`CASE WHEN created_worker_id IS NULL THEN NULL ELSE ${params.workerId} END`,
+        updated_at: new Date().toISOString(),
+      })
+      .where('id', '=', id)
+      .where('status', '=', 'open')
+      // IS compares NULL as well as values, so a session-less item can be expected.
+      .where(sql<boolean>`session_id IS ${params.expectedSessionId}`)
       .executeTakeFirst();
     if (affectedRows(result) === 0n) return null;
     return this.findById(id, executor);

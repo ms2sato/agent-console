@@ -26,6 +26,7 @@ export const SESSION_CLAIMING_TOOLS = [
   'create_todo',
   'list_todos',
   'resolve_todo',
+  'adopt_todo',
   'set_agent_parameters',
   'set_mcp_server_permission',
   'write_memo',
