@@ -216,8 +216,8 @@ Renaming changes `worker.name`, which is persisted and broadcast as a session up
 
 | Operation | Tab strip (`SessionPage` / `TabLabel`) | Panel header | Session sidebar | MCP | REST | Embedded-agent-visible |
 |-----------|----------------------------------------|--------------|-----------------|-----|------|------------------------|
-| Rename | do: `TabLabel` (double-click, Enter/F2 on the focused tab, or hover pencil) | not here: the header shows the name, the tab edits it | not here: the sidebar lists sessions, not workers | not here: no agent use case stated; a human names tabs for humans | do: `PATCH .../workers/:workerId/name` | not here: same reason as MCP |
-| Show the custom name | do: `TabLabel` | do: header follows the active tab name | not here: the sidebar lists sessions, not workers | do: `list_sessions` already carries worker names, unchanged | do: `GET .../workers` | do: unchanged |
+| Rename | do: `TabLabel` (double-click, Enter/F2 on the focused tab, or hover pencil) | not here: no panel header shows the worker name, the tab is where it is edited | not here: the sidebar lists sessions, not workers | not here: no agent use case stated; a human names tabs for humans | do: `PATCH .../workers/:workerId/name` | not here: same reason as MCP |
+| Show the custom name | do: `TabLabel` | not here: no panel header shows the name; only the worker error fallback prints the active tab's name, which follows the rename automatically | not here: the sidebar lists sessions, not workers | do: `list_sessions` already carries worker names, unchanged | do: `GET .../workers` | do: unchanged |
 
 Defaults the owner may veto: the double-click plus hover-pencil triggers, and the 64-character cap.
 

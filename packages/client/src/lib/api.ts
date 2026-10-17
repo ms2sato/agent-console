@@ -340,6 +340,26 @@ export async function updateEmbeddedAgentWorker(
 }
 
 /**
+ * Rename a worker (any type). The server is the source of truth -- it trims
+ * and validates the name, and the rename reaches every client through the
+ * session-updated broadcast, so callers do not apply the new name locally.
+ */
+export async function renameWorker(
+  sessionId: string,
+  workerId: string,
+  name: string
+): Promise<WorkerResponse> {
+  const res = await api.sessions[':sessionId'].workers[':workerId'].name.$patch({
+    param: { sessionId, workerId },
+    json: { name },
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to rename worker');
+  }
+  return v.parse(WorkerResponseSchema, await res.json());
+}
+
+/**
  * Record an MCP server permission decision for a `claude-sdk` embedded-agent
  * worker (epic #1636 Phase 5 PR-3b). The server is the source of truth --
  * the updated worker comes back in the response and the change is also
