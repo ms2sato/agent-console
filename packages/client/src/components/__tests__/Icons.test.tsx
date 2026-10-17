@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { render, cleanup } from '@testing-library/react';
-import { BellIcon, FlagIcon, PanelRightIcon } from '../Icons';
+import { BellIcon, FlagIcon, PanelRightIcon, UserCircleIcon } from '../Icons';
 
 afterEach(() => {
   cleanup();
@@ -48,6 +48,22 @@ describe('PanelRightIcon', () => {
 
   it('applies a custom className override', () => {
     const { container } = render(<PanelRightIcon className="w-5 h-5" />);
+    expect(container.querySelector('svg')?.getAttribute('class')).toBe('w-5 h-5');
+  });
+});
+
+describe('UserCircleIcon', () => {
+  it('renders a stroke svg with the default className', () => {
+    const { container } = render(<UserCircleIcon />);
+    const svg = container.querySelector('svg');
+    expect(svg).toBeTruthy();
+    expect(svg?.getAttribute('class')).toBe('w-4 h-4');
+    expect(svg?.getAttribute('fill')).toBe('none');
+    expect(svg?.getAttribute('stroke')).toBe('currentColor');
+  });
+
+  it('applies a custom className override', () => {
+    const { container } = render(<UserCircleIcon className="w-5 h-5" />);
     expect(container.querySelector('svg')?.getAttribute('class')).toBe('w-5 h-5');
   });
 });

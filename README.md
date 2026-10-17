@@ -22,7 +22,7 @@ A web application for managing multiple AI coding agent instances running in dif
 - **Bookmarks and HTML Artifacts**: Agents register URLs as session bookmarks and publish self-contained HTML pages that you open from the session sidebar or the Artifacts page
 - **Timers and Conditional Wakeups**: Periodic timers (with optional exponential backoff) and silent polling wakeups that notify an agent only when a shell condition becomes true
 - **Notifications and Integrations**: A notification center, per-repository Slack notifications, and inbound GitHub webhook events (see [GitHub Webhook Integration](#github-webhook-integration-inbound-events))
-- **Custom Agents and Jobs**: Manage agent definitions on the Agents page and watch background jobs on the Jobs page
+- **Custom Agents and Jobs**: Manage agent definitions on the Agents page and watch background jobs on the Jobs page, both reached from the header's user menu
 - **Multi-user Mode**: One server shared by several OS users on the same machine, each running as their own user, with optional shared accounts (see [Multi-user Mode](#multi-user-mode))
 - **Real-time Updates**: WebSocket-based notifications for session and worker lifecycle changes
 - **Orchestration via MCP**: Agents can delegate tasks, coordinate workflows, and manage other agents programmatically via [MCP](https://modelcontextprotocol.io) tools

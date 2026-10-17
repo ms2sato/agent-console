@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createRootRoute, Outlet, Link, useLocation, useNavigate } from '@tanstack/react-router';
 import { resumeSession } from '../lib/api';
-import { ChevronRightIcon, PlusIcon } from '../components/Icons';
+import { ChevronRightIcon } from '../components/Icons';
 import { QuickWorktreeDialog } from '../components/worktrees';
 import { MobileHeaderControls } from '../components/header/MobileHeaderControls';
-import { TodosNavLink, JobsNavLink, AgentsNavLink, ArtifactsNavLink, RepositoriesNavLink, SettingsNavLink, ReviewNavLink, LogoutButton, ValidationWarningIndicator } from '../components/header/NavLinks';
-import { NotificationBell } from '../components/notifications';
+import { DesktopNav } from '../components/header/DesktopNav';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
 import { SchemaVersionBanner } from '../components/ui/SchemaVersionBanner';
@@ -222,27 +221,7 @@ function RootLayout() {
             </div>
 
             <nav aria-label="Main navigation" className="ml-auto hidden md:flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setQuickWorktreeOpen(true)}
-                className="text-slate-400 hover:text-white p-1 rounded hover:bg-white/10 transition-colors"
-                title="Create worktree"
-              >
-                <PlusIcon className="w-4 h-4" />
-              </button>
-              <ValidationWarningIndicator />
-              <ReviewNavLink />
-              <TodosNavLink />
-              <JobsNavLink />
-              <AgentsNavLink />
-              <ArtifactsNavLink />
-              <RepositoriesNavLink />
-              {/* isMobile-gated: the parent <nav> is only CSS-hidden (hidden md:flex) on mobile, not
-                  unmounted, so without this gate NotificationBell would double-mount alongside
-                  MobileHeaderControls' own instance. */}
-              {!isMobile && <NotificationBell />}
-              <SettingsNavLink />
-              {isMultiUser && <LogoutButton />}
+              <DesktopNav onCreateWorktree={() => setQuickWorktreeOpen(true)} isMobile={isMobile} />
             </nav>
 
             {isMobile && (
