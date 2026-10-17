@@ -6,17 +6,24 @@ export const CLIPBOARD_COPY_FAILED_TEXT = 'Could not copy -- select and copy man
 
 interface TerminalClipboardNoticeProps {
   instance: Pick<TerminalInstance, 'onClipboardWrite'>;
+  /**
+   * Whether the silent write path exists at all. False in multi-user mode: the OSC 52 bytes
+   * arrive over the shared PTY stream and carry no sender, so "this client typed recently"
+   * cannot attribute the write to this client when other authenticated users can attach to
+   * the same worker. Every write then goes through the click-to-copy notice.
+   */
+  allowSilentWrite: boolean;
 }
 
 /**
- * OSC 52 clipboard writes (design doc "OSC 52 clipboard"). Silent write only when this
- * client typed into this worker recently (the store's `recentInput`) and the document has
- * focus; otherwise, and on any rejection, a non-modal notice whose click performs the write
+ * OSC 52 clipboard writes (design doc "OSC 52 clipboard"). Silent write only when
+ * `allowSilentWrite` (single-user mode) and this client typed into this worker recently (the
+ * store's `recentInput`) and the document has focus; otherwise, and on any rejection, a non-modal notice whose click performs the write
  * inside the user gesture. The notice follows the newest event: a newer event replaces the
  * pending text (a newer silent write clears it) and a superseded event's rejection is ignored.
  * A failed click keeps the notice and shows failure feedback. Nothing here reads the clipboard.
  */
-export function TerminalClipboardNotice({ instance }: TerminalClipboardNoticeProps) {
+export function TerminalClipboardNotice({ instance, allowSilentWrite }: TerminalClipboardNoticeProps) {
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [copyFailed, setCopyFailed] = useState(false);
   const latestEventSeq = useRef(0);
@@ -25,7 +32,7 @@ export function TerminalClipboardNotice({ instance }: TerminalClipboardNoticePro
     return instance.onClipboardWrite((event) => {
       const seq = ++latestEventSeq.current;
       setCopyFailed(false);
-      if (event.recentInput && document.hasFocus()) {
+      if (allowSilentWrite && event.recentInput && document.hasFocus()) {
         setPendingText(null);
         void writeClipboard(event.text).catch(() => {
           if (seq === latestEventSeq.current) setPendingText(event.text);
@@ -34,7 +41,7 @@ export function TerminalClipboardNotice({ instance }: TerminalClipboardNoticePro
         setPendingText(event.text);
       }
     });
-  }, [instance]);
+  }, [instance, allowSilentWrite]);
 
   if (pendingText === null) return null;
 

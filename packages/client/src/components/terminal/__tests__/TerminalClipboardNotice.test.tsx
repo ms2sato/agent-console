@@ -3,8 +3,8 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 import { TerminalClipboardNotice, CLIPBOARD_NOTICE_TEXT, CLIPBOARD_COPY_FAILED_TEXT } from '../TerminalClipboardNotice';
 import type { ClipboardWriteEvent, TerminalInstance } from '../terminal-store';
 
-// OSC 52 notice (design doc "OSC 52 clipboard"): silent write only with recent own input
-// and document focus; otherwise, or on rejection, a click-to-copy notice.
+// OSC 52 notice (design doc "OSC 52 clipboard"): silent write only in single-user mode with
+// recent own input and document focus; otherwise, or on rejection, a click-to-copy notice.
 
 type Listener = (event: ClipboardWriteEvent) => void;
 
@@ -51,17 +51,26 @@ describe('TerminalClipboardNotice', () => {
   it('gate true (recent input and focus): writes once, shows no notice', async () => {
     setFocus(true);
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('copied', true)));
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith('copied');
     expect(screen.queryByText(CLIPBOARD_NOTICE_TEXT)).toBeNull();
   });
 
+  it('multi-user mode (allowSilentWrite false): recent input and focus still show the notice and do not write', async () => {
+    setFocus(true);
+    const { instance, emit } = makeInstance();
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={false} />);
+    await act(async () => emit(event('copied', true)));
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.getByText(CLIPBOARD_NOTICE_TEXT)).toBeTruthy();
+  });
+
   it('no recent input: shows the notice and does not write', async () => {
     setFocus(true);
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('copied', false)));
     expect(writeText).not.toHaveBeenCalled();
     expect(screen.getByText(CLIPBOARD_NOTICE_TEXT)).toBeTruthy();
@@ -70,7 +79,7 @@ describe('TerminalClipboardNotice', () => {
   it('document without focus: shows the notice and does not write', async () => {
     setFocus(false);
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('copied', true)));
     expect(writeText).not.toHaveBeenCalled();
     expect(screen.getByText(CLIPBOARD_NOTICE_TEXT)).toBeTruthy();
@@ -79,7 +88,7 @@ describe('TerminalClipboardNotice', () => {
   it('clicking the notice writes the pending text and dismisses it', async () => {
     setFocus(false);
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('first', false)));
     await act(async () => screen.getByText(CLIPBOARD_NOTICE_TEXT).click());
     expect(writeText).toHaveBeenCalledTimes(1);
@@ -90,7 +99,7 @@ describe('TerminalClipboardNotice', () => {
   it('a second event replaces the pending text', async () => {
     setFocus(false);
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('first', false)));
     await act(async () => emit(event('second', false)));
     await act(async () => screen.getByText(CLIPBOARD_NOTICE_TEXT).click());
@@ -102,7 +111,7 @@ describe('TerminalClipboardNotice', () => {
     setFocus(true);
     writeText.mockImplementation(() => Promise.reject(new Error('NotAllowedError')));
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('copied', true)));
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(screen.getByText(CLIPBOARD_NOTICE_TEXT)).toBeTruthy();
@@ -112,7 +121,7 @@ describe('TerminalClipboardNotice', () => {
     setFocus(true);
     Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('copied', true)));
     expect(screen.getByText(CLIPBOARD_NOTICE_TEXT)).toBeTruthy();
   });
@@ -130,7 +139,7 @@ describe('TerminalClipboardNotice', () => {
   it('a newer silent write clears a stale pending notice', async () => {
     setFocus(false);
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('A', false)));
     expect(screen.getByText(CLIPBOARD_NOTICE_TEXT)).toBeTruthy();
     setFocus(true);
@@ -144,7 +153,7 @@ describe('TerminalClipboardNotice', () => {
     const a = deferred();
     writeText.mockImplementationOnce(() => a.promise);
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('A', true)));
     setFocus(false);
     await act(async () => emit(event('B', false)));
@@ -159,7 +168,7 @@ describe('TerminalClipboardNotice', () => {
     const a = deferred();
     writeText.mockImplementationOnce(() => a.promise);
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('A', true)));
     await act(async () => emit(event('B', true)));
     await act(async () => a.reject(new Error('NotAllowedError')));
@@ -170,7 +179,7 @@ describe('TerminalClipboardNotice', () => {
     setFocus(false);
     writeText.mockImplementationOnce(() => Promise.reject(new Error('NotAllowedError')));
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('first', false)));
     await act(async () => screen.getByText(CLIPBOARD_NOTICE_TEXT).click());
     expect(screen.getByText(CLIPBOARD_NOTICE_TEXT)).toBeTruthy();
@@ -186,7 +195,7 @@ describe('TerminalClipboardNotice', () => {
     setFocus(false);
     writeText.mockImplementationOnce(() => Promise.reject(new Error('NotAllowedError')));
     const { instance, emit } = makeInstance();
-    render(<TerminalClipboardNotice instance={instance} />);
+    render(<TerminalClipboardNotice instance={instance} allowSilentWrite={true} />);
     await act(async () => emit(event('first', false)));
     await act(async () => screen.getByText(CLIPBOARD_NOTICE_TEXT).click());
     await act(async () => emit(event('second', false)));

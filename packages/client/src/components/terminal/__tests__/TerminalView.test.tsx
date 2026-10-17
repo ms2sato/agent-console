@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { describe, it, expect, afterEach, beforeEach, mock, jest } from 'bun:test';
+import { describe, it, expect, afterEach, beforeEach, mock, jest, spyOn } from 'bun:test';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { TerminalView, RESIZE_DEBOUNCE_MS } from '../TerminalView';
 import { createLocalhostRewriteTransform } from '../transforms/localhost-rewrite';
@@ -92,13 +92,38 @@ describe('TerminalView row rendering', () => {
         return () => {};
       },
     };
-    render(<TerminalView instance={instance} />);
+    render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     await act(async () => emit({ text: 'from the TUI', atMs: 1, recentInput: false }));
     expect(screen.getByText(/Copied from the terminal/)).toBeTruthy();
   });
 
+  it('allowSilentClipboardWrite={false} reaches the notice: recent input and focus still show it and do not write', async () => {
+    const writeText = mock((_text: string) => Promise.resolve());
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const hasFocusSpy = spyOn(document, 'hasFocus').mockReturnValue(true);
+    try {
+      let emit: (event: { text: string; atMs: number; recentInput: boolean }) => void = () => {};
+      const instance: TerminalInstance = {
+        ...makeInstance(makeSnapshot(ROWS)),
+        onClipboardWrite: (listener) => {
+          emit = listener;
+          return () => {};
+        },
+      };
+      render(<TerminalView allowSilentClipboardWrite={false} instance={instance} />);
+      await act(async () => emit({ text: 'from the TUI', atMs: 1, recentInput: true }));
+      expect(writeText).not.toHaveBeenCalled();
+      expect(screen.getByText(/Copied from the terminal/)).toBeTruthy();
+    } finally {
+      hasFocusSpy.mockRestore();
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
   it('renders each row segment as text', () => {
-    render(<TerminalView instance={makeInstance(makeSnapshot(ROWS))} />);
+    render(<TerminalView allowSilentClipboardWrite instance={makeInstance(makeSnapshot(ROWS))} />);
 
     expect(screen.getByText('hello')).toBeTruthy();
     expect(screen.getByText('world')).toBeTruthy();
@@ -106,7 +131,7 @@ describe('TerminalView row rendering', () => {
   });
 
   it('applies a segment style (bold + foreground color) to the styled span', () => {
-    render(<TerminalView instance={makeInstance(makeSnapshot(ROWS))} />);
+    render(<TerminalView allowSilentClipboardWrite instance={makeInstance(makeSnapshot(ROWS))} />);
 
     const styled = screen.getByText('world');
     expect(styled.style.fontWeight).toBe('bold');
@@ -116,7 +141,7 @@ describe('TerminalView row rendering', () => {
   });
 
   it('renders a link segment as an anchor with href, target and rel', () => {
-    render(<TerminalView instance={makeInstance(makeSnapshot(ROWS))} />);
+    render(<TerminalView allowSilentClipboardWrite instance={makeInstance(makeSnapshot(ROWS))} />);
 
     const link = screen.getByText('#123');
     expect(link.tagName).toBe('A');
@@ -139,7 +164,7 @@ describe('TerminalView row rendering', () => {
     const resize = mock((_cols: number, _rows: number) => {});
     const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
 
-    expect(() => render(<TerminalView instance={instance} />)).not.toThrow();
+    expect(() => render(<TerminalView allowSilentClipboardWrite instance={instance} />)).not.toThrow();
 
     // The first measurement is scheduled through the debounce window rather
     // than applied synchronously at mount (see "mount-time resize
@@ -197,7 +222,7 @@ describe('TerminalView mount-time resize scheduling', () => {
     const resize = mock((_cols: number, _rows: number) => {});
     const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
 
-    render(<TerminalView instance={instance} />);
+    render(<TerminalView allowSilentClipboardWrite instance={instance} />);
 
     act(() => {
       jest.advanceTimersByTime(RESIZE_DEBOUNCE_MS - 1);
@@ -215,7 +240,7 @@ describe('TerminalView mount-time resize scheduling', () => {
   it('supersedes the mount schedule with a layout change inside the window, sending exactly one resize with the later geometry', () => {
     const resize = mock((_cols: number, _rows: number) => {});
     const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     Object.defineProperty(scroller, 'clientWidth', { value: 400, configurable: true });
 
@@ -250,7 +275,7 @@ describe('TerminalView mount-time resize scheduling', () => {
     const resize = mock((_cols: number, _rows: number) => {});
     const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
 
-    render(<TerminalView instance={instance} />);
+    render(<TerminalView allowSilentClipboardWrite instance={instance} />);
 
     act(() => {
       jest.advanceTimersByTime(RESIZE_DEBOUNCE_MS);
@@ -276,7 +301,7 @@ describe('TerminalView link transforms', () => {
   afterEach(cleanup);
 
   it('renders the original href and no title when no linkTransforms are given', () => {
-    render(<TerminalView instance={makeInstance(makeSnapshot(URL_ROWS))} />);
+    render(<TerminalView allowSilentClipboardWrite instance={makeInstance(makeSnapshot(URL_ROWS))} />);
     const link = screen.getByText(LOCALHOST_URL);
     expect(link.tagName).toBe('A');
     expect(link.getAttribute('href')).toBe(LOCALHOST_URL);
@@ -286,6 +311,7 @@ describe('TerminalView link transforms', () => {
   it('rewrites the href for a remote browser while keeping the display text and adding a title', () => {
     render(
       <TerminalView
+        allowSilentClipboardWrite
         instance={makeInstance(makeSnapshot(URL_ROWS))}
         linkTransforms={[
           createLocalhostRewriteTransform({ protocol: 'https:', hostname: 'console.example.com' }),
@@ -312,7 +338,7 @@ function TerminalViewWithHiddenInput({ instance }: { instance: TerminalInstance 
   return (
     <>
       <textarea ref={inputRef} aria-label="hidden terminal input" />
-      <TerminalView instance={instance} inputRef={inputRef} />
+      <TerminalView allowSilentClipboardWrite instance={instance} inputRef={inputRef} />
     </>
   );
 }
@@ -393,7 +419,7 @@ describe('TerminalView history-paging trigger', () => {
     const requestOlderHistory = mock(() => {});
     const snapshot = { ...makeSnapshot(ROWS), canRequestOlder: true };
     const instance = { ...makeInstance(snapshot), requestOlderHistory };
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     setGeometry(scroller, 50); // 50 < 2 * clientHeight (200) -> near the top
     fireEvent.scroll(scroller);
@@ -404,7 +430,7 @@ describe('TerminalView history-paging trigger', () => {
     const requestOlderHistory = mock(() => {});
     const snapshot = { ...makeSnapshot(ROWS), canRequestOlder: false };
     const instance = { ...makeInstance(snapshot), requestOlderHistory };
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     setGeometry(scroller, 50);
     fireEvent.scroll(scroller);
@@ -415,7 +441,7 @@ describe('TerminalView history-paging trigger', () => {
     const requestOlderHistory = mock(() => {});
     const snapshot = { ...makeSnapshot(ROWS), canRequestOlder: true };
     const instance = { ...makeInstance(snapshot), requestOlderHistory };
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     setGeometry(scroller, 500); // 500 >= 200 -> not near the top
     fireEvent.scroll(scroller);
@@ -443,7 +469,7 @@ describe('TerminalView history-paging trigger', () => {
       getSnapshot: () => snap,
       requestOlderHistory,
     };
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     const geom = installGeometry(scroller, 180);
     geom.setSilent(scroller.scrollHeight); // pinned at the bottom (270)
@@ -477,7 +503,7 @@ describe('TerminalView history-paging trigger', () => {
     const forwardScroll = mock(() => {});
     const snapshot = { ...makeSnapshot(ROWS), ...snapshotOverrides };
     const instance = { ...makeInstance(snapshot), requestOlderHistory, forwardScroll };
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     Object.defineProperty(scroller, 'clientHeight', { value: 100, configurable: true });
     Object.defineProperty(scroller, 'scrollHeight', { value: 100, configurable: true });
@@ -522,13 +548,13 @@ describe('TerminalView history-paging trigger', () => {
 
   it('shows the cap-reached notice overlay', () => {
     const snapshot = { ...makeSnapshot(ROWS), pagedCapReached: true };
-    render(<TerminalView instance={makeInstance(snapshot)} />);
+    render(<TerminalView allowSilentClipboardWrite instance={makeInstance(snapshot)} />);
     expect(screen.getByText(/older history paused/i)).toBeTruthy();
   });
 
   it('shows the retention-floor notice when the server evicted older history (#980)', () => {
     const snapshot = { ...makeSnapshot(ROWS), retentionFloorReached: true };
-    render(<TerminalView instance={makeInstance(snapshot)} />);
+    render(<TerminalView allowSilentClipboardWrite instance={makeInstance(snapshot)} />);
     expect(screen.getByText(/no longer retained/i)).toBeTruthy();
   });
 
@@ -538,14 +564,14 @@ describe('TerminalView history-paging trigger', () => {
       pagedCapReached: true,
       retentionFloorReached: true,
     };
-    render(<TerminalView instance={makeInstance(snapshot)} />);
+    render(<TerminalView allowSilentClipboardWrite instance={makeInstance(snapshot)} />);
     expect(screen.getByText(/older history paused/i)).toBeTruthy();
     expect(screen.queryByText(/no longer retained/i)).toBeNull();
   });
 
   it('renders no retention-floor notice when the floor is not reached (#980)', () => {
     const snapshot = { ...makeSnapshot(ROWS), retentionFloorReached: false };
-    render(<TerminalView instance={makeInstance(snapshot)} />);
+    render(<TerminalView allowSilentClipboardWrite instance={makeInstance(snapshot)} />);
     expect(screen.queryByText(/no longer retained/i)).toBeNull();
   });
 });
@@ -734,7 +760,7 @@ describe('TerminalView #959 eviction self-cannibalization (real store integratio
     });
     expect(instance.getSnapshot().canRequestOlder).toBe(true);
 
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     installGeometry(scroller, 180);
 
@@ -810,7 +836,7 @@ describe('TerminalView §6.4 eviction gating (#959)', () => {
       for (const l of Array.from(listeners)) l();
     };
 
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     const geom = installGeometry(scroller, 180);
     // Pin the viewport at the bottom, well below the top chunk's bottom edge.
@@ -854,7 +880,7 @@ describe('TerminalView §6.4 eviction gating (#959)', () => {
       for (const l of Array.from(listeners)) l();
     };
 
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     const geom = installShrinkClampGeometry(scroller, 180);
     // User genuinely scrolled 100px past the eviction threshold:
@@ -911,7 +937,7 @@ describe('TerminalView §6.4 eviction gating (#959)', () => {
       for (const l of Array.from(listeners)) l();
     };
 
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     const geom = installGeometry(scroller, 180);
     // Park the user well below the top chunk's bottom — an eviction-worthy spot
@@ -958,7 +984,7 @@ describe('TerminalView §6.4 eviction gating (#959)', () => {
       for (const l of Array.from(listeners)) l();
     };
 
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     const geom = installGeometry(scroller, 180);
     geom.setSilent(scroller.scrollHeight); // pin exactly at the (clamped) bottom
@@ -988,7 +1014,7 @@ describe('TerminalView §6.4 eviction gating (#959)', () => {
     const evictTopChunk = mock(() => {});
     const snapshot = { ...makeSnapshot(ROWS), pagedTopChunkRowCount: 700 };
     const instance = { ...makeInstance(snapshot), evictTopChunk };
-    const { container } = render(<TerminalView instance={instance} />);
+    const { container } = render(<TerminalView allowSilentClipboardWrite instance={instance} />);
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
     // A plain user scroll (no preceding programmatic write): scrollTop is far
     // below the chunk bottom (700*18=12600): 13000-12600=400 >= 2*180.
