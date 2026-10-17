@@ -100,7 +100,7 @@ Current UI uses inconsistent terminology:
 
 ### Database Schema
 
-No schema changes required. Use existing `serverPid` field:
+No schema changes to sessions are required. Use existing `serverPid` field (the pause and resume commands add two columns to `repositories`, see [Pause and resume commands](#pause-and-resume-commands)):
 
 ```typescript
 interface PersistedSession {
@@ -121,30 +121,54 @@ interface PersistedSession {
 
 ```
 POST /api/sessions/:id/pause
-Response: { success: true }
+Response: { success: true, pauseCommandResult?: HookCommandResult }
 ```
 
 Server behavior:
 1. Kill all PTY processes
-2. Keep session in database
-3. Set `serverPid = null`
-4. Remove from in-memory `sessions` Map
-5. **Do NOT delete worker output files**
-6. Broadcast `session-paused` event
+2. Run the repository's **pause command** (worktree sessions only; see [Pause and resume commands](#pause-and-resume-commands)). The pause always completes: the command's outcome is returned in `pauseCommandResult` and is never a reason to refuse the pause
+3. Keep session in database
+4. Set `serverPid = null`
+5. Remove from in-memory `sessions` Map
+6. **Do NOT delete worker output files**
+7. Broadcast `session-paused` event
 
 #### New Endpoint: Resume Session
 
 ```
 POST /api/sessions/:id/resume
-Response: { session: Session }
+Response: { session: Session, resumeCommandResult?: HookCommandResult }
 ```
 
 Server behavior:
 1. Load session from database
-2. Create in-memory session object
-3. Restore workers (spawn new PTY processes with `continueConversation: true`)
-4. Set `serverPid = current PID`
-5. Broadcast `session-resumed` event
+2. Run the repository's **resume command** (worktree sessions only), after the worktree path is confirmed to exist and before any worker starts, so the resources the workers need are back first. The resume always completes: a failed command is reported in `resumeCommandResult`
+3. Create in-memory session object
+4. Restore workers (spawn new PTY processes with `continueConversation: true`)
+5. Set `serverPid = current PID`
+6. Broadcast `session-resumed` event
+
+### Pause and resume commands
+
+A repository can configure a `pause_command` and a `resume_command` (columns on `repositories`, edited beside the setup and cleanup commands). They are shell commands run through the same `executeHookCommand` as the setup and cleanup commands, with the same template variables (`WORKTREE_NUM`, `BRANCH`, `REPO`, `WORKTREE_PATH`). The motivating case is a worktree that started Docker containers: `docker compose stop` on pause and `docker compose start` on resume.
+
+- **Triggers.** `POST /api/sessions/:id/pause` is the only pause path (there is no MCP pause tool and no auto-pause), so that is where the pause command runs. Every resume goes through `resumeSessionInternal`, so the resume command lives there rather than in the route. A server restart does not run the pause command: sessions become hibernated through `serverPid` handling and no pause call exists on that path (it becomes a row of the table below when graceful shutdown lands).
+- **Failure.** Pause and resume always complete. The command's result (`success`, `output`, `error`) is returned in the response and the client shows a non-blocking failure dialog; success shows nothing.
+- **Time box.** Unlike setup and cleanup, these two run with `SESSION_HOOK_COMMAND_TIMEOUT_MS` (60 s), so a hanging command cannot hang the pause request. Setup and cleanup keep their current no-timeout behaviour.
+- **Identity.** In multi-user mode the command runs as the session owner via `resolveSpawnUsername(session.createdBy, userRepository)`, the resolver resume already uses for its worker spawns (shared sessions: the shared account). Single-user mode spawns directly.
+- **Scope.** Worktree sessions only (quick sessions cannot be paused). A session whose repository is gone, or whose command is empty, runs nothing and returns no result.
+
+#### Surfaces
+
+| operation | repository settings form | repository detail page | repository card | MCP `update_repository` | MCP `list_repositories` | REST `PATCH /api/repositories/:id` | pause/resume result UI |
+|---|---|---|---|---|---|---|---|
+| configure pause command | do: textarea "Pause Command (optional)", placeholder `docker compose stop` | do: "Pause Command" row | not here: the card shows only the setup command today (same as cleanup) | do: `pauseCommand` param, echoed in the result | not here: cleanup is not listed either | do: `pauseCommand` in the request schema | -- |
+| configure resume command | do: textarea "Resume Command (optional)", placeholder `docker compose start` | do: "Resume Command" row | not here (same) | do: `resumeCommand` | not here | do | -- |
+| run pause command | -- | -- | -- | not here: no MCP pause exists | -- | -- (`POST /:id/pause` runs it) | do: on `pauseCommandResult.success === false` a non-blocking failure dialog on the page that issued the pause, then the normal navigation; success shows nothing |
+| run resume command | -- | -- | -- | not here | -- | -- (`POST /:id/resume` runs it) | do: the same dialog on `resumeCommandResult.success === false`, on the resumed session page; success shows nothing |
+| run on server shutdown / restart | -- | -- | -- | -- | -- | not here: no pause call exists on that path; becomes a row when graceful shutdown lands | -- |
+
+Owner confirmation of the user-facing cells: pending.
 
 #### Deprecate: Delete for Pause Intent
 

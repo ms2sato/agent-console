@@ -126,7 +126,7 @@ CREATE UNIQUE INDEX idx_users_os_uid ON users(os_uid) WHERE os_uid IS NOT NULL;
 Repositories and all their associated settings are **global resources shared across all users**:
 
 - **Repository registration**: Both the server operator and users can register repositories.
-- **Repository settings**: `env_vars`, `setup_command`, `cleanup_command`, `default_agent_id`, `description` — all shared. The server operator sets up the repository configuration once, and all users can use it immediately.
+- **Repository settings**: `env_vars`, `setup_command`, `cleanup_command`, `pause_command`, `resume_command`, `default_agent_id`, `description` — all shared. The server operator sets up the repository configuration once, and all users can use it immediately.
 - **Worktrees**: Created per-session, so each user works in their own worktree of a shared repository.
 
 This means a new user can log in and start working with pre-configured repositories without any setup.
