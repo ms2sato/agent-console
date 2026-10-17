@@ -29,6 +29,20 @@
  * doc under `docs/` link into `.claude/rules/*.md` and vice versa without
  * the checker treating that as out of scope.
  *
+ * Link destinations follow CommonMark's three shapes: a bare destination
+ * (`](a.md#x)`), an angle-bracket destination that may contain spaces
+ * (`](<my file.md#x>)`, `[label]: <#x>`), and, for a definition, a
+ * destination on the line after a label-only line (`[label]:` then `#x`,
+ * reported on the destination's line). A definition line must be label,
+ * destination and an optional quoted/parenthesised title with nothing
+ * after; a line with trailing text is not a definition and is not scanned.
+ *
+ * Known limits (recorded, not planned): (a) a destination containing
+ * balanced parentheses outside angle brackets (`](a_(b).md#x)`) is cut at
+ * the first `)`; (b) a definition title spanning more than one line is not
+ * recognised, so that line is not a definition. Each costs more to support
+ * than it catches: neither form occurs in docs/, .claude/ or CLAUDE.md.
+ *
  * Exit codes:
  *   0 = no dangling fragments
  *   1 = at least one dangling fragment found (printed, one per line)
@@ -221,8 +235,18 @@ export function buildAnchorSet(content) {
  * @returns {{frag: string, pathPart: string}|null}
  */
 function parseFragmentDestination(rawDest) {
-  // Drop an optional trailing "title" (](url "title")).
-  const dest = rawDest.trim().split(/\s+/)[0] ?? '';
+  let dest = rawDest.trim();
+  if (dest.startsWith('<')) {
+    // Angle-bracket destination: everything up to the first `>`; it may
+    // contain spaces but no `<`. Unterminated or empty means no link.
+    const end = dest.indexOf('>');
+    if (end === -1) return null;
+    dest = dest.slice(1, end);
+    if (dest === '' || /[<\n]/.test(dest)) return null;
+  } else {
+    // Drop an optional trailing "title" (](url "title")).
+    dest = dest.split(/\s+/)[0] ?? '';
+  }
   if (dest === '') return null;
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(dest)) return null; // external scheme (http:, mailto:, ...)
   const hashIdx = dest.indexOf('#');
@@ -259,7 +283,12 @@ export function extractFragmentLinks(content) {
   const fenceMask = computeFenceMask(lines);
   const links = [];
   const re = /\]\(([^)]*)\)/g;
-  const defRe = /^ {0,3}\[[^\]]+\]:\s*(\S+)/;
+  const titleTail = String.raw`(?:[ \t]+("[^"]*"|'[^']*'|\([^()]*\)))?[ \t]*$`;
+  const destination = String.raw`(<[^<>]*>|\S+)`;
+  const defRe = new RegExp(String.raw`^ {0,3}\[[^\]]+\]:[ \t]*` + destination + titleTail);
+  const labelOnlyRe = /^ {0,3}\[[^\]]+\]:[ \t]*$/;
+  const nextLineRe = new RegExp(String.raw`^[ \t]*` + destination + titleTail);
+  let consumedLine = -1; // destination line already taken by a label-only line above
   for (let i = 0; i < lines.length; i++) {
     if (fenceMask[i]) continue;
     const line = maskInlineCode(lines[i]);
@@ -269,10 +298,21 @@ export function extractFragmentLinks(content) {
       const parsed = parseFragmentDestination(m[1]);
       if (parsed) links.push({ line: i + 1, ...parsed });
     }
+    if (i === consumedLine) continue;
     const def = defRe.exec(line);
     if (def) {
       const parsed = parseFragmentDestination(def[1]);
       if (parsed) links.push({ line: i + 1, ...parsed });
+      continue;
+    }
+    if (labelOnlyRe.test(line) && i + 1 < lines.length && !fenceMask[i + 1]) {
+      const next = maskInlineCode(lines[i + 1]);
+      const nextDef = labelOnlyRe.test(next) ? null : nextLineRe.exec(next);
+      if (nextDef) {
+        consumedLine = i + 1;
+        const parsed = parseFragmentDestination(nextDef[1]);
+        if (parsed) links.push({ line: i + 2, ...parsed });
+      }
     }
   }
   return links;
