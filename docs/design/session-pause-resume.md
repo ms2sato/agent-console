@@ -164,11 +164,17 @@ A repository can configure a `pause_command` and a `resume_command` (columns on 
 |---|---|---|---|---|---|---|---|
 | configure pause command | do: textarea "Pause Command (optional)", placeholder `docker compose stop` | do: "Pause Command" row | not here: the card shows only the setup command today (same as cleanup) | do: `pauseCommand` param, echoed in the result | not here: cleanup is not listed either | do: `pauseCommand` in the request schema | -- |
 | configure resume command | do: textarea "Resume Command (optional)", placeholder `docker compose start` | do: "Resume Command" row | not here (same) | do: `resumeCommand` | not here | do | -- |
-| run pause command | -- | -- | -- | not here: no MCP pause exists | -- | -- (`POST /:id/pause` runs it) | do: on `pauseCommandResult.success === false` a non-blocking failure dialog on the page that issued the pause, then the normal navigation; success shows nothing |
-| run resume command | -- | -- | -- | not here | -- | -- (`POST /:id/resume` runs it) | do: the same dialog on `resumeCommandResult.success === false`, on the resumed session page; success shows nothing |
+| run pause command | -- | -- | -- | not here: no MCP pause exists | -- | -- (`POST /:id/pause` runs it) | do: on `pauseCommandResult.success === false` the failure is recorded on the session's stop task in `SessionStopTasksContext` (root) and a non-blocking failure dialog renders at the root over the current page; the normal navigation is unchanged (it does not wait for the dialog); success shows nothing |
+| run resume command | -- | -- | -- | not here | -- | -- (`POST /:id/resume` runs it) | do: the same root-level dialog on `resumeCommandResult.success === false`; every resume caller (session page, dashboard banner, sidebar) reports into the same slot; success shows nothing |
+| run resume command on auto-resume at server start | -- | -- | -- | -- | -- | -- | do (pending owner): `initialize()` resumes sessions that were active before the restart through the same `resumeSessionInternal`, so the resume command runs there; its result is not shown (no page issued the request) |
 | run on server shutdown / restart | -- | -- | -- | -- | -- | not here: no pause call exists on that path; becomes a row when graceful shutdown lands | -- |
 
 Owner confirmation of the user-facing cells: pending.
+
+Implementation notes for the two decisions above:
+
+- **Where the failure is held.** The `session-paused` WebSocket frame reaches the client before the pause response, and the session page, which issued the request, unmounts when that frame arrives. State kept in the page or its dialog is therefore lost before the response carrying `pauseCommandResult` lands, so the failure lives at the root, where the pause task already lives.
+- **Auto-resume at server start.** `initialize()` resumes sessions serially, so a resume command that hangs adds at most `SESSION_HOOK_COMMAND_TIMEOUT_MS` (60 s) per session to server start. If the owner decides the command must not run on that path, the row above flips to `not here` and its test flips with it.
 
 #### Deprecate: Delete for Pause Intent
 
