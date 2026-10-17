@@ -446,6 +446,24 @@ describe('adopt_todo', () => {
       expect(stored.createdBy).toEqual({ workerId: winner.workerId });
     });
 
+    it('two callers re-targeting one same-session item to DIFFERENT workers: exactly one wins, the other is told it moved, the row names the winner', async () => {
+      const me = await createOwnedSession(9071, 'adopt-owner-cas-k');
+      await seedAgentItem(me, 'same-session-race', 'session');
+      const t1 = await sessionManager.createWorker(me.sessionId, { type: 'terminal', name: 'Shell 1' });
+      const t2 = await sessionManager.createWorker(me.sessionId, { type: 'terminal', name: 'Shell 2' });
+
+      const responses = await Promise.all([
+        adoptViaTool({ id: 'same-session-race', sessionId: me.sessionId, workerId: t1!.id }),
+        adoptViaTool({ id: 'same-session-race', sessionId: me.sessionId, workerId: t2!.id }),
+      ]);
+
+      const errors = responses.filter((r) => r.result?.isError === true);
+      expect(errors).toHaveLength(1);
+      expect(await toolError(errors[0]!)).toContain('moved while you were adopting it');
+      const winner = responses[0]!.result?.isError === true ? t2! : t1!;
+      expect((await todoRepository.findById('same-session-race'))!.createdBy).toEqual({ workerId: winner.id });
+    });
+
     it('the same caller adopting twice concurrently succeeds both times and emits one pair of frames', async () => {
       const a = await createOwnedSession(9069, 'adopt-owner-cas-i');
       const b = await createOwnedSession(9070, 'adopt-owner-cas-j');

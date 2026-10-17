@@ -6,6 +6,7 @@ import { installMockWebSocket } from '../../../test/mock-websocket';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { createTodoApiMock, makeTodo, makeTodoComment } from '../../../test/todo-fixtures';
 import { SessionTerminalRunContext, type SessionTerminalRun } from '../SessionTerminalRunContext';
+import { SessionDataProvider } from '../../../test/session-data';
 import { TodoDetailDialog } from '../TodoDetailDialog';
 import { waitForAbsent } from '../../../test/waitForAbsent';
 
@@ -40,9 +41,11 @@ function makeRun(): SessionTerminalRun {
 async function renderDialog(todoId: string | null, run: SessionTerminalRun | null = null) {
   const onClose = mock(() => {});
   await renderWithRouter(
-    <SessionTerminalRunContext.Provider value={run}>
-      <TodoDetailDialog todoId={todoId} sessionId="session-1" users={USERS} onClose={onClose} onCloseAutoFocus={() => {}} />
-    </SessionTerminalRunContext.Provider>,
+    <SessionDataProvider>
+      <SessionTerminalRunContext.Provider value={run}>
+        <TodoDetailDialog todoId={todoId} sessionId="session-1" users={USERS} onClose={onClose} onCloseAutoFocus={() => {}} />
+      </SessionTerminalRunContext.Provider>
+    </SessionDataProvider>,
   );
   return { onClose, user: userEvent.setup() };
 }

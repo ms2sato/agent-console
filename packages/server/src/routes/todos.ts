@@ -12,10 +12,13 @@ import * as v from 'valibot';
 import type { AppBindings, AppContext } from '../app-context.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
+import { sessionVisibleToUser } from '../lib/session-access.js';
 import { deliverTodoComment, deliverTodoResolution, emitTodosUpdated } from '../lib/todo-triggers.js';
 import { vQueryValidator, vValidator } from '../middleware/validation.js';
 import type { UpdateTodoParams } from '../repositories/todo-repository.js';
 import {
+  canReceiveNotifications,
   CommentTodoRequestSchema,
   CreateTodoRequestSchema,
   ResolveTodoRequestSchema,
@@ -31,6 +34,13 @@ const ListTodosQuerySchema = v.object({
   scope: v.optional(v.picklist(TODO_SCOPES)),
   assignee: v.optional(v.pipe(v.string(), v.minLength(1))),
   sessionId: v.optional(v.pipe(v.string(), v.minLength(1))),
+  // 'mine-and-shared': only items assigned to me, created by me, or in a session I own or that is shared.
+  view: v.optional(v.picklist(['mine-and-shared'])),
+});
+
+const MoveTodoRequestSchema = v.strictObject({
+  sessionId: v.pipe(v.string(), v.minLength(1)),
+  workerId: v.optional(v.pipe(v.string(), v.minLength(1))),
 });
 
 /**
@@ -56,13 +66,27 @@ async function assertReferencesExist(
 
 const todos = new Hono<AppBindings>()
   .get('/', vQueryValidator(ListTodosQuerySchema), async (c) => {
-    const { todoRepository } = c.get('appContext');
+    const { todoRepository, sessionManager, sharedAccountRegistry } = c.get('appContext');
+    const authUser = c.get('authUser');
     const query = c.req.valid('query');
+
+    // Single-user mode has one user who sees everything, so `view` is accepted and ignored there.
+    let visibleTo: { userId: string; sessionIds: string[] } | undefined;
+    if (query.view && serverConfig.AUTH_MODE === 'multi-user') {
+      // Live and paused sessions both count: a paused session's items stay visible.
+      const sessions = [...sessionManager.getAllSessions(), ...(await sessionManager.getAllPersistedSessions())];
+      const sessionIds = sessions
+        .filter((s) => sessionVisibleToUser(s, authUser.id, sharedAccountRegistry))
+        .map((s) => s.id);
+      visibleTo = { userId: authUser.id, sessionIds: [...new Set(sessionIds)] };
+    }
+
     const list = await todoRepository.list({
       status: query.status,
       scope: query.scope,
       assigneeUserId: query.assignee,
       sessionId: query.sessionId,
+      visibleTo,
     });
     return c.json({ todos: list });
   })
@@ -249,6 +273,80 @@ const todos = new Hono<AppBindings>()
       });
 
     return c.json({ todo, activities });
+  })
+  // Move an open item to another LIVE session (its delivery needs a live worker). A move is not a
+  // resolution: nothing is delivered. Team-tool rule: any member may, no session-ownership check.
+  .post('/:id/move', vValidator(MoveTodoRequestSchema), async (c) => {
+    const id = c.req.param('id');
+    const body = c.req.valid('json');
+    const { todoRepository, broadcastToApp, sessionManager } = c.get('appContext');
+    const authUser = c.get('authUser');
+
+    const todo = await todoRepository.findById(id);
+    if (!todo) throw new NotFoundError('Todo');
+    if (todo.status !== 'open') {
+      throw new ConflictError(`Only an open item can be moved (this one is ${todo.status})`);
+    }
+
+    const target = sessionManager.getSession(body.sessionId);
+    if (!target) {
+      const paused = await sessionManager.getPersistedSession(body.sessionId);
+      if (paused) throw new ConflictError('Target session is paused; resume it first');
+      throw new NotFoundError('Session');
+    }
+
+    // The worker that will hear the resolution. A human-created item has none and keeps none.
+    let workerId: string | null = null;
+    if ('workerId' in todo.createdBy) {
+      if (body.workerId !== undefined) {
+        const worker = target.workers.find((w) => w.id === body.workerId);
+        if (!worker) {
+          throw new ConflictError(`Worker ${body.workerId} not found in session ${body.sessionId}`);
+        }
+        if (!canReceiveNotifications(worker)) {
+          throw new ConflictError(
+            `Worker ${body.workerId} in session ${body.sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
+          );
+        }
+        workerId = worker.id;
+      } else {
+        const worker = target.workers.find(canReceiveNotifications);
+        if (!worker) throw new ConflictError('Target session has no worker that can receive notifications');
+        workerId = worker.id;
+      }
+    } else if (body.workerId !== undefined) {
+      throw new ValidationError('a human-created item has no delivery worker');
+    }
+
+    // Already in that session. Human-created, or the same worker: a read-only no-op. A different worker
+    // of the same session takes over delivery below: the row is updated, but it is not a move.
+    const sameSession = todo.sessionId === body.sessionId;
+    if (sameSession && (workerId === null || ('workerId' in todo.createdBy && todo.createdBy.workerId === workerId))) {
+      return c.json({ todo });
+    }
+
+    const moved = await todoRepository.adopt(id, {
+      sessionId: body.sessionId,
+      workerId,
+      expectedSessionId: todo.sessionId,
+      expectedWorkerId: 'workerId' in todo.createdBy ? todo.createdBy.workerId : null,
+      actor: { userId: authUser.id },
+    });
+    if (!moved) {
+      // The write is a compare-and-set on the session the item was read in; say which condition failed.
+      const current = await todoRepository.findById(id);
+      if (!current) throw new NotFoundError('Todo');
+      if (current.status !== 'open') {
+        throw new ConflictError(`Only an open item can be moved (this one is ${current.status})`);
+      }
+      throw new ConflictError('The item moved while you were moving it; reload');
+    }
+
+    if (!sameSession) {
+      emitTodosUpdated(broadcastToApp, todo.sessionId);
+    }
+    emitTodosUpdated(broadcastToApp, moved.sessionId);
+    return c.json({ todo: moved });
   })
   .post('/:id/dismiss', async (c) => {
     const id = c.req.param('id');

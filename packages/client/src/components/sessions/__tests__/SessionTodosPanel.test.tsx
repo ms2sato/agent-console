@@ -3,6 +3,7 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { SessionDataProvider } from '../../../test/session-data';
 import { installMockWebSocket } from '../../../test/mock-websocket';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
@@ -31,14 +32,16 @@ afterEach(() => {
 
 async function renderPanel(props: { isExpanded?: boolean; compact?: boolean; onToggle?: () => void } = {}) {
   const rendered = await renderWithRouter(
-    <div data-testid="terminal-host">
-      <SessionTodosPanel
-        sessionId="session-1"
-        isExpanded={props.isExpanded ?? true}
-        onToggleExpanded={props.onToggle ?? (() => {})}
-        compact={props.compact ?? false}
-      />
-    </div>,
+    <SessionDataProvider>
+      <div data-testid="terminal-host">
+        <SessionTodosPanel
+          sessionId="session-1"
+          isExpanded={props.isExpanded ?? true}
+          onToggleExpanded={props.onToggle ?? (() => {})}
+          compact={props.compact ?? false}
+        />
+      </div>
+    </SessionDataProvider>,
   );
   return { ...rendered, user: userEvent.setup() };
 }
@@ -169,7 +172,11 @@ describe('SessionTodosPanel', () => {
         />
       );
     }
-    await renderWithRouter(<Host />);
+    await renderWithRouter(
+      <SessionDataProvider>
+        <Host />
+      </SessionDataProvider>,
+    );
     const row = await screen.findByTestId('todo-a');
     const body = row.closest('.max-h-96') as HTMLElement;
     // Wait for the directory so the assignee select is part of the body.

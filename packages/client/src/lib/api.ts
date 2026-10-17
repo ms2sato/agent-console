@@ -1452,6 +1452,8 @@ export interface FetchTodosFilter {
   scope?: TodoScope;
   assignee?: string;
   sessionId?: string;
+  /** Multi-user only: list just the items assigned to me, created by me, or in a session I own or that is shared. */
+  view?: 'mine-and-shared';
 }
 
 /**
@@ -1533,6 +1535,18 @@ export async function commentTodo(id: string, text: string): Promise<TodoDetailR
     await handleApiError(res, 'Failed to comment on Todo item');
   }
   return v.parse(TodoDetailResponseSchema, await res.json());
+}
+
+/**
+ * Moves an open item to another live session. The server picks the delivery worker for an
+ * agent-created item; `workerId` pins one. Returns the moved item.
+ */
+export async function moveTodo(id: string, body: { sessionId: string; workerId?: string }): Promise<Todo> {
+  const res = await api.todos[':id'].move.$post({ param: { id }, json: body });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to move Todo item');
+  }
+  return v.parse(TodoResponseSchema, await res.json()).todo;
 }
 
 /** The member directory (id and username only) that backs the assignee pickers. */

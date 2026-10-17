@@ -36,6 +36,11 @@ export interface TodoListFilters {
   scope?: TodoScope;
   assigneeUserId?: string;
   sessionId?: string;
+  /**
+   * The default human view: only items assigned to `userId`, created by `userId`, or belonging to one of
+   * `sessionIds`. Combines with the other filters (AND). An empty `sessionIds` drops the third branch.
+   */
+  visibleTo?: { userId: string; sessionIds: string[] };
 }
 
 /** Editable fields of an open item. An omitted key is left unchanged. */
@@ -50,13 +55,23 @@ export interface UpdateTodoParams {
 /** The session and worker an open item is re-targeted to by {@link TodoRepository.adopt}. */
 export interface AdoptTodoParams {
   sessionId: string;
-  workerId: string;
+  /**
+   * The worker that hears the resolution. Null is valid ONLY for a human-created item: the update
+   * never reads it there (it keeps `created_worker_id` NULL). For an agent-created item the CHECK
+   * `todos_creator_check` would fire, so the caller guarantees a worker.
+   */
+  workerId: string | null;
   /**
    * The `session_id` the caller read the item under (null for a session-less item).
    * The write applies only while the item is still there, so a concurrent adoption
    * is never overwritten.
    */
   expectedSessionId: string | null;
+  /**
+   * The `created_worker_id` the caller read the item under (null for a human-created item). Part of
+   * the same compare-and-set: two callers re-targeting the item to different workers cannot both win.
+   */
+  expectedWorkerId: string | null;
   /** Who moved the item; recorded on the `todo_moves` row written with the update. */
   actor: TodoActivityActor;
   /** The human's quoted instruction, when the move was made on one. Omitted: stored NULL. */

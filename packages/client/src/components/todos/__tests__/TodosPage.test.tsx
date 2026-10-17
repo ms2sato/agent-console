@@ -3,7 +3,7 @@ import { screen, cleanup, waitFor, within, act } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { waitForAbsent } from '../../../test/waitForAbsent';
-import { setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
+import { setCurrentUser, setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
@@ -163,6 +163,57 @@ describe('TodosPage', () => {
       await waitForAbsent(() => screen.queryByText('In beta'));
       expect(screen.getByText('In alpha')).toBeTruthy();
       expect(screen.queryByText('Sessionless')).toBeNull();
+    });
+  });
+
+  describe('view', () => {
+    // Mutation: drop the default view from the fetch -> 'fetches "Mine + shared" by default ...' fails.
+    it('fetches "Mine + shared" by default in multi-user mode and "Everyone" sends no view', async () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ ...ME, homeDir: '/home/me' });
+      const { user } = await renderPage();
+      await waitFor(() => expect(api.listFetches().length).toBeGreaterThan(0));
+      expect(lastListSearch().get('view')).toBe('mine-and-shared');
+      expect((screen.getByLabelText('View') as HTMLSelectElement).value).toBe('mine-and-shared');
+
+      await user.selectOptions(screen.getByLabelText('View'), 'Everyone');
+      await waitFor(() => expect(lastListSearch().has('view')).toBe(false));
+
+      await user.selectOptions(screen.getByLabelText('View'), 'Mine + shared');
+      await waitFor(() => expect(lastListSearch().get('view')).toBe('mine-and-shared'));
+    });
+
+    it('offers the two views as "Mine + shared" and "Everyone"', async () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ ...ME, homeDir: '/home/me' });
+      await renderPage();
+
+      const options = within(screen.getByLabelText('View')).getAllByRole('option');
+      expect(options.map((o) => o.textContent)).toEqual(['Mine + shared', 'Everyone']);
+    });
+
+    it('has no View select and sends no view in single-user mode', async () => {
+      await renderPage();
+      await waitFor(() => expect(api.listFetches().length).toBeGreaterThan(0));
+
+      expect(screen.queryByLabelText('View')).toBeNull();
+      expect(lastListSearch().has('view')).toBe(false);
+    });
+
+    it('the Session filter composes with the view', async () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ ...ME, homeDir: '/home/me' });
+      api.state.todos = [
+        makeTodo({ id: 'a', title: 'In alpha', sessionId: 'alpha-session-id' }),
+        makeTodo({ id: 'b', title: 'In beta', sessionId: 'beta-session-id' }),
+      ];
+      const { user } = await renderPage();
+      await waitFor(() => expect(screen.getByText('In alpha')).toBeTruthy());
+
+      await user.selectOptions(screen.getByLabelText('Session filter'), 'alpha-session-id');
+
+      await waitForAbsent(() => screen.queryByText('In beta'));
+      expect(lastListSearch().get('view')).toBe('mine-and-shared');
     });
   });
 
