@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 51;
+export const LATEST_SCHEMA_VERSION = 52;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -467,6 +467,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 51) {
     await migrateToV51(database);
+  }
+
+  if (currentVersion < 52) {
+    await migrateToV52(database);
   }
 }
 
@@ -3248,6 +3252,90 @@ export async function migrateToV51(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 51`.execute(database);
 
   logger.info('Migration to v51 completed');
+}
+
+/**
+ * Migration v52: Create `todo_comments` and `todo_moves` (human TODO list v3
+ * activities, docs/design/human-todo-list.md section 3).
+ *
+ * Two tables, one timeline: a comment and a move are different shapes, so each
+ * has its own columns and CHECKs, and the repository reads both as one ordered
+ * thread. Unlike `todos`, both carry a child-to-parent foreign key with
+ * `ON DELETE CASCADE` -- a comment or a move has no reason to outlive its item,
+ * so the FK is the structural form of "deleted with the item" (a todo outlives
+ * its SESSION, which is why `todos` itself has no foreign keys).
+ *
+ * Owner-approved DDL:
+ * ```sql
+ * CREATE TABLE IF NOT EXISTS todo_comments (
+ *   id              TEXT PRIMARY KEY,
+ *   todo_id         TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+ *   actor_user_id   TEXT,
+ *   actor_worker_id TEXT,
+ *   text            TEXT NOT NULL,
+ *   created_at      TEXT NOT NULL,
+ *   CONSTRAINT todo_comments_actor_check CHECK ((actor_user_id IS NOT NULL AND actor_worker_id IS NULL) OR (actor_user_id IS NULL AND actor_worker_id IS NOT NULL)),
+ *   CONSTRAINT todo_comments_text_check  CHECK (length(text) > 0)
+ * );
+ * CREATE INDEX IF NOT EXISTS idx_todo_comments_todo_created ON todo_comments (todo_id, created_at);
+ * CREATE TABLE IF NOT EXISTS todo_moves (
+ *   id                 TEXT PRIMARY KEY,
+ *   todo_id            TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+ *   actor_user_id      TEXT,
+ *   actor_worker_id    TEXT,
+ *   from_session_id    TEXT,
+ *   to_session_id      TEXT NOT NULL,
+ *   statement          TEXT,
+ *   attributed_user_id TEXT,
+ *   created_at         TEXT NOT NULL,
+ *   CONSTRAINT todo_moves_actor_check       CHECK ((actor_user_id IS NOT NULL AND actor_worker_id IS NULL) OR (actor_user_id IS NULL AND actor_worker_id IS NOT NULL)),
+ *   CONSTRAINT todo_moves_statement_check   CHECK (statement IS NULL OR length(statement) > 0),
+ *   CONSTRAINT todo_moves_attribution_check CHECK (attributed_user_id IS NULL OR statement IS NOT NULL)
+ * );
+ * CREATE INDEX IF NOT EXISTS idx_todo_moves_todo_created ON todo_moves (todo_id, created_at);
+ * PRAGMA user_version = 52;
+ * ```
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV52(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v52: Creating todo_comments and todo_moves tables');
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS todo_comments (
+      id              TEXT PRIMARY KEY,
+      todo_id         TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+      actor_user_id   TEXT,
+      actor_worker_id TEXT,
+      text            TEXT NOT NULL,
+      created_at      TEXT NOT NULL,
+      CONSTRAINT todo_comments_actor_check CHECK ((actor_user_id IS NOT NULL AND actor_worker_id IS NULL) OR (actor_user_id IS NULL AND actor_worker_id IS NOT NULL)),
+      CONSTRAINT todo_comments_text_check  CHECK (length(text) > 0)
+    )
+  `.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_todo_comments_todo_created ON todo_comments (todo_id, created_at)`.execute(database);
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS todo_moves (
+      id                 TEXT PRIMARY KEY,
+      todo_id            TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+      actor_user_id      TEXT,
+      actor_worker_id    TEXT,
+      from_session_id    TEXT,
+      to_session_id      TEXT NOT NULL,
+      statement          TEXT,
+      attributed_user_id TEXT,
+      created_at         TEXT NOT NULL,
+      CONSTRAINT todo_moves_actor_check       CHECK ((actor_user_id IS NOT NULL AND actor_worker_id IS NULL) OR (actor_user_id IS NULL AND actor_worker_id IS NOT NULL)),
+      CONSTRAINT todo_moves_statement_check   CHECK (statement IS NULL OR length(statement) > 0),
+      CONSTRAINT todo_moves_attribution_check CHECK (attributed_user_id IS NULL OR statement IS NOT NULL)
+    )
+  `.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_todo_moves_todo_created ON todo_moves (todo_id, created_at)`.execute(database);
+
+  await sql`PRAGMA user_version = 52`.execute(database);
+
+  logger.info('Migration to v52 completed');
 }
 
 /**

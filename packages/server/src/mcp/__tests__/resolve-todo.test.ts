@@ -514,7 +514,7 @@ describe('resolve_todo', () => {
   });
 
   describe('tool surface', () => {
-    it('the list tools are adopt_todo, create_todo, list_todos and resolve_todo; there is still no dismiss or delete', async () => {
+    it('the list tools are adopt_todo, comment_todo, create_todo, list_todos and resolve_todo; there is still no dismiss or delete', async () => {
       const res = await app.request('/mcp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Mcp-Session-Id': mcpSessionId },
@@ -523,7 +523,13 @@ describe('resolve_todo', () => {
       const text = await res.text();
       const names = [...text.matchAll(/"name":"([a-z_]+)"/g)].map((m) => m[1]);
 
-      expect(names.filter((n) => n!.includes('todo')).sort()).toEqual(['adopt_todo', 'create_todo', 'list_todos', 'resolve_todo']);
+      expect(names.filter((n) => n!.includes('todo')).sort()).toEqual([
+        'adopt_todo',
+        'comment_todo',
+        'create_todo',
+        'list_todos',
+        'resolve_todo',
+      ]);
     });
   });
 });

@@ -81,6 +81,7 @@ import {
   TODO_KINDS,
   TODO_SCOPES,
   TODO_STATUSES,
+  MAX_TODO_COMMENT_LENGTH,
   UpdateEmbeddedAgentWorkerRequestSchema,
   SetMcpServerPermissionsRequestSchema,
 } from '@agent-console/shared';
@@ -3052,6 +3053,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'list_todos',
     "List this session's items on the human TODO list, newest first (an empty list is a normal result). " +
       'Use it to catch up on what humans resolved or dismissed when a notification could not be delivered. ' +
+      "Each item carries `activities`: its comments and moves in order, oldest first. " +
       "With `global: true` it lists every session's `global` items instead (a successor session catching up on its " +
       "predecessor); take one over with `adopt_todo`.",
     {
@@ -3105,7 +3107,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
           scope: includeGlobal ? 'global' : scope,
           assigneeUserId: mine ? session.createdBy : undefined,
         });
-        return textResult({ todos });
+        // One timeline read per item: a session's list is short, and each read is one indexed query.
+        const items = await Promise.all(
+          todos.map(async (todo) => ({ ...todo, activities: await todoRepository.listActivities(todo.id) })),
+        );
+        return textResult({ todos: items });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'list_todos failed');
@@ -3211,6 +3217,98 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
   );
 
+  // ---------- Tool: comment_todo ----------
+
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
+  mcpServer.tool(
+    'comment_todo',
+    "Leave a comment on an item of THIS session on the human TODO list, to answer a human's reply on it or to add " +
+      'context, without closing it: the status never changes. Only open and done items of this session take a comment. ' +
+      `The text is at most ${MAX_TODO_COMMENT_LENGTH} characters. Nothing is delivered to anyone: the human reads it on the item's detail. ` +
+      'To change the question itself, use `create_todo` with `supersedes`.',
+    {
+      id: z.string().describe('The id of the item to comment on (from `list_todos`).'),
+      text: z.string().describe(`The comment, at most ${MAX_TODO_COMMENT_LENGTH} characters. Whitespace alone is refused.`),
+      sessionId: z.string().optional().describe(
+        'The session the item belongs to. Optional for embedded agents (defaults to your own session, proven by your ' +
+          'bearer token; a different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
+      ),
+      workerId: z.string().optional().describe(
+        'The worker leaving the comment. Optional for embedded agents (defaults to your own worker). ' +
+          'Required for terminal agents: your worker id (AGENT_CONSOLE_WORKER_ID in your environment).',
+      ),
+    },
+    async ({ id, text: rawText, sessionId: requestedSessionId, workerId: requestedWorkerId }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedSessionId, workerId: requestedWorkerId },
+        'comment_todo',
+      );
+      if (!self.ok) return errorResult(self.error);
+      const { sessionId, workerId } = self;
+
+      try {
+        if (!todoRepository) {
+          return errorResult('The TODO list is not available on this server');
+        }
+
+        const text = rawText.trim();
+        if (text === '') {
+          return errorResult('text cannot be empty');
+        }
+        if (text.length > MAX_TODO_COMMENT_LENGTH) {
+          return errorResult(`text may be at most ${MAX_TODO_COMMENT_LENGTH} characters (got ${text.length})`);
+        }
+
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'comment_todo' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const todo = await todoRepository.findById(id);
+        if (!todo) {
+          return errorResult(`Todo not found: ${id}`);
+        }
+        if (todo.sessionId !== sessionId) {
+          return errorResult(`Cannot comment on ${id}: it is not an item of this session`);
+        }
+        if (todo.status !== 'open' && todo.status !== 'done') {
+          return errorResult(
+            `Cannot comment on ${id}: its status is ${todo.status}, only an open or done item takes a comment`,
+          );
+        }
+
+        await todoRepository.addComment({ todoId: id, actor: { workerId }, text });
+        const [updated, activities] = await Promise.all([
+          todoRepository.findById(id),
+          todoRepository.listActivities(id),
+        ]);
+
+        logger.info({ todoId: id, sessionId, workerId }, 'Todo commented via MCP');
+        emitTodosUpdated(broadcastToApp, sessionId);
+
+        return textResult({ todo: updated ?? todo, activities });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'comment_todo failed');
+        return errorResult(message);
+      }
+    },
+  );
+
   // ---------- Tool: adopt_todo ----------
 
   // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
@@ -3219,9 +3317,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
     "Take over an OPEN item of the human TODO list from another session (a successor session picking up its " +
       "predecessor's open questions): the item moves to THIS session and, when an agent created it, to THIS worker, " +
       'so the human\'s resolution is delivered to you. Nothing else about the item changes, and nothing is delivered ' +
-      'now. Re-adopting your own item succeeds without a change. Refused: an unknown id, an item that is not open, ' +
-      "and an item of a session owned by another user. The ownership check needs the creating session to still exist " +
-      'and the caller to carry a bearer token; without either it cannot run and the adoption proceeds.',
+      'now. Re-adopting your own item succeeds without a change. Every move is recorded on the item\'s timeline. ' +
+      'Refused: an unknown id, an item that is not open, and an item of a session owned by another user unless ' +
+      "you pass `statement`, the human's own words instructing the move, quoted (what they typed or said, never an " +
+      'instruction you inferred); it is recorded on the item. The ownership check needs the creating session to still ' +
+      'exist and the caller to carry a bearer token; without either it cannot run and the adoption proceeds.',
     {
       id: z.string().describe('The id of the open item to take over (from `list_todos` or the handoff memo).'),
       sessionId: z.string().optional().describe(
@@ -3233,8 +3333,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
         'The worker that hears the resolution. Optional for embedded agents (defaults to your own worker). ' +
           'Required for terminal agents: your worker id (AGENT_CONSOLE_WORKER_ID in your environment).',
       ),
+      statement: z.string().optional().describe(
+        "The human's words instructing this move, quoted. REQUIRED when the item belongs to a session owned by another " +
+          'user; optional (and recorded) otherwise. Whitespace alone is refused.',
+      ),
+      statedBy: z.string().optional().describe(
+        'Optional username of the team member whose words `statement` is. Needs a `statement`. Omitted: the move is recorded unattributed.',
+      ),
     },
-    async ({ id, sessionId: requestedSessionId, workerId: requestedWorkerId }) => {
+    async ({ id, sessionId: requestedSessionId, workerId: requestedWorkerId, statement: rawStatement, statedBy }) => {
       const self = resolveSelfIdentity(
         getMcpCallerIdentity(),
         { sessionId: requestedSessionId, workerId: requestedWorkerId },
@@ -3246,6 +3353,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
       try {
         if (!todoRepository) {
           return errorResult('The TODO list is not available on this server');
+        }
+
+        const statement = rawStatement?.trim();
+        if (statement === '') {
+          return errorResult("statement must be the human's words, quoted; it cannot be empty");
+        }
+        if (statedBy !== undefined && statement === undefined) {
+          return errorResult('statedBy names whose words the statement is, so it needs a statement');
         }
 
         const session = sessionManager.getSession(sessionId);
@@ -3270,6 +3385,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
         );
         if (authError) return errorResult(authError.error);
 
+        let attributedUserId: string | undefined;
+        if (statedBy !== undefined) {
+          const stater = await userRepository.findByUsername(statedBy);
+          if (!stater) {
+            return errorResult(`No user named ${statedBy}`);
+          }
+          attributedUserId = stater.id;
+        }
+
         const todo = await todoRepository.findById(id);
         if (!todo) {
           return errorResult(`Todo not found: ${id}`);
@@ -3287,12 +3411,22 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (todo.sessionId !== null && callerUserId !== undefined) {
           const creatingSession =
             sessionManager.getSession(todo.sessionId) ?? (await sessionManager.getPersistedSession(todo.sessionId));
-          if (creatingSession?.createdBy !== undefined && creatingSession.createdBy !== callerUserId) {
-            return errorResult(`Cannot adopt ${id}: the item belongs to a session owned by another user`);
+          if (creatingSession?.createdBy !== undefined && creatingSession.createdBy !== callerUserId && statement === undefined) {
+            return errorResult(
+              `Cannot adopt ${id}: the item belongs to a session owned by another user. ` +
+                "Pass `statement` (the human's quoted words) to adopt it on a human's instruction",
+            );
           }
         }
 
-        const adopted = await todoRepository.adopt(id, { sessionId, workerId, expectedSessionId: todo.sessionId });
+        const adopted = await todoRepository.adopt(id, {
+          sessionId,
+          workerId,
+          actor: { workerId },
+          expectedSessionId: todo.sessionId,
+          statement,
+          statedBy: attributedUserId,
+        });
         if (!adopted) {
           // The write is a compare-and-set on the session the item was read in; say which condition failed.
           const current = await todoRepository.findById(id);

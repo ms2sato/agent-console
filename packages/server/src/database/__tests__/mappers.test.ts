@@ -16,9 +16,10 @@ import {
   DataIntegrityError,
   assertNever,
   toTodo,
+  toTodoActivity,
 } from '../mappers.js';
 import type { LegacySessionRow, LegacyAgentRow } from '../mappers.js';
-import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow, ArtifactRow, TodoRow } from '../schema.js';
+import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow, ArtifactRow, TodoActivityRow, TodoRowWithCommentCount } from '../schema.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type {
   PersistedAgentWorker,
@@ -2484,7 +2485,7 @@ describe('mappers', () => {
 
 
 describe('toTodo', () => {
-  function buildTodoRow(overrides: Partial<TodoRow> = {}): TodoRow {
+  function buildTodoRow(overrides: Partial<TodoRowWithCommentCount> = {}): TodoRowWithCommentCount {
     return {
       id: 'todo-1',
       kind: 'action',
@@ -2502,6 +2503,7 @@ describe('toTodo', () => {
       created_at: '2026-10-15T00:00:00.000Z',
       updated_at: '2026-10-15T00:00:00.000Z',
       resolved_by_worker_id: null,
+      comment_count: 0,
       ...overrides,
     };
   }
@@ -2521,9 +2523,14 @@ describe('toTodo', () => {
       resolvedByUserId: null,
       resolvedByWorkerId: null,
       resolvedAt: null,
+      commentCount: 0,
       createdAt: '2026-10-15T00:00:00.000Z',
       updatedAt: '2026-10-15T00:00:00.000Z',
     });
+  });
+
+  it('carries the derived comment_count through as commentCount', () => {
+    expect(toTodo(buildTodoRow({ comment_count: 4 })).commentCount).toBe(4);
   });
 
   it('maps an agent-created row to createdBy {workerId}', () => {
@@ -2546,5 +2553,88 @@ describe('toTodo', () => {
   it('throws DataIntegrityError when both or neither creator column is set', () => {
     expect(() => toTodo(buildTodoRow({ created_worker_id: 'w', created_user_id: 'u' }))).toThrow(DataIntegrityError);
     expect(() => toTodo(buildTodoRow({ created_worker_id: null, created_user_id: null }))).toThrow(DataIntegrityError);
+  });
+});
+
+describe('toTodoActivity', () => {
+  function buildActivityRow(overrides: Partial<TodoActivityRow> = {}): TodoActivityRow {
+    return {
+      id: 'a-1',
+      todo_id: 'todo-1',
+      kind: 'comment',
+      actor_user_id: 'user-1',
+      actor_worker_id: null,
+      text: 'hello',
+      from_session_id: null,
+      to_session_id: null,
+      statement: null,
+      attributed_user_id: null,
+      created_at: '2026-10-17T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function buildMoveRow(overrides: Partial<TodoActivityRow> = {}): TodoActivityRow {
+    return buildActivityRow({
+      id: 'm-1',
+      kind: 'moved',
+      actor_user_id: null,
+      actor_worker_id: 'worker-1',
+      text: null,
+      from_session_id: 'session-1',
+      to_session_id: 'session-2',
+      statement: 'take it',
+      attributed_user_id: 'user-1',
+      ...overrides,
+    });
+  }
+
+  it('maps a comment row to the comment variant, with no move fields', () => {
+    const activity = toTodoActivity(buildActivityRow());
+    expect(activity).toEqual({
+      id: 'a-1',
+      todoId: 'todo-1',
+      kind: 'comment',
+      actor: { userId: 'user-1' },
+      text: 'hello',
+      createdAt: '2026-10-17T00:00:00.000Z',
+    });
+    expect('toSessionId' in activity).toBe(false);
+  });
+
+  it('maps a move row to the move variant, with no text field', () => {
+    const activity = toTodoActivity(buildMoveRow());
+    expect(activity).toEqual({
+      id: 'm-1',
+      todoId: 'todo-1',
+      kind: 'moved',
+      actor: { workerId: 'worker-1' },
+      fromSessionId: 'session-1',
+      toSessionId: 'session-2',
+      statement: 'take it',
+      attributedUserId: 'user-1',
+      createdAt: '2026-10-17T00:00:00.000Z',
+    });
+    expect('text' in activity).toBe(false);
+  });
+
+  it('passes a NULL from_session_id, statement and attribution through as null', () => {
+    expect(
+      toTodoActivity(buildMoveRow({ from_session_id: null, statement: null, attributed_user_id: null })),
+    ).toMatchObject({ fromSessionId: null, statement: null, attributedUserId: null });
+  });
+
+  it('throws DataIntegrityError for a comment row whose text is NULL and a move row whose to_session_id is NULL', () => {
+    expect(() => toTodoActivity(buildActivityRow({ text: null }))).toThrow(DataIntegrityError);
+    expect(() => toTodoActivity(buildMoveRow({ to_session_id: null }))).toThrow(DataIntegrityError);
+  });
+
+  it('throws DataIntegrityError when both or neither actor column is set', () => {
+    expect(() => toTodoActivity(buildActivityRow({ actor_worker_id: 'w' }))).toThrow(DataIntegrityError);
+    expect(() => toTodoActivity(buildActivityRow({ actor_user_id: null }))).toThrow(DataIntegrityError);
+  });
+
+  it('throws for an unknown kind (the exhaustive default)', () => {
+    expect(() => toTodoActivity(Object.assign(buildActivityRow(), { kind: 'reply' }))).toThrow(/Unexpected value/);
   });
 });

@@ -22,6 +22,8 @@ export interface Database {
   user_notification_cursor: UserNotificationCursorTable;
   bookmarks: BookmarksTable;
   todos: TodosTable;
+  todo_comments: TodoCommentsTable;
+  todo_moves: TodoMovesTable;
   repository_orchestrator_sessions: RepositoryOrchestratorSessionsTable;
   mcp_server_permissions: McpServerPermissionsTable;
   mcp_server_path_permissions: McpServerPathPermissionsTable;
@@ -684,10 +686,75 @@ export interface TodosTable {
 
 /** Todo row as returned from SELECT queries */
 export type TodoRow = Selectable<TodosTable>;
+/**
+ * A todo row read together with its derived comment count (a correlated
+ * subquery on `todo_comments`; not a stored column). Every read that returns a
+ * `Todo` selects this shape.
+ */
+export type TodoRowWithCommentCount = TodoRow & { comment_count: number };
 /** Todo data for INSERT queries */
 export type NewTodo = Insertable<TodosTable>;
 /** Todo data for UPDATE queries */
 export type TodoUpdate = Updateable<TodosTable>;
+
+/**
+ * Todo comments table (migration v52; docs/design/human-todo-list.md).
+ * Words left on an item by a human (`actor_user_id`) or by an agent of the
+ * item's session (`actor_worker_id`); exactly one actor is set (CHECK). The
+ * FK cascades: a comment is deleted with its item.
+ */
+export interface TodoCommentsTable {
+  /** Primary key - UUID */
+  id: string;
+  todo_id: string;
+  actor_user_id: string | null;
+  actor_worker_id: string | null;
+  text: string;
+  created_at: string;
+}
+
+/**
+ * Todo moves table (migration v52). One row per change of an item's session.
+ * `statement` is the human's quoted instruction when an agent moved the item
+ * on it (NULL when none was given); `attributed_user_id` is whose words they
+ * are and is set only with a statement (CHECK).
+ */
+export interface TodoMovesTable {
+  /** Primary key - UUID */
+  id: string;
+  todo_id: string;
+  actor_user_id: string | null;
+  actor_worker_id: string | null;
+  /** NULL when the item had no session before the move. */
+  from_session_id: string | null;
+  to_session_id: string;
+  statement: string | null;
+  attributed_user_id: string | null;
+  created_at: string;
+}
+
+/**
+ * One row of the merged activity timeline (the UNION ALL of `todo_comments`
+ * and `todo_moves` in `SqliteTodoRepository.listActivities`). NOT a
+ * `Database` table: it exists only as a read projection, nullable wherever the
+ * OTHER branch pads with NULL. `mappers.ts`'s `toTodoActivity` narrows it into
+ * the `TodoActivity` variants.
+ */
+export interface TodoActivityRow {
+  id: string;
+  todo_id: string;
+  kind: 'comment' | 'moved';
+  actor_user_id: string | null;
+  actor_worker_id: string | null;
+  /** Set on a comment row; NULL-padded on a move row. */
+  text: string | null;
+  from_session_id: string | null;
+  /** Set on a move row; NULL-padded on a comment row. */
+  to_session_id: string | null;
+  statement: string | null;
+  attributed_user_id: string | null;
+  created_at: string;
+}
 
 /**
  * Repository-orchestrator-session designation table (migration v41;

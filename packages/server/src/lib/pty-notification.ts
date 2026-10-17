@@ -173,6 +173,20 @@ export interface InternalTodoResolvedPtyNotification extends BasePtyNotification
   intent: PtyNotificationIntent;
 }
 
+export interface InternalTodoCommentPtyNotification extends BasePtyNotificationParams {
+  kind: Extract<PtyNotificationKind, 'internal-todo-comment'>;
+  tag: 'internal:todo-comment';
+  fields: {
+    todoId: string;
+    todoKind: string;
+    title: string;
+    /** Username of the human who commented. */
+    author: string;
+    text: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
   | InternalMessagePtyNotification
@@ -183,7 +197,8 @@ export type WritePtyNotificationParams =
   | InternalConditionalWakeupPtyNotification
   | InternalAgentSpawnFailedPtyNotification
   | InternalWorkerInterruptedPtyNotification
-  | InternalTodoResolvedPtyNotification;
+  | InternalTodoResolvedPtyNotification
+  | InternalTodoCommentPtyNotification;
 
 /**
  * Structured PTY-notification params, without the PTY-only `writeInput`

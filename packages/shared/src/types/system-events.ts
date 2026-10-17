@@ -82,6 +82,7 @@ export const PTY_NOTIFICATION_KINDS = [
   'internal-agent-spawn-failed',
   'internal-worker-interrupted',
   'internal-todo-resolved',
+  'internal-todo-comment',
 ] as const;
 export type PtyNotificationKind = (typeof PTY_NOTIFICATION_KINDS)[number];
 
