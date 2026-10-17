@@ -96,14 +96,22 @@ describe('terminal-store OSC 52 clipboard', () => {
   });
 
   it('is suppressed during a resync replay (queued output flushed after the fresh history)', async () => {
-    const { ws, events } = open();
+    const { instance, ws, events } = open();
     history(ws, 'before\r\n');
     await _whenIdle();
-    // A new epoch starts a resync; output arriving meanwhile is queued, then replayed.
-    ws.simulateMessage(JSON.stringify({ type: 'output', data: osc52(b64('QUEUED')), offset: 50, epoch: EPOCH + 1 }));
+    // A new epoch starts a resync. The FIRST output tagged with it only triggers the resync
+    // (it is consumed, not queued); the second one is queued and replayed after the fresh
+    // history, which is the path under test.
+    ws.simulateMessage(JSON.stringify({ type: 'output', data: 'trigger\r\n', offset: 40, epoch: EPOCH + 1 }));
+    await _whenIdle();
+    ws.simulateMessage(JSON.stringify({ type: 'output', data: `QUEUEDMARK\r\n${osc52(b64('QUEUED'))}`, offset: 50, epoch: EPOCH + 1 }));
     await _whenIdle();
     ws.simulateMessage(JSON.stringify({ type: 'history', data: 'fresh\r\n', offset: 10, startOffset: 0, epoch: EPOCH + 1 }));
     await _whenIdle();
+    // Positive control: the queued bytes really were replayed into the terminal.
+    const text = instance.getSnapshot().rows.map((r) => r.segments.map((seg) => seg.text).join('')).join('\n');
+    expect(text).toContain('fresh');
+    expect(text).toContain('QUEUEDMARK');
     expect(events).toEqual([]);
     nextOffset = 200;
     await output(ws, osc52(b64('LIVE')), EPOCH + 1);
