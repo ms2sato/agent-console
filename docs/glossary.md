@@ -590,7 +590,7 @@ The session-side resolution is encapsulated by one of two sibling helpers in `pa
 ## Client Capabilities
 
 ### Hook Command
-A shell command a repository configures to run at a worktree or session lifecycle point: `setup_command` (worktree created), `cleanup_command` (worktree deleted), `pause_command` (session paused) and `resume_command` (session resumed). All four run through `WorktreeService.executeHookCommand` with the template variables `WORKTREE_NUM`, `BRANCH`, `REPO` and `WORKTREE_PATH`, as the [requestUsername](#requestusername) user, and report a `HookCommandResult` (`success`, `output`, `error`). Setup and cleanup run without a time limit; pause and resume run under `SESSION_HOOK_COMMAND_TIMEOUT_MS`.
+A shell command a repository configures to run at a worktree or session lifecycle point: `setup_command` (worktree created), `cleanup_command` (worktree deleted), `pause_command` (session paused) and `resume_command` (session resumed). All four run through `WorktreeService.executeHookCommand` with the template variables `WORKTREE_NUM`, `BRANCH`, `REPO` and `WORKTREE_PATH`, as the [requestUsername](#requestusername) user, and report a `HookCommandResult` (`success`, `output`, `error`). Setup and cleanup run without a time limit; pause and resume run under the time box `serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS` (default 60 s, overridable through the `SESSION_HOOK_COMMAND_TIMEOUT_MS` environment variable).
 - **See:** [Pause Command / Resume Command](#pause-command--resume-command)
 
 ### Pause Command / Resume Command
