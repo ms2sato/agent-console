@@ -68,15 +68,44 @@ function recordBroadcast(msg: AppServerMessage): void {
 }
 
 /**
+ * Upper bound for a broadcast to arrive. Measured: under 16 busy-loop
+ * processes on an 8-core host the whole file (both cases, including setup)
+ * took 7.2 to 8.7 s, so one broadcast is well inside that; 10 s sits above
+ * the worst whole-file figure. A bun:test per-test timeout does not reliably
+ * fire on a never-settling await, so this deadline is what turns a broadcast
+ * that never arrives into a clear failure. The two cases pass
+ * BROADCAST_TEST_TIMEOUT_MS to `it` so the runner's own (shorter, 5 s
+ * default) timeout cannot pre-empt it.
+ */
+const BROADCAST_DEADLINE_MS = 10_000;
+const BROADCAST_TEST_TIMEOUT_MS = BROADCAST_DEADLINE_MS + 5_000;
+
+/**
  * Resolves with the first broadcast the fire-and-forget worktree pipeline
  * emits: immediately if one is already recorded, otherwise from the
- * `broadcastToApp` callback itself. There is deliberately no deadline of this
- * file's own -- the pipeline's completion is an event, not work to poll, so
- * the only ceiling is the test runner's per-test timeout.
+ * `broadcastToApp` callback itself (an event, not work to poll). Rejects if
+ * none arrives within BROADCAST_DEADLINE_MS.
  */
 async function nextBroadcast(): Promise<AppServerMessage> {
-  while (broadcasts.length === 0) {
-    await new Promise<void>((resolve) => broadcastWaiters.push(resolve));
+  if (broadcasts.length > 0) return broadcasts[0]!;
+  let wake: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arrived = new Promise<void>((resolve) => {
+    wake = resolve;
+    broadcastWaiters.push(resolve);
+  });
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`expected a broadcast but none arrived within ${BROADCAST_DEADLINE_MS} ms`)),
+      BROADCAST_DEADLINE_MS,
+    );
+  });
+  try {
+    await Promise.race([arrived, deadline]);
+  } finally {
+    clearTimeout(timer);
+    const index = broadcastWaiters.indexOf(wake!);
+    if (index !== -1) broadcastWaiters.splice(index, 1);
   }
   return broadcasts[0]!;
 }
@@ -274,7 +303,7 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
     const written = lastInstance.writtenData.join('');
     expect(written).toContain("--model 'claude-opus-4-6'");
     expect(written).toContain("--effort 'high'");
-  });
+  }, BROADCAST_TEST_TIMEOUT_MS);
 
   it('rejects model at the real HTTP boundary for an agent whose template has no {{model...}} placeholder (fails, does not silently drop it)', async () => {
     const incapableAgentId = (await ctx.agentManager.registerAgent({
@@ -315,5 +344,5 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
     // No session was ever created for the rejected request -- the real,
     // durable observable, not merely the broadcast text.
     expect(ctx.sessionManager.getAllSessions()).toHaveLength(0);
-  });
+  }, BROADCAST_TEST_TIMEOUT_MS);
 });
