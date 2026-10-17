@@ -47,7 +47,7 @@ GET /api/sessions/:sessionId/workers/:workerId/files/content?path=<file>
 
 Both routes: look up the session and worker (404 otherwise), reject a worker whose `type` is not `file-viewer` (`ValidationError`, as the diff routes do for non-`git-diff`), and validate `path` as described under [Path safety](#path-safety).
 
-Access: `assertCanOperateSession` from `packages/server/src/lib/session-access.ts`, called as the worker route that already uses it does (the MCP-server-permission route in `routes/workers.ts`): it passes `sessionManager`'s session, `c.get('authUser')`, `sharedAccountRegistry` and `serverConfig.AUTH_MODE`. It is a no-op outside multi-user mode and allows the session owner or a shared account's sessions. **Note:** the existing `/diff` and `/diff/file` routes do not call it; reading file contents is the more sensitive operation, so the file viewer routes do, and the gap on the diff routes is not widened by this work.
+Access: `assertCanOperateSession` from `packages/server/src/lib/session-access.ts`, called as the worker route that already uses it does (the MCP-server-permission route in `routes/workers.ts`): it passes `sessionManager`'s session, `c.get('authUser')`, `sharedAccountRegistry` and `serverConfig.AUTH_MODE`. It is a no-op outside multi-user mode and allows the session owner or a shared account's sessions. **Note:** the existing `/diff` and `/diff/file` routes do not call it; reading file contents is the more sensitive operation, so the file viewer routes do, and the gap on the diff routes is not widened by this work. The wider question of a read-access policy for worker routes and worker WebSockets in multi-user mode is tracked in #2201; the viewer keeps `assertCanOperateSession` meanwhile.
 
 ### Path safety
 
@@ -77,7 +77,6 @@ Identity: the session's effective spawn user, resolved with `resolveSpawnUsernam
 interface FileTreeEntry {
   name: string;               // single path segment
   kind: 'dir' | 'file';
-  size?: number;              // bytes, files only
 }
 
 interface FileTreeResponse {
@@ -86,7 +85,7 @@ interface FileTreeResponse {
 }
 ```
 
-`size` comes from the filesystem, not from git, so in multi-user mode it is read through the elevated runner too, as one batched call per listing (portable POSIX tools; no GNU-only `stat` flags, since macOS is a supported host). A file that disappeared between the git listing and the size read is returned without `size`.
+Entries carry no `size` in v1: the content response already carries the total size, and a later query parameter can add sizes to the listing without breaking the wire.
 
 A directory that is not inside a git repository yields an empty git result; see open question 2 for how that is presented.
 
@@ -129,7 +128,7 @@ Boundary values (each is a test):
 
 ```typescript
 // packages/shared/src/types/file-viewer.ts (schemas in packages/shared/src/schemas/file-viewer.ts)
-type FileContentKind = 'text' | 'binary' | 'too-large';
+type FileContentKind = 'text' | 'binary';
 
 interface FileContentResponse {
   path: string;               // echoes the validated request path, stable across reloads
@@ -141,7 +140,7 @@ interface FileContentResponse {
 }
 ```
 
-`kind: 'too-large'` is reserved for a response where the server refuses to return even a prefix (not used by v1: v1 truncates). It is listed in the union because the AC fixes the union; the implementation may drop it if nothing produces it, since an unproduced union member is dead surface. Both responses are `v.strictObject` schemas in `packages/shared/src/schemas/`, parsed by the client, per the schema-type parallel maintenance rule (pre-PR completeness Q10); an integration test in `packages/integration/src/` exercises server-populates, serialise, schema-parse, client shape.
+Both responses are `v.strictObject` schemas in `packages/shared/src/schemas/`, parsed by the client, per the schema-type parallel maintenance rule (pre-PR completeness Q10); an integration test in `packages/integration/src/` exercises server-populates, serialise, schema-parse, client shape.
 
 `language` is computed on the server from the file name so the client does not need the map for the wire, but the client owns the Prism language set (see [Highlighting](#ui)); the server value is a name from that same set or `'text'`.
 
@@ -156,8 +155,9 @@ interface FileContentResponse {
 Decision for the viewer, given the 1 MiB server cap:
 
 - The language map is hoisted from `DiffViewer.tsx` into a shared client helper (for example `packages/client/src/lib/prism-language-for-path.ts`) used by both `DiffViewer` and the viewer. The hoist is part of the implementation PR, with the fallback unified (the diff uses `'plain'`; the wire says `'text'`; the helper maps `'text'` to the Prism name `'plain'`).
-- The file is tokenised **once** with a single `Highlight` over the whole content (so multi-line constructs such as block comments and template strings highlight correctly, which the per-line approach in the diff cannot do) and rendered as a windowed list: only the rows near the viewport are mounted. The implementation chooses the windowing mechanism; because no list-virtualisation library exists in the repository (checked: no match in `packages/client/package.json` or `src`), the AC requires either a small fixed-row-height windowing hook with a test, or, if the owner prefers zero new code paths, a hard render cap of 5000 lines with a "show more" control. This is an implementation choice inside the 1 MiB bound; it changes no wire shape and no surface cell.
-- Tokenising 1 MiB once is bounded work; it runs when a file is selected and is memoised per `(path, content)`.
+- The file is tokenised **once** per `(path, content)` with a single `Highlight` over the whole content (so multi-line constructs such as block comments and template strings highlight correctly, which the per-line approach in the diff cannot do), and **only when `content.length <= FILE_VIEWER_HIGHLIGHT_MAX_BYTES = 256 KiB`** (a client constant). Above that, the content renders as plain text with line numbers and the notice "highlighting off for files over 256 KiB".
+- Rendering is **always windowed by scroll position**, with a fixed monospaced row height: only the visible token rows plus an overscan are mapped to DOM rows, with no list library (none exists in the repository; checked: no match in `packages/client/package.json` or `src`). This applies to the highlighted and the plain-text paths alike. It changes no wire shape and no surface cell.
+- The implementation PR must record a **measured tokenise time** for a 256 KiB and a 1 MiB TypeScript file (the 1 MiB figure shows what the 256 KiB threshold avoids).
 
 ### Layout
 
@@ -249,7 +249,7 @@ Each has a recommendation (marked) and none blocks writing the implementation AC
 
 1. Shared: `FileViewerWorkerSchema`, the `CreateWorkerRequestSchema` variant, the `Worker` / app-server-message unions, `FileTreeResponse` / `FileContentResponse` types and schemas (`v.strictObject`), `FILE_VIEWER_MAX_BYTES` documented in `server-config.ts`; regenerate `SCHEMA_VERSION` (`bun run build`).
 2. Server: `InternalFileViewerWorker`, worker creation / persistence / conversion / deletion / restart-all handling at every `git-diff` site; export `isValidFilePath`; a `file-viewer-service` (tree via `gitSafe`, content via `runAsUser`, realpath containment, binary and size rules); the two routes with `assertCanOperateSession`.
-3. Client: `FileViewerWorkerView` (tree + content, mobile drawer), the hoisted language helper (and `DiffViewer` switched to it), windowed rendering or a render cap, `tabAppearance.ts`, `SessionPage.tsx` icon and view branches, `AddAgentWorkerMenu` item and `addFileViewerTab`.
+3. Client: `FileViewerWorkerView` (tree + content, mobile drawer), the hoisted language helper (and `DiffViewer` switched to it), always-windowed rendering, highlighting only up to 256 KiB (measured tokenise time for 256 KiB and 1 MiB recorded in the PR), `tabAppearance.ts`, `SessionPage.tsx` icon and view branches, `AddAgentWorkerMenu` item and `addFileViewerTab`.
 4. Tests: every boundary value in the table above; one test per mode (single-user, multi-user server-owned, multi-user other owner); a symlink-escape test; a wire-level integration test in `packages/integration/src/`; a `tabAppearance` exhaustiveness test; browser QA with screenshots attached to the PR, including the mobile drawer.
 5. Docs: README Features entry (`(in development)` until finished), `docs/glossary.md` entry (already added with this document), `session-worker-design.md` row (already added with this document).
 6. Follow-ups (filed by their owners, not by this work): `getFileLines` working-directory read as the server process (#2199); live updates (Issue filed on the owner's answer to question 1); comments (Issue filed when v1 merges).
