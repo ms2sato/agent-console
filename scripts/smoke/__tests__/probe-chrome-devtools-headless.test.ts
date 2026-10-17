@@ -17,11 +17,16 @@
  * image bytes, never an image.
  */
 import { describe, it, expect } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   APT_CHROMIUM_PATH,
   BROWSER_MCP,
   PROBE_EXIT,
   classifyProbe,
+  cleanupScratch,
+  finalStdoutLine,
   executablePathOf,
   exitCodeFor,
   formatReadingsTable,
@@ -106,6 +111,17 @@ describe('classifyProbe', () => {
     expect(v.headlessCredited).toBe(false);
     expect(v.verdict).toContain('NO ARM TOOK A SCREENSHOT');
     expect(v.stops).toHaveLength(1);
+  });
+
+  it('only the control takes a screenshot: conclusive, the flag is blamed, and nothing is to be registered with --headless', () => {
+    const v = classifyProbe({ headless: CONNECTED_NO_IMAGE, apt: CONNECTED_NO_IMAGE, control: WORKED });
+    expect(v.conclusive).toBe(true);
+    expect(v.operational).toBe('control-only');
+    expect(v.headlessCredited).toBe(false);
+    expect(v.verdict).toContain('ONLY THE CONTROL TOOK A SCREENSHOT');
+    expect(v.verdict).not.toContain('NO ARM TOOK A SCREENSHOT');
+    expect(v.stops).toEqual(['--headless prevented the screenshot on this host; do not register the server with --headless']);
+    expect(exitCodeFor(v)).toBe(PROBE_EXIT.MEASURED);
   });
 
   it('nothing connected on ANY arm is inconclusive, not a measured negative', () => {
@@ -353,5 +369,47 @@ describe('turnPrompts, parseArgs, formatReadingsTable', () => {
     expect(lines[2]).toContain('Failed to launch the browser process');
     expect(lines[3]).toContain('(not attempted)');
     expect(lines[4]).toContain('1234');
+  });
+});
+
+describe('finalStdoutLine', () => {
+  const control = withoutHeadless(HOST_ENTRY);
+  const headless = withHeadless(HOST_ENTRY);
+
+  it('registers the working --headless entry as is', () => {
+    expect(finalStdoutLine('chrome-devtools', 'headless-as-configured', headless, control)).toBe(registrationCommand('chrome-devtools', headless));
+  });
+
+  it('control-only: the control entry WITHOUT --headless, labelled, never "NO WORKING ENTRY"', () => {
+    const line = finalStdoutLine('chrome-devtools', 'control-only', null, control);
+    expect(line).toContain(registrationCommand('chrome-devtools', control));
+    expect(line.split('  # ')[0]).not.toContain('--headless');
+    expect(line).toContain('WITHOUT --headless');
+    expect(line).not.toContain('NO WORKING ENTRY');
+  });
+
+  it('nothing worked: says so', () => {
+    expect(finalStdoutLine('chrome-devtools', 'none', null, control)).toStartWith('NO WORKING ENTRY MEASURED');
+  });
+});
+
+describe('cleanupScratch', () => {
+  it('removes the cwd and the whole config dir, including the copied credentials file', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'probe-cleanup-test-cwd-'));
+    const configDir = mkdtempSync(join(tmpdir(), 'probe-cleanup-test-cfg-'));
+    writeFileSync(join(configDir, '.credentials.json'), '{}');
+    mkdirSync(join(configDir, 'projects'));
+    writeFileSync(join(cwd, 'x.txt'), 'x');
+    cleanupScratch([cwd, configDir]);
+    expect(existsSync(join(configDir, '.credentials.json'))).toBe(false);
+    expect(existsSync(configDir)).toBe(false);
+    expect(existsSync(cwd)).toBe(false);
+  });
+
+  it('tolerates a null path (cwd never created) and a path that is already gone, and still removes the other', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'probe-cleanup-test-cfg-'));
+    cleanupScratch([null, join(tmpdir(), 'probe-cleanup-test-missing-xyz'), configDir]);
+    expect(existsSync(configDir)).toBe(false);
+    cleanupScratch([]);
   });
 });

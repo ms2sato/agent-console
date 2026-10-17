@@ -52,7 +52,7 @@ import {
   type SpawnOptions,
 } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import { spawnClaudeCodeProcess, UserMessageQueue } from '../../packages/embedded-agent/src/sdk-engine.js';
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -93,6 +93,41 @@ const MAX_ATTEMPTS = 6;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+const isolatedConfigDirs = new Set<string>();
+let cleanupInstalled = false;
+
+/**
+ * Removes every config dir `isolateClaudeConfigDir` created in this process.
+ * Idempotent (`force: true`, and the set is emptied), so a caller's own
+ * `finally { rmSync }` and the exit handler can both run. Exported only so
+ * the exit handler and the unit test call the same function.
+ */
+export function cleanupIsolatedConfigDirs(): void {
+  for (const dir of isolatedConfigDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort; a leftover temp dir must not mask the run's own result.
+    }
+  }
+  isolatedConfigDirs.clear();
+}
+
+function installCleanupOnce(): void {
+  if (cleanupInstalled) return;
+  cleanupInstalled = true;
+  process.once('exit', cleanupIsolatedConfigDirs);
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    const onSignal = (): void => {
+      cleanupIsolatedConfigDirs();
+      // Restore the default behaviour: drop this handler and re-raise.
+      process.removeListener(signal, onSignal);
+      process.kill(process.pid, signal);
+    };
+    process.on(signal, onSignal);
+  }
+}
+
 /**
  * Isolates `CLAUDE_CONFIG_DIR` to a throwaway directory holding ONLY the
  * invoking user's credential file -- no `projects/`, no history, no memory
@@ -109,9 +144,21 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  */
 export function isolateClaudeConfigDir(label: string): string {
   const dir = mkdtempSync(join(tmpdir(), `probe-sdk-${label}-`));
+  isolatedConfigDirs.add(dir);
+  installCleanupOnce();
+  // The credentials ARE copied, deliberately: the `claude` CLI authenticates
+  // from the config dir, so an isolated dir without them cannot log in and no
+  // billed turn would run. That makes the dir a secret at rest outside its
+  // home, hence the explicit 0600 and the helper-owned cleanup above, which
+  // removes every dir this function created on exit and on SIGINT / SIGTERM
+  // whether or not the caller removes it. SIGKILL is the residue: nothing
+  // runs. There is deliberately no startup sweep of leftover dirs, because
+  // deleting a dir another live run owns is worse than the residue.
   const credentials = join(homedir(), '.claude', '.credentials.json');
   if (existsSync(credentials)) {
-    copyFileSync(credentials, join(dir, '.credentials.json'));
+    const copy = join(dir, '.credentials.json');
+    copyFileSync(credentials, copy);
+    chmodSync(copy, 0o600);
   }
   process.env.CLAUDE_CONFIG_DIR = dir;
   return dir;

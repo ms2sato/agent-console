@@ -176,11 +176,11 @@ export interface ArmReading {
   error: string | null;
 }
 
-export type Operational = 'headless-as-configured' | 'headless-with-apt-path' | 'none';
+export type Operational = 'headless-as-configured' | 'headless-with-apt-path' | 'control-only' | 'none';
 
 export interface ProbeVerdict {
   conclusive: boolean;
-  /** Which entry took a screenshot with `--headless`, if any. */
+  /** Which entry took a screenshot: a `--headless` one, or (`control-only`) only the entry WITHOUT the flag. */
   operational: Operational;
   /** True: the flag made the difference. False: it did not (control also works, or nothing works). Null: unread. */
   headlessCredited: boolean | null;
@@ -239,6 +239,15 @@ export function classifyProbe(r: ProbeReadings): ProbeVerdict {
   const controlTaken = screenshotTaken(r.control);
   const readings = `headless=[${describeArm(r.headless)}]${r.apt ? ` headless-apt=[${describeArm(r.apt)}]` : ''} control=[${describeArm(r.control)}]`;
 
+  if (operational === 'none' && controlTaken) {
+    return {
+      conclusive: true,
+      operational: 'control-only',
+      headlessCredited: false,
+      verdict: `ONLY THE CONTROL TOOK A SCREENSHOT: without --headless (and with no display) it worked, with --headless it did not: ${readings}`,
+      stops: ['--headless prevented the screenshot on this host; do not register the server with --headless'],
+    };
+  }
   if (operational === 'none') {
     return {
       conclusive: true,
@@ -445,6 +454,30 @@ function shellQuote(s: string): string {
 export function registrationCommand(name: string, entry: StdioEntry): string {
   const env = Object.entries(entry.env ?? {}).flatMap(([k, v]) => ['-e', shellQuote(`${k}=${v}`)]);
   return ['claude', 'mcp', 'add', '-s', 'user', ...env, shellQuote(name), '--', shellQuote(entry.command), ...entry.args.map(shellQuote)].join(' ');
+}
+
+/**
+ * The run's LAST stdout line. A `--headless` entry that worked is registered
+ * as is; when ONLY the control worked, the line is the control's entry
+ * (without the flag) and says so; otherwise there is nothing to register.
+ */
+export function finalStdoutLine(name: string, operational: Operational, headlessEntry: StdioEntry | null, controlEntry: StdioEntry): string {
+  if (operational === 'control-only') {
+    return `${registrationCommand(name, controlEntry)}  # control entry, WITHOUT --headless: only the control took a screenshot`;
+  }
+  return headlessEntry !== null ? registrationCommand(name, headlessEntry) : 'NO WORKING ENTRY MEASURED: no registration command to offer';
+}
+
+/** Removes the probe's scratch directories (the cwd and the isolated config dir, which holds a copy of the credentials). Never throws. */
+export function cleanupScratch(paths: ReadonlyArray<string | null>): void {
+  for (const path of paths) {
+    if (path === null) continue;
+    try {
+      rmSync(path, { recursive: true, force: true });
+    } catch {
+      // Best effort; a leftover temp dir must not mask the run's own result.
+    }
+  }
 }
 
 export type ParsedArgs = { kind: 'run' } | { kind: 'help' } | { kind: 'error'; arg: string };
@@ -654,9 +687,19 @@ async function main(): Promise<number> {
   }
 
   const configDir = isolateClaudeConfigDir('chrome-devtools-headless');
+  let cwd: string | null = null;
+  try {
+    cwd = mkdtempSync(join(tmpdir(), 'probe-chrome-devtools-headless-cwd-'));
+    return await measureAndReport(spec, hostEntry, configDir, cwd);
+  } finally {
+    // The config dir holds a copy of the credentials file; it goes on every exit path.
+    cleanupScratch([cwd, configDir]);
+  }
+}
+
+async function measureAndReport(spec: BrowserMcpSpec, hostEntry: StdioEntry, configDir: string, cwd: string): Promise<number> {
   // Snapshotted BEFORE the first `.claude.json` seed, so the strict check's baseline predates both the seed and the child's writes.
   const preRunIsolation = snapshotIsolationEvidence(configDir);
-  const cwd = mkdtempSync(join(tmpdir(), 'probe-chrome-devtools-headless-cwd-'));
   const ctx: LiveContext = { spec, configDir, cwd, preRunIsolation, earlyIsolationChecked: false };
   const display = scrubDisplayEnv();
   h(`probe-chrome-devtools-headless -- server=${spec.server} config=${configDir} cwd=${cwd}`);
@@ -708,13 +751,8 @@ async function main(): Promise<number> {
   console.log(`turns=${perTurn.size} promptTokens=${turnTotals.tokens} cost=$${turnTotals.cost.toFixed(4)} elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`);
   const code = exitCodeFor(verdict);
   console.log(`exit ${code}: ${EXIT_CODE_MEANINGS[code]}`);
-  try {
-    rmSync(cwd, { recursive: true, force: true });
-  } catch {
-    // Scratch cwd; leaving it behind is harmless.
-  }
   // The registration line is the LAST stdout line. It is printed, never run.
-  console.log(workedEntry !== null ? registrationCommand(spec.server, workedEntry) : 'NO WORKING ENTRY MEASURED: no registration command to offer');
+  console.log(finalStdoutLine(spec.server, verdict.operational, workedEntry, withoutHeadless(workedEntry ?? hostEntry)));
   return code;
 }
 
