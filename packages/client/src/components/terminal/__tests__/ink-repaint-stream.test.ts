@@ -11,7 +11,7 @@ const STATUS = 'ctx:4% | Sonnet 5 | ms2sato@ca-mini tmp ... /rc';
 
 /** Absolute positioning / region / alt-screen / synchronized-update sequences. */
 const ABSOLUTE_POSITIONING_CLASSES: Record<string, RegExp> = {
-  'CUP (CSI row;col H)': /\x1b\[\d*;\d*[Hf]/,
+  'CUP (CSI row;col H, or HVP f; either parameter optional)': /\x1b\[\d*(?:;\d*)?[Hf]/,
   'DECSTBM (CSI top;bottom r)': /\x1b\[\d*;?\d*r/,
   'alt-screen (?1049)': /\x1b\[\?1049[hl]/,
   'synchronized update (?2026)': /\x1b\[\?2026[hl]/,
@@ -33,7 +33,15 @@ describe('generateInkRepaintStream', () => {
   });
 
   it('control: the detector flags a string containing each absolute-positioning sequence', () => {
-    expect(detectAbsolutePositioning('x\x1b[39;1Hy')).toEqual(['CUP (CSI row;col H)']);
+    const CUP = 'CUP (CSI row;col H, or HVP f; either parameter optional)';
+    expect(detectAbsolutePositioning('x\x1b[39;1Hy')).toEqual([CUP]);
+    expect(detectAbsolutePositioning('x\x1b[Hy')).toEqual([CUP]);
+    expect(detectAbsolutePositioning('x\x1b[5Hy')).toEqual([CUP]);
+    expect(detectAbsolutePositioning('x\x1b[;5Hy')).toEqual([CUP]);
+    expect(detectAbsolutePositioning('x\x1b[5;Hy')).toEqual([CUP]);
+    expect(detectAbsolutePositioning('x\x1b[3;4fy')).toEqual([CUP]);
+    // Near miss: a relative cursor-up is the movement the fixture is allowed to use.
+    expect(detectAbsolutePositioning('x\x1b[2Ay')).toEqual([]);
     expect(detectAbsolutePositioning('x\x1b[1;38ry')).toEqual(['DECSTBM (CSI top;bottom r)']);
     expect(detectAbsolutePositioning('x\x1b[?1049hy')).toEqual(['alt-screen (?1049)']);
     expect(detectAbsolutePositioning('x\x1b[?2026hy')).toEqual(['synchronized update (?2026)']);

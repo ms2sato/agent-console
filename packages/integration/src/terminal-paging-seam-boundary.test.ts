@@ -44,7 +44,7 @@ import {
   isInkChromeRowText,
   INK_CHROME_HEIGHT,
 } from '@agent-console/client/src/components/terminal/__tests__/fixtures/ink-repaint-stream';
-import type { WSContext } from 'hono/ws';
+import { WSContext } from 'hono/ws';
 import type { WorkerServerMessage } from '@agent-console/shared';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -158,7 +158,14 @@ describe('Client-Server Boundary: paging an Ink-style repaint stream (seam corre
 
     // Real server side of the wire.
     const sent: WorkerServerMessage[] = [];
-    const wsCtx = { send: (data: string) => { sent.push(JSON.parse(data) as WorkerServerMessage); } } as unknown as WSContext;
+    const wsCtx = new WSContext({
+      send: (data) => {
+        if (typeof data !== 'string') throw new Error('the history-range handler sent a non-string frame');
+        sent.push(JSON.parse(data) as WorkerServerMessage);
+      },
+      close: () => {},
+      readyState: 1,
+    });
 
     const instance = getOrCreateTerminal(sessionId, workerId);
     const ws = MockWebSocket.getLastInstance();
@@ -242,30 +249,41 @@ describe('Client-Server Boundary: paging an Ink-style repaint stream (seam corre
     expect(found).toEqual(expected);
   }
 
-  // KNOWN FINDING (Issue #979 measurement): this test currently fails, so it is
-  // pinned with it.failing. With the seam correction on, every fetch from the 4th
-  // onward leaves the third chunk of the joint replay carrying its own on-screen
-  // tail (~rows-1 rows, ending in the chrome pair) while its newer neighbour's
-  // partition already begins with the same rows. The paged window then holds
-  // each of those rows twice and the chrome pair sits at every such seam
-  // (10 of 12 interior seams in this scenario). Measured: corrected = interior 20
-  // chrome rows over 1010 paged rows; uncorrected = interior 23 over 803. Tracked
-  // in Issue #2170. When the duplication is fixed this test starts passing and
-  // it.failing reports that: switch it to it() -- that flip is the fix's polarity.
-  it.failing('with seam correction, no chrome row leaks into the interior of the paged window and every content line appears once', async () => {
-    const result = await pageEverything();
-    const { top, interior, firstInterior } = chromeSplit(result.pagedTexts);
+  type PagedResult = Awaited<ReturnType<typeof pageEverything>>;
+  let corrected: PagedResult | undefined;
+
+  it('pages the corrected scenario to completion and keeps the interior chrome count within the measured bound', async () => {
+    corrected = await pageEverything();
+    const { top, interior, firstInterior } = chromeSplit(corrected.pagedTexts);
     console.log(
-      `[seam-measurement] corrected: segments=${result.segments} requests=${result.requests} pagedRows=${result.pagedTexts.length} chromeRows top=${top} interior=${interior}`,
+      `[seam-measurement] corrected: segments=${corrected.segments} requests=${corrected.requests} pagedRows=${corrected.pagedTexts.length} chromeRows top=${top} interior=${interior}`,
     );
     if (interior > 0) {
-      console.log(`[seam-measurement] first interior chrome row index=${firstInterior} context=${JSON.stringify(result.pagedTexts.slice(Math.max(0, firstInterior - 2), firstInterior + 3))}`);
+      console.log(`[seam-measurement] first interior chrome row index=${firstInterior} context=${JSON.stringify(corrected.pagedTexts.slice(Math.max(0, firstInterior - 2), firstInterior + 3))}`);
     }
 
-    expect(result.segments).toBeGreaterThanOrEqual(MIN_SEGMENTS);
-    expect(interior).toBe(0);
+    expect(corrected.segments).toBeGreaterThanOrEqual(MIN_SEGMENTS);
     expect(top).toBeLessThanOrEqual(INK_CHROME_HEIGHT);
-    expectEveryContentLineOnceInOrder(result.allTexts);
+    // Regression ceiling from the #2171 measurement; #2170 lowers it to 0. 20 is not an
+    // accepted number: the interior rows are duplicated content, not leaked chrome.
+    expect(interior).toBeLessThanOrEqual(20);
+  });
+
+  // KNOWN FINDING (Issue #979 measurement): this assertion currently fails, so it
+  // is pinned with it.failing. With the seam correction on, every fetch from the
+  // 4th onward leaves the third chunk of the joint replay carrying its own on-screen
+  // tail (~rows-1 rows, ending in the chrome pair) while its newer neighbour's
+  // partition already begins with the same rows. The paged window then holds
+  // each of those rows twice (10 of 12 interior seams in this scenario). Measured:
+  // corrected = interior 20 chrome rows over 1010 paged rows; uncorrected =
+  // interior 23 over 803. Tracked in Issue #2170. The scenario setup lives in the
+  // plain test above, so a timeout or a setup throw fails loudly there instead of
+  // passing as expected here. When the duplication is fixed this test starts
+  // passing and it.failing reports that: switch it to it() -- that flip is the
+  // fix's polarity.
+  it.failing('with seam correction, every content line appears exactly once and in order', () => {
+    if (!corrected) throw new Error('the corrected scenario did not run');
+    expectEveryContentLineOnceInOrder(corrected.allTexts);
   });
 
   it('polarity: with the seam correction disabled the same scenario leaks chrome rows into the interior', async () => {
