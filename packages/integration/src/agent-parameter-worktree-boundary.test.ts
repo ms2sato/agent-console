@@ -60,14 +60,25 @@ const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
 const broadcasts: AppServerMessage[] = [];
 
-async function waitFor(check: () => boolean, timeoutMs = 2000): Promise<void> {
-  const start = Date.now();
-  while (!check()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error('waitFor timed out');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
+const broadcastWaiters: Array<() => void> = [];
+
+function recordBroadcast(msg: AppServerMessage): void {
+  broadcasts.push(msg);
+  for (const wake of broadcastWaiters.splice(0)) wake();
+}
+
+/**
+ * Resolves with the first broadcast the fire-and-forget worktree pipeline
+ * emits: immediately if one is already recorded, otherwise from the
+ * `broadcastToApp` callback itself. There is deliberately no deadline of this
+ * file's own -- the pipeline's completion is an event, not work to poll, so
+ * the only ceiling is the test runner's per-test timeout.
+ */
+async function nextBroadcast(): Promise<AppServerMessage> {
+  while (broadcasts.length === 0) {
+    await new Promise<void>((resolve) => broadcastWaiters.push(resolve));
   }
+  return broadcasts[0]!;
 }
 
 describe('Cross-Package Boundary: model/reasoningEffort worker override through POST /:id/worktrees (Issue #1541)', () => {
@@ -112,8 +123,9 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
     };
 
     broadcasts.length = 0;
+    broadcastWaiters.length = 0;
     ctx = await createTestContext({
-      broadcastToApp: (msg) => { broadcasts.push(msg); },
+      broadcastToApp: recordBroadcast,
       runAsUserImpl: stubRunAsUser,
     });
     // Real WorktreeService with the SAME stubbed runAsUser, so `git
@@ -226,9 +238,8 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
 
     // The route's worktree creation is fire-and-forget; wait for the real
     // pipeline to finish (success broadcast) before asserting.
-    await waitFor(() => broadcasts.length > 0);
+    const broadcast = await nextBroadcast();
     expect(broadcasts).toHaveLength(1);
-    const broadcast = broadcasts[0]!;
     expect(broadcast.type).toBe('worktree-creation-completed');
 
     const sessions = ctx.sessionManager.getAllSessions();
@@ -255,11 +266,10 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
     // The real PTY spawn/write chain: the login-shell sentinel pattern means
     // the actual command lands in the last PTY instance's written data, not
     // the spawn argv (see worker-lifecycle-manager.test.ts for the same
-    // mechanism / rationale).
-    await waitFor(() => {
-      const lastInstance = ptyFactory.instances[ptyFactory.instances.length - 1];
-      return !!lastInstance && lastInstance.writtenData.join('').includes('--model');
-    });
+    // mechanism / rationale). The mock PTY emits the sentinel synchronously
+    // when the worker registers its data handler, so the command write
+    // happens inside createSession, before the completion broadcast awaited
+    // above -- no waiting is needed here.
     const lastInstance = ptyFactory.instances[ptyFactory.instances.length - 1]!;
     const written = lastInstance.writtenData.join('');
     expect(written).toContain("--model 'claude-opus-4-6'");
@@ -294,9 +304,8 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
     // response).
     expect(res.status).toBe(202);
 
-    await waitFor(() => broadcasts.length > 0);
+    const failure = await nextBroadcast();
     expect(broadcasts).toHaveLength(1);
-    const failure = broadcasts[0]!;
     expect(failure.type).toBe('worktree-creation-failed');
     if (failure.type !== 'worktree-creation-failed') {
       throw new Error('unreachable: narrowed by the assertion above');
