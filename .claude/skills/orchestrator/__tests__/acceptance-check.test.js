@@ -473,6 +473,10 @@ describe('getQuestions', () => {
     expect(q13.focus).toContain('surface 4');
     expect(q13.insufficient).toBeTruthy();
     expect(q13.sufficient).toContain('disposition');
+    // The record must name THIS head; the focus and the worked example say so.
+    expect(q13.focus).toContain('names THIS head');
+    expect(q13.focus).toContain('STALE');
+    expect(q13.sufficient).toContain('Head: ');
   });
 
   it('Q13 is the last question when present', () => {
@@ -1209,8 +1213,42 @@ describe('printCodeRabbitHeadState', () => {
     });
     const output = logs.join('\n');
     expect(output).toContain(
-      'CodeRabbit head review: reviewed (head abc123de, status "Review completed", reviews on head: 1, of which acks: 0, disposition record in PR body: absent)',
+      'CodeRabbit head review: reviewed (head abc123de, status "Review completed", reviews on head: 1, of which acks: 0, disposition record in PR body: absent, disposition head: none (absent))',
     );
+  });
+
+  // The disposition record names the head it was written for; the printed
+  // line says whether that is the current head.
+  it('prints "matches" when the disposition Head: line equals the current head', () => {
+    printCodeRabbitHeadState({
+      state: 'unreviewed',
+      headSha: '0123456789abcdef',
+      matchingReviewAt: null,
+      statusDescription: 'Review rate limited',
+      dispositionRecorded: true,
+      dispositionHeadSha: '0123456789abcdef',
+      dispositionMatchesHead: true,
+      headReviewCount: 0,
+      headAckCount: 0,
+    });
+    expect(logs.join('\n')).toContain('disposition head: 01234567 (matches)');
+  });
+
+  it('prints "STALE: written for <short sha>" when the disposition Head: line names an earlier commit', () => {
+    printCodeRabbitHeadState({
+      state: 'unreviewed',
+      headSha: '0123456789abcdef',
+      matchingReviewAt: null,
+      statusDescription: 'Review rate limited',
+      dispositionRecorded: false,
+      dispositionHeadSha: 'fedcba9876543210',
+      dispositionMatchesHead: false,
+      headReviewCount: 0,
+      headAckCount: 0,
+    });
+    const output = logs.join('\n');
+    expect(output).toContain('disposition record in PR body: absent');
+    expect(output).toContain('disposition head: fedcba98 (STALE: written for fedcba98)');
   });
 
   it('prints "found" for dispositionRecorded true and truncates the head SHA to 8 characters', () => {
@@ -1242,7 +1280,7 @@ describe('printCodeRabbitHeadState', () => {
     });
     const output = logs.join('\n');
     expect(output).toContain(
-      'CodeRabbit head review: retrieval-failed (head unknown, status "(unknown)", reviews on head: 0, of which acks: 0, disposition record in PR body: absent)',
+      'CodeRabbit head review: retrieval-failed (head unknown, status "(unknown)", reviews on head: 0, of which acks: 0, disposition record in PR body: absent, disposition head: none (absent))',
     );
   });
 

@@ -8,13 +8,9 @@ import type {
   CreateRepositoryRequest,
   CreateAgentRequest,
   UpdateAgentRequest,
-  EmbeddedAgentDefinition,
   CreateEmbeddedAgentRequest,
   UpdateEmbeddedAgentRequest,
   SessionsValidationResponse,
-  Job,
-  JobsResponse,
-  JobStats,
   JobStatus,
   JobType,
   RefreshDefaultBranchResponse,
@@ -81,6 +77,12 @@ import {
   OrchestratorDesignationResponseSchema,
   ClearOrchestratorDesignationResponseSchema,
   UpdateSessionResponseSchema,
+  EmbeddedAgentsListResponseSchema,
+  EmbeddedAgentResponseSchema,
+  JobSchema,
+  JobsResponseSchema,
+  JobStatsSchema,
+  SystemHealthResponseSchema,
 } from '@agent-console/shared';
 import type {
   WorkersResponse,
@@ -106,6 +108,12 @@ import type {
   ClearOrchestratorDesignationResponse,
   UpdateSessionRequest,
   UpdateSessionResponse,
+  EmbeddedAgentsListResponse,
+  EmbeddedAgentResponse,
+  JobWire,
+  JobsResponseWire,
+  JobStatsWire,
+  SystemHealthResponse,
 } from '@agent-console/shared';
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
@@ -731,20 +739,12 @@ export async function unregisterAgent(agentId: string): Promise<void> {
 // Embedded Agents API
 // ===========================================================================
 
-export interface EmbeddedAgentsResponse {
-  embeddedAgents: EmbeddedAgentDefinition[];
-}
-
-export async function fetchEmbeddedAgents(): Promise<EmbeddedAgentsResponse> {
+export async function fetchEmbeddedAgents(): Promise<EmbeddedAgentsListResponse> {
   const res = await api['embedded-agents'].$get();
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch embedded agents');
   }
-  return res.json();
-}
-
-export interface EmbeddedAgentResponse {
-  embeddedAgent: EmbeddedAgentDefinition;
+  return v.parse(EmbeddedAgentsListResponseSchema, await res.json());
 }
 
 export async function createEmbeddedAgent(
@@ -754,7 +754,7 @@ export async function createEmbeddedAgent(
   if (!res.ok) {
     await handleApiError(res, 'Failed to create embedded agent');
   }
-  return res.json() as Promise<EmbeddedAgentResponse>;
+  return v.parse(EmbeddedAgentResponseSchema, await res.json());
 }
 
 export async function updateEmbeddedAgent(
@@ -768,7 +768,7 @@ export async function updateEmbeddedAgent(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update embedded agent');
   }
-  return res.json() as Promise<EmbeddedAgentResponse>;
+  return v.parse(EmbeddedAgentResponseSchema, await res.json());
 }
 
 export async function deleteEmbeddedAgent(embeddedAgentId: string): Promise<void> {
@@ -835,7 +835,9 @@ export async function deleteInvalidSession(sessionId: string): Promise<void> {
 // ===========================================================================
 
 // Re-export job types from shared package
-export type { Job, JobsResponse, JobStats, JobStatus, JobType };
+// These are the WIRE types (the job payload is `unknown`); the server-side `Job` lives in shared `types/job.ts`.
+// The two are deliberately distinct, so do not merge them.
+export type { JobWire as Job, JobsResponseWire as JobsResponse, JobStatsWire as JobStats, JobStatus, JobType };
 
 /**
  * Parameters for fetching jobs.
@@ -847,7 +849,7 @@ export interface FetchJobsParams {
   offset?: number;
 }
 
-export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse> {
+export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponseWire> {
   // Build query object - only include defined values
   const query: Record<string, string> = {};
   if (params?.status) {
@@ -867,23 +869,23 @@ export async function fetchJobs(params?: FetchJobsParams): Promise<JobsResponse>
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch jobs');
   }
-  return res.json();
+  return v.parse(JobsResponseSchema, await res.json());
 }
 
-export async function fetchJobStats(): Promise<JobStats> {
+export async function fetchJobStats(): Promise<JobStatsWire> {
   const res = await api.jobs.stats.$get();
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch job stats');
   }
-  return res.json();
+  return v.parse(JobStatsSchema, await res.json());
 }
 
-export async function fetchJob(jobId: string): Promise<Job> {
+export async function fetchJob(jobId: string): Promise<JobWire> {
   const res = await api.jobs[':id'].$get({ param: { id: jobId } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch job');
   }
-  return res.json();
+  return v.parse(JobSchema, await res.json());
 }
 
 export async function retryJob(jobId: string): Promise<void> {
@@ -1089,12 +1091,12 @@ export async function fetchNotificationStatus(): Promise<NotificationStatus> {
 // System Health
 // ===========================================================================
 
-export async function fetchSystemHealth(): Promise<{ webhookSecretConfigured: boolean; appUrl: string | null }> {
+export async function fetchSystemHealth(): Promise<SystemHealthResponse> {
   const res = await fetch(`${API_BASE}/system/health`);
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch system health');
   }
-  return res.json();
+  return v.parse(SystemHealthResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -1442,7 +1444,7 @@ export async function fetchTodos(filter: FetchTodosFilter = {}): Promise<Todo[]>
   }
   const res = await api.todos.$get({ query });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to fetch to-do items');
+    await handleApiError(res, 'Failed to fetch Todo items');
   }
   const parsed = v.parse(TodosListResponseSchema, await res.json());
   return parsed.todos;
@@ -1456,7 +1458,7 @@ export async function fetchTodos(filter: FetchTodosFilter = {}): Promise<Todo[]>
 export async function createTodo(request: CreateTodoRequest): Promise<Todo> {
   const res = await api.todos.$post({ json: request });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to create to-do item');
+    await handleApiError(res, 'Failed to create Todo item');
   }
   return v.parse(TodoResponseSchema, await res.json()).todo;
 }
@@ -1464,7 +1466,7 @@ export async function createTodo(request: CreateTodoRequest): Promise<Todo> {
 export async function updateTodo(id: string, patch: UpdateTodoRequest): Promise<Todo> {
   const res = await api.todos[':id'].$patch({ param: { id }, json: patch });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to update to-do item');
+    await handleApiError(res, 'Failed to update Todo item');
   }
   return v.parse(TodoResponseSchema, await res.json()).todo;
 }
@@ -1473,7 +1475,7 @@ export async function updateTodo(id: string, patch: UpdateTodoRequest): Promise<
 export async function resolveTodo(id: string, text?: string): Promise<Todo> {
   const res = await api.todos[':id'].resolve.$post({ param: { id }, json: { text } });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to resolve to-do item');
+    await handleApiError(res, 'Failed to resolve Todo item');
   }
   return v.parse(TodoResponseSchema, await res.json()).todo;
 }
@@ -1481,7 +1483,7 @@ export async function resolveTodo(id: string, text?: string): Promise<Todo> {
 export async function dismissTodo(id: string): Promise<Todo> {
   const res = await api.todos[':id'].dismiss.$post({ param: { id } });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to dismiss to-do item');
+    await handleApiError(res, 'Failed to dismiss Todo item');
   }
   return v.parse(TodoResponseSchema, await res.json()).todo;
 }
@@ -1489,8 +1491,16 @@ export async function dismissTodo(id: string): Promise<Todo> {
 export async function deleteTodo(id: string): Promise<void> {
   const res = await api.todos[':id'].$delete({ param: { id } });
   if (!res.ok) {
-    await handleApiError(res, 'Failed to delete to-do item');
+    await handleApiError(res, 'Failed to delete Todo item');
   }
+}
+
+export async function fetchTodo(id: string): Promise<Todo> {
+  const res = await api.todos[':id'].$get({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch Todo item');
+  }
+  return v.parse(TodoResponseSchema, await res.json()).todo;
 }
 
 /** The member directory (id and username only) that backs the assignee pickers. */

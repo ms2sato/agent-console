@@ -7,6 +7,8 @@ import {
   WorkerResponseSchema,
   SessionsValidationResponseSchema,
   ReviewQueueResponseSchema,
+  EmbeddedAgentsListResponseSchema,
+  EmbeddedAgentResponseSchema,
 } from '@agent-console/shared';
 import { completeWireBody } from '../wire-fixtures';
 
@@ -33,6 +35,18 @@ describe('completeWireBody', () => {
     for (const type of ['agent', 'terminal', 'git-diff', 'embedded-agent']) {
       expect(v.safeParse(WorkerResponseSchema, completeWireBody({ worker: { id: 'w', type } })).success).toBe(true);
     }
+  });
+
+  it('completes a partial embedded-agent list and single envelope, for both engines', () => {
+    expect(
+      v.safeParse(
+        EmbeddedAgentsListResponseSchema,
+        completeWireBody({ embeddedAgents: [{ id: 'e1' }, { id: 'e2', engine: 'claude-sdk' }] }),
+      ).success,
+    ).toBe(true);
+    expect(
+      v.safeParse(EmbeddedAgentResponseSchema, completeWireBody({ embeddedAgent: { id: 'e1' } })).success,
+    ).toBe(true);
   });
 
   it('never overrides a field the fixture sets', () => {

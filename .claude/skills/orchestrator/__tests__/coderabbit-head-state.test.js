@@ -333,21 +333,83 @@ describe('getCodeRabbitHeadState', () => {
     expect(result.state).toBe('retrieval-failed');
   });
 
-  // (g) body containing "## CodeRabbit disposition" -> dispositionRecorded true.
-  it('dispositionRecorded is true when the PR body carries the "CodeRabbit disposition" heading', () => {
-    const execImpl = makeExecImpl({
-      pr: JSON.stringify({
-        headRefOid: HEAD,
-        body: 'Some PR description.\n\n## CodeRabbit disposition\n\nRecorded here: https://example.com/comment/1\n',
+  // Disposition record: the heading AND a `Head:` line naming the current head.
+  // `dispose(body)` runs the detector on a PR whose head is HEAD and whose
+  // body is the given text; reviews and status are empty so the state is
+  // 'unreviewed'.
+  const dispose = (body) =>
+    getCodeRabbitHeadState('1', {
+      execImpl: makeExecImpl({
+        pr: JSON.stringify({ headRefOid: HEAD, body }),
+        reviews: JSON.stringify([]),
+        status: JSON.stringify({ statuses: [] }),
       }),
-      reviews: JSON.stringify([]),
-      status: JSON.stringify({ statuses: [] }),
     });
-    const result = getCodeRabbitHeadState('1', { execImpl });
+
+  // (a) heading + Head: equal to the current head -> recorded.
+  it('dispositionRecorded is true when the heading is present and its Head: line equals the current head', () => {
+    const result = dispose(
+      `Some PR description.\n\n## CodeRabbit disposition\nHead: ${HEAD} -- unreviewed\nRecorded here: https://example.com/comment/1\n`,
+    );
     expect(result.dispositionRecorded).toBe(true);
+    expect(result.dispositionMatchesHead).toBe(true);
+    expect(result.dispositionHeadSha).toBe(HEAD);
     // Disposition detection is independent of review state -- this PR is
     // still 'unreviewed' even though a disposition was recorded.
     expect(result.state).toBe('unreviewed');
+  });
+
+  // (b) heading + Head: of an earlier commit -> not recorded (the stale shape:
+  // the heading survived a push, the record describes the previous commit).
+  // Polarity: before the Head: comparison existed, the heading alone made
+  // this return true.
+  it('dispositionRecorded is false when the Head: line names a different sha', () => {
+    const OLD = '0c3b60c9a41f7e2d85b6c0193ae4f2d7b85e1c46';
+    const result = dispose(`## CodeRabbit disposition\nHead: ${OLD} -- reviewed\nReview completed on the current head.\n`);
+    expect(result.dispositionRecorded).toBe(false);
+    expect(result.dispositionMatchesHead).toBe(false);
+    expect(result.dispositionHeadSha).toBe(OLD);
+  });
+
+  // (c) heading with no Head: line -> not recorded.
+  it('dispositionRecorded is false when the heading has no Head: line', () => {
+    const result = dispose('## CodeRabbit disposition\n\nRecorded here: https://example.com/comment/1\n');
+    expect(result.dispositionRecorded).toBe(false);
+    expect(result.dispositionMatchesHead).toBe(false);
+    expect(result.dispositionHeadSha).toBeNull();
+  });
+
+  // (d) a 7-char prefix of the head is accepted.
+  it('dispositionRecorded is true when the Head: line is a 7-character prefix of the current head', () => {
+    const result = dispose(`## CodeRabbit disposition\nHead: ${HEAD.slice(0, 7)} -- skipped\n`);
+    expect(result.dispositionRecorded).toBe(true);
+    expect(result.dispositionMatchesHead).toBe(true);
+    expect(result.dispositionHeadSha).toBe(HEAD.slice(0, 7));
+  });
+
+  // A prefix shorter than 7 characters is not a Head: line at all.
+  it('a Head: line shorter than 7 hex characters is not parsed', () => {
+    const result = dispose(`## CodeRabbit disposition\nHead: ${HEAD.slice(0, 6)} -- skipped\n`);
+    expect(result.dispositionRecorded).toBe(false);
+    expect(result.dispositionHeadSha).toBeNull();
+  });
+
+  // (e) a Head: line outside the disposition section is not the record's
+  // Head: line, even when it names the current head.
+  it('a Head: line in another section (before the heading or after the next heading) is not parsed', () => {
+    const before = dispose(`## Summary\nHead: ${HEAD}\n\n## CodeRabbit disposition\nNo head line here.\n`);
+    expect(before.dispositionRecorded).toBe(false);
+    expect(before.dispositionHeadSha).toBeNull();
+
+    const after = dispose(`## CodeRabbit disposition\nNo head line here.\n\n## Test plan\nHead: ${HEAD}\n`);
+    expect(after.dispositionRecorded).toBe(false);
+    expect(after.dispositionHeadSha).toBeNull();
+  });
+
+  // Section end is the next heading of any level, not only level 2.
+  it('a Head: line is parsed when it sits before a following heading inside the section', () => {
+    const result = dispose(`## CodeRabbit disposition\nHead: ${HEAD} -- unreviewed\n\n### Details\ntext\n`);
+    expect(result.dispositionRecorded).toBe(true);
   });
 
   it('dispositionRecorded is false when the PR body has no disposition marker', () => {
@@ -376,12 +438,13 @@ describe('getCodeRabbitHeadState', () => {
 
   it('dispositionRecorded is still reported true even when the gh pr view call itself succeeds but a later call fails', () => {
     const execImpl = makeExecImpl({
-      pr: JSON.stringify({ headRefOid: HEAD, body: '## CodeRabbit disposition\n\nfoo' }),
+      pr: JSON.stringify({ headRefOid: HEAD, body: `## CodeRabbit disposition\nHead: ${HEAD} -- unreviewed\nfoo` }),
       reviews: '',
     });
     const result = getCodeRabbitHeadState('1', { execImpl });
     expect(result.state).toBe('retrieval-failed');
     expect(result.dispositionRecorded).toBe(true);
+    expect(result.dispositionMatchesHead).toBe(true);
   });
 
   it('retrieval-failed when the PR has no headRefOid at all', () => {
@@ -389,5 +452,17 @@ describe('getCodeRabbitHeadState', () => {
     const result = getCodeRabbitHeadState('1', { execImpl });
     expect(result.state).toBe('retrieval-failed');
     expect(result.headSha).toBeNull();
+  });
+
+  // With no known head nothing can match: the record is parsed but never counts.
+  it('dispositionMatchesHead is false when the head is unknown, but the Head: line is still reported', () => {
+    const execImpl = makeExecImpl({
+      pr: JSON.stringify({ body: `## CodeRabbit disposition\nHead: ${HEAD} -- unreviewed\n` }),
+    });
+    const result = getCodeRabbitHeadState('1', { execImpl });
+    expect(result.state).toBe('retrieval-failed');
+    expect(result.dispositionRecorded).toBe(false);
+    expect(result.dispositionMatchesHead).toBe(false);
+    expect(result.dispositionHeadSha).toBe(HEAD);
   });
 });

@@ -45,6 +45,9 @@ async function waitForCondition(
   }
 }
 
+// These tests observe the process callbacks, so they opt out of the inline result window.
+const NO_INLINE = { inlineWindowMs: 0 } as const;
+
 describe('resolveSharedAccountEnvVarWarnings (shared-accounts Release 2 boot warnings)', () => {
   it('returns no warnings when the env var is unset, regardless of registry state', () => {
     expect(resolveSharedAccountEnvVarWarnings(undefined, true)).toEqual([]);
@@ -453,7 +456,7 @@ describe('AppContext', () => {
       const sessionId = 'fake-session-for-exit-wiring-test';
       const workerId = 'fake-worker-for-exit-wiring-test';
 
-      const process = await appContext.interactiveProcessManager.runProcess({
+      const process = await appContext.interactiveProcessManager.runProcess({ ...NO_INLINE,
         sessionId,
         workerId,
         command: 'true',
@@ -546,7 +549,7 @@ describe('AppContext', () => {
       try {
         const { sessionId, workerId } = await createTarget(ctx);
 
-        const process = await ctx.interactiveProcessManager.runProcess({
+        const process = await ctx.interactiveProcessManager.runProcess({ ...NO_INLINE,
           sessionId,
           workerId,
           command: 'echo notify-order',

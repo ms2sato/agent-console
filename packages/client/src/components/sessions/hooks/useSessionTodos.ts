@@ -25,7 +25,7 @@ export function useSessionTodos(sessionId: string) {
     },
   });
 
-  const { data: todos, isPending } = useQuery({
+  const { data: todos, isPending, isError, refetch } = useQuery({
     queryKey: todoKeys.listBySession(sessionId),
     queryFn: () => fetchTodos({ sessionId }),
   });
@@ -35,5 +35,7 @@ export function useSessionTodos(sessionId: string) {
     todos: items,
     openCount: items.filter((todo) => todo.status === 'open').length,
     isPending,
+    isError,
+    refetch,
   } as const;
 }

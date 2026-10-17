@@ -30,7 +30,7 @@ afterEach(() => {
 
 /** The visually hidden description; its text carries the count for assistive tech. */
 function badge() {
-  return screen.queryByText(/open to-do items assigned to you/);
+  return screen.queryByText(/open Todo items assigned to you/);
 }
 
 /**
@@ -62,7 +62,7 @@ describe('TodoCountBadge', () => {
 
     await renderWithRouter(<TodoCountBadge />);
 
-    await waitFor(() => expect(badge()?.textContent).toBe('2 open to-do items assigned to you'));
+    await waitFor(() => expect(badge()?.textContent).toBe('2 open Todo items assigned to you'));
     // The visible number is decorative; the description is the accessible text.
     expect(screen.getByText('2').getAttribute('aria-hidden')).toBe('true');
     expect(badge()?.className).toContain('sr-only');
@@ -97,7 +97,7 @@ describe('TodoCountBadge', () => {
         jsonResponse({ todos: [makeTodo({ id: 'a', assigneeUserId: ME.id })] }),
       );
       await renderWithRouter(<TodoCountBadge />);
-      await waitFor(() => expect(badge()?.textContent).toBe('1 open to-do items assigned to you'));
+      await waitFor(() => expect(badge()?.textContent).toBe('1 open Todo items assigned to you'));
       const ws = MockWebSocket.getLastInstance();
       if (!ws) throw new Error('Expected a MockWebSocket instance to exist by this point in the test');
       act(() => {
@@ -123,7 +123,7 @@ describe('TodoCountBadge', () => {
         ws.simulateMessage(JSON.stringify({ type: 'todos-updated', sessionId: null }));
       });
 
-      await waitFor(() => expect(badge()?.textContent).toBe('2 open to-do items assigned to you'));
+      await waitFor(() => expect(badge()?.textContent).toBe('2 open Todo items assigned to you'));
     });
 
     it('refetches the count on a todos-updated frame naming a session', async () => {
@@ -134,7 +134,7 @@ describe('TodoCountBadge', () => {
         ws.simulateMessage(JSON.stringify({ type: 'todos-updated', sessionId: 'session-1' }));
       });
 
-      await waitFor(() => expect(badge()?.textContent).toBe('2 open to-do items assigned to you'));
+      await waitFor(() => expect(badge()?.textContent).toBe('2 open Todo items assigned to you'));
     });
 
     it('refetches the count on a session-deleted frame', async () => {

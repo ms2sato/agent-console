@@ -2,6 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
 import {
   EmbeddedAgentDefinitionSchema,
+  EmbeddedAgentsListResponseSchema,
+  EmbeddedAgentResponseSchema,
   CreateEmbeddedAgentRequestSchema,
   UpdateEmbeddedAgentRequestSchema,
   EmbeddedAgentCompactionConfigSchema,
@@ -14,6 +16,7 @@ import {
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
 } from '../embedded-agent.js';
 import { SDK_RESUME_FAILURE_REASONS } from '../../types/embedded-agent.js';
+import type { EmbeddedAgentDefinition } from '../../types/embedded-agent.js';
 
 const validDefinition = {
   id: 'def-1',
@@ -2675,5 +2678,54 @@ describe('EMBEDDED_AGENT_TOOL_NAMES / DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS (#157
   it('EMBEDDED_AGENT_TOOL_NAMES includes Task (epic #1636 Phase 5 decision 3), off by default', () => {
     expect(EMBEDDED_AGENT_TOOL_NAMES).toContain('Task');
     expect(DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS).not.toContain('Task');
+  });
+});
+
+describe('EmbeddedAgentsListResponseSchema / EmbeddedAgentResponseSchema', () => {
+  type Assert<T extends true> = T;
+  type ResponseWire = v.InferOutput<typeof EmbeddedAgentResponseSchema>['embeddedAgent'];
+  type ListWire = v.InferOutput<typeof EmbeddedAgentsListResponseSchema>['embeddedAgents'][number];
+
+  // Both directions: the served definition type and the wire definition are the same shape.
+  it('keeps the definition type and the response schema in lockstep (type pins)', () => {
+    type _ToWire = Assert<EmbeddedAgentDefinition extends ResponseWire ? true : false>;
+    type _FromWire = Assert<ResponseWire extends EmbeddedAgentDefinition ? true : false>;
+    type _ListToWire = Assert<EmbeddedAgentDefinition extends ListWire ? true : false>;
+    type _ListFromWire = Assert<ListWire extends EmbeddedAgentDefinition ? true : false>;
+    const pins: [_ToWire, _FromWire, _ListToWire, _ListFromWire] = [true, true, true, true];
+    expect(pins).toHaveLength(4);
+  });
+
+  it('parses a list holding an openai-api and a claude-sdk definition', () => {
+    const result = v.safeParse(EmbeddedAgentsListResponseSchema, {
+      embeddedAgents: [validDefinition, validSdkDefinition],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('parses an empty list', () => {
+    expect(v.safeParse(EmbeddedAgentsListResponseSchema, { embeddedAgents: [] }).success).toBe(true);
+  });
+
+  it('parses a single-definition response for each engine arm', () => {
+    expect(v.safeParse(EmbeddedAgentResponseSchema, { embeddedAgent: validDefinition }).success).toBe(true);
+    expect(v.safeParse(EmbeddedAgentResponseSchema, { embeddedAgent: validSdkDefinition }).success).toBe(true);
+  });
+
+  it('rejects { embeddedAgent: {} }', () => {
+    expect(v.safeParse(EmbeddedAgentResponseSchema, { embeddedAgent: {} }).success).toBe(false);
+  });
+
+  it('rejects a list whose element is malformed', () => {
+    expect(v.safeParse(EmbeddedAgentsListResponseSchema, { embeddedAgents: [{}] }).success).toBe(false);
+  });
+
+  it('rejects an extra envelope key on both schemas', () => {
+    expect(
+      v.safeParse(EmbeddedAgentsListResponseSchema, { embeddedAgents: [], extra: 1 }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(EmbeddedAgentResponseSchema, { embeddedAgent: validDefinition, extra: 1 }).success,
+    ).toBe(false);
   });
 });

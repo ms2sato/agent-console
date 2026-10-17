@@ -22,6 +22,15 @@ export const SystemOpenVSCodeRequestSchema = v.strictObject({
   ),
 });
 
+/**
+ * Response of GET /api/system/health.
+ */
+export const SystemHealthResponseSchema = v.strictObject({
+  webhookSecretConfigured: v.boolean(),
+  appUrl: v.nullable(v.string()),
+});
+
 // Inferred types from schemas
 export type SystemOpenRequest = v.InferOutput<typeof SystemOpenRequestSchema>;
 export type SystemOpenVSCodeRequest = v.InferOutput<typeof SystemOpenVSCodeRequestSchema>;
+export type SystemHealthResponse = v.InferOutput<typeof SystemHealthResponseSchema>;

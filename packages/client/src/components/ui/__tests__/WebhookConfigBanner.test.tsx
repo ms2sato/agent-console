@@ -59,7 +59,7 @@ describe('WebhookConfigBanner', () => {
       if (url.includes('/api/system/health')) {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: false,
-          appUrlConfigured: true,
+          appUrl: 'https://example.com',
         }));
       }
       return originalFetch(url);
@@ -80,7 +80,7 @@ describe('WebhookConfigBanner', () => {
       if (url.includes('/api/system/health')) {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: true,
-          appUrlConfigured: true,
+          appUrl: 'https://example.com',
         }));
       }
       return originalFetch(url);
@@ -102,7 +102,7 @@ describe('WebhookConfigBanner', () => {
       if (url.includes('/api/system/health')) {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: false,
-          appUrlConfigured: true,
+          appUrl: 'https://example.com',
         }));
       }
       return originalFetch(url);
@@ -133,7 +133,7 @@ describe('WebhookConfigBanner', () => {
       if (url.includes('/api/system/health')) {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: false,
-          appUrlConfigured: true,
+          appUrl: 'https://example.com',
         }));
       }
       return originalFetch(url);
@@ -155,7 +155,7 @@ describe('WebhookConfigBanner', () => {
       if (url.includes('/api/system/health')) {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: false,
-          appUrlConfigured: true,
+          appUrl: 'https://example.com',
         }));
       }
       return originalFetch(url);

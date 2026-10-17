@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
+import * as v from 'valibot';
+import { SystemHealthResponseSchema } from '@agent-console/shared';
 import type { AppBindings } from '../../app-context.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 
@@ -230,5 +232,19 @@ describe('System API - open-in-vscode', () => {
       // The guard must fire before any spawn attempt.
       expect(spawnCalls.length).toBe(0);
     });
+  });
+});
+
+describe('System API - health', () => {
+  it('serves a body that parses through SystemHealthResponseSchema', async () => {
+    const { system } = await import(`../system.js?v=${++importCounter}`);
+    const app = new Hono<AppBindings>();
+    app.route('/api/system', system);
+
+    const res = await app.request('/api/system/health');
+    expect(res.status).toBe(200);
+
+    const parsed = v.parse(SystemHealthResponseSchema, await res.json());
+    expect(typeof parsed.webhookSecretConfigured).toBe('boolean');
   });
 });

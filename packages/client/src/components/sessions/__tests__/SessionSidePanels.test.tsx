@@ -116,7 +116,7 @@ describe('SessionSidePanels', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('tabs from the collapsed Memo header through the always-visible Edit button to the Artifacts header, skipping Memo\'s inert body entirely', async () => {
+  it('tabs from the collapsed Memo header through the always-visible Edit button to the next section header (Todo), skipping Memo\'s inert body entirely', async () => {
     // happy-dom / user-event do not model keyboard-focusable scrollers
     // (Chrome's behavior of treating a scroll container with no focusable
     // children as a tab stop), so this test cannot reproduce the original
@@ -159,7 +159,7 @@ describe('SessionSidePanels', () => {
     await user.click(memoHeader);
     const collapsedMemoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
     const editMemoButton = screen.getByLabelText('Edit memo');
-    const artifactsHeader = screen.getByLabelText('Collapse Artifacts');
+    const todoHeader = await screen.findByLabelText('Collapse Todo');
 
     const memoSection = collapsedMemoHeader.closest('.border-b') as HTMLElement;
     const memoBodyWrapper = memoSection.querySelector('[aria-hidden]') as HTMLElement;
@@ -177,7 +177,7 @@ describe('SessionSidePanels', () => {
     expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
 
     await user.tab();
-    expect(document.activeElement).toBe(artifactsHeader);
+    expect(document.activeElement).toBe(todoHeader);
     expect(memoBodyWrapper.getAttribute('inert')).toBe('');
     expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
   });
@@ -218,17 +218,22 @@ describe('SessionSidePanels', () => {
 
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
 
-    expect(await screen.findByText('To-do (1)')).toBeTruthy();
+    expect(await screen.findByText('Todo (1)')).toBeTruthy();
     expect(screen.getByText(TODO_TITLE)).toBeTruthy();
   });
 
-  it('renders no to-do section when the session has no items (the default routing serves no to-do list)', async () => {
+  it('renders the to-do section with a zero count and the add form when the session list settles empty', async () => {
+    const base = mockFetch.getMockImplementation()!;
+    mockFetch.mockImplementation((input: RequestInfo | URL) =>
+      urlToString(input).includes('/todos') ? Promise.resolve(jsonResponse({ todos: [] })) : base(input)
+    );
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } }));
 
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
 
     await waitFor(() => expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy());
-    expect(screen.queryByLabelText('Collapse To-do')).toBeNull();
+    expect(await screen.findByText('Todo (0)')).toBeTruthy();
+    expect(screen.getByRole('form', { name: 'Add Todo' })).toBeTruthy();
   });
 
   it('the rail toggle button flips between the wide and narrow rail classes', async () => {
