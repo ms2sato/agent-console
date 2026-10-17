@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import type { AuthUser, LoginResponse, UpdateUserPreferencesResponse } from '../../types/auth';
 import {
   LoginRequestSchema,
   ConfigResponseSchema,
   MePreferencesSchema,
-  AuthUserSchema,
   CurrentUserResponseSchema,
   LoginResponseSchema,
   UpdateUserPreferencesResponseSchema,
+  type AuthUser,
+  type LoginResponse,
+  type UpdateUserPreferencesResponse,
 } from '../auth';
 
 describe('LoginRequestSchema', () => {
@@ -158,8 +159,23 @@ describe('MePreferencesSchema', () => {
 type Assert<T extends true> = T;
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 
-// The hand-written `AuthUser` domain type and the wire schema must stay one shape.
-export type _AuthUserMatchesSchema = Assert<Equals<AuthUser, v.InferOutput<typeof AuthUserSchema>>>;
+// Key-set pins. `AuthUser`, `LoginResponse` and `UpdateUserPreferencesResponse` are derived from
+// their schemas, so the schema is the only place a field is edited; each pin compares `keyof`
+// with an explicit literal union, so a field added to (or removed from) a schema alone is a
+// `tsc` failure (TS2344) naming the difference. `Assert<Equals<...>>` is the form that fails
+// under drift; a `declare const x: never` form would type-check under it.
+//
+// Measured reach: (`tsc` diagnostics, control clean first): adding a field to, or removing
+// one from, `AuthUserSchema` fails `_AuthUserKeys` (TS2344, and only it); the same on
+// `LoginResponseSchema` fails `_LoginResponseKeys`, and on `UpdateUserPreferencesResponseSchema` fails
+// `_UpdateUserPreferencesResponseKeys`; retyping `LoginResponseSchema`'s `user` as a different object
+// fails `_LoginResponseUserIsAuthUser`. Each diagnostic sits on the pin's line and does not name the key.
+export type _AuthUserKeys = Assert<Equals<keyof AuthUser, 'id' | 'username' | 'homeDir'>>;
+export type _LoginResponseKeys = Assert<Equals<keyof LoginResponse, 'user'>>;
+export type _UpdateUserPreferencesResponseKeys = Assert<
+  Equals<keyof UpdateUserPreferencesResponse, 'user' | 'preferences'>
+>;
+export type _LoginResponseUserIsAuthUser = Assert<Equals<LoginResponse['user'], AuthUser>>;
 
 describe('CurrentUserResponseSchema', () => {
   const user = { id: 'u1', username: 'alice', homeDir: '/home/alice' };
@@ -180,14 +196,6 @@ describe('CurrentUserResponseSchema', () => {
     expect(v.safeParse(CurrentUserResponseSchema, { user: null, extra: 1 }).success).toBe(false);
   });
 });
-
-// `LoginResponse` / `UpdateUserPreferencesResponse` stay hand-written interfaces the server imports;
-// these pins fix each schema's output to its interface exactly. `Assert<Equals<...>>` fails `tsc`
-// (TS2344) under drift in either direction.
-export type _LoginResponseIsExact = Assert<Equals<v.InferOutput<typeof LoginResponseSchema>, LoginResponse>>;
-export type _UpdateUserPreferencesResponseIsExact = Assert<
-  Equals<v.InferOutput<typeof UpdateUserPreferencesResponseSchema>, UpdateUserPreferencesResponse>
->;
 
 describe('LoginResponseSchema', () => {
   const user = { id: 'u1', username: 'alice', homeDir: '/home/alice' };

@@ -58,12 +58,13 @@ export {
   MePreferencesSchema,
   type MePreferencesRequest,
   AuthUserSchema,
+  type AuthUser,
   CurrentUserResponseSchema,
   type CurrentUserResponse,
   LoginResponseSchema,
-  type LoginResponseWire,
+  type LoginResponse,
   UpdateUserPreferencesResponseSchema,
-  type UpdateUserPreferencesResponseWire,
+  type UpdateUserPreferencesResponse,
 } from './auth.js';
 
 // Agent schemas
@@ -317,6 +318,7 @@ export {
   SendWorkerMessageRequestSchema,
   type SendWorkerMessageRequest,
   WorkerMessageSchema,
+  type WorkerMessage,
   SendWorkerMessageResponseSchema,
   type SendWorkerMessageResponse,
 } from './message.js';
@@ -326,6 +328,7 @@ export {
   RepositorySlackIntegrationInputSchema,
   RepositorySlackIntegrationSchema,
   NotificationStatusResponseSchema,
+  type RepositorySlackIntegration,
   type RepositorySlackIntegrationInput,
   type NotificationStatus,
 } from './notification.js';
@@ -350,6 +353,7 @@ export {
   type UpdateMessageTemplateRequest,
   type ReorderMessageTemplatesRequest,
   MessageTemplateSchema,
+  type MessageTemplate,
   MessageTemplatesResponseSchema,
   type MessageTemplatesResponse,
   MessageTemplateResponseSchema,
@@ -361,6 +365,7 @@ export {
 // Skill schemas
 export {
   SkillDefinitionSchema,
+  type SkillDefinition,
   SkillsResponseSchema,
   type SkillsResponse,
 } from './skill.js';

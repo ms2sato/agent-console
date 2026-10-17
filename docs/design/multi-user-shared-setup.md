@@ -112,15 +112,7 @@ CREATE UNIQUE INDEX idx_users_os_uid ON users(os_uid) WHERE os_uid IS NOT NULL;
 
 ### AuthUser
 
-```typescript
-interface AuthUser {
-  id: string;         // users.id (UUID)
-  username: string;   // Current OS username
-  homeDir: string;    // Home directory
-}
-```
-
-`AuthUser` is returned by `UserMode.authenticate()` and `UserMode.login()`. It always includes `id` so callers can use it as a stable reference (e.g., `sessions.created_by`).
+`AuthUser` (`id` is `users.id`, a UUID; `username` is the current OS username; `homeDir` is the home directory) is derived from `AuthUserSchema` in `packages/shared/src/schemas/auth.ts` (`v.InferOutput`); the schema is the single writer of its fields. It is returned by `UserMode.authenticate()` and `UserMode.login()`. It always includes `id` so callers can use it as a stable reference (e.g., `sessions.created_by`).
 
 ### User Record Lifecycle
 
@@ -246,11 +238,8 @@ interface UserMode {
   spawnPty(request: PtySpawnRequest): PtyInstance;
 }
 
-interface AuthUser {
-  id: string;         // UUID from users table
-  username: string;
-  homeDir: string;
-}
+// AuthUser is derived from `AuthUserSchema` in
+// `packages/shared/src/schemas/auth.ts` (`v.InferOutput`).
 
 interface LoginResult {
   user: AuthUser;

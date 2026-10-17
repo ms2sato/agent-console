@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 import { AgentDefinitionSchema } from './agent.js';
 import { EmbeddedAgentDefinitionSchema } from './embedded-agent.js';
+import { WorkerMessageSchema } from './message.js';
 
 // === Primitive schemas ===
 
@@ -319,17 +320,6 @@ export const RepositorySchema = v.strictObject({
 });
 
 export type Repository = v.InferOutput<typeof RepositorySchema>;
-
-const WorkerMessageSchema = v.strictObject({
-  id: v.string(),
-  sessionId: v.string(),
-  fromWorkerId: v.string(),
-  fromWorkerName: v.string(),
-  toWorkerId: v.string(),
-  toWorkerName: v.string(),
-  content: v.string(),
-  timestamp: v.string(),
-});
 
 const InboundEventTypeSchema = v.picklist([
   'ci:completed', 'ci:failed', 'issue:closed', 'issue:labeled',
