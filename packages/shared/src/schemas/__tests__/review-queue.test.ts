@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import type { ReviewComment, ReviewQueueGroup, ReviewQueueItem } from '../../types/git-diff';
+import type { AnnotationSummary, ReviewComment, ReviewQueueGroup, ReviewQueueItem, ReviewStatus } from '../../types/git-diff';
 import {
+  AnnotationSummarySchema,
   ReviewQueueGroupSchema,
   ReviewQueueItemSchema,
   ReviewQueueResponseSchema,
@@ -9,14 +10,22 @@ import {
   ReviewStatusResponseSchema,
 } from '../review-queue';
 
-// `ReviewQueueItem` / `ReviewQueueGroup` stay hand-written interfaces the server imports;
-// these pins fix each schema's output to its interface exactly. `Assert<Equals<...>>` fails
-// `tsc` (TS2344) under drift in either direction.
+// `ReviewQueueItem`, `ReviewQueueGroup`, `ReviewComment`, `AnnotationSummary` and `ReviewStatus`
+// stay hand-written in `types/git-diff.ts` by ruling: that file is a protocol-dispatch trigger
+// file, and `ReviewAnnotationSet` (the `annotations-updated` WS payload, which has no valibot
+// schema) composes three of them. These pins are the parity guard: each fixes a schema's output
+// to its hand-written type exactly. `Assert<Equals<...>>` fails `tsc` (TS2344) under drift in
+// either direction. Measured reach (`tsc --noEmit`, failing pins by name): `AnnotationSummarySchema.confidence`
+// widened to `v.string()`: _ReviewQueueItemIsExact, _ReviewQueueGroupIsExact and _AnnotationSummaryIsExact;
+// `ReviewQueueItemSchema.status` widened to `v.string()`: _ReviewQueueItemIsExact, _ReviewQueueGroupIsExact
+// and _ReviewStatusIsExact. Revisit when `annotations-updated` gets a schema: derive the five from it.
 type Assert<T extends true> = T;
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 export type _ReviewQueueItemIsExact = Assert<Equals<v.InferOutput<typeof ReviewQueueItemSchema>, ReviewQueueItem>>;
 export type _ReviewCommentIsExact = Assert<Equals<v.InferOutput<typeof ReviewCommentSchema>, ReviewComment>>;
 export type _ReviewQueueGroupIsExact = Assert<Equals<v.InferOutput<typeof ReviewQueueGroupSchema>, ReviewQueueGroup>>;
+export type _AnnotationSummaryIsExact = Assert<Equals<v.InferOutput<typeof AnnotationSummarySchema>, AnnotationSummary>>;
+export type _ReviewStatusIsExact = Assert<Equals<v.InferOutput<typeof ReviewQueueItemSchema>['status'], ReviewStatus>>;
 
 const item = {
   workerId: 'w1',

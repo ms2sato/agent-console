@@ -10,7 +10,7 @@
  * (`NotificationsResponseSchema` / `NotificationsSeenResponseSchema`).
  *
  * This is the test that would fail if `schemas/notification-item.ts`
- * silently dropped a field relative to `types/notification-item.ts` (the
+ * silently dropped a field relative to the hand-written consumer shapes (the
  * core `.claude/rules/pre-pr-completeness.md` Q10 guard).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
