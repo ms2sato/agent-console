@@ -1,14 +1,13 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import type { MessageTemplate } from '../../types/message-template';
 import {
-  MessageTemplateSchema,
   MessageTemplatesResponseSchema,
   CreateMessageTemplateRequestSchema,
   UpdateMessageTemplateRequestSchema,
   ReorderMessageTemplatesRequestSchema,
   MessageTemplateResponseSchema,
   SuccessResponseSchema,
+  type MessageTemplate,
 } from '../message-template';
 
 describe('CreateMessageTemplateRequestSchema', () => {
@@ -129,8 +128,18 @@ describe('strict-parse contract (unknown-key rejection)', () => {
 type Assert<T extends true> = T;
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 
-// The hand-written `MessageTemplate` domain type and the wire schema must stay one shape.
-export type _MessageTemplateMatchesSchema = Assert<Equals<MessageTemplate, v.InferOutput<typeof MessageTemplateSchema>>>;
+// Key-set pin. `MessageTemplate` is derived from `MessageTemplateSchema`, so the schema is the
+// only place a field is edited; the pin compares `keyof` with an explicit literal union, so a
+// field added to (or removed from) the schema alone is a `tsc` failure (TS2344) naming the
+// difference. `Assert<Equals<...>>` is the form that fails under drift; a `declare const x: never`
+// form would type-check under it.
+//
+// Measured reach: (`tsc` diagnostics, control clean first): adding a field to, or removing
+// one from, `MessageTemplateSchema` fails `_MessageTemplateKeys` (TS2344, and only it). The diagnostic sits
+// on the pin's line and does not name the key.
+export type _MessageTemplateKeys = Assert<
+  Equals<keyof MessageTemplate, 'id' | 'title' | 'content' | 'sortOrder' | 'createdAt' | 'updatedAt'>
+>;
 
 describe('MessageTemplatesResponseSchema', () => {
   const template = {

@@ -6,6 +6,8 @@ export const SkillDefinitionSchema = v.strictObject({
   description: v.string(),
 });
 
+export type SkillDefinition = v.InferOutput<typeof SkillDefinitionSchema>;
+
 /** Schema for `GET /api/skills`'s response. */
 export const SkillsResponseSchema = v.strictObject({
   skills: v.array(SkillDefinitionSchema),

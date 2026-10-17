@@ -1,4 +1,4 @@
-import { Terminal } from '@xterm/headless';
+import { Terminal, type IMarker } from '@xterm/headless';
 import {
   WORKER_SERVER_MESSAGE_TYPES,
   isPtyBackedWorker,
@@ -96,6 +96,15 @@ export interface TerminalInstance {
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const SCROLLBACK = 5000;
+// Live-edge accounting (§6.5): cap on the frame-marker deque. Past it the two oldest
+// spans merge, which only delays learning an eviction by one span.
+const MAX_FRAME_MARKERS = 512;
+// Every applied output frame and the initial history payload are written in line-aligned
+// pieces of about this many bytes, one marker each, so rows evicted while a frame is being
+// written are accounted for at piece resolution (§6.5). A frame at or under this size stays
+// one piece. Test-overridable through _setLiveEdgePieceBytesForTest.
+const LIVE_EDGE_PIECE_BYTES = 4096;
+let liveEdgePieceBytes = LIVE_EDGE_PIECE_BYTES;
 
 // --- Scroll-back history paging (terminal-history-paging.md §6) ---
 // Paged-window row cap (~3x live SCROLLBACK). At the cap, upward fetch is
@@ -195,6 +204,17 @@ class TerminalController implements TerminalInstance {
   // Absolute start of everything currently represented (live + paged). Seeded
   // by the fresh history.startOffset, moved down by each history-range (§6.1).
   private oldestOffset = 0;
+  // Absolute offset up to which the live buffer has evicted rows (§6.5). 0 until an
+  // eviction is observed through a frame marker. Reset with the live window.
+  private liveEvictedUpTo = 0;
+  // One marker per applied frame (and the initial history payload), oldest first.
+  private frameMarkers: Array<{ marker: IMarker; endOffset: number }> = [];
+  // Every marker registered and not yet disposed, whether or not it is still in the deque.
+  private liveMarkers = new Set<IMarker>();
+  // Bumped by resetTerminal(). xterm 5.5 does not cancel queued write callbacks on reset(), so
+  // a callback queued before a reset must not register its old-epoch end offset as a marker in
+  // the new buffer. Only the marker registration is gated; the rest of the callback is not.
+  private writeGeneration = 0;
   // Paged chunks, oldest first (a deque). Each carries its absolute range so
   // contiguity/eviction can reason about boundaries without re-deriving them.
   // `rawData` is retained on `pagedChunks[0]` (current top) AND `pagedChunks[1]`
@@ -485,6 +505,7 @@ class TerminalController implements TerminalInstance {
     this.clearResyncTimer();
     this.appUnsub();
     this.closeWs();
+    this.clearFrameMarkers();
     this.terminal.dispose();
     this.listeners.clear();
     removeInstance(this.sessionId, this.workerId);
@@ -559,6 +580,7 @@ class TerminalController implements TerminalInstance {
     epoch: number | null;
     oldestOffset: number;
     liveStartOffset: number;
+    liveEvictedUpTo: number;
     pagedRowCount: number;
     pagedChunkCount: number;
     hasMoreHistory: boolean;
@@ -574,11 +596,15 @@ class TerminalController implements TerminalInstance {
     topChunkRawBytes: number;
     secondChunkHasRaw: boolean;
     pagedRawCount: number;
+    frameMarkerCount: number;
+    liveMarkerCount: number;
+    frameMarkerEndOffsets: number[];
   } {
     return {
       epoch: this.epoch,
       oldestOffset: this.oldestOffset,
       liveStartOffset: this.liveStartOffset,
+      liveEvictedUpTo: this.liveEvictedUpTo,
       pagedRowCount: this.pagedRowCount,
       pagedChunkCount: this.pagedChunks.length,
       hasMoreHistory: this.hasMoreHistory,
@@ -594,6 +620,9 @@ class TerminalController implements TerminalInstance {
       topChunkRawBytes: this.pagedChunks[0]?.rawData?.length ?? 0,
       secondChunkHasRaw: this.pagedChunks[1]?.rawData !== undefined,
       pagedRawCount: this.pagedChunks.filter((c) => c.rawData !== undefined).length,
+      frameMarkerCount: this.frameMarkers.length,
+      liveMarkerCount: this.liveMarkers.size,
+      frameMarkerEndOffsets: this.frameMarkers.map((e) => e.endOffset),
     };
   }
 
@@ -631,7 +660,7 @@ class TerminalController implements TerminalInstance {
     }
     if (msg.type === 'worker-restarted') {
       if (msg.sessionId !== this.sessionId || msg.workerId !== this.workerId) return;
-      this.terminal.reset();
+      this.resetTerminal();
       this.invalidateRowCache();
       this.lastOffset = 0;
       // Restart resets the absolute stream to 0 under a new epoch (§4.5). Drop
@@ -815,7 +844,7 @@ class TerminalController implements TerminalInstance {
           break;
         }
         this.lastOffset = message.offset;
-        this.terminal.write(this.processOutput(message.data), () => this.scheduleNotify());
+        this.writeTracked(message.data, message.offset, () => this.scheduleNotify());
         break;
       case 'history-range':
         this.handleHistoryRange(message);
@@ -876,7 +905,7 @@ class TerminalController implements TerminalInstance {
   }
 
   private beginEpochResync(newEpoch: number): void {
-    this.terminal.reset();
+    this.resetTerminal();
     this.invalidateRowCache();
     this.lastOffset = 0;
     this.clearPagedState();
@@ -924,7 +953,7 @@ class TerminalController implements TerminalInstance {
    * in-flight (adopted) response completes the resync against the clean buffer.
    */
   private hardResetResync(reason: 'overflow' | 'timeout'): void {
-    this.terminal.reset();
+    this.resetTerminal();
     this.invalidateRowCache();
     this.lastOffset = 0;
     this.queuedOutput = [];
@@ -976,7 +1005,7 @@ class TerminalController implements TerminalInstance {
         ? startOffset !== this.requestedFromOffset
         : offset < this.requestedFromOffset);
     if (isFresh) {
-      this.terminal.reset();
+      this.resetTerminal();
       this.invalidateRowCache();
       this.clearPagedState();
       // Seed the paging cursor at the window's absolute start (§6.1). Without a
@@ -985,7 +1014,7 @@ class TerminalController implements TerminalInstance {
       if (typeof startOffset === 'number') {
         this.liveStartOffset = startOffset;
         this.oldestOffset = startOffset;
-        this.hasMoreHistory = startOffset > 0;
+        this.hasMoreHistory = this.oldestOffset > 0;
       } else {
         this.liveStartOffset = 0;
         this.oldestOffset = 0;
@@ -994,7 +1023,7 @@ class TerminalController implements TerminalInstance {
     }
     this.lastOffset = offset;
     const bytes = data.length;
-    this.terminal.write(this.processOutput(data), () => {
+    this.writeTracked(data, offset, () => {
       this.lastHistoryLoadMs = nowMs() - this.historyStartMs;
       logger.debug(
         `[terminal] history loaded: ${bytes} bytes in ${Math.round(this.lastHistoryLoadMs)} ms`,
@@ -1004,6 +1033,45 @@ class TerminalController implements TerminalInstance {
       // covered by this history payload (§3.4).
       if (this.resyncing) this.flushResyncQueue(offset);
       this.scheduleNotify();
+    });
+  }
+
+  /**
+   * Write `data` (a payload whose absolute end is `endOffset`) in line-aligned pieces of
+   * about `liveEdgePieceBytes` bytes, registering one frame marker after each piece's write
+   * completes (§6.5). Only the LAST piece's callback runs `onDone`.
+   *
+   * A piece's end offset is `endOffset` minus the bytes remaining after it, measured with
+   * TextEncoder, so it is exact for multi-byte text too. When processing changed the data
+   * (system-message or scrollback-clear stripping) the byte accounting is unknown and the
+   * payload stays one piece: coarse but safe, a marker never claims more than was evicted.
+   */
+  private writeTracked(data: string, endOffset: number, onDone: () => void): void {
+    const processed = this.processOutput(data);
+    const pieces: Array<{ text: string; endOffset: number }> = [];
+    if (processed !== data || processed.length <= liveEdgePieceBytes) {
+      pieces.push({ text: processed, endOffset });
+    } else {
+      const encoder = new TextEncoder();
+      let remainingBytes = encoder.encode(processed).length;
+      let from = 0;
+      while (from < processed.length) {
+        const nl = processed.indexOf('\n', Math.min(processed.length, from + liveEdgePieceBytes) - 1);
+        const to = nl === -1 ? processed.length : nl + 1;
+        const text = processed.slice(from, to);
+        remainingBytes -= encoder.encode(text).length;
+        pieces.push({ text, endOffset: endOffset - remainingBytes });
+        from = to;
+      }
+    }
+    const generation = this.writeGeneration;
+    pieces.forEach((piece, index) => {
+      const last = index === pieces.length - 1;
+      this.terminal.write(piece.text, () => {
+        // A reset after this write was queued makes its offset foreign to the new buffer.
+        if (generation === this.writeGeneration && piece.text.length > 0) this.trackFrame(piece.endOffset);
+        if (last) onDone();
+      });
     });
   }
 
@@ -1018,8 +1086,9 @@ class TerminalController implements TerminalInstance {
       // covered by the history payload; drop them to avoid double-application.
       if (item.offset <= historyOffset) continue;
       this.lastOffset = item.offset;
-      this.terminal.write(this.processOutput(item.data), () => this.scheduleNotify());
+      this.writeTracked(item.data, item.offset, () => this.scheduleNotify());
     }
+    this.reseedFromLiveEdge();
   }
 
   private handleError(message: string, code?: WorkerErrorCode, requestId?: number): void {
@@ -1048,6 +1117,7 @@ class TerminalController implements TerminalInstance {
   requestOlderHistory = (): void => {
     if (this.disposed) return;
     if (this.loadingOlder || this.pagingUnsupported || this.pagedCapReached) return;
+    this.reseedFromLiveEdge();
     if (this.resyncing || !this.hasMoreHistory || this.oldestOffset <= 0) return;
     this.sendRangeRequest(this.oldestOffset, RANGE_MAX_BYTES);
   };
@@ -1168,7 +1238,16 @@ class TerminalController implements TerminalInstance {
   ): Promise<void> {
     let pair: Awaited<ReturnType<typeof replayHistoryPair>>;
     try {
-      pair = await replayHistoryPair(msg.data, topRaw, cols, rows, (d) => this.processOutput(d));
+      // pagedChunks[1] (if any) is newer than the top chunk and already owns the
+      // top chunk's still-volatile tail rows.
+      pair = await replayHistoryPair(
+        msg.data,
+        topRaw,
+        cols,
+        rows,
+        (d) => this.processOutput(d),
+        this.pagedChunks.length > 1 ? 'yield-to-newer' : 'keep',
+      );
     } catch {
       return;
     }
@@ -1252,6 +1331,9 @@ class TerminalController implements TerminalInstance {
         cols,
         rows,
         (d) => this.processOutput(d),
+        // pagedChunks[2] (if any) is newer than the second chunk and already owns
+        // its still-volatile tail rows.
+        this.pagedChunks.length > 2 ? 'yield-to-newer' : 'keep',
       );
     } catch {
       return;
@@ -1406,6 +1488,77 @@ class TerminalController implements TerminalInstance {
     if (this.pagedRowCount >= MAX_PAGED_ROWS) this.pagedCapReached = true;
   }
 
+  /** terminal.reset() disposes every marker; detach the listeners first so that is not read as eviction. */
+  private resetTerminal(): void {
+    this.writeGeneration++;
+    this.clearFrameMarkers();
+    this.terminal.reset();
+  }
+
+  private clearFrameMarkers(): void {
+    // Empty the deque first: a disposal of an entry that is no longer in it is not an eviction.
+    const entries = this.frameMarkers;
+    this.frameMarkers = [];
+    for (const entry of entries) entry.marker.dispose();
+  }
+
+  /**
+   * Live-edge accounting (§6.5): remember that everything up to `endOffset` has been
+   * rendered by now, at the cursor row. When xterm disposes the marker because its row
+   * was evicted from the scrollback, those bytes are no longer visible in the live buffer.
+   */
+  private trackFrame(endOffset: number): void {
+    // Only the normal buffer has a scrollback (xterm registers no marker on the alt buffer).
+    if (this.disposed || this.terminal.buffer.active.type !== 'normal') return;
+    const marker = this.terminal.registerMarker(0);
+    if (!marker) {
+      throw new Error('terminal.registerMarker returned no marker: live-edge accounting (§6.5) cannot work');
+    }
+    const entry = { marker, endOffset };
+    this.liveMarkers.add(marker);
+    marker.onDispose(() => {
+      this.liveMarkers.delete(marker);
+      const at = this.frameMarkers.indexOf(entry);
+      if (at === -1) return; // dropped on purpose (merge, reset, dispose)
+      this.frameMarkers.splice(at, 1);
+      if (!this.isScrollbackEviction()) return;
+      if (endOffset > this.liveEvictedUpTo) {
+        this.liveEvictedUpTo = endOffset;
+        this.reseedFromLiveEdge();
+      }
+    });
+    this.frameMarkers.push(entry);
+    if (this.frameMarkers.length > MAX_FRAME_MARKERS) {
+      // Merge the two oldest spans: the oldest keeps its own endOffset (never claims more
+      // than was evicted) and the second-oldest boundary is given up AND its marker disposed.
+      const [merged] = this.frameMarkers.splice(1, 1);
+      merged?.marker.dispose();
+    }
+  }
+
+  /**
+   * A marker disposal is a scrollback eviction only when the normal buffer is full: xterm
+   * trims its oldest line then, and the buffer length equals rows + SCROLLBACK at that
+   * moment (measured on @xterm/headless 5.5). Other disposals (a scrollback clear that
+   * shortens the buffer, a reset) are not evictions and must not advance liveEvictedUpTo.
+   * Reach limit: no reachable disposal fails this predicate on xterm 5.5; it is kept for a
+   * future xterm that disposes normal-buffer markers on other events.
+   */
+  private isScrollbackEviction(): boolean {
+    const buffer = this.terminal.buffer.active;
+    return buffer.type === 'normal' && buffer.length >= this.terminal.rows + SCROLLBACK;
+  }
+
+  /** Paging cursor seed while nothing is paged yet: the live window's visible top (§6.5). */
+  private reseedFromLiveEdge(): void {
+    if (this.pagedChunks.length > 0 || this.loadingOlder || this.resyncing) return;
+    const seed = Math.max(this.liveStartOffset, this.liveEvictedUpTo);
+    if (seed === this.oldestOffset) return;
+    this.oldestOffset = seed;
+    this.hasMoreHistory = seed > 0;
+    this.syncPagingMeta();
+  }
+
   /** Full teardown of paged state (resync / restart). Keys are never reused, so
    * negKeyCounter is deliberately NOT reset. */
   private clearPagedState(): void {
@@ -1413,6 +1566,8 @@ class TerminalController implements TerminalInstance {
     this.pagedRowCount = 0;
     this.oldestOffset = 0;
     this.liveStartOffset = 0;
+    this.liveEvictedUpTo = 0;
+    this.clearFrameMarkers();
     this.hasMoreHistory = true;
     this.pagedCapReached = false;
     this.loadingOlder = false;
@@ -1424,8 +1579,8 @@ class TerminalController implements TerminalInstance {
   private dropPagedChunks(): void {
     this.pagedChunks = [];
     this.pagedRowCount = 0;
-    this.oldestOffset = this.liveStartOffset;
-    this.hasMoreHistory = this.liveStartOffset > 0;
+    this.oldestOffset = Math.max(this.liveStartOffset, this.liveEvictedUpTo);
+    this.hasMoreHistory = this.oldestOffset > 0;
     this.pagedCapReached = false;
     this.loadingOlder = false;
     this.clearRangeInFlight();
@@ -1751,6 +1906,11 @@ export function _setSeamCorrectionForTest(enabled: boolean): void {
   seamCorrectionEnabled = enabled;
 }
 
+/** @internal Exported for testing: piece size of the live-edge frame writes; `null` restores the default. */
+export function _setLiveEdgePieceBytesForTest(n: number | null): void {
+  liveEdgePieceBytes = n ?? LIVE_EDGE_PIECE_BYTES;
+}
+
 export function getOrCreateTerminal(
   sessionId: string,
   workerId: string,
@@ -1775,6 +1935,7 @@ export function _resetTerminals(): void {
   timings = { ...DEFAULT_TIMINGS };
   appSubscribeImpl = subscribeApp;
   seamCorrectionEnabled = true;
+  liveEdgePieceBytes = LIVE_EDGE_PIECE_BYTES;
 }
 
 /** @internal Test helper: resolve once every live instance has parsed all pending output and flushed its snapshot frame. */

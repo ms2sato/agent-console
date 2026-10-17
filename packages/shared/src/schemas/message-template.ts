@@ -37,6 +37,8 @@ export const MessageTemplateSchema = v.strictObject({
   updatedAt: v.string(),
 });
 
+export type MessageTemplate = v.InferOutput<typeof MessageTemplateSchema>;
+
 /** Schema for `GET /api/message-templates`'s response. */
 export const MessageTemplatesResponseSchema = v.strictObject({
   templates: v.array(MessageTemplateSchema),

@@ -99,6 +99,25 @@ const activityPriority: Record<AgentActivityState, number> = {
 };
 ```
 
+### View modes (flat / tree)
+
+The active list has two view modes, a toggle beside the filter buttons (`aria-pressed`, labels "Flat" and "Tree"). The mode is persisted under `session-view-mode` (the `useSessionFilter` idiom, every localStorage access guarded); the default is **flat**, which is the list exactly as described above.
+
+**Tree rule.** In tree mode the active list is built from `parentSessionId` by the pure `buildSessionTree` (`components/sidebar/session-tree.ts`): a session with no parent is a root; a session whose parent is in the list is indented under it, recursively to any depth; the roots keep the flat list's order (activity priority only) and each set of children is sorted by the same activity priority with title then id as tie-breakers (the activity-priority comparator is one exported function shared with the flat sort, not a copy; the title/id tie-breakers apply to children only); the tree is ONE ungrouped list: the repository grouping of the flat list is not applied in tree mode, because a child can live in another repository than its parent and grouping would split a tree and mislabel its children as orphans (only flat mode keeps the grouping; the collapsed icon column is flat and ungrouped); each node with children has a chevron that collapses and expands its subtree (the collapsed set is component state and is not persisted). Paused sessions stay in their own grouped list and creation/deletion task rows stay as they are: they are never part of the tree.
+
+**Orphan rule.** A session whose `parentSessionId` names a session that is not in the rendered active list is shown at the root with a small badge that states WHY, never hidden. The builder only flags it (`orphan: true`); the component resolves the reason: "parent paused" when the parent id is in the paused list (paused sessions are not in the tree), "parent hidden" when the parent is in the unfiltered session list but not rendered (the badge title says "the parent session is not shown in this list (hidden by the filter, or it has no active worker)": the reason is deliberately loose and covers two sub-cases, a parent hidden by the Mine / Shared filter and a parent that is in the unfiltered list but has no active worker and so no activity state), and "parent gone" otherwise (deleted). A cycle (A's parent is B and B's parent is A; the server cannot produce one, the guard is cheap) makes both roots flagged as orphans, with no infinite loop.
+
+**Collapsed sidebar.** The icon column has no room for an indent: in tree mode it renders the same flat icon column as flat mode.
+
+Decision table (every cell is a decision; none is undecided):
+
+| operation | desktop sidebar | mobile drawer | collapsed sidebar | dashboard (`routes/index.tsx` session list) | MCP (`list_sessions`) |
+|---|---|---|---|---|---|
+| switch view mode | do | do: the same component | not here: no room for indent, flat icons | not here: the dashboard groups by repository, the tree is a sidebar concern | not here: `list_sessions` already carries `parentSessionId`; the tree is a presentation |
+| expand / collapse a subtree | do | do: the same component | not here: no room for indent, flat icons | not here: the dashboard groups by repository, the tree is a sidebar concern | not here: `list_sessions` already carries `parentSessionId`; the tree is a presentation |
+| orphan display ("parent gone", "parent paused" or "parent hidden", with the reason in the title) | do | do: the same component | not here: no room for indent, flat icons | not here: the dashboard groups by repository, the tree is a sidebar concern | not here: `list_sessions` already carries `parentSessionId`; the tree is a presentation |
+| child ordering (activity priority, then title or id) | do | do: the same component | not here: no room for indent, flat icons | not here: the dashboard groups by repository, the tree is a sidebar concern | not here: `list_sessions` already carries `parentSessionId`; the tree is a presentation |
+
 ## Implementation
 
 ### New Files

@@ -464,4 +464,24 @@ describe('useAppWsEvent wire consumption (fully populated derived entities)', ()
     expect(onRepositoryCreated).toHaveBeenCalledTimes(1);
     expect(onRepositoryCreated).toHaveBeenCalledWith(fullRepository);
   });
+
+  it('worker-message: all eight fields of the one WorkerMessage the frame carries reach onWorkerMessage', () => {
+    const onWorkerMessage = mock(() => {});
+    renderHook(() => useAppWsEvent({ onWorkerMessage }));
+    const ws = MockWebSocket.getLastInstance();
+
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'worker-message', message: workerMessage }));
+    });
+
+    expect(onWorkerMessage).toHaveBeenCalledTimes(1);
+    const received = (onWorkerMessage.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+    expect(Object.keys(received).sort()).toEqual(
+      ['content', 'fromWorkerId', 'fromWorkerName', 'id', 'sessionId', 'timestamp', 'toWorkerId', 'toWorkerName'],
+    );
+    for (const [key, value] of Object.entries(workerMessage)) {
+      expect(received[key]).toBe(value);
+    }
+  });
 });

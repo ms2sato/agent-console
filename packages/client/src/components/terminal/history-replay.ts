@@ -147,6 +147,15 @@ export interface ReplayJointResult {
 }
 
 /**
+ * Who owns the still-volatile on-screen tail after the last chunk of a joint
+ * replay. Callers must choose explicitly; there is deliberately no default.
+ * - `'yield-to-newer'`: a newer paged chunk exists; the last partition ends at
+ *   its recorded baseY.
+ * - `'keep'`: the last chunk is the newest paged chunk and keeps its tail.
+ */
+export type VolatileTailPolicy = 'yield-to-newer' | 'keep';
+
+/**
  * Joint N-chunk re-replay for seam correction (§6.2 "Seam correction — older-
  * neighbor pair re-replay (#979)", generalized to N chunks for #994).
  *
@@ -175,6 +184,13 @@ export interface ReplayJointResult {
  * @param cols     Live terminal cols (wrap parity).
  * @param rows     Live terminal rows (bottom-anchored chrome positioning, #979).
  * @param processOutput  Same strip pipeline the live store applies.
+ * @param volatileTail  Required, no default (see {@link VolatileTailPolicy}).
+ *                 `'yield-to-newer'`: a paged chunk NEWER than the last entry
+ *                 already exists. The rows still on screen after the last write
+ *                 are volatile: they belong to that newer chunk's leading
+ *                 repaints, whose stored partition already begins with them, so
+ *                 the last partition ends at its recorded baseY. `'keep'`: the
+ *                 last chunk is the newest paged chunk and keeps its tail.
  * @returns  N partitions in the same order as `chunks`. Empty on overflow.
  */
 export async function replayHistoryJoint(
@@ -182,6 +198,7 @@ export async function replayHistoryJoint(
   cols: number,
   rows: number,
   processOutput: (data: string) => string,
+  volatileTail: VolatileTailPolicy,
 ): Promise<ReplayJointResult> {
   const terminal = new Terminal({
     cols: Math.max(1, cols),
@@ -213,15 +230,17 @@ export async function replayHistoryJoint(
     // Partition at the captured baseYs. For chunks[i], the partition is
     // extracted[start_i, end_i), where:
     //   start_0 = 0, start_i>0 = splitBaseYs[i-1]
-    //   end_last = extracted.length, end_i<last = splitBaseYs[i]
+    //   end_i<last = splitBaseYs[i]
+    //   end_last = extracted.length, or splitBaseYs[last] when a newer paged
+    //   chunk already owns the still-volatile tail (volatileTail === 'yield-to-newer')
     // Clamp each boundary to extracted.length: a final erase can pull the buffer
     // back above where an earlier chunk had settled, in which case that
     // partition becomes empty rather than negative.
     const partitions: TerminalRow[][] = [];
     let cursor = 0;
     for (let i = 0; i < chunks.length; i++) {
-      const isLast = i === chunks.length - 1;
-      const end = isLast ? extracted.length : Math.min(splitBaseYs[i], extracted.length);
+      const keepsTail = i === chunks.length - 1 && volatileTail === 'keep';
+      const end = keepsTail ? extracted.length : Math.min(splitBaseYs[i], extracted.length);
       const start = Math.min(cursor, end);
       partitions.push(extracted.slice(start, end));
       cursor = end;
@@ -263,8 +282,9 @@ export async function replayHistoryPair(
   cols: number,
   rows: number,
   processOutput: (data: string) => string,
+  volatileTail: VolatileTailPolicy,
 ): Promise<ReplayPairResult> {
-  const joint = await replayHistoryJoint([newBytes, topBytes], cols, rows, processOutput);
+  const joint = await replayHistoryJoint([newBytes, topBytes], cols, rows, processOutput, volatileTail);
   if (joint.overflow) {
     return { newChunkRows: [], topChunkRows: [], overflow: true };
   }

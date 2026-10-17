@@ -27,6 +27,7 @@ import type {
   WorkerActivityInfo,
   Repository,
 } from '../app-server-message';
+import type { WorkerMessage } from '../message';
 
 // Key-set pins. The entity types are derived from their schemas, so the
 // schema is the only place a field is edited; each pin compares a member's
@@ -113,6 +114,15 @@ export type _WorkerNarrowsOnType = Assert<
   Equals<Extract<Worker, { type: 'embedded-agent' }>, EmbeddedAgentWorker>
 >;
 export type _SessionNarrowsOnType = Assert<Equals<Extract<Session, { type: 'worktree' }>, WorktreeSession>>;
+// The `worker-message` frame carries the one and only `WorkerMessage` (the message schema is the
+// single writer; the frame schema imports it rather than keeping a private copy).
+// Measured reach: (`tsc` diagnostics, control clean first): replacing the frame's
+// `message: WorkerMessageSchema` with an object that extends it by one field (a stand-in for a second
+// writer) fails this pin (TS2344, and only it); adding a field to `WorkerMessageSchema` itself does NOT
+// fail it, because the frame and the type both follow the schema, which is the point of the pin.
+export type _WorkerMessageEventCarriesWorkerMessage = Assert<
+  Equals<Extract<AppServerMessage, { type: 'worker-message' }>['message'], WorkerMessage>
+>;
 export type _WorktreeFieldOnlyOnWorktreeMember = Assert<
   Equals<'repositoryId' extends keyof Extract<Session, { type: 'quick' }> ? true : false, false>
 >;

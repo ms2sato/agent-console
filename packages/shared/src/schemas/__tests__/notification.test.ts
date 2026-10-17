@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import type { RepositorySlackIntegration } from '../../types/notification';
 import {
   RepositorySlackIntegrationInputSchema,
   RepositorySlackIntegrationSchema,
   NotificationStatusResponseSchema,
+  type RepositorySlackIntegration,
 } from '../notification';
 
 describe('RepositorySlackIntegrationInputSchema', () => {
@@ -56,13 +56,20 @@ describe('RepositorySlackIntegrationInputSchema', () => {
   });
 });
 
-// `RepositorySlackIntegration` stays a hand-written interface the server imports; this pin
-// fixes the schema's output to it exactly. `Assert<Equals<...>>` fails `tsc` (TS2344) under
-// drift in either direction.
+// Key-set pin. `RepositorySlackIntegration` is derived from `RepositorySlackIntegrationSchema`,
+// so the schema is the only place a field is edited; the pin compares `keyof` with an explicit
+// literal union, so a field added to (or removed from) the schema alone is a `tsc` failure
+// (TS2344) naming the difference. `Assert<Equals<...>>` is the form that fails under drift; a
+// `declare const x: never` form would type-check under it.
+//
+// Measured reach: (`tsc` diagnostics, control clean first): adding a field to, or removing
+// one from, `RepositorySlackIntegrationSchema` fails `_RepositorySlackIntegrationKeys` (TS2344); an added
+// field also fails the entity fixture below (TS2769) because the fixture lacks it. The pin's diagnostic does
+// not name the key.
 type Assert<T extends true> = T;
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
-export type _RepositorySlackIntegrationIsExact = Assert<
-  Equals<v.InferOutput<typeof RepositorySlackIntegrationSchema>, RepositorySlackIntegration>
+export type _RepositorySlackIntegrationKeys = Assert<
+  Equals<keyof RepositorySlackIntegration, 'id' | 'repositoryId' | 'webhookUrl' | 'enabled' | 'createdAt' | 'updatedAt'>
 >;
 
 describe('RepositorySlackIntegrationSchema', () => {

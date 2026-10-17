@@ -98,12 +98,19 @@ export const MePreferencesSchema = v.strictObject({
 
 export type MePreferencesRequest = v.InferOutput<typeof MePreferencesSchema>;
 
-/** The authenticated user identity as it crosses the wire. */
+/**
+ * The authenticated user identity as it crosses the wire: the OS user who is
+ * currently authenticated. In single-user mode this is always the server
+ * process user; in multi-user mode it is the user who logged in via OS
+ * credentials. `id` is the stable UUID from the users table.
+ */
 export const AuthUserSchema = v.strictObject({
   id: v.string(),
   username: v.string(),
   homeDir: v.string(),
 });
+
+export type AuthUser = v.InferOutput<typeof AuthUserSchema>;
 
 /**
  * Schema for `GET /api/auth/me`'s response. `preferences` is present iff
@@ -121,7 +128,7 @@ export const LoginResponseSchema = v.strictObject({
   user: AuthUserSchema,
 });
 
-export type LoginResponseWire = v.InferOutput<typeof LoginResponseSchema>;
+export type LoginResponse = v.InferOutput<typeof LoginResponseSchema>;
 
 /**
  * Schema for `PATCH /api/auth/me/preferences`'s response. Unlike
@@ -133,4 +140,4 @@ export const UpdateUserPreferencesResponseSchema = v.strictObject({
   preferences: MePreferencesSchema,
 });
 
-export type UpdateUserPreferencesResponseWire = v.InferOutput<typeof UpdateUserPreferencesResponseSchema>;
+export type UpdateUserPreferencesResponse = v.InferOutput<typeof UpdateUserPreferencesResponseSchema>;

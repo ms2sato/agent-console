@@ -20,9 +20,10 @@ export const SendWorkerMessageRequestSchema = v.strictObject({
 export type SendWorkerMessageRequest = v.InferOutput<typeof SendWorkerMessageRequestSchema>;
 
 /**
- * A delivered worker message as it crosses the wire. Mirrors `WorkerMessage` in
- * `types/worker-message.ts` (pinned in the schema test), which the server still
- * imports.
+ * A delivered worker message as it crosses the wire. This schema is the single
+ * writer of the `WorkerMessage` shape; the type is derived below. Users send
+ * messages to workers in the same session via the MessagePanel; the server
+ * injects the content into the target worker's PTY input.
  */
 export const WorkerMessageSchema = v.strictObject({
   id: v.string(),
@@ -35,6 +36,8 @@ export const WorkerMessageSchema = v.strictObject({
   /** ISO 8601 */
   timestamp: v.string(),
 });
+
+export type WorkerMessage = v.InferOutput<typeof WorkerMessageSchema>;
 
 /** Schema for `POST /api/sessions/:sessionId/messages`'s 201 response. */
 export const SendWorkerMessageResponseSchema = v.strictObject({

@@ -249,10 +249,26 @@ describe('Client-Server Boundary: paging an Ink-style repaint stream (seam corre
     expect(found).toEqual(expected);
   }
 
+  /** Paged content never runs backwards: each label's (frame, line) index is strictly above the previous one. */
+  function expectPagedContentMonotonic(pagedTexts: string[]): void {
+    let previous = 0;
+    for (const text of pagedTexts) {
+      const m = text.match(/\[F(\d{3}):L(\d{2})\]/);
+      if (!m) continue;
+      const index = (Number(m[1]) - 1) * CONTENT_LINES + Number(m[2]);
+      expect(index).toBeGreaterThan(previous);
+      previous = index;
+    }
+  }
+
   type PagedResult = Awaited<ReturnType<typeof pageEverything>>;
   let corrected: PagedResult | undefined;
 
-  it('pages the corrected scenario to completion and keeps the interior chrome count within the measured bound', async () => {
+  // Measured record: before the joint replay left the last chunk's still-volatile
+  // tail to its newer neighbour, corrected = interior 20 chrome rows over 1010 paged
+  // rows (every fetch from the 4th added 21-23 duplicate lines); uncorrected =
+  // interior 23 over 803 (see the polarity run below).
+  it('pages the corrected scenario to completion with no chrome row in the interior of the paged window', async () => {
     corrected = await pageEverything();
     const { top, interior, firstInterior } = chromeSplit(corrected.pagedTexts);
     console.log(
@@ -264,28 +280,23 @@ describe('Client-Server Boundary: paging an Ink-style repaint stream (seam corre
 
     expect(corrected.segments).toBeGreaterThanOrEqual(MIN_SEGMENTS);
     expect(top).toBeLessThanOrEqual(INK_CHROME_HEIGHT);
-    // Regression ceiling from the #2171 measurement; #2170 lowers it to 0. 20 is not an
-    // accepted number: the interior rows are duplicated content, not leaked chrome.
-    expect(interior).toBeLessThanOrEqual(20);
+    expect(interior).toBe(0);
   });
 
-  // KNOWN FINDING (Issue #979 measurement): this assertion currently fails, so it
-  // is pinned with it.failing. With the seam correction on, every fetch from the
-  // 4th onward leaves the third chunk of the joint replay carrying its own on-screen
-  // tail (~rows-1 rows, ending in the chrome pair) while its newer neighbour's
-  // partition already begins with the same rows. The paged window then holds
-  // each of those rows twice (10 of 12 interior seams in this scenario). Measured:
-  // corrected = interior 20 chrome rows over 1010 paged rows; uncorrected =
-  // interior 23 over 803. Tracked in Issue #2170. The scenario setup lives in the
-  // plain test above, so a timeout or a setup throw fails loudly there instead of
-  // passing as expected here. When the duplication is fixed this test starts
-  // passing and it.failing reports that: switch it to it() -- that flip is the
-  // fix's polarity.
-  it.failing('with seam correction, every content line appears exactly once and in order', () => {
+  // The scenario setup lives in the test above, so a timeout or a setup throw fails
+  // there loudly. This case reads its cached result.
+  it('with seam correction, every content line appears exactly once, in order, and the paged window has no duplicate label', () => {
     if (!corrected) throw new Error('the corrected scenario did not run');
     expectEveryContentLineOnceInOrder(corrected.allTexts);
+    expectPagedContentMonotonic(corrected.pagedTexts);
+    const labels = corrected.pagedTexts.map((t) => t.match(/\[F\d{3}:L\d{2}\]/)?.[0]).filter((l): l is string => l !== undefined);
+    expect(labels.length - new Set(labels).size).toBe(0);
   });
 
+  // Reach: with the duplication fixed, the corrected run counts 0 interior chrome rows and
+  // this run counts 23, so this assertion is load-bearing (a mutation that ignores the
+  // test seam, leaving the correction on, fails it). Before the fix the corrected run
+  // also showed 20, so the polarity was not load-bearing then.
   it('polarity: with the seam correction disabled the same scenario leaks chrome rows into the interior', async () => {
     _setSeamCorrectionForTest(false);
     const result = await pageEverything();

@@ -14,6 +14,14 @@ export interface SessionWithActivity {
 }
 
 /**
+ * Order sessions by activity priority (asking > idle > active). Equal
+ * priorities compare as 0, so a stable sort keeps their input order.
+ */
+export function compareByActivityPriority(a: SessionWithActivity, b: SessionWithActivity): number {
+  return activityPriority[a.activityState] - activityPriority[b.activityState];
+}
+
+/**
  * Get the highest priority activity state for a session.
  * A session's aggregated state is the highest priority state among all its workers.
  */
@@ -58,9 +66,7 @@ export function useActiveSessionsWithActivity(
       }
     }
 
-    sessionsWithActivity.sort(
-      (a, b) => activityPriority[a.activityState] - activityPriority[b.activityState]
-    );
+    sessionsWithActivity.sort(compareByActivityPriority);
 
     return sessionsWithActivity;
   }, [sessions, workerActivityStates]);
