@@ -201,7 +201,7 @@ Store state added:
 - `liveEvictedUpTo`: the absolute offset up to which the live buffer has evicted rows (Section 6.5); `0` until an eviction is observed.
 - `pagedChunks: PocRow[][]` (deque, oldest first) + `pagedRowCount`, `hasMoreHistory: boolean`, `loadingOlder: boolean` (surfaced in the snapshot alongside `loadingHistory`, `poc-terminal-store.ts:43`), `pagingUnsupported: boolean` (per-connection, Section 5.1), and the in-flight `requestId`.
 
-Requests chain contiguously: `request-history-range { requestId, beforeOffset: oldestOffset, maxBytes: 262144 }`; the response's `startOffset` becomes the next `beforeOffset`. Contiguity with the live window is structural — the first request starts exactly at the initial window's `startOffset` — and is verified per-response by the `endOffset === oldestOffset` acceptance rule (Section 5.1).
+Requests chain contiguously: `request-history-range { requestId, beforeOffset: oldestOffset, maxBytes: 262144 }`; the response's `startOffset` becomes the next `beforeOffset`. Contiguity with the live window is structural — the first request starts at the live edge, `max(liveStartOffset, liveEvictedUpTo)` (Section 6.5) — and is verified per-response by the `endOffset === oldestOffset` acceptance rule (Section 5.1).
 
 ### 6.2 Throwaway headless VT replay
 
@@ -221,7 +221,7 @@ ANSI streams cannot be replayed from an arbitrary midpoint (order-dependent curs
 - **Measured (2026-10-17, PR #2171)**: on a 48-frame synthetic Ink-style stream cut into 13 segments, the seam correction leaves no leaked chrome rows at interior seams (23 interior chrome rows without it); the 20 interior chrome rows that remain with it are not leaks but duplicated content, found in the same run from the 4th fetch on and tracked in #2170. After the volatile-tail rule above, the same run counts 0 interior chrome rows and no duplicated or backwards content row.
 - **Side benefit**: link detection (Section 6.3) runs over the pair replay's joined extraction, so wrapped URLs crossing the corrected chunk boundary now join — narrowing the per-chunk-isolation caveat noted below.
 
-**Terminal resize**: paged chunks are replayed at fetch-time `cols` and are **not** rebuilt when the live terminal resizes — mixing rows wrapped at different widths would corrupt row geometry and the wrapped-line link windows. On any `cols` change, the store **drops all paged chunks**: `pagedChunks` / `pagedRowCount` reset, `oldestOffset` returns to the live window's `startOffset`, `hasMoreHistory` returns to `true`. The user re-pages if needed, and re-fetched chunks replay at the new width. This is the simple-and-correct choice; retaining the raw chunk bytes and re-replaying them on resize is noted as future work.
+**Terminal resize**: paged chunks are replayed at fetch-time `cols` and are **not** rebuilt when the live terminal resizes — mixing rows wrapped at different widths would corrupt row geometry and the wrapped-line link windows. On any `cols` change, the store **drops all paged chunks**: `pagedChunks` / `pagedRowCount` reset, `oldestOffset` returns to the live edge, `max(liveStartOffset, liveEvictedUpTo)` (Section 6.5), and `hasMoreHistory` is `oldestOffset > 0`. The user re-pages if needed, and re-fetched chunks replay at the new width. This is the simple-and-correct choice; retaining the raw chunk bytes and re-replaying them on resize is noted as future work.
 
 ### 6.3 Prepend, keys, row cache, and anchoring
 

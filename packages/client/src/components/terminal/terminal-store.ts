@@ -211,6 +211,10 @@ class TerminalController implements TerminalInstance {
   private frameMarkers: Array<{ marker: IMarker; endOffset: number }> = [];
   // Every marker registered and not yet disposed, whether or not it is still in the deque.
   private liveMarkers = new Set<IMarker>();
+  // Bumped by resetTerminal(). xterm 5.5 does not cancel queued write callbacks on reset(), so
+  // a callback queued before a reset must not register its old-epoch end offset as a marker in
+  // the new buffer. Only the marker registration is gated; the rest of the callback is not.
+  private writeGeneration = 0;
   // Paged chunks, oldest first (a deque). Each carries its absolute range so
   // contiguity/eviction can reason about boundaries without re-deriving them.
   // `rawData` is retained on `pagedChunks[0]` (current top) AND `pagedChunks[1]`
@@ -1060,10 +1064,12 @@ class TerminalController implements TerminalInstance {
         from = to;
       }
     }
+    const generation = this.writeGeneration;
     pieces.forEach((piece, index) => {
       const last = index === pieces.length - 1;
       this.terminal.write(piece.text, () => {
-        if (piece.text.length > 0) this.trackFrame(piece.endOffset);
+        // A reset after this write was queued makes its offset foreign to the new buffer.
+        if (generation === this.writeGeneration && piece.text.length > 0) this.trackFrame(piece.endOffset);
         if (last) onDone();
       });
     });
@@ -1484,6 +1490,7 @@ class TerminalController implements TerminalInstance {
 
   /** terminal.reset() disposes every marker; detach the listeners first so that is not read as eviction. */
   private resetTerminal(): void {
+    this.writeGeneration++;
     this.clearFrameMarkers();
     this.terminal.reset();
   }

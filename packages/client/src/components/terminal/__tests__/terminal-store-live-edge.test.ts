@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
-import { getOrCreateTerminal, _resetTerminals, _inspect, _whenIdle, _setLiveEdgePieceBytesForTest } from '../terminal-store';
+import type { AppServerMessage } from '@agent-console/shared';
+import { subscribe as subscribeApp } from '../../../lib/app-websocket.js';
+import { getOrCreateTerminal, _resetTerminals, _inspect, _whenIdle, _setLiveEdgePieceBytesForTest, _setAppSubscribe } from '../terminal-store';
 
 // Live-edge accounting (terminal-history-paging.md section 6.5): frame markers tell the
 // store which bytes the live buffer has evicted, and the paging cursor follows.
@@ -193,5 +195,58 @@ describe('terminal-store live-edge accounting', () => {
     expect(_inspect(instance).paging.frameMarkerCount).toBeGreaterThan(0);
     instance.dispose();
     expect(_inspect(instance).paging.frameMarkerCount).toBe(0);
+  });
+
+  // xterm 5.5 does not cancel queued write callbacks on reset(): a callback queued before a
+  // reset would register its old-epoch end offset as a marker in the NEW buffer. Deterministic
+  // ordering: xterm's write is async and simulateMessage / bus.emit are synchronous, so a reset
+  // issued right after the write call lands before the write's callback runs. The two reset
+  // callers clear different state, so both are covered.
+  describe('a write queued before a reset', () => {
+    const STALE_OFFSET = 999_999;
+
+    function expectNoStaleState(instance: ReturnType<typeof open>['instance']) {
+      const p = _inspect(instance).paging;
+      expect(p.frameMarkerEndOffsets).toEqual([]);
+      expect(p.frameMarkerCount).toBe(0);
+      expect(p.liveMarkerCount).toBe(0);
+      expect(p.liveEvictedUpTo).toBe(0);
+    }
+
+    it('epoch resync: registers no stale marker, and the new generation tracks normally', async () => {
+      const { instance, ws } = open();
+      history(ws, { offset: 1000, startOffset: 400 });
+      await _whenIdle();
+      ws.simulateMessage(JSON.stringify({ type: 'output', data: 'old epoch line\r\n', offset: STALE_OFFSET, epoch: EPOCH }));
+      ws.simulateMessage(JSON.stringify({ type: 'output', data: 'trigger\r\n', offset: 5, epoch: EPOCH + 1 }));
+      expect(_inspect(instance).paging.resyncing).toBe(true);
+      await _whenIdle();
+      expectNoStaleState(instance);
+
+      // Control: the new generation still tracks, and only its own offsets.
+      ws.simulateMessage(JSON.stringify({ type: 'history', data: 'fresh\r\n', offset: 7, startOffset: 0, epoch: EPOCH + 1 }));
+      await _whenIdle();
+      expect(_inspect(instance).paging.frameMarkerEndOffsets).toEqual([7]);
+      expect(_inspect(instance).paging.liveMarkerCount).toBe(1);
+    });
+
+    it('worker restart: registers no stale marker', async () => {
+      const listeners = new Set<(msg: AppServerMessage) => void>();
+      _setAppSubscribe((listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      });
+      try {
+        const { instance, ws } = open();
+        history(ws, { offset: 1000, startOffset: 400 });
+        await _whenIdle();
+        ws.simulateMessage(JSON.stringify({ type: 'output', data: 'before restart\r\n', offset: STALE_OFFSET, epoch: EPOCH }));
+        for (const l of Array.from(listeners)) l({ type: 'worker-restarted', sessionId: 's-live-edge', workerId: 'w-live-edge' } as AppServerMessage);
+        await _whenIdle();
+        expectNoStaleState(instance);
+      } finally {
+        _setAppSubscribe(subscribeApp);
+      }
+    });
   });
 });
