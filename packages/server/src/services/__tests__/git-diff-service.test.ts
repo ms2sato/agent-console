@@ -222,6 +222,58 @@ describe('GitDiffService', () => {
       expect(result.summary.files.find(f => f.path === 'new-file.ts')?.status).toBe('untracked');
     });
 
+    it('reads each untracked file through readWorkingTreeFile as requestUser', async () => {
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('');
+      mockGit.getStatusPorcelain.mockResolvedValue('?? new-file.ts');
+      mockGit.getUntrackedFiles.mockResolvedValue(['new-file.ts']);
+      mockGit.readWorkingTreeFile.mockResolvedValue({ kind: 'file', content: Buffer.from('a\nb\n') });
+
+      const result = await getDiffData('/repo/path', 'base-commit', 'alice');
+
+      expect(mockGit.readWorkingTreeFile).toHaveBeenCalledWith('/repo/path', 'new-file.ts', 'alice');
+      expect(result.summary.files.find(f => f.path === 'new-file.ts')?.additions).toBe(2);
+      expect(result.rawDiff).toContain('+a');
+    });
+
+    it('passes null through to readWorkingTreeFile for untracked files in single-user mode', async () => {
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('');
+      mockGit.getStatusPorcelain.mockResolvedValue('?? new-file.ts');
+      mockGit.getUntrackedFiles.mockResolvedValue(['new-file.ts']);
+      mockGit.readWorkingTreeFile.mockResolvedValue({ kind: 'file', content: Buffer.from('a\n') });
+
+      await getDiffData('/repo/path', 'base-commit', null);
+
+      expect(mockGit.readWorkingTreeFile).toHaveBeenCalledWith('/repo/path', 'new-file.ts', null);
+    });
+
+    it('yields an empty diff for an untracked entry that is a directory', async () => {
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('');
+      mockGit.getStatusPorcelain.mockResolvedValue('?? sub');
+      mockGit.getUntrackedFiles.mockResolvedValue(['sub']);
+      mockGit.readWorkingTreeFile.mockResolvedValue({ kind: 'directory' });
+
+      const result = await getDiffData('/repo/path', 'base-commit', 'alice');
+
+      expect(result.summary.files.find(f => f.path === 'sub')?.additions).toBe(0);
+      expect(result.rawDiff).not.toContain('diff --git a/sub');
+    });
+
+    it('yields an empty diff for an untracked file that vanished (null read)', async () => {
+      mockGit.getDiff.mockResolvedValue('');
+      mockGit.getDiffNumstat.mockResolvedValue('');
+      mockGit.getStatusPorcelain.mockResolvedValue('?? gone.ts');
+      mockGit.getUntrackedFiles.mockResolvedValue(['gone.ts']);
+      mockGit.readWorkingTreeFile.mockResolvedValue(null);
+
+      const result = await getDiffData('/repo/path', 'base-commit', 'alice');
+
+      expect(result.summary.files.find(f => f.path === 'gone.ts')?.additions).toBe(0);
+      expect(result.rawDiff).not.toContain('diff --git a/gone.ts');
+    });
+
     it('should handle multiple untracked files (processed in parallel)', async () => {
       // This test verifies that multiple untracked files are all included in the result.
       // The parallel processing optimization should not affect the final output.
@@ -426,6 +478,29 @@ describe('GitDiffService', () => {
       }
     });
 
+    it('untracked fallback reads the file through readWorkingTreeFile as requestUser', async () => {
+      mockGit.gitRaw.mockResolvedValue('');
+      mockGit.getUntrackedFiles.mockResolvedValue(['new-file.ts']);
+      mockGit.readWorkingTreeFile.mockResolvedValue({ kind: 'file', content: Buffer.from('hello\n') });
+
+      const result = await getFileDiff('/repo/path', 'base-commit', 'new-file.ts', 'alice');
+
+      expect(mockGit.readWorkingTreeFile).toHaveBeenCalledWith('/repo/path', 'new-file.ts', 'alice');
+      expect(result).toContain('diff --git a/new-file.ts b/new-file.ts');
+      expect(result).toContain('+hello');
+    });
+
+    it('untracked fallback returns an empty string for a directory or a vanished file', async () => {
+      mockGit.gitRaw.mockResolvedValue('');
+      mockGit.getUntrackedFiles.mockResolvedValue(['sub', 'gone.ts']);
+
+      mockGit.readWorkingTreeFile.mockResolvedValue({ kind: 'directory' });
+      expect(await getFileDiff('/repo/path', 'base-commit', 'sub', 'alice')).toBe('');
+
+      mockGit.readWorkingTreeFile.mockResolvedValue(null);
+      expect(await getFileDiff('/repo/path', 'base-commit', 'gone.ts', 'alice')).toBe('');
+    });
+
     it('should return empty string when file has no changes and is not untracked', async () => {
       mockGit.gitRaw.mockResolvedValue('');
       mockGit.getUntrackedFiles.mockResolvedValue([]);
@@ -463,6 +538,39 @@ describe('GitDiffService', () => {
       const result = await getFileLines(tmpDir, 'file.ts', 2, 4, 'working-dir', null);
 
       expect(result).toEqual(['line2', 'line3', 'line4']);
+    });
+
+    it('working-dir: reads through readWorkingTreeFile as requestUser', async () => {
+      mockGit.readWorkingTreeFile.mockResolvedValue({ kind: 'file', content: Buffer.from('l1\nl2\nl3\n') });
+
+      const result = await getFileLines('/repo/path', 'file.ts', 1, 2, 'working-dir', 'alice');
+
+      expect(mockGit.readWorkingTreeFile).toHaveBeenCalledWith('/repo/path', 'file.ts', 'alice');
+      expect(result).toEqual(['l1', 'l2']);
+    });
+
+    it('working-dir: passes null requestUser through (single-user mode)', async () => {
+      mockGit.readWorkingTreeFile.mockResolvedValue({ kind: 'file', content: Buffer.from('l1\n') });
+
+      await getFileLines('/repo/path', 'file.ts', 1, 1, 'working-dir', null);
+
+      expect(mockGit.readWorkingTreeFile).toHaveBeenCalledWith('/repo/path', 'file.ts', null);
+    });
+
+    it('working-dir: throws when readWorkingTreeFile reports a missing file', async () => {
+      mockGit.readWorkingTreeFile.mockResolvedValue(null);
+
+      await expect(
+        getFileLines('/repo/path', 'file.ts', 1, 2, 'working-dir', 'alice')
+      ).rejects.toThrow('Failed to read file.ts from working directory');
+    });
+
+    it('working-dir: throws when the path is a directory', async () => {
+      mockGit.readWorkingTreeFile.mockResolvedValue({ kind: 'directory' });
+
+      await expect(
+        getFileLines('/repo/path', 'file.ts', 1, 2, 'working-dir', 'alice')
+      ).rejects.toThrow('is a directory');
     });
 
     it('commit ref: returns correct lines via git show', async () => {
