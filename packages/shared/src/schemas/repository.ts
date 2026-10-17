@@ -386,6 +386,8 @@ export const PullWorktreeRequestSchema = v.strictObject({
 export const UpdateRepositoryRequestSchema = v.strictObject({
   setupCommand: v.nullish(v.pipe(v.string(), v.trim())),
   cleanupCommand: v.nullish(v.pipe(v.string(), v.trim())),
+  pauseCommand: v.nullish(v.pipe(v.string(), v.trim())),
+  resumeCommand: v.nullish(v.pipe(v.string(), v.trim())),
   envVars: v.nullish(v.pipe(v.string(), v.trim())),
   description: v.nullish(v.pipe(v.string(), v.trim())),
   defaultAgentId: v.nullish(v.pipe(v.string(), v.trim())),

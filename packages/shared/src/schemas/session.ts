@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import { SessionSchema } from './app-server-message.js';
+import { HookCommandResultSchema, SessionSchema } from './app-server-message.js';
 
 /**
  * Schema for creating a worktree session
@@ -280,9 +280,20 @@ export type DeleteSessionRequest = v.InferOutput<typeof DeleteSessionRequestSche
  */
 export const SessionResponseSchema = v.strictObject({
   session: SessionSchema,
+  /** Outcome of the repository's resume hook; absent when no hook ran. */
+  resumeCommandResult: v.optional(HookCommandResultSchema),
 });
 
 export type SessionResponse = v.InferOutput<typeof SessionResponseSchema>;
+
+/** Schema for `POST /api/sessions/:id/pause`'s response. */
+export const PauseSessionResponseSchema = v.strictObject({
+  success: v.literal(true),
+  /** Outcome of the repository's pause hook; absent when no hook ran. */
+  pauseCommandResult: v.optional(HookCommandResultSchema),
+});
+
+export type PauseSessionResponse = v.InferOutput<typeof PauseSessionResponseSchema>;
 
 /** Schema for `POST /api/sessions/restart-all-agents`'s response (one `results` row per worker visited). */
 export const RestartAllAgentsResponseSchema = v.strictObject({
