@@ -258,6 +258,34 @@ describe('extractFragmentLinks', () => {
     const content = '```\n```js\n[fake](#nothing)\n```\n[real](#real)\n';
     expect(extractFragmentLinks(content)).toEqual([{ line: 5, frag: 'real', pathPart: '' }]);
   });
+
+  it('extracts a cross-file fragment from an angle-bracket inline destination', () => {
+    expect(extractFragmentLinks('[t](<other.md#frag>)\n')).toEqual([
+      { line: 1, frag: 'frag', pathPart: 'other.md' },
+    ]);
+  });
+
+  it('extracts a same-file fragment from an angle-bracket inline destination', () => {
+    expect(extractFragmentLinks('[t](<#frag>)\n')).toEqual([{ line: 1, frag: 'frag', pathPart: '' }]);
+  });
+
+  it('keeps a space inside an angle-bracket inline destination in the pathPart', () => {
+    expect(extractFragmentLinks('[t](<my file.md#x>)\n')).toEqual([
+      { line: 1, frag: 'x', pathPart: 'my file.md' },
+    ]);
+  });
+
+  it('extracts nothing from an unterminated angle-bracket inline destination', () => {
+    expect(extractFragmentLinks('[t](<#frag)\n')).toEqual([]);
+  });
+
+  it('extracts nothing from an empty angle-bracket inline destination', () => {
+    expect(extractFragmentLinks('[t](<>)\n')).toEqual([]);
+  });
+
+  it('extracts nothing from an angle-bracket inline destination without a fragment', () => {
+    expect(extractFragmentLinks('[t](<other.md>)\n')).toEqual([]);
+  });
 });
 
 // Reference-style link definitions (`[label]: dest`). Reach, measured by
@@ -308,6 +336,73 @@ describe('extractFragmentLinks — reference-style definitions', () => {
 
   it('ignores an external-scheme definition', () => {
     expect(extractFragmentLinks('[ref]: https://example.com/page#frag\n')).toEqual([]);
+  });
+
+  // Angle-bracket destinations.
+  it('extracts a same-file fragment from an angle-bracket definition', () => {
+    expect(extractFragmentLinks('[r]: <#frag>\n')).toEqual([{ line: 1, frag: 'frag', pathPart: '' }]);
+  });
+
+  it('extracts an angle-bracket definition and drops its title', () => {
+    expect(extractFragmentLinks('[r]: <other.md#frag> "title"\n')).toEqual([
+      { line: 1, frag: 'frag', pathPart: 'other.md' },
+    ]);
+  });
+
+  // Trailing text after the destination.
+  it('extracts nothing from a definition with trailing words after the destination', () => {
+    expect(extractFragmentLinks('[r]: #frag extra words\n')).toEqual([]);
+  });
+
+  it('extracts a definition whose title is double-quoted', () => {
+    expect(extractFragmentLinks('[r]: #frag "a title"\n')).toEqual([
+      { line: 1, frag: 'frag', pathPart: '' },
+    ]);
+  });
+
+  it('extracts a definition whose title is single-quoted', () => {
+    expect(extractFragmentLinks("[r]: #frag 'single'\n")).toEqual([
+      { line: 1, frag: 'frag', pathPart: '' },
+    ]);
+  });
+
+  it('extracts a definition whose title is parenthesised', () => {
+    expect(extractFragmentLinks('[r]: #frag (parens)\n')).toEqual([
+      { line: 1, frag: 'frag', pathPart: '' },
+    ]);
+  });
+
+  it('extracts nothing from a definition whose title quote is unterminated', () => {
+    expect(extractFragmentLinks('[r]: #frag "unterminated\n')).toEqual([]);
+  });
+
+  // Destination on the line after the label.
+  it('extracts a destination on the line after the label and reports the destination line', () => {
+    expect(extractFragmentLinks('[r]:\n#frag\n')).toEqual([{ line: 2, frag: 'frag', pathPart: '' }]);
+  });
+
+  it('extracts an angle-bracket destination with a title on the line after the label', () => {
+    expect(extractFragmentLinks('[r]:\n<other.md#frag> "t"\n')).toEqual([
+      { line: 2, frag: 'frag', pathPart: 'other.md' },
+    ]);
+  });
+
+  it('extracts nothing when a blank line separates the label from the destination', () => {
+    expect(extractFragmentLinks('[r]:\n\n#frag\n')).toEqual([]);
+  });
+
+  it('extracts nothing from a label-only line at the end of the file', () => {
+    expect(extractFragmentLinks('[r]:')).toEqual([]);
+  });
+
+  it('extracts nothing when the line after the label is inside a fenced code block', () => {
+    expect(extractFragmentLinks('[r]:\n```#frag\ncode\n```\n')).toEqual([]);
+  });
+
+  it('extracts exactly one link, from the second label, when two label-only lines precede a destination', () => {
+    expect(extractFragmentLinks('[r1]:\n[r2]:\n#frag\n')).toEqual([
+      { line: 3, frag: 'frag', pathPart: '' },
+    ]);
   });
 });
 
@@ -477,5 +572,21 @@ describe('checkDocFragments — acceptance scenarios', () => {
     expect(result.misses).toEqual([
       { file: 'ref-def.md', line: 5, frag: 'nope', target: 'ref-def.md', reason: 'no-anchor' },
     ]);
+  });
+
+  it('reports a dangling angle-bracket reference-style definition as a miss', () => {
+    writeFixture('angle-def.md', '# Real\n\n[a][r]\n\n[r]: <#missing>\n');
+
+    const result = checkDocFragments(tempDir, { cwd: tempDir });
+    expect(result.misses).toEqual([
+      { file: 'angle-def.md', line: 5, frag: 'missing', target: 'angle-def.md', reason: 'no-anchor' },
+    ]);
+  });
+
+  it('reports no miss for a definition line with trailing words after the destination', () => {
+    writeFixture('trailing-words.md', '# Real\n\n[r]: #missing extra words\n');
+
+    const result = checkDocFragments(tempDir, { cwd: tempDir });
+    expect(result.misses).toEqual([]);
   });
 });
