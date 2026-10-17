@@ -1444,11 +1444,13 @@ describe('MCP Server Tools', () => {
         body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
       });
       const listBody = (await listRes.json()) as {
-        result?: { tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }> };
+        result?: { tools?: Array<{ name: string; description?: string; inputSchema?: { properties?: Record<string, unknown> } }> };
       };
       const tools = listBody.result?.tools ?? [];
 
       expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['adopt_todo', 'resolve_todo']));
+      // The compare-and-set covers the session and the worker: a lost race is a refusal, not a silent overwrite.
+      expect(tools.find((t) => t.name === 'adopt_todo')?.description).toContain('moved while you were adopting it');
       expect(Object.keys(tools.find((t) => t.name === 'adopt_todo')?.inputSchema?.properties ?? {}).sort()).toEqual([
         'id',
         'sessionId',

@@ -21,6 +21,10 @@ const ALL_SESSIONS = 'all';
 
 const DEFAULT_STATUS_FILTER: StatusFilter = 'open';
 
+/** The View select (multi-user only): my own and shared-session items by default, or everyone's. */
+type ViewFilter = 'mine-and-shared' | 'everyone';
+const DEFAULT_VIEW: ViewFilter = 'mine-and-shared';
+
 function sessionIdsOf(todos: Todo[]): string[] {
   const ids = new Set<string>();
   for (const todo of todos) {
@@ -32,10 +36,12 @@ function sessionIdsOf(todos: Todo[]): string[] {
 export function TodosPage() {
   const { errorDialogProps, showError } = useErrorDialog();
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+  const { currentUser, isMultiUser } = useAuth();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(DEFAULT_STATUS_FILTER);
   const [assigneeFilter, setAssigneeFilter] = useState<string>(ANYONE);
   const [sessionFilter, setSessionFilter] = useState<string>(ALL_SESSIONS);
+  // Not remembered across reloads: every load starts on the default view.
+  const [view, setView] = useState<ViewFilter>(DEFAULT_VIEW);
 
   const { data: users = [] } = useQuery({ queryKey: userKeys.list(), queryFn: fetchUsers });
 
@@ -51,6 +57,8 @@ export function TodosPage() {
   } = useFilteredTodos({
     status: statusFilter === 'all' ? undefined : statusFilter,
     assignee: serverAssignee,
+    // The server ignores the view in single-user mode, and the select is not shown there.
+    view: isMultiUser && view === 'mine-and-shared' ? 'mine-and-shared' : undefined,
   });
 
   const fetched = todos ?? [];
@@ -73,6 +81,20 @@ export function TodosPage() {
       <AddTodoForm users={users} knownSessionIds={sessionIdsOf(fetched)} onError={showError} />
 
       <div className="flex gap-3 flex-wrap mb-4 text-sm">
+        {isMultiUser && (
+          <label className="flex items-center gap-1.5 text-gray-400">
+            View
+            <select
+              aria-label="View"
+              value={view}
+              onChange={(e) => setView(e.target.value as ViewFilter)}
+              className="input text-sm"
+            >
+              <option value="mine-and-shared">Mine + shared</option>
+              <option value="everyone">Everyone</option>
+            </select>
+          </label>
+        )}
         <label className="flex items-center gap-1.5 text-gray-400">
           Status
           <select

@@ -101,6 +101,7 @@ The on-disk Git repository a [Repository](#repository) is registered from, livin
 - **`kind`:** a closed list in v1, `question` or `action`. A `question` needs a non-empty resolution text to be marked `done`; an `action` does not.
 - **Assignee (`assigneeUserId`):** the team member an item is assigned to; null means anyone on the team. Not to be confused with [assignee](#assignee) (the delegate target of `delegate_to_worktree`), which is a different field on a different concept.
 - **UI label:** **Todo** (owner decision, 2026-10-16).
+- **Default view (v3):** on the Todo page in multi-user mode, "Mine + shared": items assigned to me, created by me, or in a session I own or that is shared; "Everyone" shows the rest. Single-user mode shows everything.
 - **Aliases:** to-do item, human TODO, TODO list entry
 - **Contrast:** the [Memo](#memo) keeps status; the TODO list takes requests (questions and commands).
 - **See:** [human-todo-list.md](design/human-todo-list.md)

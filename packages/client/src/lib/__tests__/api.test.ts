@@ -67,6 +67,7 @@ import {
   fetchTodos,
   fetchTodoDetail,
   commentTodo,
+  moveTodo,
   createTodo,
   updateTodo,
   resolveTodo,
@@ -1625,6 +1626,16 @@ describe('API Client', () => {
       expect(result).toEqual([validTodo]);
     });
 
+    it('forwards the view filter as a query param, and omits it when undefined', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todos: [] }));
+
+      await fetchTodos({ view: 'mine-and-shared' });
+      expect(new URL(getLastFetchUrl(), 'http://localhost').searchParams.get('view')).toBe('mine-and-shared');
+
+      await fetchTodos({ view: undefined });
+      expect(new URL(getLastFetchUrl(), 'http://localhost').searchParams.has('view')).toBe(false);
+    });
+
     it('calls the bare endpoint when no filter is given', async () => {
       mockFetch.mockResolvedValue(createMockResponse({ todos: [] }));
 
@@ -1771,6 +1782,55 @@ describe('API Client', () => {
       mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
 
       await expect(commentTodo('todo-1', 'x')).rejects.toThrow();
+    });
+  });
+
+  describe('moveTodo', () => {
+    const wireTodo = {
+      id: 'todo-1',
+      kind: 'action',
+      scope: 'session',
+      title: 'Run the migration',
+      body: '',
+      sessionId: 'session-2',
+      createdBy: { workerId: 'worker-1' },
+      assigneeUserId: null,
+      status: 'open',
+      resolutionText: null,
+      resolvedByUserId: null,
+      resolvedByWorkerId: null,
+      resolvedAt: null,
+      commentCount: 0,
+      createdAt: '2026-10-15T00:00:00.000Z',
+      updatedAt: '2026-10-15T00:00:00.000Z',
+    };
+
+    it('POSTs the body to the move path and returns the parsed item', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
+
+      const result = await moveTodo('todo-1', { sessionId: 'session-2' });
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos/todo-1/move');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(await getLastFetchBody()).toEqual({ sessionId: 'session-2' });
+      expect(result).toEqual(wireTodo);
+    });
+
+    it('surfaces the server error message on a refusal (409: the target is paused)', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ error: 'Target session is paused; resume it first' }, { status: 409, ok: false }),
+      );
+
+      await expect(moveTodo('todo-1', { sessionId: 'session-2' })).rejects.toThrow(
+        'Target session is paused; resume it first',
+      );
+    });
+
+    it('throws when the response fails schema validation (e.g. a dropped field)', async () => {
+      const { resolutionText: _dropped, ...withoutResolutionText } = wireTodo;
+      mockFetch.mockResolvedValue(createMockResponse({ todo: withoutResolutionText }));
+
+      await expect(moveTodo('todo-1', { sessionId: 'session-2' })).rejects.toThrow();
     });
   });
 
