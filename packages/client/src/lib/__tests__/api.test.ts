@@ -45,6 +45,22 @@ import {
   fetchJob,
   fetchSystemHealth,
   generateRepositoryDescription,
+  cloneRepository,
+  createWorktree,
+  createWorktreeAsync,
+  pullWorktreeAsync,
+  deleteWorktreeAsync,
+  updateRepositorySlackIntegration,
+  sendWorkerMessage,
+  login,
+  updateAuthPreferences,
+  addReviewComment,
+  updateReviewStatus,
+  createMessageTemplate,
+  updateMessageTemplate,
+  deleteMessageTemplate,
+  reorderMessageTemplates,
+  registerSharedAccount,
   resumeSession,
   openInVSCode,
   fetchArtifacts,
@@ -2616,6 +2632,106 @@ describe('API Client', () => {
           await expect(fetchSystemHealth()).rejects.toThrow();
         });
       });
+    });
+  });
+
+  describe('strict response parsing (pass 6)', () => {
+    const user = { id: 'user-1', username: 'alice', homeDir: '/home/alice' };
+    const template = {
+      id: 't1',
+      title: 'T',
+      content: 'C',
+      sortOrder: 0,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const slack = {
+      id: 'sl1',
+      repositoryId: 'repo-1',
+      webhookUrl: 'https://hooks.example.com/x',
+      enabled: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const workerMessage = {
+      id: 'm1',
+      sessionId: 's1',
+      fromWorkerId: 'w1',
+      fromWorkerName: 'A',
+      toWorkerId: 'w2',
+      toWorkerName: 'B',
+      content: 'hi',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    };
+    const reviewComment = { id: 'c1', file: 'a.ts', line: 3, body: 'nit', createdAt: '2026-01-01T00:00:00.000Z' };
+    const worktreeRequest = { mode: 'custom', branch: 'b', taskId: 't' } as const;
+
+    // [name, call, valid body, key whose removal must fail]
+    const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>, string]> = [
+      ['cloneRepository', () => cloneRepository({ url: 'https://example.com/r.git' }), { jobId: 'j1', repositoryId: null }, 'jobId'],
+      ['createWorktree', () => createWorktree('repo-1', worktreeRequest), { accepted: true }, 'accepted'],
+      ['createWorktreeAsync', () => createWorktreeAsync('repo-1', worktreeRequest), { accepted: true }, 'accepted'],
+      ['pullWorktreeAsync', () => pullWorktreeAsync('repo-1', '/wt', 't'), { accepted: true }, 'accepted'],
+      ['deleteWorktreeAsync', () => deleteWorktreeAsync('repo-1', '/wt'), { accepted: true, jobId: 'j1' }, 'jobId'],
+      ['generateRepositoryDescription', () => generateRepositoryDescription('repo-1'), { description: 'd' }, 'description'],
+      [
+        'updateRepositorySlackIntegration',
+        () => updateRepositorySlackIntegration('repo-1', { webhookUrl: 'https://hooks.example.com/x', enabled: true }),
+        slack,
+        'webhookUrl',
+      ],
+      ['sendWorkerMessage', () => sendWorkerMessage('s1', 'w2', 'hi'), { message: workerMessage }, 'message'],
+      ['login', () => login({ username: 'alice', password: 'p' }), { user }, 'user'],
+      [
+        'updateAuthPreferences',
+        () => updateAuthPreferences({ disableClaudeAiConnectors: true }),
+        { user, preferences: { disableClaudeAiConnectors: true } },
+        'preferences',
+      ],
+      ['addReviewComment', () => addReviewComment('w1', { file: 'a.ts', line: 3, body: 'nit' }), reviewComment, 'createdAt'],
+      ['updateReviewStatus', () => updateReviewStatus('w1', 'completed'), { workerId: 'w1', status: 'completed' }, 'status'],
+      ['createMessageTemplate', () => createMessageTemplate('T', 'C'), { template }, 'template'],
+      ['updateMessageTemplate', () => updateMessageTemplate('t1', { title: 'T' }), { template }, 'template'],
+      ['deleteMessageTemplate', () => deleteMessageTemplate('t1'), { success: true }, 'success'],
+      ['reorderMessageTemplates', () => reorderMessageTemplates(['t1']), { success: true }, 'success'],
+      ['registerSharedAccount', () => registerSharedAccount('shared'), { username: 'shared', userId: 'u1' }, 'userId'],
+    ];
+
+    it.each(cases)('%s resolves with a valid body', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse(valid));
+      expect(await call()).toEqual(valid);
+    });
+
+    it.each(cases)('%s throws on a body with an unknown extra field', async (_name, call, valid) => {
+      mockFetch.mockResolvedValue(createMockResponse({ ...valid, extra: true }));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it.each(cases)('%s throws when a required key is missing', async (_name, call, valid, requiredKey) => {
+      const { [requiredKey]: _dropped, ...rest } = valid;
+      mockFetch.mockResolvedValue(createMockResponse(rest));
+      await expect(call()).rejects.toThrow();
+    });
+
+    it('deleteMessageTemplate and reorderMessageTemplates reject success: false (the server only ever writes true)', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: false }));
+      await expect(deleteMessageTemplate('t1')).rejects.toThrow();
+      await expect(reorderMessageTemplates(['t1'])).rejects.toThrow();
+    });
+
+    it('sendWorkerMessage throws when the nested message has an unknown field', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ message: { ...workerMessage, extra: 1 } }));
+      await expect(sendWorkerMessage('s1', 'w2', 'hi')).rejects.toThrow();
+    });
+
+    it('does not parse the body of a failed response', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ error: 'boom' })),
+      } as unknown as Response);
+      await expect(deleteMessageTemplate('t1')).rejects.toThrow('boom');
     });
   });
 });

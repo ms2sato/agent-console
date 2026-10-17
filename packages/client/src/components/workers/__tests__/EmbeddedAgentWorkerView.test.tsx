@@ -4642,7 +4642,7 @@ describe('EmbeddedAgentWorkerView', () => {
       const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.endsWith('/messages') && init?.method === 'POST') {
-          return new Response(JSON.stringify({ message: { id: 'm1' } }), {
+          return new Response(JSON.stringify({ message: { id: 'm1', sessionId: 's1', fromWorkerId: 'w1', fromWorkerName: 'A', toWorkerId: 'w2', toWorkerName: 'B', content: 'x', timestamp: '2026-01-01T00:00:00.000Z' } }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });

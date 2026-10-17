@@ -184,7 +184,7 @@ describe('MemoPanel', () => {
     async function renderMemo(run: SessionTerminalRun | null) {
       mockFetch.mockImplementation(async (url: unknown) =>
         String(url).includes('/messages')
-          ? jsonResponse({ message: { id: 'm1' } })
+          ? jsonResponse({ message: { id: 'm1', sessionId: 's1', fromWorkerId: 'w1', fromWorkerName: 'A', toWorkerId: 'w2', toWorkerName: 'B', content: 'x', timestamp: '2026-01-01T00:00:00.000Z' } })
           : jsonResponse({ content: MEMO }),
       );
       await renderWithRouter(

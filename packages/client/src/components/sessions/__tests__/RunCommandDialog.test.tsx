@@ -56,7 +56,7 @@ describe('RunCommandDialog', () => {
       if (String(url).includes('/messages')) {
         events.push(`send:${String((init?.body as FormData).get('toWorkerId'))}`);
       }
-      return new Response(JSON.stringify({ message: { id: 'm1' } }), {
+      return new Response(JSON.stringify({ message: { id: 'm1', sessionId: 's1', fromWorkerId: 'w1', fromWorkerName: 'A', toWorkerId: 'w2', toWorkerName: 'B', content: 'x', timestamp: '2026-01-01T00:00:00.000Z' } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
