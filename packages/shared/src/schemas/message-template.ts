@@ -55,7 +55,8 @@ export const MessageTemplateResponseSchema = v.strictObject({
 /**
  * Schema for the `{ success: true }` acknowledgement of
  * `DELETE /api/message-templates/:id` and `PUT /api/message-templates/reorder`.
- * `success` is the literal the routes write, not a boolean.
+ * `success` is the literal the routes write, not a boolean. Hoist to a shared
+ * file when a third route uses it.
  */
 export const SuccessResponseSchema = v.strictObject({
   success: v.literal(true),
