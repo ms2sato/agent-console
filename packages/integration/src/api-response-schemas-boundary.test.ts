@@ -62,6 +62,7 @@ import type { AppContext, AppBindings } from '@agent-console/server/src/app-cont
 import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import { onApiError } from '@agent-console/server/src/lib/error-handler';
 import { api } from '@agent-console/server/src/routes/api';
+import { _getPullsInProgress } from '@agent-console/server/src/routes/worktrees';
 import {
   getSession,
   fetchRepositories,
@@ -734,12 +735,21 @@ describe('Client-Server Boundary: strict response schemas on the pass-1 to pass-
   });
 
   it('pullWorktreeAsync: the real 202 body parses, and an extra field is rejected', async () => {
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+    // The route keeps a path in its in-progress set while the background pull runs and answers
+    // 409 for a second pull of the same path. Poll that set (bounded; it FAILS if the entry
+    // never clears) instead of sleeping for a guessed duration.
+    const waitForPullToClear = async (): Promise<void> => {
+      const deadline = Date.now() + 5000;
+      while (_getPullsInProgress().has(TEST_REPO_PATH)) {
+        if (Date.now() > deadline) throw new Error('the background pull did not clear within 5000 ms');
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    };
     // The repository's primary worktree: no managed-directory or ownership check applies.
     const result = await pullWorktreeAsync(repoId, TEST_REPO_PATH, 'pull-a');
     expect(result).toEqual({ accepted: true });
     // The background pull of the first call must finish before the same path is pulled again.
-    await settle();
+    await waitForPullToClear();
 
     const body = await rawCall(`/api/repositories/${repoId}/worktrees/pull`, {
       method: 'POST',
@@ -747,7 +757,7 @@ describe('Client-Server Boundary: strict response schemas on the pass-1 to pass-
     });
     expect(body).toEqual({ accepted: true });
     expectStrictControl(WorktreeAcceptedResponseSchema, body);
-    await settle();
+    await waitForPullToClear();
   });
 
   it('deleteWorktreeAsync: the real async 202 body parses (with a job id), and an extra field is rejected', async () => {
