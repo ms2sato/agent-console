@@ -10,8 +10,10 @@
  * Scope: only declared foreign keys are enumerable. Soft references (an `*_id`
  * column without a REFERENCES clause) are out of scope by design.
  *
- * Polarity: deleting any one of the migrateToV53 CREATE INDEX lines makes this
- * file fail naming that table.column.
+ * Polarity (measured): deleting any one of the six migrateToV53 CREATE INDEX
+ * lines that cover a declared foreign key fails this file, and the failure names
+ * that table.column -> parent. The two todos indexes cover soft references, so
+ * they are pinned by migration-v53.test.ts instead, not by this guard.
  */
 
 import { describe, it, expect } from 'bun:test';
