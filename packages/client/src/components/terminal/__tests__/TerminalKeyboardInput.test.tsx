@@ -51,7 +51,7 @@ function makeMockInstance(): TerminalInstance {
   return {
     subscribe: () => () => {},
     getSnapshot: () => SNAPSHOT_STUB,
-    sendInput: () => {},
+    sendInput: () => true,
     sendUserInput: () => {},
     resize: () => {},
     forwardScroll: () => {},
@@ -132,7 +132,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     const instance: TerminalInstance = {
       subscribe: () => () => {},
       getSnapshot: () => SNAPSHOT_STUB,
-      sendInput: () => {},
+      sendInput: () => true,
       sendUserInput,
       resize: () => {},
       forwardScroll: () => {},

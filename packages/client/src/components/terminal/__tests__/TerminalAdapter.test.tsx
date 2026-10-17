@@ -33,7 +33,7 @@ const EXITED_SNAPSHOT: TerminalSnapshot = Object.freeze({
 const stubInstance: TerminalInstance = {
   subscribe: () => () => {},
   getSnapshot: () => EXITED_SNAPSHOT,
-  sendInput: () => {},
+  sendInput: () => true,
   sendUserInput: () => {},
   resize: () => {},
   forwardScroll: () => {},

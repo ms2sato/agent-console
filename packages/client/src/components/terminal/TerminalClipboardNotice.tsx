@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { TerminalInstance } from './terminal-store';
 
 export const CLIPBOARD_NOTICE_TEXT = 'Copied from the terminal -- click to put it on your clipboard';
+export const CLIPBOARD_COPY_FAILED_TEXT = 'Could not copy -- select and copy manually';
 
 interface TerminalClipboardNoticeProps {
   instance: Pick<TerminalInstance, 'onClipboardWrite'>;
@@ -11,16 +12,24 @@ interface TerminalClipboardNoticeProps {
  * OSC 52 clipboard writes (design doc "OSC 52 clipboard"). Silent write only when this
  * client typed into this worker recently (the store's `recentInput`) and the document has
  * focus; otherwise, and on any rejection, a non-modal notice whose click performs the write
- * inside the user gesture. A second event replaces the pending text. Nothing here reads the
- * clipboard.
+ * inside the user gesture. The notice follows the newest event: a newer event replaces the
+ * pending text (a newer silent write clears it) and a superseded event's rejection is ignored.
+ * A failed click keeps the notice and shows failure feedback. Nothing here reads the clipboard.
  */
 export function TerminalClipboardNotice({ instance }: TerminalClipboardNoticeProps) {
   const [pendingText, setPendingText] = useState<string | null>(null);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const latestEventSeq = useRef(0);
 
   useEffect(() => {
     return instance.onClipboardWrite((event) => {
+      const seq = ++latestEventSeq.current;
+      setCopyFailed(false);
       if (event.recentInput && document.hasFocus()) {
-        void writeClipboard(event.text).catch(() => setPendingText(event.text));
+        setPendingText(null);
+        void writeClipboard(event.text).catch(() => {
+          if (seq === latestEventSeq.current) setPendingText(event.text);
+        });
       } else {
         setPendingText(event.text);
       }
@@ -38,12 +47,22 @@ export function TerminalClipboardNotice({ instance }: TerminalClipboardNoticePro
         type="button"
         className="px-3 py-2 hover:bg-slate-600 rounded-l"
         onClick={() => {
-          void writeClipboard(pendingText).catch(() => {});
-          setPendingText(null);
+          const seq = latestEventSeq.current;
+          writeClipboard(pendingText).then(
+            () => {
+              if (seq !== latestEventSeq.current) return;
+              setCopyFailed(false);
+              setPendingText(null);
+            },
+            () => {
+              if (seq === latestEventSeq.current) setCopyFailed(true);
+            },
+          );
         }}
       >
         {CLIPBOARD_NOTICE_TEXT}
       </button>
+      {copyFailed && <span className="text-red-300">{CLIPBOARD_COPY_FAILED_TEXT}</span>}
       <button
         type="button"
         aria-label="Dismiss clipboard notice"

@@ -79,8 +79,8 @@ export interface TerminalInstance {
   /** Subscribe to OSC 52 clipboard writes from the live terminal (never to reads). */
   onClipboardWrite(listener: (event: ClipboardWriteEvent) => void): () => void;
   getSnapshot(): TerminalSnapshot;
-  /** Plain transport: send bytes to the worker. Not an intent signal (wheel and mouse reports use it). */
-  sendInput(data: string): void;
+  /** Plain transport: send bytes to the worker. Not an intent signal (wheel and mouse reports use it). Returns whether the frame was actually sent (false while the socket is not open). */
+  sendInput(data: string): boolean;
   /** Keyboard input or paste: sendInput plus the clipboard intent stamp (OSC 52 gate). */
   sendUserInput(data: string): void;
   resize(cols: number, rows: number): void;
@@ -382,16 +382,17 @@ class TerminalController implements TerminalInstance {
     };
   };
 
-  sendInput = (data: string): void => {
-    this.send({ type: 'input', data });
+  sendInput = (data: string): boolean => {
+    return this.send({ type: 'input', data });
   };
 
   // Only typing and paste are intent for the OSC 52 gate. Wheel forwarding and mouse button
   // reports go through sendInput: a TUI that enables any-event mouse tracking would otherwise
   // keep the gate open permanently.
   sendUserInput = (data: string): void => {
-    this.lastInputSentAtMs = clipboardClock();
-    this.sendInput(data);
+    if (this.sendInput(data)) {
+      this.lastInputSentAtMs = clipboardClock();
+    }
   };
 
   resize = (cols: number, rows: number): void => {
@@ -854,9 +855,10 @@ class TerminalController implements TerminalInstance {
     this.ws = null;
   }
 
-  private send(message: WorkerClientMessage): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+  private send(message: WorkerClientMessage): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     this.ws.send(JSON.stringify(message));
+    return true;
   }
 
   private handleMessage(raw: string): void {

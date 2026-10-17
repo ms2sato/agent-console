@@ -63,7 +63,7 @@ function makeInstance(snapshot: TerminalSnapshot): TerminalInstance {
   return {
     subscribe: () => () => {},
     getSnapshot: () => snapshot,
-    sendInput: () => {},
+    sendInput: () => true,
     sendUserInput: () => {},
     resize: () => {},
     forwardScroll: () => {},

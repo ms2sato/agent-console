@@ -173,6 +173,17 @@ describe('terminal-store OSC 52 clipboard', () => {
     expect(await recentInputAfter((i) => i.paste('pasted text'))).toBe(true);
   });
 
+  it('a keystroke typed while the socket is not open does not count as input', async () => {
+    _setClockForTest(() => 1_000);
+    const { instance, ws, events } = open();
+    history(ws, '');
+    ws.simulateClose();
+    instance.sendUserInput('typed offline');
+    ws.simulateOpen();
+    await output(ws, osc52(b64('copied')));
+    expect(events.map((e) => e.recentInput)).toEqual([false]);
+  });
+
   it('reports recentInput false when this client never sent input', async () => {
     _setClockForTest(() => 10);
     const { ws, events } = open();
