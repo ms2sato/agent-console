@@ -125,6 +125,9 @@ function createMockSessionStopTasks(
     markAsFailed: mock(() => {}),
     markAsSucceeded: mock(() => {}),
     markAsPending: mock(() => {}),
+    hookFailure: null,
+    reportHookFailure: mock(() => {}),
+    dismissHookFailure: mock(() => {}),
     ...overrides,
   };
 }

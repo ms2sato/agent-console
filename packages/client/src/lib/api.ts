@@ -45,6 +45,7 @@ import {
   BranchesResponseSchema,
   AgentResponseSchema,
   SessionResponseSchema,
+  PauseSessionResponseSchema,
   RepositoriesResponseSchema,
   BranchCommitsResponseSchema,
   GitHubIssueResponseSchema,
@@ -132,6 +133,7 @@ import type {
   MessageTemplateResponse,
   SuccessResponse,
   RegisterSharedAccountResponse,
+  PauseSessionResponse,
 } from '@agent-console/shared';
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
@@ -419,23 +421,24 @@ export async function deleteSession(sessionId: string): Promise<void> {
  * Kills PTY processes but preserves session data in database for later resume.
  * Only available for worktree sessions.
  */
-export async function pauseSession(sessionId: string): Promise<void> {
+export async function pauseSession(sessionId: string): Promise<PauseSessionResponse> {
   const res = await api.sessions[':id'].pause.$post({ param: { id: sessionId } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to pause session');
   }
+  return v.parse(PauseSessionResponseSchema, await res.json());
 }
 
 /**
  * Resume a paused session.
  * Loads session from database and restores workers with new PTY processes.
  */
-export async function resumeSession(sessionId: string): Promise<Session> {
+export async function resumeSession(sessionId: string): Promise<SessionResponse> {
   const res = await api.sessions[':id'].resume.$post({ param: { id: sessionId } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to resume session');
   }
-  return v.parse(SessionResponseSchema, await res.json()).session;
+  return v.parse(SessionResponseSchema, await res.json());
 }
 
 

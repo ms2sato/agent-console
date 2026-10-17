@@ -92,6 +92,7 @@ let fetchResponses: FetchResponses = {
 };
 
 const resumeSessionCalls: string[] = [];
+let resumeCommandResultBody: unknown;
 
 const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input instanceof Request ? input.url : String(input);
@@ -174,6 +175,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
         isShared: false,
         recoveryState: 'healthy',
       },
+      ...(resumeCommandResultBody === undefined ? {} : { resumeCommandResult: resumeCommandResultBody }),
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -237,6 +239,9 @@ function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn
     markAsFailed: mock(() => {}),
     markAsSucceeded: mock(() => {}),
     markAsPending: mock(() => {}),
+    hookFailure: null,
+    reportHookFailure: mock(() => {}),
+    dismissHookFailure: mock(() => {}),
     ...overrides,
   };
 }
@@ -1023,6 +1028,7 @@ describe('Dashboard / stop-pause result feedback', () => {
   beforeEach(() => {
     mockFetch.mockClear();
     resumeSessionCalls.length = 0;
+    resumeCommandResultBody = undefined;
     useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation(() => undefined);
     useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(<T,>() => false as T);
     hasVSCodeSpy = spyOn(capabilitiesModule, 'hasVSCode').mockImplementation(() => false);
@@ -1089,6 +1095,42 @@ describe('Dashboard / stop-pause result feedback', () => {
 
     await waitFor(() => expect(removeTask).toHaveBeenCalledWith('session-1'));
     expect(resumeSessionCalls).toEqual(['session-1']);
+  });
+
+  describe('resume hook failure reporting', () => {
+    async function resumeWith(body: unknown) {
+      resumeCommandResultBody = body;
+      const reportHookFailure = mock(() => {});
+      const value = createMockSessionStopTasks({ tasks: [task()], reportHookFailure });
+      await renderWithRouter(
+        <SessionStopTasksContext.Provider value={value}>
+          <SessionStopResultBanner />
+        </SessionStopTasksContext.Provider>
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+      await waitFor(() => expect(resumeSessionCalls).toEqual(['session-1']));
+      return reportHookFailure;
+    }
+
+    it('reports a failing resumeCommandResult through the root slot', async () => {
+      const failure = { success: false, error: 'start failed' };
+      const reportHookFailure = await resumeWith(failure);
+
+      await waitFor(() => expect(reportHookFailure).toHaveBeenCalledTimes(1));
+      expect(reportHookFailure).toHaveBeenCalledWith({ kind: 'resume', sessionTitle: undefined, result: failure });
+    });
+
+    it('reports nothing for a successful result', async () => {
+      const reportHookFailure = await resumeWith({ success: true });
+      await Promise.resolve();
+      expect(reportHookFailure).not.toHaveBeenCalled();
+    });
+
+    it('reports nothing when the key is absent', async () => {
+      const reportHookFailure = await resumeWith(undefined);
+      await Promise.resolve();
+      expect(reportHookFailure).not.toHaveBeenCalled();
+    });
   });
 
   it('succeeded stop shows "Stopped" with Dismiss and no Resume', async () => {

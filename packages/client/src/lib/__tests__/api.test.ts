@@ -62,6 +62,7 @@ import {
   reorderMessageTemplates,
   registerSharedAccount,
   resumeSession,
+  pauseSession,
   openInVSCode,
   fetchArtifacts,
   fetchTodos,
@@ -2270,7 +2271,7 @@ describe('API Client', () => {
       capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
     };
     const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>, string]> = [
-      ['resumeSession', async () => ({ session: await resumeSession('s1') }), { session: validQuickSession }, 'session'],
+      ['resumeSession', async () => resumeSession('s1'), { session: validQuickSession }, 'session'],
       [
         'registerAgent',
         async () => registerAgent({ name: 'Agent', commandTemplate: 'run {{prompt}}' }),
@@ -2312,6 +2313,36 @@ describe('API Client', () => {
       const nested = valid[requiredKey] as Record<string, unknown>;
       mockFetch.mockResolvedValue(createMockResponse({ [requiredKey]: { ...nested, id: 42 } }));
       await expect(call()).rejects.toThrow();
+    });
+  });
+
+  describe('pauseSession / resumeSession hook results', () => {
+    const failure = { success: false, error: 'exit code 3', output: 'out' };
+
+    it('pauseSession returns pauseCommandResult when the server reports one', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true, pauseCommandResult: failure }));
+      expect(await pauseSession('s1')).toEqual({ success: true, pauseCommandResult: failure });
+    });
+
+    it('pauseSession leaves pauseCommandResult absent when no hook ran', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+      expect((await pauseSession('s1')).pauseCommandResult).toBeUndefined();
+    });
+
+    it('pauseSession rejects a malformed body', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: false }));
+      await expect(pauseSession('s1')).rejects.toThrow();
+      mockFetch.mockResolvedValue(createMockResponse({ success: true, pauseCommandResult: { success: 'no' } }));
+      await expect(pauseSession('s1')).rejects.toThrow();
+      mockFetch.mockResolvedValue(createMockResponse({ success: true, extra: 1 }));
+      await expect(pauseSession('s1')).rejects.toThrow();
+    });
+
+    it('resumeSession returns resumeCommandResult alongside the session', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ session: validQuickSession, resumeCommandResult: failure }));
+      const result = await resumeSession('s1');
+      expect(result.session).toEqual(validQuickSession);
+      expect(result.resumeCommandResult).toEqual(failure);
     });
   });
 

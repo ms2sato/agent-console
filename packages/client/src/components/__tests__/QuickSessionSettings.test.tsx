@@ -17,6 +17,9 @@ function createMockSessionStopTasks(): UseSessionStopTasksReturn {
     markAsFailed: mock(() => {}),
     markAsSucceeded: mock(() => {}),
     markAsPending: mock(() => {}),
+    hookFailure: null,
+    reportHookFailure: mock(() => {}),
+    dismissHookFailure: mock(() => {}),
   };
 }
 

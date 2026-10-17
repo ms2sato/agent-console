@@ -149,6 +149,18 @@ export function RepositoryDetailView({ repositoryId }: { repositoryId: string })
             muted={!repository.cleanupCommand}
           />
           <DetailRow
+            label="Pause Command"
+            value={repository.pauseCommand || '(not set)'}
+            mono
+            muted={!repository.pauseCommand}
+          />
+          <DetailRow
+            label="Resume Command"
+            value={repository.resumeCommand || '(not set)'}
+            mono
+            muted={!repository.resumeCommand}
+          />
+          <DetailRow
             label="Env Variables"
             value={repository.envVars || '(not set)'}
             mono

@@ -33,7 +33,7 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 import { useSessionStopTasksContext } from '../../routes/__root';
 import { runPauseSession } from './PauseSessionDialog';
 import { runStopSession } from './EndSessionDialog';
-import type { SessionStopTask } from '../../hooks/useSessionStopTasks';
+import { reportIfHookFailed, type SessionStopTask } from '../../hooks/useSessionStopTasks';
 import { Spinner } from '../ui/Spinner';
 import { logger } from '../../lib/logger';
 
@@ -222,6 +222,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     removeTask: removeStopTask,
     markAsFailed: markStopTaskFailed,
     markAsPending: markStopTaskPending,
+    reportHookFailure,
   } = useSessionStopTasksContext();
   const stopTask = getStopTask(sessionId);
   const messagePanelRef = useRef<MessagePanelHandle>(null);
@@ -231,8 +232,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // uses, then leaves the page just as the dialog does on success.
   const handleRetryStopTask = async (task: SessionStopTask) => {
     markStopTaskPending(task.sessionId);
-    const run = task.action === 'pause' ? runPauseSession : runStopSession;
-    const ok = await run(task.sessionId, markStopTaskFailed);
+    const ok = task.action === 'pause'
+      ? await runPauseSession(task.sessionId, markStopTaskFailed, (result) =>
+          reportHookFailure({ kind: 'pause', sessionTitle: task.sessionTitle, result })
+        )
+      : await runStopSession(task.sessionId, markStopTaskFailed);
     if (ok) {
       await navigate({ to: '/' });
     }
@@ -343,7 +347,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     if (isResuming) return;
     setIsResuming(true);
     try {
-      await resumeSession(sessionId);
+      const { session, resumeCommandResult } = await resumeSession(sessionId);
+      reportIfHookFailed(reportHookFailure, 'resume', resumeCommandResult, session.title);
       // State transition handled by session-resumed WS event via handleSessionResumed.
       // Terminal remounts via resumeKey change.
     } catch (error) {
@@ -358,7 +363,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       }
       setIsResuming(false);
     }
-  }, [sessionId, isResuming, showError]);
+  }, [sessionId, isResuming, showError, reportHookFailure]);
 
   // Restart handler: works from both active and disconnected states.
   const handleWorkerRestart = useCallback(async (continueConversation: boolean) => {
@@ -515,7 +520,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       setIsResuming(true);
       setResumeError(null);
       try {
-        await resumeSession(sessionId);
+        const { session, resumeCommandResult } = await resumeSession(sessionId);
+        reportIfHookFailed(reportHookFailure, 'resume', resumeCommandResult, session.title);
         // State transition handled by session-resumed WS event via handleSessionResumed.
       } catch (error) {
         if (isSessionOrphanedError(error)) {

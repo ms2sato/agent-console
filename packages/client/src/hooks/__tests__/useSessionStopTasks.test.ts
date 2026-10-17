@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
-import { useSessionStopTasks } from '../useSessionStopTasks';
+import { mock } from 'bun:test';
+import { useSessionStopTasks, reportIfHookFailed } from '../useSessionStopTasks';
 
 describe('useSessionStopTasks', () => {
   it('addTask adds a new task and returns true', () => {
@@ -162,5 +163,45 @@ describe('useSessionStopTasks', () => {
       ['b', 'succeeded'],
       ['c', 'failed'],
     ]);
+  });
+});
+
+describe('useSessionStopTasks hook failure slot', () => {
+  it('starts empty, holds a reported failure, and clears on dismiss', () => {
+    const { result } = renderHook(() => useSessionStopTasks());
+    expect(result.current.hookFailure).toBeNull();
+
+    const failure = { kind: 'pause' as const, sessionTitle: 'S', result: { success: false, error: 'boom' } };
+    act(() => {
+      result.current.reportHookFailure(failure);
+    });
+    expect(result.current.hookFailure).toEqual(failure);
+
+    act(() => {
+      result.current.dismissHookFailure();
+    });
+    expect(result.current.hookFailure).toBeNull();
+  });
+
+  it('does not disturb tasks', () => {
+    const { result } = renderHook(() => useSessionStopTasks());
+    act(() => {
+      result.current.addTask({ sessionId: 'session-1', action: 'pause' });
+      result.current.reportHookFailure({ kind: 'resume', result: { success: false } });
+    });
+    expect(result.current.tasks.length).toBe(1);
+  });
+});
+
+describe('reportIfHookFailed', () => {
+  it('reports only a result with success === false', () => {
+    const report = mock(() => {});
+    reportIfHookFailed(report, 'resume', { success: false, error: 'x' }, 'T');
+    expect(report).toHaveBeenCalledWith({ kind: 'resume', sessionTitle: 'T', result: { success: false, error: 'x' } });
+
+    const none = mock(() => {});
+    reportIfHookFailed(none, 'resume', { success: true }, 'T');
+    reportIfHookFailed(none, 'resume', undefined, 'T');
+    expect(none).not.toHaveBeenCalled();
   });
 });

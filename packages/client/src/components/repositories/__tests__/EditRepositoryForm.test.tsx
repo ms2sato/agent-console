@@ -181,7 +181,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -209,7 +209,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -236,7 +236,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
   });
 
@@ -723,6 +723,69 @@ describe('EditRepositoryForm', () => {
       // Verify API was called with cleanupCommand
       const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody.cleanupCommand).toBe('docker compose down');
+    });
+  });
+
+  describe.each([
+    {
+      field: 'pauseCommand' as const,
+      label: 'Pause Command (optional)',
+      placeholder: 'docker compose stop',
+      description: 'This command runs automatically when a session of this repository is paused.',
+      value: 'docker compose stop',
+    },
+    {
+      field: 'resumeCommand' as const,
+      label: 'Resume Command (optional)',
+      placeholder: 'docker compose start',
+      description: 'This command runs automatically when a session of this repository is resumed, before its workers start.',
+      value: 'docker compose start',
+    },
+  ])('$field field', ({ field, label, placeholder, description, value }) => {
+    it('renders the label, placeholder and description', () => {
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm();
+
+      expect(screen.getByText(label)).toBeTruthy();
+      expect(screen.getByPlaceholderText(placeholder)).toBeTruthy();
+      expect(screen.getByText(new RegExp(description.replace(/[.]/g, '\\.')))).toBeTruthy();
+    });
+
+    it('pre-populates from the repository', () => {
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm({ repository: createTestRepository({ [field]: value }) });
+
+      expect((screen.getByPlaceholderText(placeholder) as HTMLTextAreaElement).value).toBe(value);
+    });
+
+    it('shows an empty field when the repository value is null', () => {
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm({ repository: createTestRepository({ [field]: null }) });
+
+      expect((screen.getByPlaceholderText(placeholder) as HTMLTextAreaElement).value).toBe('');
+    });
+
+    it('submits the typed value, and an empty string when left blank', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+      setupMockFetch(createMockResponse({ repository }));
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      await user.type(screen.getByPlaceholderText(placeholder), `  ${value}  `);
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      const requestBody = getRepositoryUpdateRequestBody();
+      expect(requestBody[field]).toBe(value);
+      const otherField = field === 'pauseCommand' ? 'resumeCommand' : 'pauseCommand';
+      expect(requestBody[otherField]).toBe('');
     });
   });
 
