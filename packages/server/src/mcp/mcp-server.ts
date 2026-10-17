@@ -3330,7 +3330,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Refused: an unknown id, an item that is not open, and an item of a session owned by another user unless ' +
       "you pass `statement`, the human's own words instructing the move, quoted (what they typed or said, never an " +
       'instruction you inferred); it is recorded on the item. The ownership check needs the creating session to still ' +
-      'exist and the caller to carry a bearer token; without either it cannot run and the adoption proceeds.',
+      'exist and the caller to carry a bearer token; without either it cannot run and the adoption proceeds. ' +
+      'If another session or worker took the item between your read and the write, the call is refused ("moved while you were adopting it"); list_todos again.',
     {
       id: z.string().describe('The id of the open item to take over (from `list_todos` or the handoff memo).'),
       sessionId: z.string().optional().describe(
