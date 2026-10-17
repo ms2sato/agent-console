@@ -10,6 +10,7 @@ import {
   restartWorkerAsEmbeddedAgent,
   restartAllAgentWorkers,
   updateEmbeddedAgentWorker,
+  renameWorker,
   setMcpServerPermissions,
   fetchRepositories,
   registerRepository,
@@ -455,6 +456,30 @@ describe('API Client', () => {
       expect(getLastFetchUrl()).toContain('/api/sessions/restart-all-agents');
       expect(getLastFetchMethod()).toBe('POST');
       expect(result).toEqual(mockResult);
+    });
+  });
+
+  describe('renameWorker', () => {
+    it('PATCHes the name sub-path with the name body and parses the worker response', async () => {
+      const mockWorker = completeWireBody({ worker: { id: 'worker-1', type: 'terminal', name: 'build watch' } });
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      const result = await renameWorker('session-id', 'worker-id', 'build watch');
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id/name');
+      expect(getLastFetchMethod()).toBe('PATCH');
+      expect(await getLastFetchBody()).toEqual({ name: 'build watch' });
+      expect(result).toEqual(mockWorker);
+    });
+
+    it('throws the server error message on a failed response', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        json: mock(() => Promise.resolve({ error: 'Worker not found' })),
+      } as unknown as Response);
+      await expect(renameWorker('session-id', 'worker-id', 'x')).rejects.toThrow('Worker not found');
     });
   });
 
@@ -2407,6 +2432,7 @@ describe('API Client', () => {
         embeddedWorker,
         'worker',
       ],
+      ['renameWorker', () => renameWorker('s1', 'w1', 'build watch'), terminalWorker, 'worker'],
       [
         'setMcpServerPermissions',
         () => setMcpServerPermissions('s1', 'w1', { all: true }),

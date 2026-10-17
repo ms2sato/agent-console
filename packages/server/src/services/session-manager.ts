@@ -1075,6 +1075,27 @@ export class SessionManager {
   }
 
   /**
+   * Rename a worker (the label shown on its tab). Works for every worker type.
+   *
+   * Same write path shape as `setEmbeddedAgentAutoCompaction`: durable write
+   * first, broadcast last. The caller is expected to pass an already
+   * validated name (the route trims and bounds it). Returns `null` when the
+   * session or worker does not exist; nothing is persisted or broadcast then.
+   */
+  async renameWorker(sessionId: string, workerId: string, name: string): Promise<Worker | null> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    const worker = session.workers.get(workerId);
+    if (!worker) return null;
+
+    worker.name = name;
+    await this.persistSession(session);
+    this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
+
+    return this.workerManager.toPublicWorker(worker);
+  }
+
+  /**
    * agent-surface.md Phase 3: set an embedded-agent worker's model /
    * reasoning-effort / context-window override mid-run.
    *

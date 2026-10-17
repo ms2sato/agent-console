@@ -18,6 +18,7 @@ import { useTabManagement } from './hooks/useTabManagement';
 import { useSessionPageState, type PageState } from './hooks/useSessionPageState';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from './tabAppearance';
+import { TabLabel } from './TabLabel';
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
@@ -649,28 +650,27 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     return (
       <div
         key={tab.id}
-        className={`flex items-center border-r border-slate-600 hover:bg-slate-700 ${
+        className={`group flex items-center border-r border-slate-600 hover:bg-slate-700 ${
           tab.id === activeTabId
             ? 'bg-slate-700 text-white'
             : 'text-gray-400'
         }`}
       >
-        <button
-          role="tab"
-          id={`worker-tab-${tab.id}`}
-          aria-selected={tab.id === activeTabId}
-          aria-controls={`worker-tabpanel-${tab.id}`}
-          tabIndex={tab.id === activeTabId ? 0 : -1}
-          onClick={() => handleTabClick(tab.id)}
-          className={`py-2 text-sm flex items-center gap-2 pl-4 ${closeable ? 'pr-1' : 'pr-4'}`}
+        <TabLabel
+          sessionId={sessionId}
+          workerId={tab.id}
+          name={tab.name}
+          active={tab.id === activeTabId}
+          buttonClassName={`py-2 text-sm flex items-center gap-2 pl-4 ${closeable ? 'pr-1' : 'pr-4'}`}
+          onSelect={() => handleTabClick(tab.id)}
+          onError={(message) => showError('Rename Failed', message)}
         >
           {tab.workerType === 'git-diff' ? (
             <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
           ) : (
             <span className={`inline-block w-2 h-2 rounded-full ${getTabDotColor(tab.workerType)}`} aria-hidden="true" />
           )}
-          {tab.name}
-        </button>
+        </TabLabel>
         {closeable && (
           <button
             type="button"

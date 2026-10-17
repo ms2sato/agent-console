@@ -9,7 +9,7 @@ import type { SessionDataContextValue } from '../../../contexts/root-contexts';
 import type { UseSessionStopTasksReturn, SessionStopTask } from '../../../hooks/useSessionStopTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../../../hooks/useWorktreeDeletionTasks';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
-import { installMockWebSocket } from '../../../test/mock-websocket';
+import { installMockWebSocket, MockWebSocket } from '../../../test/mock-websocket';
 import { _resetTerminals } from '../../terminal/terminal-store';
 import type { Session, Worker } from '@agent-console/shared';
 import { completeWireBody } from '../../../test/wire-fixtures';
@@ -424,6 +424,35 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
     expect(screen.getByRole('tab', { name: 'Agent' }).getAttribute('aria-selected')).toBe('true');
   });
 
+  it('a session-updated frame with a renamed worker updates the tab and the rename control', async () => {
+    // Renaming is a broadcast, not local state: the tab (and everything derived
+    // from `activeTab.name`, e.g. the error fallback's `workerName`) follows
+    // the session's worker name. `workerName` is only rendered by the worker
+    // error fallback, so there is no always-visible panel header to assert on.
+    const user = userEvent.setup();
+    await renderSessionPage();
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
+    await user.click(screen.getByRole('tab', { name: 'Shell 1' }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Shell 1' }).getAttribute('aria-selected')).toBe('true'));
+    expect(screen.getByRole('button', { name: 'Rename Shell 1' })).toBeTruthy();
+
+    const appSocket = MockWebSocket.getInstances().find(ws => ws.url.includes('/ws/app'));
+    expect(appSocket).toBeDefined();
+    act(() => {
+      appSocket!.simulateOpen();
+      appSocket!.simulateMessage(JSON.stringify(completeWireBody({
+        type: 'session-updated',
+        session: createMockSession({
+          workers: [AGENT_WORKER, { ...TERMINAL_WORKER, name: 'build watch' } as Worker],
+        }),
+      })));
+    });
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'build watch' })).toBeTruthy());
+    expect(screen.queryByRole('tab', { name: 'Shell 1' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Rename build watch' })).toBeTruthy();
+  });
+
   it('clicking the tab activator switches the active tab', async () => {
     await renderSessionPage();
     await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
@@ -439,7 +468,7 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
     expect(screen.getByRole('tab', { name: 'Agent' }).getAttribute('aria-selected')).toBe('false');
   });
 
-  it('roving tabindex: Tab order visits the active tab\'s activator then its close control, and Enter on the close control closes it', async () => {
+  it('roving tabindex: Tab order visits the active tab\'s activator, its rename pencil, then its close control, and Enter on the close control closes it', async () => {
     await renderSessionPage();
     await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
 
@@ -463,6 +492,9 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
 
     await user.tab();
     expect(document.activeElement).toBe(terminalTab);
+
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Rename Shell 1' }));
 
     await user.tab();
     expect(document.activeElement).toBe(closeButton);
