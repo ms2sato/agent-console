@@ -72,6 +72,16 @@ describe('TodoDetail', () => {
       expect(screen.getByText('Second paragraph')).toBeTruthy();
     });
 
+    it('wraps the body in memo-content with min-w-0 so a wide code block scrolls instead of widening the card', async () => {
+      // Mutation: revert the wrapper to `break-words` without memo-content -> this fails.
+      await renderDetail({ body: 'Intro\n\n```sql\nSELECT 1;\n```\n' });
+
+      const wrapper = screen.getByText('Intro').closest('.memo-content');
+      expect(wrapper).not.toBeNull();
+      expect(wrapper?.classList.contains('min-w-0')).toBe(true);
+      expect(wrapper?.querySelector('pre')).not.toBeNull();
+    });
+
     it('shows kind, scope, status, creator and assignee as detail rows', async () => {
       await renderDetail(
         { kind: 'action', scope: 'session', status: 'open', createdBy: { userId: BOB.id }, assigneeUserId: ALICE.id },
