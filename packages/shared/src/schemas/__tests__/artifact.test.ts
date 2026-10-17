@@ -1,7 +1,24 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { ArtifactSchema, ArtifactsListResponseSchema } from '../artifact.js';
-import type { Artifact } from '../../types/artifact.js';
+import { ArtifactSchema, ArtifactsListResponseSchema, type Artifact } from '../artifact.js';
+
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+// Pins. `Artifact` is derived from `ArtifactSchema`, so the schema is the only place a field is
+// edited. `_ArtifactKeys` compares `keyof` with an explicit literal union, so a field added to
+// (or removed from) the schema alone is a `tsc` failure (TS2344). `_ArtifactUpdatedAtIsNullableString`
+// pins the one member whose shape the schema narrows (required-nullable). `Assert<Equals<...>>` is
+// the form that fails under drift; a `declare const x: never` form would type-check under it.
+//
+// Measured reach (`tsc` diagnostics, control clean first), two-sided: adding a field to, or removing
+// one from, `ArtifactSchema` fails `_ArtifactKeys` (TS2344) plus the typed fixtures below (TS2741 on
+// an added field, TS2353 on a removed one); changing `updatedAt` to `v.string()` fails
+// `_ArtifactUpdatedAtIsNullableString` (TS2344) plus the fixtures that set it to `null` (TS2322);
+// changing it to `v.optional(v.nullable(v.string()))` fails `_ArtifactUpdatedAtIsNullableString` and
+// nothing else. Each pin's diagnostic sits on the pin's line and does not name the key.
+export type _ArtifactKeys = Assert<Equals<keyof Artifact, 'id' | 'title' | 'createdAt' | 'sizeBytes' | 'updatedAt'>>;
+export type _ArtifactUpdatedAtIsNullableString = Assert<Equals<Artifact['updatedAt'], string | null>>;
 
 describe('ArtifactSchema', () => {
   it('accepts a well-formed Artifact object (parse-path, closes the #926 silent-drop gap)', () => {

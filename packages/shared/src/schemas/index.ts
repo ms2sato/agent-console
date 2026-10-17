@@ -373,7 +373,7 @@ export {
 // Artifact schemas
 export {
   ArtifactSchema,
-  type ArtifactSchemaOutput,
+  type Artifact,
   ArtifactsListResponseSchema,
   type ArtifactsListResponse,
 } from './artifact.js';
@@ -381,7 +381,7 @@ export {
 // Bookmark schemas
 export {
   BookmarkSchema,
-  type BookmarkSchemaOutput,
+  type Bookmark,
   BookmarksListResponseSchema,
   type BookmarksListResponse,
   CreateBookmarkRequestSchema,
