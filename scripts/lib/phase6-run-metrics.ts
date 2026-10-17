@@ -38,7 +38,12 @@ function isNumber(value: unknown): value is number {
 
 /** Strip a leading `mcp__<server>__` prefix; built-in names have none. */
 function stripMcpPrefix(name: string): string {
-  return name.replace(/^mcp__[^_]+(?:-[^_]+)*__/, '');
+  const PREFIX = 'mcp__';
+  if (!name.startsWith(PREFIX)) return name;
+  const separator = name.indexOf('__', PREFIX.length);
+  // The server segment is non-empty and holds no underscore.
+  if (separator <= PREFIX.length || name.slice(PREFIX.length, separator).includes('_')) return name;
+  return name.slice(separator + 2);
 }
 
 /**

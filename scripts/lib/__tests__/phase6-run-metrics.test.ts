@@ -444,6 +444,30 @@ describe('refusal literal drift', () => {
 });
 
 describe('boundary values of each predicate', () => {
+  it('strips only a well-formed mcp__<server>__ prefix', () => {
+    const names = [
+      `${PREFIX}create_timer`,
+      'mcp__a-b-c__create_timer',
+      'mcp__a_b__create_timer',
+      'mcp____create_timer',
+      'create_timer',
+    ];
+    const events = names.map((name) => call('t', name, { intervalSeconds: 30 }));
+    // Only the first two reduce to the bare name; the malformed prefixes and the bare
+    // name that is not create_timer-prefixed stay distinct, so only 3 count (the bare one too).
+    expect(computeNdjsonMetrics(events, SID).timers.create).toBe(3);
+  });
+
+  // The previous nested-quantifier regex took ~435 ms here (the engine's backtracking cap) and
+  // then reported no match; the string-operation version takes well under a millisecond.
+  it('returns quickly on an adversarial long mcp__ name with no closing separator', () => {
+    const name = `mcp__${'a-'.repeat(50_000)}x`;
+    const started = performance.now();
+    const m = computeNdjsonMetrics([call('t', name)], SID);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(m.toolCalls).toBe(1);
+  });
+
   it('a create_timer at exactly 120 s is not eligible, 119 s is', () => {
     const at120 = call('t', `${PREFIX}create_timer`, { intervalSeconds: 120 });
     const at119 = call('t', `${PREFIX}create_timer`, { intervalSeconds: 119 });
