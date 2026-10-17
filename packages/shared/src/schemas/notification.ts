@@ -28,9 +28,8 @@ export const RepositorySlackIntegrationInputSchema = v.strictObject({
 
 /**
  * Schema for the repository Slack integration entity, the body of
- * `GET /api/repositories/:id/integrations/slack`. The field set mirrors
- * `RepositorySlackIntegration` in `types/notification.ts` (pinned in the schema test),
- * which the server still imports.
+ * `GET /api/repositories/:id/integrations/slack`. This schema is the single
+ * writer of the `RepositorySlackIntegration` shape; the type is derived below.
  */
 export const RepositorySlackIntegrationSchema = v.strictObject({
   id: v.string(),
@@ -49,5 +48,6 @@ export const NotificationStatusResponseSchema = v.strictObject({
 
 // === Inferred Types ===
 
+export type RepositorySlackIntegration = v.InferOutput<typeof RepositorySlackIntegrationSchema>;
 export type RepositorySlackIntegrationInput = v.InferOutput<typeof RepositorySlackIntegrationInputSchema>;
 export type NotificationStatus = v.InferOutput<typeof NotificationStatusResponseSchema>;
