@@ -749,7 +749,7 @@ describe('EditRepositoryForm', () => {
 
       expect(screen.getByText(label)).toBeTruthy();
       expect(screen.getByPlaceholderText(placeholder)).toBeTruthy();
-      expect(screen.getByText(new RegExp(description.replace(/[.]/g, '\\.')))).toBeTruthy();
+      expect(screen.getByText((content) => content.includes(description))).toBeTruthy();
     });
 
     it('pre-populates from the repository', () => {
