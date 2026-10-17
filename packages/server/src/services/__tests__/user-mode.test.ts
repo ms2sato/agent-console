@@ -25,6 +25,7 @@ import { SingleUserMode, MultiUserMode, assertSpawnCwdExists, SpawnCwdMissingErr
 import type { TerminalPtySpawnRequest, AgentPtySpawnRequest } from '../user-mode.js';
 import type { RunAsUserResult } from '../privilege-elevation.js';
 import { getUnsetEnvPrefix } from '../env-filter.js';
+import { describeAgentSpawnConformance } from './user-mode-spawn-conformance.js';
 import { buildAgentConsoleEnv } from '../agent-console-env.js';
 import type { PtyProvider, PtySpawnOptions, PtyInstance } from '../../lib/pty-provider.js';
 
@@ -171,8 +172,8 @@ describe('SingleUserMode', () => {
     // running the agent command directly, the PTY execs the user's login
     // shell, echoes the sentinel line, then execs an interactive login shell.
     // This lets the worker-manager detect shell readiness before injecting the
-    // agent command. When request.sentinel is unset the direct command path is used.
-    function makeAgentRequest(sentinel?: string): AgentPtySpawnRequest {
+    // agent command. Every agent spawn request carries a sentinel.
+    function makeAgentRequest(sentinel: string): AgentPtySpawnRequest {
       return {
         type: 'agent',
         username: 'cached',
@@ -186,7 +187,7 @@ describe('SingleUserMode', () => {
           sessionId: 's1',
           workerId: 'w1',
         },
-        ...(sentinel !== undefined && { sentinel }),
+        sentinel,
       };
     }
 
@@ -209,17 +210,33 @@ describe('SingleUserMode', () => {
       expect(shellCommand.startsWith(getUnsetEnvPrefix())).toBe(true);
     });
 
-    it('runs the agent command directly when no sentinel is provided', () => {
+    it('requires a sentinel on an agent spawn request', () => {
+      // Type-level pin: dropping `sentinel` must stay a compile error. If the
+      // field became optional again this directive would be unused, which tsc
+      // reports as an error itself.
+      // @ts-expect-error -- sentinel is required on an agent spawn request
+      const withoutSentinel: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'cached',
+        cwd: '/home/cached/project',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude --resume',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 's1',
+          workerId: 'w1',
+        },
+      };
+      void withoutSentinel;
+    });
+
+    describeAgentSpawnConformance('SingleUserMode.spawnPty', (request) => {
       const { provider, lastCall } = createCapturingPtyProvider();
       const cachedUser = { id: 'cached-id', username: 'cached', homeDir: '/home/cached' };
-      const userMode = new SingleUserMode(provider, cachedUser);
-
-      userMode.spawnPty(makeAgentRequest());
-
-      const [, args] = lastCall();
-      const shellCommand = args[1];
-      expect(shellCommand).toContain('claude --resume');
-      expect(shellCommand).not.toContain('exec $SHELL -l -c');
+      new SingleUserMode(provider, cachedUser).spawnPty(request);
+      return lastCall()[1][1];
     });
   });
 });
@@ -527,6 +544,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'cached',
         cwd: '/home/cached/project',
         additionalEnvVars: {},
@@ -551,6 +569,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'definitely-not-the-server-user',
         cwd: '/workspace',
         additionalEnvVars: {},

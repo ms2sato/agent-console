@@ -22,6 +22,7 @@ import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.
 import { MultiUserMode } from '../user-mode.js';
 import type { AgentPtySpawnRequest, TerminalPtySpawnRequest } from '../user-mode.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
+import { describeAgentSpawnConformance } from './user-mode-spawn-conformance.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -404,12 +405,25 @@ describe('MultiUserMode', () => {
       return os.userInfo().username;
     }
 
+    describe('sentinel conformance row', () => {
+      let mode: MultiUserMode;
+      beforeEach(async () => {
+        mode = await createMode();
+      });
+
+      describeAgentSpawnConformance('MultiUserMode direct (elevation-skip)', (request) => {
+        mode.spawnPty({ ...request, username: getServerUsername() });
+        return getLastSpawnCall()[1][1];
+      });
+    });
+
     it('should spawn directly when username matches server process user (agent)', async () => {
       const mode = await createMode();
       const serverUsername = getServerUsername();
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: serverUsername,
         cwd: '/workspace/project',
         additionalEnvVars: { MY_VAR: 'value' },
@@ -431,8 +445,8 @@ describe('MultiUserMode', () => {
       expect(args[0]).toBe('-c');
       // Should NOT contain 'sudo'
       expect(args[1]).not.toContain('sudo');
-      // Should contain the agent command
-      expect(args[1]).toContain('claude --prompt "hello"');
+      // The agent command is injected after the sentinel, never spawned directly
+      expect(args[1]).not.toContain('claude --prompt "hello"');
       // Should have env vars set directly on the process
       expect(opts.env).toBeDefined();
       expect(opts.env!.AGENT_CONSOLE_BASE_URL).toBe('http://localhost:3457');
@@ -509,6 +523,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: serverUsername,
         cwd: '/workspace',
         additionalEnvVars: {},
@@ -539,6 +554,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: serverUsername,
         cwd: '/workspace',
         additionalEnvVars: {},
@@ -576,11 +592,24 @@ describe('MultiUserMode', () => {
       return calls[calls.length - 1];
     }
 
+    describe('sentinel conformance row', () => {
+      let mode: MultiUserMode;
+      beforeEach(async () => {
+        mode = await createMode();
+      });
+
+      describeAgentSpawnConformance('MultiUserMode elevated spawn', (request) => {
+        mode.spawnPty({ ...request, username: 'other-user' });
+        return getLastSpawnCall()[1][6];
+      });
+    });
+
     it('should spawn via sudo when username differs from server process user (agent)', async () => {
       const mode = await createMode();
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'other-user',
         cwd: '/workspace/project',
         additionalEnvVars: { CUSTOM_VAR: 'val' },
@@ -608,15 +637,16 @@ describe('MultiUserMode', () => {
       expect(args[3]).toBe('-i');
       expect(args[4]).toBe('sh');
       expect(args[5]).toBe('-c');
-      // The inner command should contain cd, export, and the agent command
+      // The inner command should contain cd and export, but not the agent command
+      // (it is injected after the sentinel line)
       const innerCommand = args[6];
       expect(innerCommand).toContain("cd '/workspace/project'");
       expect(innerCommand).toContain('AGENT_CONSOLE_BASE_URL');
       expect(innerCommand).toContain('AGENT_CONSOLE_SESSION_ID');
       expect(innerCommand).toContain('AGENT_CONSOLE_WORKER_ID');
       expect(innerCommand).toContain('CUSTOM_VAR');
-      expect(innerCommand).toContain('claude --prompt "build feature"');
-      // Sudo path should NOT have env in spawn options (env is embedded in command)
+      expect(innerCommand).not.toContain('claude --prompt "build feature"');
+      // Elevated path should NOT have env in spawn options (env is embedded in command)
       expect(opts.env).toBeUndefined();
       expect(opts.cols).toBe(120);
       expect(opts.rows).toBe(30);
@@ -661,32 +691,6 @@ describe('MultiUserMode', () => {
       expect(innerCommand).toContain('AGENT_CONSOLE_BASE_URL');
     });
 
-    it('should run the agent command directly when no sentinel is set', async () => {
-      const mode = await createMode();
-
-      const request: AgentPtySpawnRequest = {
-        type: 'agent',
-        username: 'other-user',
-        cwd: '/workspace/project',
-        additionalEnvVars: {},
-        cols: 80,
-        rows: 24,
-        command: 'claude --prompt "build feature"',
-        agentConsoleContext: {
-          baseUrl: 'http://localhost:3457',
-          sessionId: 'sess-1',
-          workerId: 'wkr-1',
-        },
-      };
-
-      mode.spawnPty(request);
-
-      const [, args] = getLastSpawnCall();
-      const innerCommand = args[6];
-      expect(innerCommand).toContain('claude --prompt "build feature"');
-      expect(innerCommand).not.toContain('exec $SHELL');
-    });
-
     it('should pass --preserve-env=FORCE_COLOR to sudo so truecolor flag survives sudo -i', async () => {
       // Model B (multi-user) bug: sudo -i resets the env to the sudoers env_keep
       // defaults, which strips FORCE_COLOR. Node-based agents then fall back to
@@ -697,6 +701,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'other-user',
         cwd: '/workspace',
         additionalEnvVars: {},
@@ -746,6 +751,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'other-user',
         cwd: '/workspace',
         additionalEnvVars: {
@@ -789,6 +795,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'other-user',
         cwd: '/workspace',
         additionalEnvVars: {
@@ -841,6 +848,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'other-user',
         cwd: '/workspace',
         additionalEnvVars: {},
@@ -871,6 +879,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'other-user',
         cwd: '/workspace',
         additionalEnvVars: {
@@ -941,6 +950,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'alice',
         // A target user's private 0700 home; service user cannot traverse it.
         cwd: '/home/alice',
@@ -994,6 +1004,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'other-user',
         cwd: '/workspace',
         additionalEnvVars: {},
@@ -1025,6 +1036,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: 'other-user',
         cwd: '/workspace',
         additionalEnvVars: {},
@@ -1100,6 +1112,7 @@ describe('MultiUserMode', () => {
 
       const request: AgentPtySpawnRequest = {
         type: 'agent',
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
         username: serverUsername,
         cwd: '/workspace',
         additionalEnvVars: {},
