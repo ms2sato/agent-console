@@ -34,6 +34,7 @@ const stubInstance: TerminalInstance = {
   subscribe: () => () => {},
   getSnapshot: () => EXITED_SNAPSHOT,
   sendInput: () => {},
+  sendUserInput: () => {},
   resize: () => {},
   forwardScroll: () => {},
   reportMouseButton: () => {},

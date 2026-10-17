@@ -123,7 +123,7 @@ describe('terminal-store OSC 52 clipboard', () => {
     _setClockForTest(() => now);
     const { instance, ws, events } = open();
     history(ws, '');
-    instance.sendInput('/copy\r');
+    instance.sendUserInput('/copy\r');
     now = 1_000 + CLIPBOARD_INTENT_WINDOW_MS;
     await output(ws, osc52(b64('inside')));
     now = 1_000 + CLIPBOARD_INTENT_WINDOW_MS + 1;
@@ -133,6 +133,44 @@ describe('terminal-store OSC 52 clipboard', () => {
       ['inside', true, 6_000],
       ['outside', false, 6_001],
     ]);
+  });
+
+  // Only typing and paste are intent. Wheel forwarding and mouse button reports are plain
+  // transport: a TUI with any-event mouse tracking would otherwise keep the gate open forever.
+  async function recentInputAfter(act: (instance: ReturnType<typeof open>['instance']) => void): Promise<boolean | undefined> {
+    let now = 1_000;
+    _setClockForTest(() => now);
+    const { instance, ws, events } = open();
+    history(ws, '');
+    // The TUI enables mouse tracking, so wheel and button reports are really sent.
+    await output(ws, '\x1b[?1000h\x1b[?1006h');
+    const sentBefore = ws.send.mock.calls.length;
+    act(instance);
+    expect(ws.send.mock.calls.length).toBeGreaterThan(sentBefore);
+    now = 1_100;
+    await output(ws, osc52(b64('copied')));
+    return events[0]?.recentInput;
+  }
+
+  it('a wheel report alone does not count as input', async () => {
+    expect(await recentInputAfter((i) => i.forwardScroll(3, { x: 1, y: 1 }))).toBe(false);
+  });
+
+  it('a mouse button report alone does not count as input', async () => {
+    expect(
+      await recentInputAfter((i) => {
+        i.reportMouseButton('press', { x: 1, y: 1 });
+        i.reportMouseButton('release', { x: 1, y: 1 });
+      }),
+    ).toBe(false);
+  });
+
+  it('a keystroke counts as input', async () => {
+    expect(await recentInputAfter((i) => i.sendUserInput('a'))).toBe(true);
+  });
+
+  it('a paste counts as input', async () => {
+    expect(await recentInputAfter((i) => i.paste('pasted text'))).toBe(true);
   });
 
   it('reports recentInput false when this client never sent input', async () => {

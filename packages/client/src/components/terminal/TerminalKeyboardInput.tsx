@@ -54,7 +54,7 @@ export const TerminalKeyboardInput = forwardRef<HTMLTextAreaElement, TerminalKey
     // stay active on both — desktop still needs the input path.
     const isMobile = useIsMobile();
 
-    const send = (data: string) => instance.sendInput(data);
+    const send = (data: string) => instance.sendUserInput(data);
 
     const clearTextarea = (el: HTMLTextAreaElement) => {
       el.value = '';

@@ -79,7 +79,10 @@ export interface TerminalInstance {
   /** Subscribe to OSC 52 clipboard writes from the live terminal (never to reads). */
   onClipboardWrite(listener: (event: ClipboardWriteEvent) => void): () => void;
   getSnapshot(): TerminalSnapshot;
+  /** Plain transport: send bytes to the worker. Not an intent signal (wheel and mouse reports use it). */
   sendInput(data: string): void;
+  /** Keyboard input or paste: sendInput plus the clipboard intent stamp (OSC 52 gate). */
+  sendUserInput(data: string): void;
   resize(cols: number, rows: number): void;
   /** Forward scroll to the app in alternate-screen mode. positive = toward newer. */
   forwardScroll(lines: number, cell: { x: number; y: number }): void;
@@ -380,8 +383,15 @@ class TerminalController implements TerminalInstance {
   };
 
   sendInput = (data: string): void => {
-    this.lastInputSentAtMs = clipboardClock();
     this.send({ type: 'input', data });
+  };
+
+  // Only typing and paste are intent for the OSC 52 gate. Wheel forwarding and mouse button
+  // reports go through sendInput: a TUI that enables any-event mouse tracking would otherwise
+  // keep the gate open permanently.
+  sendUserInput = (data: string): void => {
+    this.lastInputSentAtMs = clipboardClock();
+    this.sendInput(data);
   };
 
   resize = (cols: number, rows: number): void => {
@@ -447,9 +457,9 @@ class TerminalController implements TerminalInstance {
     const normalized = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
     if (this.terminal.modes.bracketedPasteMode) {
       // One frame so the app sees the paste atomically between the markers.
-      this.sendInput(`\x1b[200~${normalized}\x1b[201~`);
+      this.sendUserInput(`\x1b[200~${normalized}\x1b[201~`);
     } else {
-      this.sendInput(normalized);
+      this.sendUserInput(normalized);
     }
   };
 
@@ -1541,6 +1551,8 @@ class TerminalController implements TerminalInstance {
     const separator = data.indexOf(';');
     if (separator === -1) return;
     const payload = data.slice(separator + 1);
+    // The explicit `?` check states intent: a clipboard read request is refused by design, not
+    // by the accident that `?` is not valid base64 (the decode below is what enforces it).
     if (payload === '' || payload === '?') return;
     // Cheap pre-check before decoding: the largest base64 text a capped payload can have.
     if (payload.length > Math.ceil(CLIPBOARD_MAX_BYTES / 3) * 4) {
