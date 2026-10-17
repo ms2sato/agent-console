@@ -260,10 +260,11 @@ function baseResult(overrides: Partial<ImportResult> = {}): ImportResult {
 }
 
 // Reach (measured, each mutation applied alone to this file and restored):
-//   m1 drop the stderr tail from the describer -> the 50-line test and the cap test fail;
-//   m2 drop the signal derivation -> the "133 -> SIGTRAP" test fails and so do the two wiring tests that use it;
-//   m3 remove the `throw` in assertImportSafe -> the two wiring tests fail (the SIGTRAP scratch describer test
-//      alone would still pass: it tests the describer, not the wiring).
+//   m1 drop the stderr tail from the describer -> the 50-line test, the cap test and the exit-133 wiring test fail;
+//   m2 drop the signal derivation -> the "133 -> SIGTRAP" test and the exit-133 wiring test fail (the SIGTRAP
+//      self-kill scratch is reported by Bun as a signal, so it does not exercise the derivation);
+//   m3 remove the `throw` in assertImportSafe -> the two crash wiring tests fail (the SIGTRAP scratch describer
+//      test alone still passes: it tests the describer, not the wiring).
 describe('describeImportFailure (a recurrence of the exit-133 flake must name the crash)', () => {
   it('derives SIGTRAP from exit code 133 when no signal is reported, and shows the exit code', () => {
     const text = describeImportFailure('x.mjs', 'b', baseResult({ exitCode: 133 }));
