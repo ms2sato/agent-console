@@ -4,15 +4,26 @@ import { TODO_KINDS, TODO_SCOPES, TODO_STATUSES } from '../types/todo.js';
 /** Maximum title length: one scannable line (same cap as bookmark / artifact titles). */
 const MAX_TODO_TITLE_LENGTH = 200;
 
-const TodoCreatorSchema = v.union([
+/**
+ * Who created an item: an agent (the worker is the resolution
+ * notification's target) or a human, never both.
+ */
+export const TodoCreatorSchema = v.union([
   v.strictObject({ workerId: v.pipe(v.string(), v.minLength(1)) }),
   v.strictObject({ userId: v.pipe(v.string(), v.minLength(1)) }),
 ]);
 
+export type TodoCreator = v.InferOutput<typeof TodoCreatorSchema>;
+
 /**
- * Wire schema for the `Todo` shape. Mirrors `types/todo.ts`'s `Todo`
- * field-for-field so a server response that adds or drops a field fails to
- * parse instead of failing silently at the client (see
+ * A TODO item as it crosses the wire, and the wire schema its `Todo` type is
+ * derived from (the closed lists of `kind`, `scope` and `status` live in
+ * `types/todo.ts`). `sessionId` is the item's session: required for
+ * `scope = 'session'` and for an agent creator, provenance otherwise (a
+ * `global` item may still carry it).
+ *
+ * Strict, so a server response that adds or drops a field fails to parse
+ * instead of failing silently at the client (see
  * `.claude/rules/pre-pr-completeness.md` Q10).
  */
 export const TodoSchema = v.strictObject({
@@ -26,15 +37,20 @@ export const TodoSchema = v.strictObject({
   assigneeUserId: v.nullable(v.string()),
   status: v.picklist(TODO_STATUSES),
   resolutionText: v.nullable(v.string()),
+  // The human whose decision this is. For an agent-recorded resolution: the
+  // person the agent attributes the quoted words to.
   resolvedByUserId: v.nullable(v.string()),
+  // The agent worker that recorded a human's statement; null when a human
+  // resolved the item in the UI.
   resolvedByWorkerId: v.nullable(v.string()),
   resolvedAt: v.nullable(v.string()),
+  // Comments on the item, never moves; a derived count, not a stored column.
   commentCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
   createdAt: v.string(),
   updatedAt: v.string(),
 });
 
-export type TodoSchemaOutput = v.InferOutput<typeof TodoSchema>;
+export type Todo = v.InferOutput<typeof TodoSchema>;
 
 /** Wire schema for `GET /api/todos`'s list response. */
 export const TodosListResponseSchema = v.strictObject({
@@ -50,12 +66,19 @@ export const TodoResponseSchema = v.strictObject({
 
 export type TodoResponse = v.InferOutput<typeof TodoResponseSchema>;
 
-const TodoActivityActorSchema = v.union([
+/** Who acted: a human in the UI or an agent worker through MCP, never both. */
+export const TodoActivityActorSchema = v.union([
   v.strictObject({ userId: v.pipe(v.string(), v.minLength(1)) }),
   v.strictObject({ workerId: v.pipe(v.string(), v.minLength(1)) }),
 ]);
 
-/** Wire schema for a comment on an item. Mirrors `TodoCommentActivity` field-for-field. */
+export type TodoActivityActor = v.InferOutput<typeof TodoActivityActorSchema>;
+
+/**
+ * Words left on an item by a human (UI) or by an agent of the item's session
+ * (MCP). Each kind of activity has its own table (`todo_comments`,
+ * `todo_moves`) and its own member of {@link TodoActivitySchema}.
+ */
 export const TodoCommentActivitySchema = v.strictObject({
   id: v.pipe(v.string(), v.minLength(1)),
   todoId: v.pipe(v.string(), v.minLength(1)),
@@ -65,12 +88,20 @@ export const TodoCommentActivitySchema = v.strictObject({
   createdAt: v.string(),
 });
 
-/** Wire schema for a change of an item's session. Mirrors `TodoMoveActivity` field-for-field. */
+export type TodoCommentActivity = v.InferOutput<typeof TodoCommentActivitySchema>;
+
+/**
+ * A change of the item's session. `statement` is the human's quoted
+ * instruction when an agent moved the item on it (null when none was given);
+ * `attributedUserId` names whose words they are and is set only with a
+ * statement.
+ */
 export const TodoMoveActivitySchema = v.strictObject({
   id: v.pipe(v.string(), v.minLength(1)),
   todoId: v.pipe(v.string(), v.minLength(1)),
   kind: v.literal('moved'),
   actor: TodoActivityActorSchema,
+  // Null when the item had no session before the move.
   fromSessionId: v.nullable(v.string()),
   toSessionId: v.string(),
   statement: v.nullable(v.string()),
@@ -78,10 +109,15 @@ export const TodoMoveActivitySchema = v.strictObject({
   createdAt: v.string(),
 });
 
-/** One entry of an item's timeline, discriminated by `kind` (`TODO_ACTIVITY_KINDS`). */
+export type TodoMoveActivity = v.InferOutput<typeof TodoMoveActivitySchema>;
+
+/**
+ * One entry of an item's timeline, discriminated by `kind`
+ * (`TODO_ACTIVITY_KINDS`, the client's exhaustiveness constant).
+ */
 export const TodoActivitySchema = v.variant('kind', [TodoCommentActivitySchema, TodoMoveActivitySchema]);
 
-export type TodoActivitySchemaOutput = v.InferOutput<typeof TodoActivitySchema>;
+export type TodoActivity = v.InferOutput<typeof TodoActivitySchema>;
 
 /**
  * Wire schema for the detail responses (`GET /api/todos/:id`,

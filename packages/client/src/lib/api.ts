@@ -126,6 +126,8 @@ import type {
   WorktreeAcceptedResponse,
   WorktreeDeletionAcceptedResponse,
   SendWorkerMessageResponse,
+  NotificationsResponse,
+  NotificationsSeenResponse,
   LoginResponse,
   UpdateUserPreferencesResponse,
   ReviewStatusResponse,
@@ -133,7 +135,6 @@ import type {
   SuccessResponse,
   RegisterSharedAccountResponse,
 } from '@agent-console/shared';
-import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
 
 // Kept importable from here: the repository edit form types its optimistic cache update with it.
@@ -1397,7 +1398,7 @@ export async function deleteBookmark(id: string): Promise<void> {
  * cast, so a server/client field drift fails loudly instead of silently
  * dropping data (see `.claude/rules/pre-pr-completeness.md` Q10).
  */
-export async function fetchNotifications(): Promise<NotificationsResponseSchemaOutput> {
+export async function fetchNotifications(): Promise<NotificationsResponse> {
   const res = await api.notifications.$get();
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch notifications');
@@ -1411,7 +1412,7 @@ export async function fetchNotifications(): Promise<NotificationsResponseSchemaO
  * docs/design/notification-center.md R4.1/R2 and the server's future-
  * timestamp rejection).
  */
-export async function markNotificationsSeen(lastSeenAt: string): Promise<NotificationsSeenResponseSchemaOutput> {
+export async function markNotificationsSeen(lastSeenAt: string): Promise<NotificationsSeenResponse> {
   const res = await api.notifications.seen.$put({ json: { lastSeenAt } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to update notification cursor');

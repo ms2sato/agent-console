@@ -5,23 +5,34 @@ import {
   NotificationsResponseSchema,
   NotificationsSeenRequestSchema,
   NotificationsSeenResponseSchema,
+  type NotificationItem,
+  type NotificationsResponse,
+  type NotificationsSeenRequest,
+  type NotificationsSeenResponse,
 } from '../notification-item.js';
-import type {
-  NotificationItem,
-  NotificationsResponse,
-  NotificationsSeenRequest,
-  NotificationsSeenResponse,
-} from '../../types/notification-item.js';
 
-// Type pins (the `Assert<T extends true>` shape, not `declare const x: never`): the hand-written wire type and the
-// schema's inferred output must stay one shape in BOTH directions, so adding a notification kind to only one of the
-// two literals (the picklist or the union) is a compile error here, not a silently dropped item at the wire.
-// Reach (measured): removing 'todo-agent-replied' from the picklist fails `_NotificationItemIsSchemaOutput` (TS2344);
-// removing it from the hand-written union fails `_SchemaOutputIsNotificationItem` (TS2344).
+// Type pins (`Assert<T extends true>` over a two-sided `Equals`, not `declare const x: never`). The
+// types are derived from the schemas, so the pins fix the field sets and the one literal the client
+// consumer (`NotificationItemRow`) switches on.
+// Measured reach (`tsc --noEmit`, failing pins by name, control clean first): a field added to or
+// dropped from `NotificationItemSchema`: _NotificationItemKeys; `'x'` added to its kind picklist, or
+// 'todo-agent-replied' removed from it: _NotificationItemKind only; a field added to
+// `NotificationsResponseSchema`: _NotificationsResponseKeys; a field added to the seen request /
+// response schema: _NotificationsSeenRequestKeys / _NotificationsSeenResponseKeys respectively.
+// Each diagnostic sits on the pin's line and does not name the key.
 type Assert<T extends true> = T;
-type SchemaOutput = v.InferOutput<typeof NotificationItemSchema>;
-export type _NotificationItemIsSchemaOutput = Assert<NotificationItem extends SchemaOutput ? true : false>;
-export type _SchemaOutputIsNotificationItem = Assert<SchemaOutput extends NotificationItem ? true : false>;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _NotificationItemKeys = Assert<
+  Equals<keyof NotificationItem, 'kind' | 'id' | 'occurredAt' | 'title' | 'link' | 'outcome'>
+>;
+export type _NotificationItemKind = Assert<
+  Equals<NotificationItem['kind'], 'artifact-created' | 'worktree-deletion-finished' | 'todo-agent-replied'>
+>;
+export type _NotificationsResponseKeys = Assert<
+  Equals<keyof NotificationsResponse, 'items' | 'lastSeenAt' | 'unreadCount'>
+>;
+export type _NotificationsSeenRequestKeys = Assert<Equals<keyof NotificationsSeenRequest, 'lastSeenAt'>>;
+export type _NotificationsSeenResponseKeys = Assert<Equals<keyof NotificationsSeenResponse, 'lastSeenAt'>>;
 
 describe('NotificationItemSchema', () => {
   it('accepts a well-formed NotificationItem object (parse-path, closes the #926 silent-drop gap)', () => {
