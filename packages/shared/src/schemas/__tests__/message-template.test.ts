@@ -7,6 +7,8 @@ import {
   CreateMessageTemplateRequestSchema,
   UpdateMessageTemplateRequestSchema,
   ReorderMessageTemplatesRequestSchema,
+  MessageTemplateResponseSchema,
+  SuccessResponseSchema,
 } from '../message-template';
 
 describe('CreateMessageTemplateRequestSchema', () => {
@@ -149,5 +151,41 @@ describe('MessageTemplatesResponseSchema', () => {
     expect(v.safeParse(MessageTemplatesResponseSchema, { templates: [{ ...template, sortOrder: '0' }] }).success).toBe(false);
     expect(v.safeParse(MessageTemplatesResponseSchema, { templates: [{ ...template, extra: 1 }] }).success).toBe(false);
     expect(v.safeParse(MessageTemplatesResponseSchema, { templates: [], extra: 1 }).success).toBe(false);
+  });
+});
+
+describe('MessageTemplateResponseSchema', () => {
+  const template = {
+    id: 't1',
+    title: 'Title',
+    content: 'Body',
+    sortOrder: 0,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  it('accepts { template }', () => {
+    expect(v.safeParse(MessageTemplateResponseSchema, { template }).success).toBe(true);
+  });
+
+  it('rejects an extra field on the envelope and on the template', () => {
+    expect(v.safeParse(MessageTemplateResponseSchema, { template, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(MessageTemplateResponseSchema, { template: { ...template, extra: 1 } }).success).toBe(false);
+  });
+
+  it('rejects a dropped template', () => {
+    expect(v.safeParse(MessageTemplateResponseSchema, {}).success).toBe(false);
+  });
+});
+
+describe('SuccessResponseSchema', () => {
+  it('accepts { success: true }', () => {
+    expect(v.safeParse(SuccessResponseSchema, { success: true }).success).toBe(true);
+  });
+
+  it('rejects success: false, an extra field and a dropped field', () => {
+    expect(v.safeParse(SuccessResponseSchema, { success: false }).success).toBe(false);
+    expect(v.safeParse(SuccessResponseSchema, { success: true, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(SuccessResponseSchema, {}).success).toBe(false);
   });
 });

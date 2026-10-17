@@ -60,6 +60,10 @@ export {
   AuthUserSchema,
   CurrentUserResponseSchema,
   type CurrentUserResponse,
+  LoginResponseSchema,
+  type LoginResponseWire,
+  UpdateUserPreferencesResponseSchema,
+  type UpdateUserPreferencesResponseWire,
 } from './auth.js';
 
 // Agent schemas
@@ -183,6 +187,12 @@ export {
 export {
   CreateRepositoryRequestSchema,
   CloneRepositoryRequestSchema,
+  CloneRepositoryResponseSchema,
+  GenerateRepositoryDescriptionResponseSchema,
+  WorktreeAcceptedResponseSchema,
+  WorktreeDeletionAcceptedResponseSchema,
+  type WorktreeAcceptedResponse,
+  type WorktreeDeletionAcceptedResponse,
   CLONE_JOB_STATUS,
   CLONE_ERROR_CODES,
   CreateWorktreePromptRequestSchema,
@@ -243,6 +253,8 @@ export {
   RegisterSharedAccountRequestSchema,
   SharedAccountSummarySchema,
   ListSharedAccountsResponseSchema,
+  RegisterSharedAccountResponseSchema,
+  type RegisterSharedAccountResponse,
   type RegisterSharedAccountRequest,
   type SharedAccountSummary,
   type ListSharedAccountsResponse,
@@ -304,6 +316,9 @@ export {
 export {
   SendWorkerMessageRequestSchema,
   type SendWorkerMessageRequest,
+  WorkerMessageSchema,
+  SendWorkerMessageResponseSchema,
+  type SendWorkerMessageResponse,
 } from './message.js';
 
 // Notification schemas
@@ -321,6 +336,9 @@ export {
   ReviewQueueItemSchema,
   ReviewQueueGroupSchema,
   ReviewQueueResponseSchema,
+  ReviewCommentSchema,
+  ReviewStatusResponseSchema,
+  type ReviewStatusResponse,
 } from './review-queue.js';
 
 // Message template schemas
@@ -334,6 +352,10 @@ export {
   MessageTemplateSchema,
   MessageTemplatesResponseSchema,
   type MessageTemplatesResponse,
+  MessageTemplateResponseSchema,
+  type MessageTemplateResponse,
+  SuccessResponseSchema,
+  type SuccessResponse,
 } from './message-template.js';
 
 // Skill schemas

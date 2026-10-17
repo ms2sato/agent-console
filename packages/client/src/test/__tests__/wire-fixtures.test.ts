@@ -9,6 +9,7 @@ import {
   ReviewQueueResponseSchema,
   EmbeddedAgentsListResponseSchema,
   EmbeddedAgentResponseSchema,
+  SendWorkerMessageResponseSchema,
 } from '@agent-console/shared';
 import { completeWireBody } from '../wire-fixtures';
 
@@ -76,5 +77,15 @@ describe('completeWireBody', () => {
       ).success,
     ).toBe(true);
     expect(completeWireBody([])).toEqual([]);
+  });
+
+  it('completes a partial worker-message envelope and leaves a string message alone', () => {
+    expect(
+      v.safeParse(SendWorkerMessageResponseSchema, completeWireBody({ message: { id: 'm1' } })).success,
+    ).toBe(true);
+    expect(completeWireBody({ message: { id: 'm1', content: 'kept' } })).toMatchObject({
+      message: { id: 'm1', content: 'kept' },
+    });
+    expect(completeWireBody({ message: 'plain text' })).toEqual({ message: 'plain text' });
   });
 });

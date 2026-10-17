@@ -44,3 +44,13 @@ export const ListSharedAccountsResponseSchema = v.strictObject({
 });
 
 export type ListSharedAccountsResponse = v.InferOutput<typeof ListSharedAccountsResponseSchema>;
+
+/**
+ * Response schema for `POST /api/shared-accounts` (201).
+ */
+export const RegisterSharedAccountResponseSchema = v.strictObject({
+  username: v.string(),
+  userId: v.string(),
+});
+
+export type RegisterSharedAccountResponse = v.InferOutput<typeof RegisterSharedAccountResponseSchema>;

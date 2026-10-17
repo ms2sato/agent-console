@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import type { AuthUser } from '../../types/auth';
+import type { AuthUser, LoginResponse, UpdateUserPreferencesResponse } from '../../types/auth';
 import {
   LoginRequestSchema,
   ConfigResponseSchema,
   MePreferencesSchema,
   AuthUserSchema,
   CurrentUserResponseSchema,
+  LoginResponseSchema,
+  UpdateUserPreferencesResponseSchema,
 } from '../auth';
 
 describe('LoginRequestSchema', () => {
@@ -176,5 +178,52 @@ describe('CurrentUserResponseSchema', () => {
     expect(v.safeParse(CurrentUserResponseSchema, {}).success).toBe(false);
     expect(v.safeParse(CurrentUserResponseSchema, { user: { ...user, extra: 1 } }).success).toBe(false);
     expect(v.safeParse(CurrentUserResponseSchema, { user: null, extra: 1 }).success).toBe(false);
+  });
+});
+
+// `LoginResponse` / `UpdateUserPreferencesResponse` stay hand-written interfaces the server imports;
+// these pins fix each schema's output to its interface exactly. `Assert<Equals<...>>` fails `tsc`
+// (TS2344) under drift in either direction.
+export type _LoginResponseIsExact = Assert<Equals<v.InferOutput<typeof LoginResponseSchema>, LoginResponse>>;
+export type _UpdateUserPreferencesResponseIsExact = Assert<
+  Equals<v.InferOutput<typeof UpdateUserPreferencesResponseSchema>, UpdateUserPreferencesResponse>
+>;
+
+describe('LoginResponseSchema', () => {
+  const user = { id: 'u1', username: 'alice', homeDir: '/home/alice' };
+
+  it('accepts { user }', () => {
+    expect(v.safeParse(LoginResponseSchema, { user }).success).toBe(true);
+  });
+
+  it('rejects an extra field on the envelope and on the user', () => {
+    expect(v.safeParse(LoginResponseSchema, { user, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(LoginResponseSchema, { user: { ...user, extra: 1 } }).success).toBe(false);
+  });
+
+  it('rejects a missing or null user', () => {
+    expect(v.safeParse(LoginResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(LoginResponseSchema, { user: null }).success).toBe(false);
+  });
+});
+
+describe('UpdateUserPreferencesResponseSchema', () => {
+  const user = { id: 'u1', username: 'alice', homeDir: '/home/alice' };
+  const preferences = { disableClaudeAiConnectors: true };
+
+  it('accepts { user, preferences }', () => {
+    expect(v.safeParse(UpdateUserPreferencesResponseSchema, { user, preferences }).success).toBe(true);
+  });
+
+  it('rejects an extra field on the envelope and on the preferences', () => {
+    expect(v.safeParse(UpdateUserPreferencesResponseSchema, { user, preferences, extra: 1 }).success).toBe(false);
+    expect(
+      v.safeParse(UpdateUserPreferencesResponseSchema, { user, preferences: { ...preferences, extra: 1 } }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a dropped preferences (unlike the current-user response) and a null user', () => {
+    expect(v.safeParse(UpdateUserPreferencesResponseSchema, { user }).success).toBe(false);
+    expect(v.safeParse(UpdateUserPreferencesResponseSchema, { user: null, preferences }).success).toBe(false);
   });
 });

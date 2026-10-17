@@ -148,16 +148,18 @@ export interface CloneJobError {
 }
 
 /**
- * Response shape for `POST /api/repositories/clone`. The repo is
+ * Schema for `POST /api/repositories/clone`'s 202 response. The repo is
  * cloned asynchronously; the client polls `GET /api/repositories/clone/:jobId`
  * for the final status and the new `repositoryId`.
  */
-export interface CloneRepositoryResponse {
-  jobId: string;
+export const CloneRepositoryResponseSchema = v.strictObject({
+  jobId: v.string(),
   /** Always `null` at request time; populated on the status endpoint after
    * the background clone + register chain completes. */
-  repositoryId: null;
-}
+  repositoryId: v.null(),
+});
+
+export type CloneRepositoryResponse = v.InferOutput<typeof CloneRepositoryResponseSchema>;
 
 /**
  * Wire schema for `GET /api/repositories/clone/:jobId`.
@@ -422,10 +424,36 @@ export type GitHubIssueSummary = v.InferOutput<typeof GitHubIssueSummarySchema>;
 export type RefreshDefaultBranchResponse = v.InferOutput<typeof RefreshDefaultBranchResponseSchema>;
 export type RemoteBranchStatus = v.InferOutput<typeof RemoteBranchStatusSchema>;
 
-/** Response type for repository description generation endpoint */
-export interface GenerateRepositoryDescriptionResponse {
-  description: string;
-}
+/** Schema for `POST /api/repositories/:id/generate-description`'s response. */
+export const GenerateRepositoryDescriptionResponseSchema = v.strictObject({
+  description: v.string(),
+});
+
+export type GenerateRepositoryDescriptionResponse = v.InferOutput<
+  typeof GenerateRepositoryDescriptionResponseSchema
+>;
+
+/**
+ * Schema for the 202 body of the asynchronous worktree create and pull routes
+ * (`POST /:id/worktrees`, `POST /:id/worktrees/pull`): the work continues in the
+ * background and its outcome arrives over `/ws/app`.
+ */
+export const WorktreeAcceptedResponseSchema = v.strictObject({
+  accepted: v.literal(true),
+});
+
+/**
+ * Schema for the 202 body of `DELETE /:id/worktrees/*?async=true`. The
+ * synchronous 200 body (`{ success, cleanupCommandResult? }`) is a different
+ * contract and is not modelled here.
+ */
+export const WorktreeDeletionAcceptedResponseSchema = v.strictObject({
+  accepted: v.literal(true),
+  jobId: v.string(),
+});
+
+export type WorktreeAcceptedResponse = v.InferOutput<typeof WorktreeAcceptedResponseSchema>;
+export type WorktreeDeletionAcceptedResponse = v.InferOutput<typeof WorktreeDeletionAcceptedResponseSchema>;
 
 /**
  * Schema for `GET /api/repositories/:id`'s response. Composes the shared

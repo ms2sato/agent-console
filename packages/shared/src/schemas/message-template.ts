@@ -43,3 +43,24 @@ export const MessageTemplatesResponseSchema = v.strictObject({
 });
 
 export type MessageTemplatesResponse = v.InferOutput<typeof MessageTemplatesResponseSchema>;
+
+/**
+ * Schema for the single-template response of `POST /api/message-templates` (201)
+ * and `PUT /api/message-templates/:id`.
+ */
+export const MessageTemplateResponseSchema = v.strictObject({
+  template: MessageTemplateSchema,
+});
+
+/**
+ * Schema for the `{ success: true }` acknowledgement of
+ * `DELETE /api/message-templates/:id` and `PUT /api/message-templates/reorder`.
+ * `success` is the literal the routes write, not a boolean. Hoist to a shared
+ * file when a third route uses it.
+ */
+export const SuccessResponseSchema = v.strictObject({
+  success: v.literal(true),
+});
+
+export type MessageTemplateResponse = v.InferOutput<typeof MessageTemplateResponseSchema>;
+export type SuccessResponse = v.InferOutput<typeof SuccessResponseSchema>;

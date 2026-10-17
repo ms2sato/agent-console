@@ -115,3 +115,22 @@ export const CurrentUserResponseSchema = v.strictObject({
 });
 
 export type CurrentUserResponse = v.InferOutput<typeof CurrentUserResponseSchema>;
+
+/** Schema for `POST /api/auth/login`'s response. */
+export const LoginResponseSchema = v.strictObject({
+  user: AuthUserSchema,
+});
+
+export type LoginResponseWire = v.InferOutput<typeof LoginResponseSchema>;
+
+/**
+ * Schema for `PATCH /api/auth/me/preferences`'s response. Unlike
+ * `CurrentUserResponseSchema` the user is never null and `preferences` is
+ * always present: a different contract, not a reuse.
+ */
+export const UpdateUserPreferencesResponseSchema = v.strictObject({
+  user: AuthUserSchema,
+  preferences: MePreferencesSchema,
+});
+
+export type UpdateUserPreferencesResponseWire = v.InferOutput<typeof UpdateUserPreferencesResponseSchema>;
