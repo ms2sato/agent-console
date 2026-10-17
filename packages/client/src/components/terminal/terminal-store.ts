@@ -1534,6 +1534,8 @@ class TerminalController implements TerminalInstance {
    * trims its oldest line then, and the buffer length equals rows + SCROLLBACK at that
    * moment (measured on @xterm/headless 5.5). Other disposals (a scrollback clear that
    * shortens the buffer, a reset) are not evictions and must not advance liveEvictedUpTo.
+   * Reach limit: no reachable disposal fails this predicate on xterm 5.5; it is kept for a
+   * future xterm that disposes normal-buffer markers on other events.
    */
   private isScrollbackEviction(): boolean {
     const buffer = this.terminal.buffer.active;
