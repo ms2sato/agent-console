@@ -1,3 +1,54 @@
+/**
+ * Reach, measured by mutating the predicate once and running this file and
+ * phase6-analyze-run-cli.test.ts (which tests failed; no mutant passes):
+ *
+ * - self/other split dropped (self = every get_session_status):
+ *     computeNdjsonMetrics polling > counts a 12-poll turn as Self only for the matching sessionId
+ *     computeNdjsonMetrics polling > splits Cause A (>=10 polls in a turn) from Cause B and separates self from other
+ *     formatReadinessRows vocabulary > renders composite values
+ * - eligible: backoff condition dropped:
+ *     computeNdjsonMetrics create_timer > applies the eligibility condition and requires ok:false plus the literal for a refusal
+ * - eligible: interval limit 120 -> <=120:
+ *     boundary values of each predicate > a create_timer at exactly 120 s is not eligible, 119 s is
+ * - refused: literal check dropped (ok:false only):
+ *     computeNdjsonMetrics create_timer > applies the eligibility condition and requires ok:false plus the literal for a refusal
+ * - refused: ok:false check dropped:
+ *     computeNdjsonMetrics create_timer > applies the eligibility condition and requires ok:false plus the literal for a refusal
+ * - inline exited: any 'exited' key counts:
+ *     computeNdjsonMetrics run_process > counts inline exits only when exited is true
+ * - Cause A threshold >=10 -> >10:
+ *     boundary values of each predicate > 9 polls in one turn are Cause B, 10 are Cause A
+ * - Cause A counts only get_session_status (list_processes excluded):
+ *     boundary values of each predicate > 9 polls in one turn are Cause B, 10 are Cause A
+ *     computeNdjsonMetrics polling > splits Cause A (>=10 polls in a turn) from Cause B and separates self from other
+ * - dedup: LAST usage -> FIRST usage:
+ *     computeTranscriptCost > dedups by message.id taking the last usage, ignores non-assistant, keeps id-less records apart
+ * - dedup: every record is its own call:
+ *     computeTranscriptCost > dedups by message.id taking the last usage, ignores non-assistant, keeps id-less records apart
+ * - cost: assistant filter dropped:
+ *     computeTranscriptCost > dedups by message.id taking the last usage, ignores non-assistant, keeps id-less records apart
+ *     phase6-analyze-run CLI > exits 2 and shows UNAVAILABLE cost for a transcript without assistant records
+ * - price: cache write/read swapped:
+ *     boundary values of each predicate > prices each token class at its own rate (four different quantities)
+ * - substitute: send_session_message to self counts every send:
+ *     computeNdjsonMetrics misc counters > counts substitute channels, context usage and models
+ * - substitute: sleep match startsWith -> includes:
+ *     boundary values of each predicate > only a command that STARTS with sleep is a sleep wait
+ * - server clock: lag uses EARLIEST exit:
+ *     computeServerClock > measures lag from the latest exit and ignores ineligible timers and other sessions
+ * - server clock: isLive end>t -> end>=t:
+ *     boundary values of each predicate > server clock > an accept at the very millisecond of the exit is after the exit, not live
+ * - server clock: median of even count takes upper middle:
+ *     boundary values of each predicate > server clock > the median of an even count is the mean of the two middle values
+ * - server clock: <=2 s -> <2 s:
+ *     computeServerClock > counts durations at most 2 s inclusive
+ * - server clock: refused session filter dropped:
+ *     computeServerClock > measures lag from the latest exit and ignores ineligible timers and other sessions
+ * - tool name prefix strip dropped: every test that builds prefixed tool names fails (all of the tool-call describes and the CLI baseline case)
+ * - turns counts assistant-message too:
+ *     boundary values of each predicate > counts a turn only for user-message, not for assistant-message
+ */
+
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -389,5 +440,88 @@ describe('refusal literal drift', () => {
 
   it('is the three sentences joined with single spaces', () => {
     expect(TIMER_REFUSED_PROCESS_RUNNING_TEXT).toBe(SENTENCES.join(' '));
+  });
+});
+
+describe('boundary values of each predicate', () => {
+  it('a create_timer at exactly 120 s is not eligible, 119 s is', () => {
+    const at120 = call('t', `${PREFIX}create_timer`, { intervalSeconds: 120 });
+    const at119 = call('t', `${PREFIX}create_timer`, { intervalSeconds: 119 });
+    const m = computeNdjsonMetrics([at120, at119], SID);
+    expect(m.timers.create).toBe(2);
+    expect(m.createTimerEligible).toBe(1);
+  });
+
+  it('9 polls in one turn are Cause B, 10 are Cause A', () => {
+    const nine = Array.from({ length: 9 }, () => call('t9', `${PREFIX}list_processes`));
+    const ten = Array.from({ length: 10 }, () => call('t10', `${PREFIX}list_processes`));
+    const m = computeNdjsonMetrics([...nine, ...ten], SID);
+    expect(m.causeATurns).toBe(1);
+    expect(m.causeAPolls).toBe(10);
+    expect(m.causeBPolls).toBe(9);
+  });
+
+  it('counts a turn only for user-message, not for assistant-message', () => {
+    const m = computeNdjsonMetrics(
+      [{ type: 'user-message' }, { type: 'assistant-message' }, { type: 'assistant-message' }],
+      SID,
+    );
+    expect(m.turns).toBe(1);
+  });
+
+  it('only a command that STARTS with sleep is a sleep wait', () => {
+    const m = computeNdjsonMetrics(
+      [
+        call('t', `${PREFIX}run_process`, { command: '  sleep 30' }),
+        call('t', `${PREFIX}run_process`, { command: 'echo sleep' }),
+      ],
+      SID,
+    );
+    expect(m.substituteChannels.sleepRunProcess).toBe(1);
+  });
+
+  it('prices each token class at its own rate (four different quantities)', () => {
+    const cost = computeTranscriptCost([
+      {
+        type: 'assistant',
+        message: {
+          id: 'm',
+          usage: {
+            input_tokens: 1_000_000,
+            cache_creation_input_tokens: 2_000_000,
+            cache_read_input_tokens: 3_000_000,
+            output_tokens: 4_000_000,
+          },
+        },
+      },
+    ]);
+    expect(cost.status).toBe('ok');
+    if (cost.status !== 'ok') return;
+    // 1*3 + 2*3.75 + 3*0.30 + 4*15 = 3 + 7.5 + 0.9 + 60
+    expect(cost.usd).toBeCloseTo(71.4, 10);
+  });
+
+  describe('server clock', () => {
+    const sec = (s: number) => 1_000_000 + s * 1000;
+    const started = (p: string, s: number) => ({ msg: 'Process started', sessionId: SID, processId: p, time: sec(s) });
+    const exited = (p: string, s: number) => ({ msg: 'Process exited', processId: p, time: sec(s) });
+    const timer = (s: number) => ({ msg: 'Timer created', sessionId: SID, intervalSeconds: 30, time: sec(s) });
+
+    it('an accept at the very millisecond of the exit is after the exit, not live', () => {
+      const clock = computeServerClock([started('p', 0), exited('p', 5), timer(5)], SID);
+      expect(clock.acceptedWhileLive).toBe(0);
+      expect(clock.acceptedAfterExit).toBe(1);
+      expect(clock.exitToAcceptLag.medianSeconds).toBe(0);
+    });
+
+    it('the median of an even count is the mean of the two middle values', () => {
+      const clock = computeServerClock(
+        [started('p', 0), exited('p', 1), timer(3), timer(5), timer(9), timer(13)],
+        SID,
+      );
+      // lags 2, 4, 8, 12 -> median (4 + 8) / 2 = 6
+      expect(clock.exitToAcceptLag.medianSeconds).toBe(6);
+      expect(clock.exitToAcceptLag.maxSeconds).toBe(12);
+    });
   });
 });
