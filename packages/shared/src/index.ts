@@ -20,8 +20,6 @@ export * from './types/timer.js';
 export * from './types/conditional-wakeup.js';
 export * from './types/interactive-process.js';
 export * from './types/message-contracts.js';
-export * from './types/artifact.js';
-export * from './types/bookmark.js';
 export * from './types/todo.js';
 export * from './utils/ndjson-lines.js';
 export * from './utils/agent-capabilities.js';

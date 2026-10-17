@@ -113,7 +113,7 @@ describe('SqliteArtifactRepository', () => {
       // and owner-only delete -- see repositories/artifact-repository.ts).
       // `content`/`sourceSessionId` still never leak; `userId` is NOT part
       // of the wire `Artifact` type and must never be serialized into an
-      // HTTP response (see packages/shared/src/types/artifact.ts).
+      // HTTP response (see packages/shared/src/schemas/artifact.ts).
       expect(Object.keys(artifact).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'sourceSessionId', 'title', 'updatedAt', 'userId']);
 
       const written = await readArtifactFile('user-1', 'artifact-1');

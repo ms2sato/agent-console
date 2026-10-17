@@ -52,7 +52,7 @@ describe('toWireBookmark', () => {
 // shape, so the `Equals` comparison is real.
 //
 // Re-measured with the fix in place. Adding a scratch field to the
-// `Bookmark` interface (`packages/shared/src/types/bookmark.ts`) and running
+// `Bookmark` interface (`packages/shared/src/schemas/bookmark.ts`) and running
 // `bunx tsc --noEmit` from `packages/server` produces:
 //
 //   src/database/mappers.ts(869,3): error TS2741: Property 'extraScratchField' is missing in type '{ id: string; url: string; title: string | null; createdAt: string; origin: "user" | "agent"; }' but required in type 'Bookmark'.

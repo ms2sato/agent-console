@@ -39,6 +39,8 @@ describe('shared index exports', () => {
       'AuthUserSchema',
       'RepositorySlackIntegrationSchema',
       'WorkerMessageSchema',
+      'ArtifactSchema',
+      'BookmarkSchema',
     ] as const) {
       expect(mod[name]).toBeDefined();
     }
