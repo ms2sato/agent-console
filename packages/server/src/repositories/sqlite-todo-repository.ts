@@ -116,6 +116,8 @@ export class SqliteTodoRepository implements TodoRepository {
       })
       .where('id', '=', id)
       .where('status', '=', 'open')
+      // IS compares NULL as well as values, so a session-less item can be expected.
+      .where(sql<boolean>`session_id IS ${params.expectedSessionId}`)
       .executeTakeFirst();
     if (affectedRows(result) === 0n) return null;
     return this.findById(id, executor);

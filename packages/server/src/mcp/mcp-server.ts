@@ -3292,9 +3292,20 @@ export function createMcpApp(deps: McpDependencies): Hono {
           }
         }
 
-        const adopted = await todoRepository.adopt(id, { sessionId, workerId });
+        const adopted = await todoRepository.adopt(id, { sessionId, workerId, expectedSessionId: todo.sessionId });
         if (!adopted) {
-          return errorResult(`Cannot adopt ${id}: it is no longer an open item`);
+          // The write is a compare-and-set on the session the item was read in; say which condition failed.
+          const current = await todoRepository.findById(id);
+          if (!current) {
+            return errorResult(`Todo not found: ${id}`);
+          }
+          if (current.status !== 'open') {
+            return errorResult(`Cannot adopt ${id}: its status is ${current.status}, only an open item can be adopted`);
+          }
+          if (current.sessionId === sessionId) {
+            return textResult({ todo: current });
+          }
+          return errorResult(`Cannot adopt ${id}: the item moved while you were adopting it; list_todos again`);
         }
 
         logger.info({ todoId: id, fromSessionId: todo.sessionId, sessionId, workerId }, 'Todo adopted via MCP');

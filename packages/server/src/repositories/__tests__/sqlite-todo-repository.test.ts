@@ -146,7 +146,7 @@ describe('SqliteTodoRepository', () => {
       );
       await new Promise((r) => setTimeout(r, 5));
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', expectedSessionId: 'session-1' });
 
       expect(adopted).toMatchObject({
         sessionId: 'session-2',
@@ -162,14 +162,43 @@ describe('SqliteTodoRepository', () => {
     it('moves only session_id of a human-created item: its creator stays the human and no worker is set', async () => {
       await repository.create(params({ createdBy: { userId: 'user-1' } }));
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', expectedSessionId: 'session-1' });
 
       expect(adopted).toMatchObject({ sessionId: 'session-2', createdBy: { userId: 'user-1' } });
       expect(adopted!.createdBy).not.toHaveProperty('workerId');
     });
 
+    it('a stale expectedSessionId (the item moved since it was read) returns null and leaves the row untouched', async () => {
+      await repository.create(params({ scope: 'global', sessionId: 'session-1', createdBy: { workerId: 'worker-1' } }));
+      const before = await repository.findById('todo-1');
+
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', expectedSessionId: 'session-2' });
+
+      expect(adopted).toBeNull();
+      expect(await repository.findById('todo-1')).toEqual(before);
+    });
+
+    it('a stale NULL expectedSessionId (the item has a session now) returns null and leaves the row untouched', async () => {
+      await repository.create(params({ scope: 'global', sessionId: 'session-1', createdBy: { userId: 'user-1' } }));
+      const before = await repository.findById('todo-1');
+
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', expectedSessionId: null });
+
+      expect(adopted).toBeNull();
+      expect(await repository.findById('todo-1')).toEqual(before);
+    });
+
+    it('an item with no session is adopted when NULL is expected, and refused when a session is expected', async () => {
+      await repository.create(params({ scope: 'global', sessionId: null, createdBy: { userId: 'user-1' } }));
+
+      expect(await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', expectedSessionId: 'session-1' })).toBeNull();
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', expectedSessionId: null });
+
+      expect(adopted).toMatchObject({ sessionId: 'session-3', createdBy: { userId: 'user-1' } });
+    });
+
     it('returns null for an unknown id and for every non-open status, leaving the row untouched', async () => {
-      expect(await repository.adopt('missing', { sessionId: 'session-2', workerId: 'worker-2' })).toBeNull();
+      expect(await repository.adopt('missing', { sessionId: 'session-2', workerId: 'worker-2', expectedSessionId: 'session-1' })).toBeNull();
 
       for (const [id, close] of [
         ['done', () => repository.resolve('done', { text: 'ok', resolvedByUserId: 'user-1' })],
@@ -180,7 +209,7 @@ describe('SqliteTodoRepository', () => {
         await close();
         const before = await repository.findById(id);
 
-        expect(await repository.adopt(id, { sessionId: 'session-2', workerId: 'worker-2' })).toBeNull();
+        expect(await repository.adopt(id, { sessionId: 'session-2', workerId: 'worker-2', expectedSessionId: 'session-1' })).toBeNull();
         expect(await repository.findById(id)).toEqual(before);
       }
     });

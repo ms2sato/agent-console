@@ -385,6 +385,94 @@ describe('adopt_todo', () => {
     });
   });
 
+  describe('concurrent adoption (compare-and-set on the session the item was read in)', () => {
+    it('two callers adopting one session-less global item: exactly one wins, the other is told it moved, and the row names the winner', async () => {
+      const creator = await createOwnedSession(9061, 'adopt-owner-cas');
+      const b = await createOwnedSession(9062, 'adopt-owner-cas-b');
+      const c = await createOwnedSession(9063, 'adopt-owner-cas-c');
+      await todoRepository.create({
+        id: 'contested',
+        kind: 'action',
+        scope: 'global',
+        title: 'contested',
+        body: 'b',
+        sessionId: null,
+        createdBy: { userId: creator.userId },
+        assigneeUserId: null,
+      });
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: broadcast });
+
+      const [rb, rc] = await Promise.all([
+        adoptViaTool({ id: 'contested', sessionId: b.sessionId, workerId: b.workerId }),
+        adoptViaTool({ id: 'contested', sessionId: c.sessionId, workerId: c.workerId }),
+      ]);
+
+      const results = [
+        { who: b, response: rb },
+        { who: c, response: rc },
+      ];
+      const winners = results.filter((r) => r.response.result?.isError !== true);
+      const losers = results.filter((r) => r.response.result?.isError === true);
+      expect(winners).toHaveLength(1);
+      expect(losers).toHaveLength(1);
+      expect(await toolError(losers[0]!.response)).toContain('moved while you were adopting it');
+      const winner = winners[0]!.who;
+      expect(await todoRepository.findById('contested')).toMatchObject({ sessionId: winner.sessionId });
+      expect(broadcast.mock.calls.map((call) => call[0])).toEqual([
+        { type: 'todos-updated', sessionId: null },
+        { type: 'todos-updated', sessionId: winner.sessionId },
+      ]);
+    });
+
+    it('two callers adopting one agent-created item: the loser is refused and the winner\'s worker is the delivery target', async () => {
+      const a = await createOwnedSession(9064, 'adopt-owner-cas-d');
+      const b = await createOwnedSession(9065, 'adopt-owner-cas-e');
+      const c = await createOwnedSession(9066, 'adopt-owner-cas-f');
+      await seedAgentItem(a, 'contested-agent', 'global');
+
+      const [rb, rc] = await Promise.all([
+        adoptViaTool({ id: 'contested-agent', sessionId: b.sessionId, workerId: b.workerId }),
+        adoptViaTool({ id: 'contested-agent', sessionId: c.sessionId, workerId: c.workerId }),
+      ]);
+
+      const errors = [rb, rc].filter((r) => r.result?.isError === true);
+      expect(errors).toHaveLength(1);
+      expect(await toolError(errors[0]!)).toContain('moved while you were adopting it');
+      const stored = (await todoRepository.findById('contested-agent'))!;
+      const winner = [b, c].find((w) => w.sessionId === stored.sessionId)!;
+      expect(stored.createdBy).toEqual({ workerId: winner.workerId });
+    });
+
+    it('the same caller adopting twice concurrently succeeds both times and emits one pair of frames', async () => {
+      const a = await createOwnedSession(9069, 'adopt-owner-cas-i');
+      const b = await createOwnedSession(9070, 'adopt-owner-cas-j');
+      await seedAgentItem(a, 'twice', 'global');
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: broadcast });
+
+      const responses = await Promise.all([
+        adoptViaTool({ id: 'twice', sessionId: b.sessionId, workerId: b.workerId }),
+        adoptViaTool({ id: 'twice', sessionId: b.sessionId, workerId: b.workerId }),
+      ]);
+
+      expect(responses.map((r) => r.result?.isError)).toEqual([undefined, undefined]);
+      expect(broadcast).toHaveBeenCalledTimes(2);
+    });
+
+    it('an idempotent call on an item dismissed since the caller adopted it is refused, not a silent success', async () => {
+      const a = await createOwnedSession(9067, 'adopt-owner-cas-g');
+      const b = await createOwnedSession(9068, 'adopt-owner-cas-h');
+      await seedAgentItem(a, 'then-dismissed', 'global');
+      await adoptViaTool({ id: 'then-dismissed', sessionId: b.sessionId, workerId: b.workerId });
+      await todoRepository.dismiss('then-dismissed');
+
+      const error = await toolError(await adoptViaTool({ id: 'then-dismissed', sessionId: b.sessionId, workerId: b.workerId }));
+
+      expect(error).toContain('dismissed');
+    });
+  });
+
   describe('the adopting worker must be able to hear the resolution', () => {
     it('a git-diff worker of the caller session is refused with create_todo\'s text; the row, status and broadcast are untouched', async () => {
       const a = await createOwnedSession(9051, 'adopt-owner-x');

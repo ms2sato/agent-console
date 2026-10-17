@@ -41,6 +41,12 @@ export interface UpdateTodoParams {
 export interface AdoptTodoParams {
   sessionId: string;
   workerId: string;
+  /**
+   * The `session_id` the caller read the item under (null for a session-less item).
+   * The write applies only while the item is still there, so a concurrent adoption
+   * is never overwritten.
+   */
+  expectedSessionId: string | null;
 }
 
 export interface ResolveTodoParams {
@@ -106,7 +112,7 @@ export interface TodoRepository {
    * Re-target an OPEN item to another session: `session_id` always;
    * `created_worker_id` only when the item is agent-created, so the creator's
    * kind never changes (CHECK `todos_creator_check`). Null when the item does
-   * not exist or is not open.
+   * not exist, is not open, or no longer has `params.expectedSessionId` (compare-and-set).
    */
   adopt(id: string, params: AdoptTodoParams, executor?: TodoExecutor): Promise<Todo | null>;
 
