@@ -1,7 +1,28 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { BookmarkSchema, BookmarksListResponseSchema, CreateBookmarkRequestSchema } from '../bookmark.js';
-import type { Bookmark } from '../../types/bookmark.js';
+import {
+  BookmarkSchema,
+  BookmarksListResponseSchema,
+  CreateBookmarkRequestSchema,
+  type Bookmark,
+} from '../bookmark.js';
+
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+// Pins. `Bookmark` is derived from `BookmarkSchema`, so the schema is the only place a field is
+// edited. `_BookmarkKeys` compares `keyof` with an explicit literal union, so a field added to
+// (or removed from) the schema alone is a `tsc` failure (TS2344). `_BookmarkOriginIsUserOrAgent`
+// pins the one member whose shape the schema narrows (a picklist). `Assert<Equals<...>>` is the
+// form that fails under drift; a `declare const x: never` form would type-check under it.
+//
+// Measured reach (`tsc` diagnostics, control clean first), two-sided: adding a field to, or removing
+// one from, `BookmarkSchema` fails `_BookmarkKeys` (TS2344) plus the typed fixtures below (TS2741 on
+// an added field, TS2353 on a removed one); widening `origin` to `v.string()` fails
+// `_BookmarkOriginIsUserOrAgent` (TS2344) and nothing else, and so does adding a third picklist
+// member. Each pin's diagnostic sits on the pin's line and does not name the key.
+export type _BookmarkKeys = Assert<Equals<keyof Bookmark, 'id' | 'url' | 'title' | 'createdAt' | 'origin'>>;
+export type _BookmarkOriginIsUserOrAgent = Assert<Equals<Bookmark['origin'], 'user' | 'agent'>>;
 
 describe('BookmarkSchema', () => {
   it('accepts a well-formed Bookmark object (parse-path, closes the #926 silent-drop gap)', () => {

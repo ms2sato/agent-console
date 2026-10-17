@@ -1,21 +1,31 @@
 import * as v from 'valibot';
 
 /**
- * Wire schema for the `Bookmark` summary shape. Mirrors
- * `types/bookmark.ts`'s `Bookmark` interface field-for-field so a server
- * response that silently drops/adds a field fails to parse instead of
- * failing silently at the client (see `.claude/rules/pre-pr-completeness.md`
- * Q10, the #926 lesson).
+ * A registered bookmark: an arbitrary URL (plus optional title) saved from
+ * a session, and the wire schema its `Bookmark` type is derived from.
+ *
+ * This is the wire summary shape only, mirroring `ArtifactSchema`'s
+ * `Artifact` shape: it deliberately excludes `userId` (owner identity never
+ * crosses the wire) and `sourceSessionId` (provenance only, server-internal
+ * -- see `repositories/bookmark-repository.ts`'s `BookmarkRecord`). `origin`
+ * IS included on the wire -- it is provenance the client renders (an
+ * "agent"-registered badge), not authorization data (see
+ * `docs/design/session-bookmarks.md` §4.2).
+ *
+ * Strict, so a server response that silently drops/adds a field fails to
+ * parse instead of failing silently at the client (see
+ * `.claude/rules/pre-pr-completeness.md` Q10).
  */
 export const BookmarkSchema = v.strictObject({
   id: v.pipe(v.string(), v.minLength(1)),
   url: v.pipe(v.string(), v.minLength(1)),
   title: v.nullable(v.string()),
   createdAt: v.string(),
+  // Who registered this bookmark: through the sidebar form, or via an MCP tool call.
   origin: v.picklist(['user', 'agent']),
 });
 
-export type BookmarkSchemaOutput = v.InferOutput<typeof BookmarkSchema>;
+export type Bookmark = v.InferOutput<typeof BookmarkSchema>;
 
 /**
  * Wire schema for `GET /api/bookmarks`'s list response. Parsed at the

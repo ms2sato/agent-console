@@ -30,7 +30,7 @@ export interface UpdateArtifactParams {
 /**
  * Server-internal artifact record: the wire `Artifact` summary plus
  * `userId`, the owning user's id. `userId` MUST NEVER be forwarded into a
- * wire response (see `packages/shared/src/types/artifact.ts`'s wire-shape
+ * wire response (see `packages/shared/src/schemas/artifact.ts`'s wire-shape
  * JSDoc, which deliberately excludes it) -- it exists here only so route
  * handlers can resolve the on-disk file location (`lib/artifact-storage.ts`
  * keys files by `userId`) and enforce owner-only deletion

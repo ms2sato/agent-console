@@ -814,7 +814,7 @@ export function toMessageTemplate(row: MessageTemplateRow): MessageTemplate {
  * Convert a database artifact row to the shared `Artifact` wire summary
  * (id, title, createdAt, sizeBytes). Deliberately excludes `user_id` and
  * `source_session_id` -- neither belongs in the wire type (see
- * `packages/shared/src/types/artifact.ts`); content never lives in this row
+ * `packages/shared/src/schemas/artifact.ts`); content never lives in this row
  * at all (see `lib/artifact-storage.ts`).
  *
  * @param row - The database artifact row
@@ -859,7 +859,7 @@ const VALID_BOOKMARK_ORIGINS = ['user', 'agent'] as const;
  * Convert a database bookmark row to the shared `Bookmark` wire summary
  * (id, url, title, createdAt, origin). Deliberately excludes `user_id` and
  * `source_session_id` -- neither belongs in the wire type (see
- * `packages/shared/src/types/bookmark.ts`).
+ * `packages/shared/src/schemas/bookmark.ts`).
  *
  * @param row - The database bookmark row
  * @returns The Bookmark object
