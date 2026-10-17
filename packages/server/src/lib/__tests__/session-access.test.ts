@@ -1,11 +1,32 @@
 import { describe, it, expect } from 'bun:test';
-import { assertCanOperateSession, canOperateSession } from '../session-access.js';
+import { assertCanOperateSession, canOperateSession, sessionVisibleToUser } from '../session-access.js';
 import { ForbiddenError } from '../errors.js';
 import * as path from 'path';
 
 const AUTH_USER = { id: 'user-1' };
 const SHARED_REGISTRY_NONE = { isSharedUserId: () => false };
 const SHARED_REGISTRY_MATCHES = { isSharedUserId: (id: string) => id === 'shared-user' };
+
+describe('sessionVisibleToUser', () => {
+  it('is true for the session owner', () => {
+    expect(sessionVisibleToUser({ createdBy: 'user-1' }, 'user-1', SHARED_REGISTRY_NONE)).toBe(true);
+  });
+
+  it('is true for a session created by a shared account', () => {
+    expect(sessionVisibleToUser({ createdBy: 'shared-user' }, 'user-1', SHARED_REGISTRY_MATCHES)).toBe(true);
+  });
+
+  it('is false for another user\'s non-shared session', () => {
+    expect(sessionVisibleToUser({ createdBy: 'someone-else' }, 'user-1', SHARED_REGISTRY_MATCHES)).toBe(false);
+  });
+
+  it('is false when createdBy is undefined, and the registry is not even asked', () => {
+    const asked: string[] = [];
+    const registry = { isSharedUserId: (id: string) => { asked.push(id); return true; } };
+    expect(sessionVisibleToUser({ createdBy: undefined }, 'user-1', registry)).toBe(false);
+    expect(asked).toEqual([]);
+  });
+});
 
 describe('canOperateSession', () => {
   it('returns true for the session owner in multi-user mode', () => {

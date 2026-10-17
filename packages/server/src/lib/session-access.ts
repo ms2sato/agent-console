@@ -1,6 +1,22 @@
 import { ForbiddenError } from './errors.js';
 
 /**
+ * Single writer of the "owned by the caller, or created by a shared account" rule.
+ * `canOperateSession` applies it in multi-user mode; the Todo list's default view uses it
+ * to choose the sessions whose items show. `createdBy` is nullable (legacy sessions): such a
+ * session is visible to nobody by this rule.
+ */
+export function sessionVisibleToUser(
+  session: { createdBy?: string },
+  userId: string,
+  sharedAccountRegistry: { isSharedUserId(userId: string): boolean },
+): boolean {
+  const isOwner = session.createdBy === userId;
+  const isSharedSession = session.createdBy != null && sharedAccountRegistry.isSharedUserId(session.createdBy);
+  return isOwner || isSharedSession;
+}
+
+/**
  * Single writer of the "can this authenticated caller operate on this
  * session" predicate, extracted from the three sites in `routes/sessions.ts`
  * that previously each inlined the identical `isOwner`/`isSharedSession`
@@ -27,9 +43,7 @@ export function canOperateSession(
   authMode: 'none' | 'multi-user',
 ): boolean {
   if (authMode !== 'multi-user') return true;
-  const isOwner = session.createdBy === userId;
-  const isSharedSession = session.createdBy != null && sharedAccountRegistry.isSharedUserId(session.createdBy);
-  return isOwner || isSharedSession;
+  return sessionVisibleToUser(session, userId, sharedAccountRegistry);
 }
 
 /**

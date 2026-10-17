@@ -23,7 +23,9 @@ import {
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppBindings, AppContext } from '@agent-console/server/src/app-context';
 import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
-import { ApiError, commentTodo, fetchTodoDetail } from '@agent-console/client/src/lib/api';
+import { ApiError, commentTodo, fetchTodoDetail, fetchTodos, moveTodo } from '@agent-console/client/src/lib/api';
+import { serverConfig } from '@agent-console/server/src/lib/server-config';
+import { SharedAccountRegistry } from '@agent-console/server/src/services/shared-account-registry';
 
 import { createFetchBridge } from './test-utils';
 
@@ -335,6 +337,111 @@ describe('Client-Server Boundary: human TODO list', () => {
 
       expect(error).toBeInstanceOf(ApiError);
       expect(error).toMatchObject({ message: 'Todo not found', status: 404 });
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it('?view=mine-and-shared over the real wiring lists my own and shared-session items, hides a foreign one, and parses strictly (multi-user)', async () => {
+    // The caller is whoever the test context authenticates; two other users own the other sessions.
+    const me = ctx.userMode.authenticate(() => undefined)!;
+    const bob = await ctx.userRepository.upsertByOsUid(54322, 'bob', '/home/bob');
+    const sharedAccount = await ctx.userRepository.upsertByOsUid(6000, 'shared-user', '/home/shared-user');
+    const registry = await SharedAccountRegistry.createFromDb({
+      sharedAccountRepository: {
+        list: async () => [{ userId: sharedAccount.id, username: 'shared-user', createdAt: '2024-01-01T00:00:00.000Z', createdBy: null }],
+        register: async () => {},
+        unregister: async () => true,
+        countBoundRepositories: async () => 0,
+        countSessions: async () => 0,
+      },
+      userRepository: ctx.userRepository,
+      lookupOsUser: () => Promise.resolve({ uid: 6000, homeDir: '/home/shared-user' }),
+    });
+    expect(registry.isSharedUserId(sharedAccount.id)).toBe(true);
+    const viewApp = await createTestApp({ ...ctx, sharedAccountRegistry: registry });
+
+    const spec = { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' } as const;
+    const mine = await ctx.sessionManager.createSession(spec, { createdBy: me.id });
+    const shared = await ctx.sessionManager.createSession(spec, { createdBy: sharedAccount.id });
+    const foreign = await ctx.sessionManager.createSession(spec, { createdBy: bob.id });
+    const seed = (id: string, sessionId: string) =>
+      ctx.todoRepository.create({
+        id, kind: 'action', scope: 'session', title: id, body: '', sessionId, createdBy: { userId: bob.id }, assigneeUserId: null,
+      });
+    await seed('in-my-session', mine.id);
+    await seed('in-shared-session', shared.id);
+    await seed('in-foreign-session', foreign.id);
+
+    const original = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    const bridge = createFetchBridge(viewApp);
+    try {
+      const everyone = await fetchTodos();
+      const view = await fetchTodos({ view: 'mine-and-shared' });
+
+      expect(everyone.map((t) => t.id).sort()).toEqual(['in-foreign-session', 'in-my-session', 'in-shared-session']);
+      expect(view.map((t) => t.id).sort()).toEqual(['in-my-session', 'in-shared-session']);
+      expect(bridge.capturedRequests.map((r) => r.url.includes('view=mine-and-shared'))).toEqual([false, true]);
+    } finally {
+      bridge.restore();
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = original;
+    }
+  });
+
+  it('moveTodo through the real POST /:id/move route records a human move that fetchTodoDetail parses (actor.userId, no statement)', async () => {
+    const me = ctx.userMode.authenticate(() => undefined)!;
+    const spec = { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' } as const;
+    const from = await ctx.sessionManager.createSession(spec, { createdBy: me.id });
+    const to = await ctx.sessionManager.createSession(spec, { createdBy: me.id });
+    const item = await ctx.todoRepository.create({
+      id: 'movable',
+      kind: 'action',
+      scope: 'session',
+      title: 'Move me',
+      body: '',
+      sessionId: from.id,
+      createdBy: { workerId: from.workers[0]!.id },
+      assigneeUserId: null,
+    });
+
+    const bridge = createFetchBridge(app);
+    try {
+      const moved = await moveTodo(item.id, { sessionId: to.id });
+      const detail = await fetchTodoDetail(item.id);
+
+      expect(moved).toMatchObject({ id: item.id, sessionId: to.id, status: 'open' });
+      expect(detail.todo).toEqual(moved);
+      expect(detail.activities).toHaveLength(1);
+      expect(detail.activities[0]).toMatchObject({
+        kind: 'moved',
+        actor: { userId: me.id },
+        fromSessionId: from.id,
+        toSessionId: to.id,
+        statement: null,
+        attributedUserId: null,
+      });
+      expect(bridge.capturedRequests.map((r) => `${r.method} ${r.url}`)).toEqual([
+        `POST /api/todos/${item.id}/move`,
+        `GET /api/todos/${item.id}`,
+      ]);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it('moveTodo surfaces the real route\'s refusal text for a closed item (ApiError 409)', async () => {
+    const created = v.parse(TodoResponseSchema, await post('/api/todos', { kind: 'action', title: 'a', body: '' })).todo;
+    await post(`/api/todos/${created.id}/dismiss`, {});
+    const bridge = createFetchBridge(app);
+    try {
+      const error = await moveTodo(created.id, { sessionId: 'whatever' }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error).toMatchObject({ status: 409, message: expect.stringContaining('Only an open item can be moved') });
     } finally {
       bridge.restore();
     }

@@ -3330,7 +3330,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Refused: an unknown id, an item that is not open, and an item of a session owned by another user unless ' +
       "you pass `statement`, the human's own words instructing the move, quoted (what they typed or said, never an " +
       'instruction you inferred); it is recorded on the item. The ownership check needs the creating session to still ' +
-      'exist and the caller to carry a bearer token; without either it cannot run and the adoption proceeds.',
+      'exist and the caller to carry a bearer token; without either it cannot run and the adoption proceeds. ' +
+      'If another session or worker took the item between your read and the write, the call is refused ("moved while you were adopting it"); list_todos again.',
     {
       id: z.string().describe('The id of the open item to take over (from `list_todos` or the handoff memo).'),
       sessionId: z.string().optional().describe(
@@ -3437,11 +3438,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
           workerId,
           actor: { workerId },
           expectedSessionId: todo.sessionId,
+          expectedWorkerId: 'workerId' in todo.createdBy ? todo.createdBy.workerId : null,
           statement,
           statedBy: attributedUserId,
         });
         if (!adopted) {
-          // The write is a compare-and-set on the session the item was read in; say which condition failed.
+          // The write is a compare-and-set on the session and worker the item was read under; say which condition failed.
           const current = await todoRepository.findById(id);
           if (!current) {
             return errorResult(`Todo not found: ${id}`);
@@ -3449,7 +3451,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
           if (current.status !== 'open') {
             return errorResult(`Cannot adopt ${id}: its status is ${current.status}, only an open item can be adopted`);
           }
-          if (current.sessionId === sessionId) {
+          // Already exactly what this call wanted (same session, and the same worker or none): success.
+          // The same session with ANOTHER worker is a lost race, not a success.
+          if (current.sessionId === sessionId && (!('workerId' in current.createdBy) || current.createdBy.workerId === workerId)) {
             return textResult({ todo: current });
           }
           return errorResult(`Cannot adopt ${id}: the item moved while you were adopting it; list_todos again`);

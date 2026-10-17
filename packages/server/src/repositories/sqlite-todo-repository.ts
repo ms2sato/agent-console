@@ -100,6 +100,17 @@ export class SqliteTodoRepository implements TodoRepository {
     if (filters.scope) query = query.where('scope', '=', filters.scope);
     if (filters.assigneeUserId) query = query.where('assignee_user_id', '=', filters.assigneeUserId);
     if (filters.sessionId) query = query.where('session_id', '=', filters.sessionId);
+    if (filters.visibleTo) {
+      const { userId, sessionIds } = filters.visibleTo;
+      query = query.where((eb) =>
+        eb.or([
+          eb('assignee_user_id', '=', userId),
+          eb('created_user_id', '=', userId),
+          // SQLite accepts `IN ()`; the guard is for readers and for any engine that does not.
+          ...(sessionIds.length > 0 ? [eb('session_id', 'in', sessionIds)] : []),
+        ]),
+      );
+    }
     const rows = await query.orderBy('todos.created_at', 'desc').orderBy('todos.id', 'desc').execute();
     return rows.map(toTodo);
   }
@@ -136,6 +147,7 @@ export class SqliteTodoRepository implements TodoRepository {
         .where('status', '=', 'open')
         // IS compares NULL as well as values, so a session-less item can be expected.
         .where(sql<boolean>`session_id IS ${params.expectedSessionId}`)
+        .where(sql<boolean>`created_worker_id IS ${params.expectedWorkerId}`)
         .executeTakeFirst();
       if (affectedRows(result) === 0n) return null;
 
