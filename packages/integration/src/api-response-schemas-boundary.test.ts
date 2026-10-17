@@ -1,7 +1,7 @@
 /**
- * Client-Server Boundary Test: the thirty-one client functions that parse
- * their response through a strict wire schema (#1367 pass 1, pass 2, pass 3 and pass 4;
- * two more pass-4 functions are pinned in sibling files, see below).
+ * Client-Server Boundary Test: the client functions that parse their response
+ * through a strict wire schema (#1367 pass 1 to pass 6; a few functions are pinned
+ * in sibling files, see below).
  *
  * Pass 1: `fetchRepository`, `fetchWorkers`, `fetchWorktrees`, `fetchBranches`,
  * `fetchAgent`, `fetchMessageTemplates`, `fetchSkills`, `fetchCurrentUser`.
@@ -17,6 +17,14 @@
  * `updateSessionMetadata`. `restartWorkerAsEmbeddedAgent` and `setMcpServerPermissions`
  * need a live embedded subprocess; their real-POST strict controls live in
  * `cross-type-restart-boundary.test.ts` and `embedded-agent-mcp-permission-boundary.test.ts`.
+ * Pass 6 (the last seventeen casts): `cloneRepository`, `createWorktree` and
+ * `createWorktreeAsync` (one route), `pullWorktreeAsync`, `deleteWorktreeAsync`,
+ * `generateRepositoryDescription`, `updateRepositorySlackIntegration`,
+ * `sendWorkerMessage`, `login`, `updateAuthPreferences`, `addReviewComment`,
+ * `updateReviewStatus`, `createMessageTemplate` and `updateMessageTemplate` (one
+ * schema), `deleteMessageTemplate` and `reorderMessageTemplates` (one schema).
+ * `registerSharedAccount` needs a real OS account in multi-user mode; its strict
+ * control lives in `shared-accounts-api-boundary.test.ts`.
  *
  * Each fetcher used to cast the JSON and trust it. They now `v.parse`
  * a `v.strictObject` schema, so a server body that gains or renames a field
@@ -54,6 +62,7 @@ import type { AppContext, AppBindings } from '@agent-console/server/src/app-cont
 import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import { onApiError } from '@agent-console/server/src/lib/error-handler';
 import { api } from '@agent-console/server/src/routes/api';
+import { _getPullsInProgress } from '@agent-console/server/src/routes/worktrees';
 import {
   getSession,
   fetchRepositories,
@@ -86,6 +95,22 @@ import {
   raiseOrchestratorDesignation,
   clearOrchestratorDesignation,
   updateSessionMetadata,
+  cloneRepository,
+  createWorktree,
+  createWorktreeAsync,
+  pullWorktreeAsync,
+  deleteWorktreeAsync,
+  generateRepositoryDescription,
+  updateRepositorySlackIntegration,
+  sendWorkerMessage,
+  login,
+  updateAuthPreferences,
+  addReviewComment,
+  updateReviewStatus,
+  createMessageTemplate,
+  updateMessageTemplate,
+  deleteMessageTemplate,
+  reorderMessageTemplates,
 } from '@agent-console/client/src/lib/api';
 import {
   SessionResponseSchema,
@@ -116,13 +141,24 @@ import {
   OrchestratorDesignationResponseSchema,
   ClearOrchestratorDesignationResponseSchema,
   UpdateSessionResponseSchema,
+  CloneRepositoryResponseSchema,
+  WorktreeAcceptedResponseSchema,
+  WorktreeDeletionAcceptedResponseSchema,
+  GenerateRepositoryDescriptionResponseSchema,
+  SendWorkerMessageResponseSchema,
+  LoginResponseSchema,
+  UpdateUserPreferencesResponseSchema,
+  ReviewCommentSchema,
+  ReviewStatusResponseSchema,
+  MessageTemplateResponseSchema,
+  SuccessResponseSchema,
 } from '@agent-console/shared';
 import { serverConfig } from '@agent-console/server/src/lib/server-config';
 import { createFetchBridge } from './test-utils';
 
 const TEST_REPO_PATH = '/test/repo-response-schemas';
 
-describe('Client-Server Boundary: strict response schemas on the pass-1 to pass-4 client functions', () => {
+describe('Client-Server Boundary: strict response schemas on the pass-1 to pass-6 client functions', () => {
   let ctx: AppContext;
   let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
@@ -179,7 +215,7 @@ describe('Client-Server Boundary: strict response schemas on the pass-1 to pass-
     return res.json();
   }
 
-  /** Performs a mutation on the real route and returns the parsed JSON body (status 200 or 201). */
+  /** Performs a mutation on the real route and returns the parsed JSON body (status 200, 201 or 202). */
   async function rawCall(path: string, init: { method: string; body?: unknown }): Promise<unknown> {
     const res = await app.request(path, {
       method: init.method,
@@ -188,7 +224,7 @@ describe('Client-Server Boundary: strict response schemas on the pass-1 to pass-
         body: JSON.stringify(init.body),
       }),
     });
-    expect([200, 201]).toContain(res.status);
+    expect([200, 201, 202]).toContain(res.status);
     return res.json();
   }
 
@@ -660,5 +696,222 @@ describe('Client-Server Boundary: strict response schemas on the pass-1 to pass-
     const empty = await rawCall(`/api/sessions/${sessionId}`, { method: 'PATCH', body: {} });
     expect(empty).toEqual({ success: true });
     expectStrictControl(UpdateSessionResponseSchema, empty);
+  });
+
+  // ---- pass 6: the last seventeen casts ----
+  // Proxies recorded here (the file's existing git / PTY stubs plus these, all upstream of
+  // the response body under test): `enqueueClone` (no real `git clone`), the description
+  // generator (no headless agent CLI), `verifyRepoAccessible` (the background worktree
+  // pipeline ends at once instead of running git), `userMode.login` (single-user mode has
+  // no credential check). Every route, handler and response body is the real one.
+
+  it('cloneRepository: the real 202 body parses, and an extra field is rejected', async () => {
+    const enqueueClone = spyOn(ctx.repositoryCloneService, 'enqueueClone').mockResolvedValue('job-1');
+    try {
+      const request = { url: 'https://github.com/org/repo.git' };
+      const result = await cloneRepository(request);
+      expect(result).toEqual({ jobId: 'job-1', repositoryId: null });
+
+      const body = await rawCall('/api/repositories/clone', { method: 'POST', body: request });
+      expectStrictControl(CloneRepositoryResponseSchema, body);
+    } finally {
+      enqueueClone.mockRestore();
+    }
+  });
+
+  it('createWorktree / createWorktreeAsync: the real 202 body of the shared route parses, and an extra field is rejected', async () => {
+    const verify = spyOn(ctx.worktreeService, 'verifyRepoAccessible').mockRejectedValue(new Error('stubbed'));
+    try {
+      const request = (taskId: string) => ({ taskId, mode: 'custom' as const, branch: 'feature-x' });
+      expect(await createWorktree(repoId, request('task-a'))).toEqual({ accepted: true });
+      expect(await createWorktreeAsync(repoId, request('task-b'))).toEqual({ accepted: true });
+
+      const body = await rawCall(`/api/repositories/${repoId}/worktrees`, { method: 'POST', body: request('task-c') });
+      expect(body).toEqual({ accepted: true });
+      expectStrictControl(WorktreeAcceptedResponseSchema, body);
+    } finally {
+      verify.mockRestore();
+    }
+  });
+
+  it('pullWorktreeAsync: the real 202 body parses, and an extra field is rejected', async () => {
+    // The route keeps a path in its in-progress set while the background pull runs and answers
+    // 409 for a second pull of the same path. Poll that set (bounded; it FAILS if the entry
+    // never clears) instead of sleeping for a guessed duration.
+    const waitForPullToClear = async (): Promise<void> => {
+      const deadline = Date.now() + 5000;
+      while (_getPullsInProgress().has(TEST_REPO_PATH)) {
+        if (Date.now() > deadline) throw new Error('the background pull did not clear within 5000 ms');
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    };
+    // The repository's primary worktree: no managed-directory or ownership check applies.
+    const result = await pullWorktreeAsync(repoId, TEST_REPO_PATH, 'pull-a');
+    expect(result).toEqual({ accepted: true });
+    // The background pull of the first call must finish before the same path is pulled again.
+    await waitForPullToClear();
+
+    const body = await rawCall(`/api/repositories/${repoId}/worktrees/pull`, {
+      method: 'POST',
+      body: { worktreePath: TEST_REPO_PATH, taskId: 'pull-b' },
+    });
+    expect(body).toEqual({ accepted: true });
+    expectStrictControl(WorktreeAcceptedResponseSchema, body);
+    await waitForPullToClear();
+  });
+
+  it('deleteWorktreeAsync: the real async 202 body parses (with a job id), and an extra field is rejected', async () => {
+    const worktreePath = `${TEST_REPO_PATH}-wt`;
+    const result = await deleteWorktreeAsync(repoId, worktreePath);
+    expect(result.accepted).toBe(true);
+    expect(typeof result.jobId).toBe('string');
+
+    const body = await rawCall(
+      `/api/repositories/${repoId}/worktrees/${encodeURIComponent(`${worktreePath}-2`)}?async=true`,
+      { method: 'DELETE' },
+    );
+    expectStrictControl(WorktreeDeletionAcceptedResponseSchema, body);
+  });
+
+  it('generateRepositoryDescription: the real body parses, and an extra field is rejected', async () => {
+    const generate = spyOn(ctx, 'generateRepositoryDescription').mockResolvedValue({ description: 'A test repository' });
+    try {
+      const result = await generateRepositoryDescription(repoId);
+      expect(result).toEqual({ description: 'A test repository' });
+
+      const body = await rawCall(`/api/repositories/${repoId}/generate-description`, { method: 'POST' });
+      expectStrictControl(GenerateRepositoryDescriptionResponseSchema, body);
+    } finally {
+      generate.mockRestore();
+    }
+  });
+
+  it('updateRepositorySlackIntegration: the real bare-entity body parses, and an extra field is rejected', async () => {
+    const data = { webhookUrl: 'https://hooks.slack.com/services/T00/B00/XXXX', enabled: true };
+    const result = await updateRepositorySlackIntegration(repoId, data);
+    expect(result.repositoryId).toBe(repoId);
+    expect(result.enabled).toBe(true);
+
+    const body = await rawCall(`/api/repositories/${repoId}/integrations/slack`, { method: 'PUT', body: data });
+    expectStrictControl(RepositorySlackIntegrationSchema, body);
+  });
+
+  it('sendWorkerMessage: the real 201 body parses, and an extra field is rejected', async () => {
+    const created = await ctx.sessionManager.createWorker(sessionId, { type: 'terminal', name: 'Receiver' });
+    if (!created) throw new Error('terminal worker creation must succeed');
+
+    const result = await sendWorkerMessage(sessionId, created.id, 'hello from the client');
+    expect(result.message.toWorkerId).toBe(created.id);
+    expect(result.message.content).toBe('hello from the client');
+
+    // The route reads multipart form data, so the control sends the same form.
+    const form = new FormData();
+    form.append('toWorkerId', created.id);
+    form.append('content', 'hello again');
+    const res = await app.request(`/api/sessions/${sessionId}/messages`, { method: 'POST', body: form });
+    expect(res.status).toBe(201);
+    expectStrictControl(SendWorkerMessageResponseSchema, await res.json());
+  });
+
+  it('login: the real body parses, and an extra field is rejected', async () => {
+    const user = { id: authUserId, username: 'login-user', homeDir: '/home/login-user' };
+    const loginStub = spyOn(ctx.userMode, 'login').mockResolvedValue({ user, token: 'stub-token' });
+    try {
+      const credentials = { username: 'login-user', password: 'pw' };
+      const result = await login(credentials);
+      expect(result).toEqual({ user });
+
+      const body = await rawCall('/api/auth/login', { method: 'POST', body: credentials });
+      expectStrictControl(LoginResponseSchema, body);
+    } finally {
+      loginStub.mockRestore();
+    }
+  });
+
+  it('updateAuthPreferences: the real body parses (user + preferences), and an extra field is rejected', async () => {
+    const result = await updateAuthPreferences({ disableClaudeAiConnectors: true });
+    expect(result.preferences.disableClaudeAiConnectors).toBe(true);
+    expect(result.user.id).toBe(authUserId);
+
+    const body = await rawCall('/api/auth/me/preferences', {
+      method: 'PATCH',
+      body: { disableClaudeAiConnectors: false },
+    });
+    expectStrictControl(UpdateUserPreferencesResponseSchema, body);
+  });
+
+  it('addReviewComment: the real bare-entity 201 body parses, and an extra field is rejected', async () => {
+    const summary = { totalFiles: 1, reviewFiles: 1, mechanicalFiles: 0, confidence: 'high' as const };
+    ctx.annotationService.setAnnotations('worker-comment', { annotations: [], summary }, {
+      sessionId,
+      sourceSessionId: worktreeSessionId,
+    });
+
+    const result = await addReviewComment('worker-comment', { file: 'a.ts', line: 3, body: 'nit' });
+    expect(result.file).toBe('a.ts');
+    expect(result.line).toBe(3);
+
+    const body = await rawCall('/api/review-queue/worker-comment/comments', {
+      method: 'POST',
+      body: { file: 'b.ts', line: 7, body: 'another' },
+    });
+    expectStrictControl(ReviewCommentSchema, body);
+  });
+
+  it('updateReviewStatus: the real body parses, and an extra field is rejected', async () => {
+    const summary = { totalFiles: 1, reviewFiles: 1, mechanicalFiles: 0, confidence: 'high' as const };
+    ctx.annotationService.setAnnotations('worker-status', { annotations: [], summary }, {
+      sessionId,
+      sourceSessionId: worktreeSessionId,
+    });
+
+    const result = await updateReviewStatus('worker-status', 'completed');
+    expect(result).toEqual({ workerId: 'worker-status', status: 'completed' });
+
+    const body = await rawCall('/api/review-queue/worker-status/status', {
+      method: 'PATCH',
+      body: { status: 'completed' },
+    });
+    expectStrictControl(ReviewStatusResponseSchema, body);
+  });
+
+  it('createMessageTemplate / updateMessageTemplate: the real { template } bodies parse, and an extra field is rejected', async () => {
+    const created = await createMessageTemplate('Greeting', 'Hello');
+    expect(created.template.title).toBe('Greeting');
+
+    const updated = await updateMessageTemplate(created.template.id, { title: 'Greeting 2' });
+    expect(updated.template.title).toBe('Greeting 2');
+
+    expectStrictControl(
+      MessageTemplateResponseSchema,
+      await rawCall('/api/message-templates', { method: 'POST', body: { title: 'Second', content: 'Body' } }),
+    );
+    expectStrictControl(
+      MessageTemplateResponseSchema,
+      await rawCall(`/api/message-templates/${created.template.id}`, { method: 'PUT', body: { content: 'Changed' } }),
+    );
+  });
+
+  it('deleteMessageTemplate / reorderMessageTemplates: the real { success: true } bodies parse, and an extra field is rejected', async () => {
+    const first = await createMessageTemplate('One', 'a');
+    const second = await createMessageTemplate('Two', 'b');
+    const third = await createMessageTemplate('Three', 'c');
+
+    expect(await reorderMessageTemplates([second.template.id, first.template.id, third.template.id])).toEqual({
+      success: true,
+    });
+    expectStrictControl(
+      SuccessResponseSchema,
+      await rawCall('/api/message-templates/reorder', {
+        method: 'PUT',
+        body: { orderedIds: [third.template.id, second.template.id, first.template.id] },
+      }),
+    );
+
+    expect(await deleteMessageTemplate(first.template.id)).toEqual({ success: true });
+    expectStrictControl(
+      SuccessResponseSchema,
+      await rawCall(`/api/message-templates/${second.template.id}`, { method: 'DELETE' }),
+    );
   });
 });

@@ -68,6 +68,8 @@ import { SqliteRepositoryRepository } from '@agent-console/server/src/repositori
 import { RepositoryManager } from '@agent-console/server/src/services/repository-manager';
 import { serverConfig } from '@agent-console/server/src/lib/server-config';
 import type { AppBindings } from '@agent-console/server/src/app-context';
+import * as v from 'valibot';
+import { RegisterSharedAccountResponseSchema } from '@agent-console/shared';
 
 import {
   fetchSharedAccounts,
@@ -165,6 +167,21 @@ describe('Client-Server Boundary: Shared Accounts REST API', () => {
     // extra field. Reverted immediately after; `git diff --stat
     // packages/server/src/routes/shared-accounts.ts` showed no diff
     // against the prior commit.
+  });
+
+  it('(a2) POST /api/shared-accounts answers 201 with exactly { username, userId }, and the strict response schema rejects one extra field', async () => {
+    const res = await app.request('/api/shared-accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: REAL_OS_USERNAME }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+
+    expect(Object.keys(body as object).sort()).toEqual(['userId', 'username']);
+    expect((body as { username: string }).username).toBe(REAL_OS_USERNAME);
+    expect(v.safeParse(RegisterSharedAccountResponseSchema, body).success).toBe(true);
+    expect(v.safeParse(RegisterSharedAccountResponseSchema, { ...(body as object), extra: true }).success).toBe(false);
   });
 
   it('(b) updateRepository binds sharedAccountUsername; fetchRepository re-reads it; null unbinds', async () => {

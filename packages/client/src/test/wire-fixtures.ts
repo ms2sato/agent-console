@@ -132,13 +132,27 @@ function completeReviewItem(item: unknown): unknown {
   };
 }
 
+function completeWorkerMessage(message: unknown): unknown {
+  if (!isEntity(message)) return message;
+  return {
+    sessionId: 's1',
+    fromWorkerId: 'w1',
+    fromWorkerName: 'A',
+    toWorkerId: 'w2',
+    toWorkerName: 'B',
+    content: 'x',
+    timestamp: FIXED_CREATED_AT,
+    ...message,
+  };
+}
+
 function completeReviewGroup(group: unknown): unknown {
   if (!isEntity(group) || !Array.isArray(group.items)) return group;
   return { ...group, items: group.items.map(completeReviewItem) };
 }
 
 /**
- * Fill the schema-required fields a partial `agents` / `repositories` / `session` / `worker` / `embeddedAgents` / `embeddedAgent` / `results`
+ * Fill the schema-required fields a partial `agents` / `repositories` / `session` / `worker` / `message` / `embeddedAgents` / `embeddedAgent` / `results`
  * (session validation) envelope, or a bare review-queue array of groups, leaves out.
  */
 export function completeWireBody(body: unknown): unknown {
@@ -150,6 +164,7 @@ export function completeWireBody(body: unknown): unknown {
   if (Array.isArray(out.repositories)) out.repositories = out.repositories.map(completeRepository);
   if (isEntity(out.session)) out.session = completeSession(out.session);
   if (isEntity(out.worker)) out.worker = completeWorker(out.worker);
+  if (isEntity(out.message)) out.message = completeWorkerMessage(out.message);
   if (Array.isArray(out.embeddedAgents)) out.embeddedAgents = out.embeddedAgents.map(completeEmbeddedAgent);
   if (isEntity(out.embeddedAgent)) out.embeddedAgent = completeEmbeddedAgent(out.embeddedAgent);
   return out;
