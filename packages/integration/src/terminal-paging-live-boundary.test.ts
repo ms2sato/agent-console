@@ -1,5 +1,5 @@
 /**
- * Cross-Package Boundary Test: the paged rows meet the live window (Issue #2173).
+ * Cross-Package Boundary Test: the paged rows meet the live window (Issue #2176).
  *
  * Same server/client wiring as terminal-paging-seam-boundary.test.ts, but the
  * measurement spans the CONCATENATION of the paged rows (key < 0) and the live
@@ -78,7 +78,7 @@ function labelOf(text: string): string | null {
   return text.match(LABEL)?.[0] ?? null;
 }
 
-describe('Client-Server Boundary: paged rows meet the live window (#2173)', () => {
+describe('Client-Server Boundary: paged rows meet the live window (#2176)', () => {
   let sessionManager: SessionManager;
   let jobQueue: JobQueue;
   let outputManager: WorkerOutputFileManager;
@@ -270,7 +270,7 @@ describe('Client-Server Boundary: paged rows meet the live window (#2173)', () =
 
   const esc = (value: unknown): string => JSON.stringify(value);
 
-  /** Label-gap measured by the attach scenario, read by the it.failing case below. */
+  /** Label gap measured by the attach scenario, read by the gap case below. */
   let attachGap: number | undefined;
 
   // The attach path is clean: 'keep' on the first fetch is RIGHT. The newest paged
@@ -333,13 +333,13 @@ describe('Client-Server Boundary: paged rows meet the live window (#2173)', () =
       `[live-boundary] yield-sim: pagedRows=${yieldedPaged.length} duplicatedRows=${my.duplicateIdx.length} backwardsSteps=${my.backwards.length} missingLabels=${missing.length} ${JSON.stringify(missing.slice(0, 12))}`,
     );
 
-    // Measured state (Issue #2173; deterministic, no timing): the live window starts
+    // Measured state (Issue #2176; deterministic, no timing): the live window starts
     // mid-stream and mid-frame; nothing repeats and nothing runs backwards over
     // paged ++ live. The newest paged chunk's 'keep' tail is ROWS - 1 genuine content
     // rows that no live row repeats (yielding them would lose them), and the rows
     // missing at the boundary are the live window's OWN top rows dropped by the
     // client's 5000-row live scrollback, not rows the paged side repeats (see the
-    // it.failing case below).
+    // gap case below).
     expect(r.segments).toBeGreaterThanOrEqual(3);
     expect(startOffset).toBeGreaterThan(0);
     expect(m.duplicateIdx).toEqual([]);
@@ -352,11 +352,10 @@ describe('Client-Server Boundary: paged rows meet the live window (#2173)', () =
 
   // Live-streamed-then-paged flow: the client attaches mid-stream, then the rest of the
   // stream arrives as real `output` frames while the server cuts segments (the browser
-  // case of Issue #2173).
+  // case of Issue #2176).
   const STREAMED_FRAMES = 1200;
-  const STREAMED_ATTACH_AT = 700_000;
 
-  async function streamThenPage() {
+  async function streamThenPage(attachAtBytes: number) {
     const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
     const sessionId = session.id;
     const workerId = session.workers.find((w) => w.type === 'agent')!.id;
@@ -379,7 +378,7 @@ describe('Client-Server Boundary: paged rows meet the live window (#2173)', () =
 
     // Server side only, up to the attach point.
     let at = 0;
-    for (; at < STREAMED_ATTACH_AT; at += WRITE_CHUNK_BYTES) {
+    for (; at < attachAtBytes; at += WRITE_CHUNK_BYTES) {
       ptyFactory.instances[0].simulateData(stream.slice(at, at + WRITE_CHUNK_BYTES));
       await outputManager.flushAll();
     }
@@ -394,7 +393,7 @@ describe('Client-Server Boundary: paged rows meet the live window (#2173)', () =
     let lastSeed = '';
     const noteSeed = (label: string): void => {
       const p = _inspect(instance).paging;
-      const seed = `liveStartOffset=${p.liveStartOffset} oldestOffset=${p.oldestOffset} hasMoreHistory=${p.hasMoreHistory}`;
+      const seed = `liveStartOffset=${p.liveStartOffset} liveEvictedUpTo=${p.liveEvictedUpTo} oldestOffset=${p.oldestOffset} hasMoreHistory=${p.hasMoreHistory} frameMarkers=${p.frameMarkerCount}`;
       if (seed !== lastSeed) {
         seeds.push(`${label}: ${seed}`);
         console.log(`[live-streamed] ${label}: ${seed}`);
@@ -429,17 +428,15 @@ describe('Client-Server Boundary: paged rows meet the live window (#2173)', () =
     }
 
     const liveBefore = instance.getSnapshot().rows.filter((r) => r.key >= 0).map(rowText);
+    const firstInspect = { ..._inspect(instance).paging };
     const paging = await pageToTop({ instance, ws, wsCtx, sent, sessionId, workerId });
     const rows = instance.getSnapshot().rows;
     const pagedTexts = rows.filter((r) => r.key < 0).map(rowText);
     const liveTexts = rows.filter((r) => r.key >= 0).map(rowText);
-    return { stream, history, attachedAt, attachSeed, received, boundaries, liveBefore, pagedTexts, liveTexts, ...paging };
+    return { stream, history, attachedAt, attachSeed, received, boundaries, liveBefore, pagedTexts, liveTexts, firstInspect, ...paging };
   }
 
-  let streamedGap: number | undefined;
-
-  it('live-streamed then paged: measures the overlap at the live edge', async () => {
-    const r = await streamThenPage();
+  function reportStreamed(r: Awaited<ReturnType<typeof streamThenPage>>) {
     const { stream, pagedTexts, liveTexts } = r;
     const m = measure(pagedTexts, liveTexts);
     const firstLiveLabel = liveTexts.map(labelOf).find((l) => l !== null) ?? null;
@@ -454,35 +451,55 @@ describe('Client-Server Boundary: paged rows meet the live window (#2173)', () =
     console.log(
       `[live-streamed] duplicatedRows=${m.duplicateIdx.length} first=${m.duplicateIdx[0]} last=${m.duplicateIdx[m.duplicateIdx.length - 1]} backwardsSteps=${m.backwards.length} at=${JSON.stringify(m.backwards)} (indices relative to pagedRowCount=${m.pagedCount})`,
     );
-    streamedGap = firstLiveIdx - lastPagedIdx - 1;
-    // Issue #2173 did NOT reproduce in this harness: 0 duplicates and 0 backwards steps.
-    // liveStartOffset / oldestOffset are seeded once, at the attach, and never move during
-    // live output, so the first beforeOffset names the ATTACH start (180171), far below the
-    // live buffer's retained top (stream offset 1944065): the opposite sign, a gap.
+    return { m, gap: firstLiveIdx - lastPagedIdx - 1, topOffset };
+  }
+
+  // Fixed by the live-edge accounting (design section 6.5, Issue #2176). Measured record,
+  // before the fix, with the paging cursor seeded from the attach window's start:
+  //   - attach replay larger than SCROLLBACK (340 frames, 24 rows): 90 labels missing between the
+  //     last paged row and the first live row; the 2.4 MB attach scenario: rows 24 -> 19 missing,
+  //     30 -> 13, 38 -> 5, 45 -> 0;
+  //   - live-streamed flow below (attach at 704512 bytes, then output frames): 17203 labels
+  //     missing (18975 in the browser); an attach at offset 0 could not page at all.
+  // After the fix the gap is bounded by the span of one marker: one history piece (about
+  // 13 rows) on attach, one output frame on the stream. Duplicates and backwards steps are 0.
+  const ATTACH_GAP_BOUND_LABELS = 16;
+  const LABELS_PER_STREAM_BYTE = (STREAMED_FRAMES * CONTENT_LINES) / 2_466_424;
+  const STREAM_GAP_BOUND_LABELS = Math.ceil(WRITE_CHUNK_BYTES * LABELS_PER_STREAM_BYTE);
+
+  it('attach path: the labels missing at the boundary are bounded by one history piece', () => {
+    if (attachGap === undefined) throw new Error('the attach scenario did not run');
+    expect(attachGap).toBeLessThanOrEqual(ATTACH_GAP_BOUND_LABELS);
+  });
+
+  it('live-streamed then paged: the first fetch starts at the live edge and no label repeats or runs backwards', async () => {
+    const r = await streamThenPage(700_000);
+    const { m, gap, topOffset } = reportStreamed(r);
+    const first = r.firstInspect;
+    console.log(
+      `[live-streamed] at the first fetch: liveStartOffset=${first.liveStartOffset} liveEvictedUpTo=${first.liveEvictedUpTo} oldestOffset=${first.oldestOffset}; gap=${gap} labels (bound ${STREAM_GAP_BOUND_LABELS}); top of the live buffer at stream offset ${topOffset}`,
+    );
     expect(m.duplicateIdx).toEqual([]);
     expect(m.backwards).toEqual([]);
     expect(r.boundaries.length).toBeGreaterThanOrEqual(3);
-    expect(r.attachSeed.liveStartOffset).toBeGreaterThan(0);
+    expect(first.liveStartOffset).toBeGreaterThan(0);
+    expect(first.oldestOffset).toBe(first.liveEvictedUpTo);
+    expect(first.liveEvictedUpTo).toBeGreaterThan(first.liveStartOffset);
+    expect(r.firstBeforeOffset).toBe(first.oldestOffset);
+    expect(gap).toBeLessThanOrEqual(STREAM_GAP_BOUND_LABELS);
   }, 120_000);
 
-  // KNOWN FINDING (Issue #2176): the attach replay holds more rows than the client's live
-  // scrollback (SCROLLBACK = 5000, terminal-store.ts:98: 5114 rows here), so the live
-  // buffer drops its own top rows, while the first archive fetch ends at liveStartOffset,
-  // so those rows are never paged: a gap at the live edge. Measured:
-  //   340-frame scenario below (24 rows): 90 labels missing between the last paged row and the first live row
-  //   2.4 MB / 1200 frames scenario: rows 24 -> 19 missing, 30 -> 13, 38 -> 5, 45 -> 0
-//   live-streamed flow below (attach at 704512 bytes, then output frames): 17203 labels missing
-  // Flip to a plain `it` when #2176 is fixed.
-  it.failing('no labels are missing between the last paged row and the first live row', () => {
-    if (attachGap === undefined) throw new Error('the attach scenario did not run');
-    expect(attachGap).toBe(0);
-  });
-
-  // KNOWN FINDING (Issue #2176, same family as the attach gap; measured in the Issue #2173
-  // live-streamed repro): oldestOffset keeps the ATTACH window's start while live output
-  // evicts the buffer's top, so the bytes between them are never paged: 17203 labels missing.
-  it.failing('live-streamed: no labels are missing between the last paged row and the first live row', () => {
-    if (streamedGap === undefined) throw new Error('the live-streamed scenario did not run');
-    expect(streamedGap).toBe(0);
-  });
+  it('attach at offset 0 then stream: the first fetch is sent once eviction has happened', async () => {
+    const r = await streamThenPage(0);
+    const { m, gap } = reportStreamed(r);
+    const first = r.firstInspect;
+    console.log(`[live-streamed] attach at 0: at the first fetch liveStartOffset=${first.liveStartOffset} liveEvictedUpTo=${first.liveEvictedUpTo} hasMoreHistory=${first.hasMoreHistory}; gap=${gap}`);
+    expect(first.liveStartOffset).toBe(0);
+    expect(first.hasMoreHistory).toBe(true);
+    expect(r.firstBeforeOffset).toBe(first.liveEvictedUpTo);
+    expect(r.firstBeforeOffset).toBeGreaterThan(0);
+    expect(m.duplicateIdx).toEqual([]);
+    expect(m.backwards).toEqual([]);
+    expect(gap).toBeLessThanOrEqual(STREAM_GAP_BOUND_LABELS);
+  }, 120_000);
 });
