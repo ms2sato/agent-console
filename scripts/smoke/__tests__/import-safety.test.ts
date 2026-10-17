@@ -213,8 +213,8 @@ function signalNameOf(n: number): string | null {
  * cap, keeps the last `STDERR_TAIL_MAX_CHARS` characters and says how many were cut.
  *
  * Why the signal has two paths: Bun reports a SIGTRAP self-kill as BOTH `exitCode` 133 and `signalCode` 'SIGTRAP', so
- * the derived name (128 + n) is only reached when a runtime reports the code alone; the SIGTRAP self-kill scratch
- * test and the exit(133) scratch test cover the two cases separately for that reason.
+ * the derived name (128 + n) is only reached when a runtime reports the code alone; the signal-named wiring test
+ * (a SIGKILL self-kill) and the exit(133) scratch test (the derivation path) cover the two cases separately.
  */
 function describeImportFailure(file: string, route: 'a' | 'b', result: ImportResult): string {
   const derivedSignal =
@@ -265,10 +265,17 @@ function baseResult(overrides: Partial<ImportResult> = {}): ImportResult {
 
 // Reach (measured, each mutation applied alone to this file and restored):
 //   m1 drop the stderr tail from the describer -> the 50-line test, the cap test and the exit-133 wiring test fail;
-//   m2 drop the signal derivation -> the "133 -> SIGTRAP" test and the exit-133 wiring test fail (the SIGTRAP
-//      self-kill scratch is reported by Bun as a signal, so it does not exercise the derivation);
-//   m3 remove the `throw` in assertImportSafe -> the two crash wiring tests fail (the SIGTRAP scratch describer
-//      test alone still passes: it tests the describer, not the wiring).
+//   m2 drop the signal derivation -> the "133 -> SIGTRAP" test and the exit-133 wiring test fail (a SIGKILL
+//      self-kill is reported by Bun as a signal, so it does not exercise the derivation);
+//   m3 remove the `throw` in assertImportSafe -> the two crash wiring tests fail (the SIGKILL describer-only
+//      test still passes: it tests the describer, not the wiring).
+//
+// Why the scratch modules never self-kill with SIGTRAP (or SIGSEGV): on GitHub runners a core-dumping signal takes
+// about 17 seconds to be reaped (9 of 9 runs, then 10 more at 15 s), because `core_pattern` pipes the dump to
+// systemd-coredump and that helper runs even with `ulimit -c 0`; a SIGKILL or a plain exit takes 15 ms. Pointing
+// `core_pattern` at a plain file brought the same SIGTRAP kill down to 14 ms, and neither `DO_NOT_TRACK` nor a dead
+// `BUN_CRASH_REPORT_URL` changed the delay, so it is the core-dump helper, not Bun's crash report. The SIGTRAP name
+// is still pinned: by the code-only derivation (exit 133 with no signal) and by the exit(133) wiring test.
 describe('describeImportFailure (a recurrence of the exit-133 flake must name the crash)', () => {
   it('derives SIGTRAP from exit code 133 when no signal is reported, and shows the exit code', () => {
     const text = describeImportFailure('x.mjs', 'b', baseResult({ exitCode: 133 }));
@@ -320,19 +327,19 @@ describe('failed imports are described through the same path as the discovered-s
     return file;
   }
 
-  it('a module that kills itself with SIGTRAP is reported as SIGTRAP (as an exit code of 133 or a signal)', async () => {
-    const file = scratchModule("process.kill(process.pid, 'SIGTRAP');\n");
+  it('a module that kills itself with SIGKILL is reported as SIGKILL (a reported signal, not a code only)', async () => {
+    const file = scratchModule("process.kill(process.pid, 'SIGKILL');\n");
     const result = await importInSubprocess(file);
 
-    expect(result.exitCode === 133 || result.signalCode === 'SIGTRAP').toBe(true);
-    expect(describeImportFailure('scratch.mjs', 'b', result)).toContain('SIGTRAP');
+    expect(result.signalCode).toBe('SIGKILL');
+    expect(describeImportFailure('scratch.mjs', 'b', result)).toContain('SIGKILL');
   });
 
-  it('assertImportSafe rejects with the SIGTRAP description for a crashing module (the wiring of route b)', async () => {
-    const file = scratchModule("process.kill(process.pid, 'SIGTRAP');\n");
+  it('assertImportSafe rejects with the SIGKILL description for a killed module (the wiring of route b)', async () => {
+    const file = scratchModule("process.kill(process.pid, 'SIGKILL');\n");
     const result = await importInSubprocess(file);
 
-    expect(() => assertImportSafe('scratch.mjs', 'b', result)).toThrow(/SIGTRAP/);
+    expect(() => assertImportSafe('scratch.mjs', 'b', result)).toThrow(/SIGKILL/);
   });
 
   it('assertImportSafe rejects with the 133 description for a module that exits 133 and prints to stderr', async () => {
