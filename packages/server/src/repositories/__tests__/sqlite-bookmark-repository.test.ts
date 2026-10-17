@@ -58,7 +58,7 @@ describe('SqliteBookmarkRepository', () => {
       // summary + userId, needed by route handlers to enforce owner-only
       // delete -- see repositories/bookmark-repository.ts). `userId` is NOT
       // part of the wire `Bookmark` type and must never be serialized into
-      // an HTTP response (see packages/shared/src/types/bookmark.ts).
+      // an HTTP response (see packages/shared/src/schemas/bookmark.ts).
       expect(Object.keys(bookmark).sort()).toEqual(['createdAt', 'id', 'origin', 'sourceSessionId', 'title', 'url', 'userId'].sort());
     });
 

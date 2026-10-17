@@ -26,7 +26,7 @@ export interface CreateBookmarkParams {
 /**
  * Server-internal bookmark record: the wire `Bookmark` summary plus
  * `userId`, the owning user's id. `userId` MUST NEVER be forwarded into a
- * wire response (see `packages/shared/src/types/bookmark.ts`'s wire-shape
+ * wire response (see `packages/shared/src/schemas/bookmark.ts`'s wire-shape
  * JSDoc, which deliberately excludes it) -- it exists here only so route
  * handlers can enforce owner-only deletion.
  *

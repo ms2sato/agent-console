@@ -7,7 +7,7 @@
  * real HTTP (real login, real cookie, real `/mcp` JSON-RPC, real
  * `fetch()` against `/api/artifacts/*`), then performs a real, direct
  * on-disk SQLite read to verify a field ( `user_id`) the routes' own JSON
- * responses never expose (see `packages/shared/src/types/artifact.ts`'s
+ * responses never expose (see `packages/shared/src/schemas/artifact.ts`'s
  * wire-shape JSDoc -- `userId` is deliberately excluded from every wire
  * response).
  *
@@ -327,7 +327,7 @@ async function main() {
     const artifactUrl = `${baseUrl}/api${toolResult.path}`;
 
     // V2's DB-verification step: the JSON responses (tool result AND the
-    // list endpoint, per packages/shared/src/types/artifact.ts's wire-shape
+    // list endpoint, per packages/shared/src/schemas/artifact.ts's wire-shape
     // JSDoc) never expose userId, so the only way to check attribution is
     // a direct read of the disposable instance's own SQLite file.
     const dbPath = configModule.getDbPath();
