@@ -271,7 +271,7 @@ function baseResult(overrides: Partial<ImportResult> = {}): ImportResult {
 //      test still passes: it tests the describer, not the wiring).
 //
 // Why the scratch modules never self-kill with SIGTRAP (or SIGSEGV): on GitHub runners a core-dumping signal takes
-// about 17 seconds to be reaped (9 of 9 runs, then 10 more at 15 s), because `core_pattern` pipes the dump to
+// about 15 to 17 seconds to be reaped (12 of 12 SIGTRAP and SIGSEGV runs in the first probe, 10 more SIGTRAP runs in the second), because `core_pattern` pipes the dump to
 // systemd-coredump and that helper runs even with `ulimit -c 0`; a SIGKILL or a plain exit takes 15 ms. Pointing
 // `core_pattern` at a plain file brought the same SIGTRAP kill down to 14 ms, and neither `DO_NOT_TRACK` nor a dead
 // `BUN_CRASH_REPORT_URL` changed the delay, so it is the core-dump helper, not Bun's crash report. The SIGTRAP name
