@@ -23,12 +23,13 @@ import {
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppBindings, AppContext } from '@agent-console/server/src/app-context';
 import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
-import { ApiError, fetchTodo } from '@agent-console/client/src/lib/api';
+import { ApiError, commentTodo, fetchTodoDetail } from '@agent-console/client/src/lib/api';
 
 import { createFetchBridge } from './test-utils';
 
 import {
   AppServerMessageSchema,
+  TodoDetailResponseSchema,
   TodoResponseSchema,
   TodosListResponseSchema,
   UsersListResponseSchema,
@@ -222,7 +223,7 @@ describe('Client-Server Boundary: human TODO list', () => {
     expect((await list()).todos).toHaveLength(1);
   });
 
-  it('fetchTodo reads one item through the real GET /api/todos/:id route and strict parse', async () => {
+  it('fetchTodoDetail reads one item and its timeline through the real GET /api/todos/:id route and strict parse', async () => {
     const session = await ctx.sessionManager.createSession(
       { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
     );
@@ -234,9 +235,10 @@ describe('Client-Server Boundary: human TODO list', () => {
 
     const bridge = createFetchBridge(app);
     try {
-      const fetched = await fetchTodo(created.id);
+      const fetched = await fetchTodoDetail(created.id);
 
-      expect(fetched).toEqual(created);
+      expect(fetched).toEqual({ todo: created, activities: [] });
+      expect(fetched.todo.commentCount).toBe(0);
       expect(bridge.capturedRequests.map((r) => `${r.method} ${new URL(r.url, 'http://localhost').pathname}`)).toEqual([
         `GET /api/todos/${created.id}`,
       ]);
@@ -245,10 +247,88 @@ describe('Client-Server Boundary: human TODO list', () => {
     }
   });
 
-  it('fetchTodo rejects with an ApiError carrying the 404 message for a missing id', async () => {
+  it('commentCount and the timeline survive populate -> serialize -> strict parse (list, detail and the comment response); moves never count', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'alice', '/home/alice');
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
+      { createdBy: owner.id },
+    );
+    const workerId = session.workers[0]!.id;
+    const item = await ctx.todoRepository.create({
+      id: 'threaded',
+      kind: 'question',
+      scope: 'session',
+      title: 'Which port?',
+      body: 'b',
+      sessionId: session.id,
+      createdBy: { workerId },
+      assigneeUserId: null,
+    });
+    await ctx.todoRepository.addComment({ todoId: item.id, actor: { workerId }, text: 'agent context' });
+    await ctx.todoRepository.addMove({
+      todoId: item.id,
+      actor: { workerId },
+      fromSessionId: null,
+      toSessionId: session.id,
+      statement: 'take it',
+      attributedUserId: owner.id,
+    });
+
     const bridge = createFetchBridge(app);
     try {
-      const error = await fetchTodo('missing').then(
+      const commented = await commentTodo(item.id, '  3457, please  ');
+      const detail = await fetchTodoDetail(item.id);
+
+      expect(commented.todo.commentCount).toBe(2);
+      expect(commented.activities.map((a) => a.kind).sort()).toEqual(['comment', 'comment', 'moved']);
+      expect(detail).toEqual(commented);
+      expect(detail.activities.find((a) => a.kind === 'moved')).toMatchObject({
+        statement: 'take it',
+        attributedUserId: owner.id,
+        fromSessionId: null,
+      });
+      expect((await list()).todos.find((t) => t.id === item.id)!.commentCount).toBe(2);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it('a detail response missing activities, or carrying an extra top-level key, is rejected by fetchTodoDetail', async () => {
+    const created = v.parse(TodoResponseSchema, await post('/api/todos', { kind: 'action', title: 'a', body: '' })).todo;
+    const bridge = createFetchBridge(app);
+    const bridged = globalThis.fetch;
+    const tamper = (mutate: (body: Record<string, unknown>) => void) => {
+      globalThis.fetch = Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const res = await bridged(input, init);
+          const body = (await res.json()) as Record<string, unknown>;
+          mutate(body);
+          return new Response(JSON.stringify(body), { status: res.status, headers: res.headers });
+        },
+        { preconnect: () => {} },
+      ) as typeof fetch;
+    };
+    try {
+      expect(v.safeParse(TodoDetailResponseSchema, { todo: created, activities: [] }).success).toBe(true);
+
+      tamper((body) => {
+        delete body.activities;
+      });
+      await expect(fetchTodoDetail(created.id)).rejects.toThrow();
+
+      tamper((body) => {
+        body.extra = true;
+      });
+      await expect(fetchTodoDetail(created.id)).rejects.toThrow();
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it('fetchTodoDetail rejects with an ApiError carrying the 404 message for a missing id', async () => {
+    const bridge = createFetchBridge(app);
+    try {
+      const error = await fetchTodoDetail('missing').then(
         () => null,
         (err: unknown) => err,
       );
