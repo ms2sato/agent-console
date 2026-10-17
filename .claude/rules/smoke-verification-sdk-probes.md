@@ -13,6 +13,7 @@ paths:
   - "scripts/smoke/probe-sdk-effort-live-apply.ts"
   - "scripts/smoke/probe-sdk-auto-memory.ts"
   - "scripts/smoke/probe-sdk-declared-mcp-and-task.ts"
+  - "scripts/smoke/probe-chrome-devtools-headless.ts"
   - "scripts/smoke/probe-sdk-mcp-settings-sources.ts"
   - "scripts/smoke/probe-sdk-phase5-pr2-premises.ts"
   - "scripts/smoke/probe-sdk-phase5-pr2-pc.ts"
@@ -139,6 +140,21 @@ Two properties of the script that matter when re-running it:
 
 - **Billable (`claude` CLI)**, plus a User-scope `chrome-devtools` MCP server in `~/.claude.json` (the P0 seed and the P2 declared server; `claude mcp get chrome-devtools` must report it). About 8 small turns across the four arms.
 - **Exit codes** as in the header (a P0 leak or a P3 containment escape is a MEASUREMENT, printed as a `STOP:` line, and still exits 0). **A P0 leak halts the run before P2/P3** unless `--continue-after-leak` is passed -- a live leak changes P2's negative-control design and must be reported first. The mapping and every per-arm classifier are pinned by `scripts/smoke/__tests__/probe-sdk-declared-mcp-and-task.test.ts`, which imports them directly and never runs the billed measurement.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
+
+## Additional Verification: Headless Browser-MCP Probe
+
+Before relying on a browser MCP server (today `chrome-devtools-mcp`) for a `claude-sdk` worker, before changing the user-scope `mcpServers` entry that worker's OS user registers, or when a worker's browser tool calls fail on a host with no display, run `bun scripts/smoke/probe-chrome-devtools-headless.ts` against a real, authenticated `claude` CLI session. It answers one environment question: can the `claude-sdk` arm launch the browser MCP headless, as this OS user, and take a real screenshot? The frame is generic (any browser MCP; the server and tool names are the `BROWSER_MCP` constant, never read by the classifier) and `chrome-devtools` is the instance at hand. Measurement only; nothing it prints is run.
+
+**Three sessions at most, one live session each, `settingSources: ['user', 'local']`, no `strictMcpConfig`, `DISPLAY` / `WAYLAND_DISPLAY` unset in all of them.** `headless`: the operator's own user-scope entry (copied by `readUserScopeMcpServers()`) plus `--headless`; turn 1 calls the list tool (server `connected` in `system:init` or the post-turn `mcpServerStatus()` AND a `mcp__<server>__*` call completed), turn 2 (only if turn 1 connected) navigates to `about:blank` and takes a screenshot (an IMAGE block with decoded size > 0). `headless-apt`: only if `headless` took no screenshot and its `--executablePath` is not already `/usr/bin/chromium-browser` -- the same with that value replaced (the snap trap: a snap Chromium cannot write the profile directory a launch needs); both results are recorded. `control`: the entry that worked (else the as-configured one) with `--headless` removed; if it ALSO takes a screenshot the verdict says `BOTH SUCCEED` and does not credit the flag.
+
+**Recorded proxy (pre-pr-completeness Q13), upstream of and outside the chain under test.** The isolated `CLAUDE_CONFIG_DIR` is seeded with ONLY the one `mcpServers` entry, provisioned from the real `~/.claude.json` (read, never written) and edited with `--headless` / `--executablePath`; these change how the arm arrives at the launch and the tool call, not what they do. **How an image is observed:** `ProbeSession` sees `tool_use` blocks but not `tool_result` blocks, so the probe reads the `PostToolUse` hook's `tool_response` for an image block (`imageBytesIn`) and prints that response's shape with base64 redacted to its length; a server that returns its image as a file path reads as 0 bytes and the shape shows why.
+
+Two properties of the script that matter when re-running it:
+
+- **Billable (`claude` CLI)**, plus a User-scope `chrome-devtools` MCP server in `~/.claude.json`, `npx`, and a Chromium on the host. Up to 6 small turns (two per session).
+- **Exit codes** as in the header: `0` = measured whichever way (a working flag, a control that also works, no arm taking a screenshot), `1` = a turn did not settle or nothing connected on ANY arm, `2` = harness. The last stdout line is the `claude mcp add -s user ...` the owner would run, built from the entry that worked. The classifier, reading builder, image walker and entry edits are pinned by `scripts/smoke/__tests__/probe-chrome-devtools-headless.test.ts`, which imports them directly and never runs the billed measurement.
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
