@@ -6,6 +6,7 @@ import {
   _resetTerminals,
   _setAppSubscribe,
   _setTimings,
+  _setSeamCorrectionForTest,
   _inspect,
 } from '../terminal-store';
 
@@ -814,6 +815,32 @@ describe('terminal-store paging', () => {
         .getSnapshot()
         .rows.filter((r) => r.key < 0)
         .map((r) => r.key);
+
+    describe('_setSeamCorrectionForTest', () => {
+      const pageTwoChunks = async (): Promise<{ keysAfterFirst: number[]; keysAfterSecond: number[] }> => {
+        const { instance, ws } = open('s', 'w');
+        await seedHistory(ws, { startOffset: 100 });
+        await pageChunk(ws, instance, { data: manyLines('A'), startOffset: 70, endOffset: 100, hasMore: true, epoch: 1000 });
+        const keysAfterFirst = negKeys(instance);
+        await pageChunk(ws, instance, { data: manyLines('B'), startOffset: 40, endOffset: 70, hasMore: true, epoch: 1000 });
+        return { keysAfterFirst, keysAfterSecond: negKeys(instance) };
+      };
+
+      it('false routes the second fetch through the standalone replay: the former top chunk keeps its row keys', async () => {
+        _setSeamCorrectionForTest(false);
+        const { keysAfterFirst, keysAfterSecond } = await pageTwoChunks();
+        for (const k of keysAfterFirst) expect(keysAfterSecond).toContain(k);
+      });
+
+      it('defaults to true and _resetTerminals restores it: the pair replay re-keys the former top chunk', async () => {
+        _setSeamCorrectionForTest(false);
+        _resetTerminals();
+        restoreWebSocket();
+        restoreWebSocket = installMockWebSocket();
+        const { keysAfterFirst, keysAfterSecond } = await pageTwoChunks();
+        for (const k of keysAfterFirst) expect(keysAfterSecond).not.toContain(k);
+      });
+    });
 
     it('re-replays the top chunk on the next older fetch, retaining raw on both new [0] and new [1] (#994 invariant)', async () => {
       const { instance, ws } = open('s', 'w');
