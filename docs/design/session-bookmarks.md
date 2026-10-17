@@ -63,7 +63,7 @@ Existing rows -- all created by the pre-#1390 human-only form -- backfill to `'u
 
 ### 4.2 Shared types and schemas (Q10 three-part set)
 
-- `types/bookmark.ts`: `origin: 'user' | 'agent'` added to both the wire `Bookmark` interface and the server-internal record.
+- `schemas/bookmark.ts`: `origin: 'user' | 'agent'` added to both the wire `Bookmark` type and the server-internal record.
 - `schemas/bookmark.ts`: `origin: v.picklist(['user', 'agent'])` added to `BookmarkSchema` (wire parse). `CreateBookmarkRequestSchema.title` gains `v.maxLength(200)`, matching `MAX_TITLE_LENGTH` in `mcp-server.ts` (the HTML artifact title cap) -- one length policy, reused rather than re-derived. The wire-side `BookmarkSchema.title` (used for *reading* existing rows) is deliberately **not** capped, to tolerate any legacy row that predates the cap; the cap is a write-time constraint only.
 - `schema-version.gen.ts` regenerated (`node scripts/generate-schema-version.mjs`) -- required whenever `packages/shared/src/schemas/*.ts` changes; only the full `bun run test` suite's `schema-version.gen.test.ts` detects a stale hash (`.claude/rules/workflow.md`).
 
