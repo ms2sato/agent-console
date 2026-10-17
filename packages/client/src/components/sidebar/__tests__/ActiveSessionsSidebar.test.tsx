@@ -1685,7 +1685,7 @@ describe('ActiveSessionsSidebar view modes (flat / tree)', () => {
   });
 
   // Mirrors how routes/__root.tsx wires the persisted hook into the sidebar.
-  function SidebarWithViewMode(props: { sessions: SessionWithActivity[]; collapsed?: boolean; pausedSessions?: Session[] }) {
+  function SidebarWithViewMode(props: { sessions: SessionWithActivity[]; collapsed?: boolean; pausedSessions?: Session[]; allSessionIds?: ReadonlySet<string> }) {
     const { viewMode, setViewMode } = useSessionViewMode();
     return (
       <ActiveSessionsSidebar
@@ -1795,7 +1795,67 @@ describe('ActiveSessionsSidebar view modes (flat / tree)', () => {
     expect(rowFor('lost')?.getAttribute('data-depth')).toBe('0');
     const badges = screen.getAllByText('parent gone');
     expect(badges).toHaveLength(1);
-    expect(badges[0].getAttribute('title')).toContain('parent session');
+    expect(badges[0].getAttribute('title')).toBe('The parent session no longer exists.');
+  });
+
+  describe.each([
+    {
+      reason: 'gone',
+      text: 'parent gone',
+      title: 'The parent session no longer exists.',
+      pausedIds: [] as string[],
+      knownIds: [] as string[],
+    },
+    {
+      reason: 'paused',
+      text: 'parent paused',
+      title: 'The parent session is paused.',
+      pausedIds: ['dad'],
+      knownIds: ['dad'],
+    },
+    {
+      reason: 'hidden',
+      text: 'parent hidden',
+      title: 'The parent session is hidden by the current filter.',
+      pausedIds: [] as string[],
+      knownIds: ['dad'],
+    },
+  ])('orphan whose parent is $reason', ({ text, title, pausedIds, knownIds }) => {
+    it('shows the matching badge text and title', async () => {
+      localStorage.setItem(VIEW_KEY, 'tree');
+      const sessions = [createSessionWithActivity(named('kid', 'kid-repo', { parentSessionId: 'dad' }), 'idle')];
+      const paused = pausedIds.map((id) => named(id, 'dad-repo', { pausedAt: new Date().toISOString() }));
+      await renderWithRouter(
+        <SidebarWithViewMode sessions={sessions} pausedSessions={paused} allSessionIds={new Set(['kid', ...knownIds])} />
+      );
+
+      const badge = screen.getByText(text);
+      expect(badge.getAttribute('title')).toBe(title);
+      expect(screen.getAllByText(/^parent (gone|paused|hidden)$/)).toHaveLength(1);
+    });
+  });
+
+  it('prefers "parent paused" over "parent hidden" when the parent is both paused and in the unfiltered list', async () => {
+    localStorage.setItem(VIEW_KEY, 'tree');
+    const sessions = [createSessionWithActivity(named('kid', 'kid-repo', { parentSessionId: 'dad' }), 'idle')];
+    const paused = [named('dad', 'dad-repo', { pausedAt: new Date().toISOString() })];
+    await renderWithRouter(
+      <SidebarWithViewMode sessions={sessions} pausedSessions={paused} allSessionIds={new Set(['kid', 'dad'])} />
+    );
+
+    expect(screen.getByText('parent paused')).toBeTruthy();
+    expect(screen.queryByText('parent hidden')).toBeNull();
+  });
+
+  it('keeps a parent cycle as "parent gone" even when both members are known', async () => {
+    localStorage.setItem(VIEW_KEY, 'tree');
+    const sessions = [
+      createSessionWithActivity(named('a', 'a-repo', { parentSessionId: 'b' }), 'idle'),
+      createSessionWithActivity(named('b', 'b-repo', { parentSessionId: 'a' }), 'idle'),
+    ];
+    await renderWithRouter(<SidebarWithViewMode sessions={sessions} allSessionIds={new Set(['a', 'b'])} />);
+
+    expect(screen.getAllByText('parent gone')).toHaveLength(2);
   });
 
   it('keeps the flat ordering and rows unchanged in flat view', async () => {

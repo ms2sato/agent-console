@@ -148,6 +148,7 @@ function RootLayout() {
 
   const { viewMode, setViewMode } = useSessionViewMode();
   const sessionViewMode = { mode: viewMode, onChange: setViewMode };
+  const allSessionIds = useMemo(() => new Set(sessions.map(s => s.id)), [sessions]);
 
   const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
     try {
@@ -253,6 +254,7 @@ function RootLayout() {
                     hideResizeHandle
                     sessionFilter={sessionFilter}
                     sessionViewMode={sessionViewMode}
+                    allSessionIds={allSessionIds}
                   />
                 }
               />
@@ -282,6 +284,7 @@ function RootLayout() {
                 onResumeSession={handleResumeFromSidebar}
                 sessionFilter={sessionFilter}
                 sessionViewMode={sessionViewMode}
+                allSessionIds={allSessionIds}
               />
             )}
             <main className={`flex-1 flex flex-col min-h-0 ${isSessionPage ? 'overflow-hidden' : 'overflow-auto'}`}>

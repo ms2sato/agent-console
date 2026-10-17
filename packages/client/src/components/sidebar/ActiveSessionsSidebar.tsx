@@ -60,9 +60,23 @@ interface ActiveSessionsSidebarProps {
     mode: SessionViewMode;
     onChange: (mode: SessionViewMode) => void;
   };
+  /**
+   * Ids of every known session before the mine/shared filter. Lets the tree tell
+   * an orphan whose parent is hidden by the filter from one whose parent is gone.
+   */
+  allSessionIds?: ReadonlySet<string>;
 }
 
 const TREE_INDENT_PX = 12;
+
+/** Why an orphan root's parent is not shown above it in the tree. */
+type ParentState = 'gone' | 'paused' | 'hidden';
+
+const PARENT_STATE_BADGE: Record<ParentState, { text: string; title: string }> = {
+  gone: { text: 'parent gone', title: 'The parent session no longer exists.' },
+  paused: { text: 'parent paused', title: 'The parent session is paused.' },
+  hidden: { text: 'parent hidden', title: 'The parent session is hidden by the current filter.' },
+};
 
 const VIEW_MODE_OPTIONS: ReadonlyArray<{ mode: SessionViewMode; label: string }> = [
   { mode: 'flat', label: 'Flat' },
@@ -580,6 +594,7 @@ export function ActiveSessionsSidebar({
   hideResizeHandle,
   sessionFilter,
   sessionViewMode,
+  allSessionIds,
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -638,6 +653,18 @@ export function ActiveSessionsSidebar({
     () => (isTreeView ? buildSessionTree(sessions) : []),
     [isTreeView, sessions]
   );
+  // Paused wins over hidden: a paused parent is also in the unfiltered list.
+  const resolveParentState = (parentSessionId: string | undefined): ParentState => {
+    if (parentSessionId === undefined) return 'gone';
+    if (pausedSessions.some((paused) => paused.id === parentSessionId)) return 'paused';
+    if (
+      allSessionIds?.has(parentSessionId) &&
+      !sessions.some(({ session }) => session.id === parentSessionId)
+    ) {
+      return 'hidden';
+    }
+    return 'gone';
+  };
   // Ids of tree nodes whose subtree is collapsed. Not persisted.
   const [collapsedTreeNodes, setCollapsedTreeNodes] = useState<ReadonlySet<string>>(new Set());
   const toggleTreeNode = useCallback((sessionId: string) => {
@@ -841,16 +868,19 @@ export function ActiveSessionsSidebar({
                 onClick={() => handleSessionClick(session.id)}
                 orchestratorSessionIds={orchestratorSessionIdsFor(session)}
               />
-              {node.orphan && (
-                <div className="px-3 pb-1.5 -mt-1">
-                  <span
-                    className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-800 text-gray-400"
-                    title="This session was started from a parent session that is not in the active list (it has ended, is paused, or is hidden by the current filter)."
-                  >
-                    parent gone
-                  </span>
-                </div>
-              )}
+              {node.orphan && (() => {
+                const badge = PARENT_STATE_BADGE[resolveParentState(session.parentSessionId)];
+                return (
+                  <div className="px-3 pb-1.5 -mt-1">
+                    <span
+                      className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-800 text-gray-400"
+                      title={badge.title}
+                    >
+                      {badge.text}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
           </div>
           {hasChildren && expanded && renderTreeNodes(node.children, depth + 1)}
