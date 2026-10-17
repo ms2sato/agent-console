@@ -7,6 +7,7 @@ import { MemoPanel } from '../MemoPanel';
 import { SessionTerminalRunContext, type SessionTerminalRun } from '../SessionTerminalRunContext';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 // Fetch-level mock (testing.md Anti-Pattern #2: mock at the fetch boundary).
 const originalFetch = globalThis.fetch;
@@ -184,7 +185,7 @@ describe('MemoPanel', () => {
     async function renderMemo(run: SessionTerminalRun | null) {
       mockFetch.mockImplementation(async (url: unknown) =>
         String(url).includes('/messages')
-          ? jsonResponse({ message: { id: 'm1' } })
+          ? jsonResponse(completeWireBody({ message: { id: 'm1' } }))
           : jsonResponse({ content: MEMO }),
       );
       await renderWithRouter(

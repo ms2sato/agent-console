@@ -16,18 +16,13 @@ import type {
   RefreshDefaultBranchResponse,
   RemoteBranchStatus,
   UpdateRepositoryRequest,
-  WorkerMessage,
   GenerateRepositoryDescriptionResponse,
   CloneRepositoryRequest,
   CloneRepositoryResponse,
   ConfigResponse,
   LoginRequest,
-  LoginResponse,
   CurrentUserResponse,
   UserPreferences,
-  UpdateUserPreferencesResponse,
-  ReviewComment,
-  MessageTemplate,
   Artifact,
   Bookmark,
   Todo,
@@ -85,6 +80,18 @@ import {
   JobsResponseSchema,
   JobStatsSchema,
   SystemHealthResponseSchema,
+  CloneRepositoryResponseSchema,
+  WorktreeAcceptedResponseSchema,
+  WorktreeDeletionAcceptedResponseSchema,
+  GenerateRepositoryDescriptionResponseSchema,
+  SendWorkerMessageResponseSchema,
+  LoginResponseSchema,
+  UpdateUserPreferencesResponseSchema,
+  ReviewCommentSchema,
+  ReviewStatusResponseSchema,
+  MessageTemplateResponseSchema,
+  SuccessResponseSchema,
+  RegisterSharedAccountResponseSchema,
 } from '@agent-console/shared';
 import type {
   WorkersResponse,
@@ -116,6 +123,15 @@ import type {
   JobsResponseWire,
   JobStatsWire,
   SystemHealthResponse,
+  WorktreeAcceptedResponse,
+  WorktreeDeletionAcceptedResponse,
+  SendWorkerMessageResponse,
+  LoginResponseWire,
+  UpdateUserPreferencesResponseWire,
+  ReviewStatusResponse,
+  MessageTemplateResponse,
+  SuccessResponse,
+  RegisterSharedAccountResponse,
 } from '@agent-console/shared';
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
@@ -533,7 +549,7 @@ export async function cloneRepository(
   if (!res.ok) {
     await handleApiError(res, 'Failed to start clone');
   }
-  return res.json() as Promise<CloneRepositoryResponse>;
+  return v.parse(CloneRepositoryResponseSchema, await res.json());
 }
 
 /**
@@ -568,13 +584,6 @@ export async function updateRepository(
     await handleApiError(res, 'Failed to update repository');
   }
   return v.parse(RepositoryResponseSchema, await res.json());
-}
-
-/**
- * Response for async worktree creation.
- */
-export interface CreateWorktreeAsyncResponse {
-  accepted: true;
 }
 
 export async function fetchWorktrees(repositoryId: string): Promise<WorktreesResponse> {
@@ -619,7 +628,7 @@ export async function fetchBranchCommits(sessionId: string, baseRef: string): Pr
 export async function createWorktree(
   repositoryId: string,
   request: CreateWorktreeRequest
-): Promise<CreateWorktreeAsyncResponse> {
+): Promise<WorktreeAcceptedResponse> {
   const res = await api.repositories[':id'].worktrees.$post({
     param: { id: repositoryId },
     json: request,
@@ -627,7 +636,7 @@ export async function createWorktree(
   if (!res.ok) {
     await handleApiError(res, 'Failed to create worktree');
   }
-  return res.json() as Promise<CreateWorktreeAsyncResponse>;
+  return v.parse(WorktreeAcceptedResponseSchema, await res.json());
 }
 
 /**
@@ -639,7 +648,7 @@ export async function createWorktree(
 export async function createWorktreeAsync(
   repositoryId: string,
   request: CreateWorktreeRequest
-): Promise<CreateWorktreeAsyncResponse> {
+): Promise<WorktreeAcceptedResponse> {
   const res = await api.repositories[':id'].worktrees.$post({
     param: { id: repositoryId },
     json: request,
@@ -647,7 +656,7 @@ export async function createWorktreeAsync(
   if (!res.ok) {
     await handleApiError(res, 'Failed to create worktree');
   }
-  return res.json() as Promise<CreateWorktreeAsyncResponse>;
+  return v.parse(WorktreeAcceptedResponseSchema, await res.json());
 }
 
 export async function fetchGitHubIssue(
@@ -698,7 +707,7 @@ export async function deleteWorktreeAsync(
   repositoryId: string,
   worktreePath: string,
   force: boolean = false
-): Promise<{ accepted: true; jobId: string }> {
+): Promise<WorktreeDeletionAcceptedResponse> {
   const params = new URLSearchParams();
   if (force) params.set('force', 'true');
   params.set('async', 'true');
@@ -709,7 +718,9 @@ export async function deleteWorktreeAsync(
   if (!res.ok) {
     await handleApiError(res, 'Failed to delete worktree');
   }
-  return res.json();
+  // The server's sync 200 branch ({ success, cleanupCommandResult? }) is unreachable
+  // from here: this function always sends async=true, so only the 202 body arrives.
+  return v.parse(WorktreeDeletionAcceptedResponseSchema, await res.json());
 }
 
 export async function fetchAgents(): Promise<AgentsResponse> {
@@ -937,7 +948,7 @@ export async function pullWorktreeAsync(
   repositoryId: string,
   worktreePath: string,
   taskId: string
-): Promise<{ accepted: true }> {
+): Promise<WorktreeAcceptedResponse> {
   const res = await api.repositories[':id'].worktrees.pull.$post({
     param: { id: repositoryId },
     json: { worktreePath, taskId },
@@ -946,7 +957,7 @@ export async function pullWorktreeAsync(
     const error = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(error.error || 'Failed to pull worktree');
   }
-  return res.json();
+  return v.parse(WorktreeAcceptedResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -982,7 +993,7 @@ export async function generateRepositoryDescription(
   if (!res.ok) {
     await handleApiError(res, 'Failed to generate description');
   }
-  return res.json() as Promise<GenerateRepositoryDescriptionResponse>;
+  return v.parse(GenerateRepositoryDescriptionResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -1082,7 +1093,7 @@ export async function updateRepositorySlackIntegration(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update Slack integration');
   }
-  return res.json() as Promise<RepositorySlackIntegration>;
+  return v.parse(RepositorySlackIntegrationSchema, await res.json());
 }
 
 /**
@@ -1130,7 +1141,7 @@ export async function sendWorkerMessage(
   toWorkerId: string,
   content: string,
   files?: File[],
-): Promise<{ message: WorkerMessage }> {
+): Promise<SendWorkerMessageResponse> {
   const formData = new FormData();
   formData.append('toWorkerId', toWorkerId);
   formData.append('content', content);
@@ -1144,19 +1155,19 @@ export async function sendWorkerMessage(
   if (!res.ok) {
     await handleApiError(res, 'Failed to send worker message');
   }
-  return res.json() as Promise<{ message: WorkerMessage }>;
+  return v.parse(SendWorkerMessageResponseSchema, await res.json());
 }
 
 // ===========================================================================
 // Authentication
 // ===========================================================================
 
-export async function login(request: LoginRequest): Promise<LoginResponse> {
+export async function login(request: LoginRequest): Promise<LoginResponseWire> {
   const res = await api.auth.login.$post({ json: request });
   if (!res.ok) {
     await handleApiError(res, 'Login failed');
   }
-  return res.json() as Promise<LoginResponse>;
+  return v.parse(LoginResponseSchema, await res.json());
 }
 
 export async function logout(): Promise<void> {
@@ -1176,12 +1187,12 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
 
 export async function updateAuthPreferences(
   preferences: UserPreferences
-): Promise<UpdateUserPreferencesResponse> {
+): Promise<UpdateUserPreferencesResponseWire> {
   const res = await api.auth.me.preferences.$patch({ json: preferences });
   if (!res.ok) {
     await handleApiError(res, 'Failed to update preferences');
   }
-  return res.json() as Promise<UpdateUserPreferencesResponse>;
+  return v.parse(UpdateUserPreferencesResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -1199,7 +1210,7 @@ export async function fetchReviewQueue(): Promise<ReviewQueueGroup[]> {
 export async function addReviewComment(
   workerId: string,
   comment: { file: string; line: number; body: string }
-): Promise<ReviewComment> {
+): Promise<v.InferOutput<typeof ReviewCommentSchema>> {
   const res = await api['review-queue'][':workerId'].comments.$post({
     param: { workerId },
     json: comment,
@@ -1207,13 +1218,13 @@ export async function addReviewComment(
   if (!res.ok) {
     await handleApiError(res, 'Failed to add review comment');
   }
-  return res.json() as Promise<ReviewComment>;
+  return v.parse(ReviewCommentSchema, await res.json());
 }
 
 export async function updateReviewStatus(
   workerId: string,
   status: 'completed'
-): Promise<{ workerId: string; status: string }> {
+): Promise<ReviewStatusResponse> {
   const res = await api['review-queue'][':workerId'].status.$patch({
     param: { workerId },
     json: { status },
@@ -1221,7 +1232,7 @@ export async function updateReviewStatus(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update review status');
   }
-  return res.json() as Promise<{ workerId: string; status: string }>;
+  return v.parse(ReviewStatusResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -1236,7 +1247,7 @@ export async function fetchMessageTemplates(): Promise<MessageTemplatesResponse>
   return v.parse(MessageTemplatesResponseSchema, await res.json());
 }
 
-export async function createMessageTemplate(title: string, content: string): Promise<{ template: MessageTemplate }> {
+export async function createMessageTemplate(title: string, content: string): Promise<MessageTemplateResponse> {
   const res = await fetch(`${API_BASE}/message-templates`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1245,13 +1256,13 @@ export async function createMessageTemplate(title: string, content: string): Pro
   if (!res.ok) {
     await handleApiError(res, 'Failed to create message template');
   }
-  return res.json() as Promise<{ template: MessageTemplate }>;
+  return v.parse(MessageTemplateResponseSchema, await res.json());
 }
 
 export async function updateMessageTemplate(
   id: string,
   updates: { title?: string; content?: string }
-): Promise<{ template: MessageTemplate }> {
+): Promise<MessageTemplateResponse> {
   const res = await fetch(`${API_BASE}/message-templates/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -1260,18 +1271,18 @@ export async function updateMessageTemplate(
   if (!res.ok) {
     await handleApiError(res, 'Failed to update message template');
   }
-  return res.json() as Promise<{ template: MessageTemplate }>;
+  return v.parse(MessageTemplateResponseSchema, await res.json());
 }
 
-export async function deleteMessageTemplate(id: string): Promise<{ success: boolean }> {
+export async function deleteMessageTemplate(id: string): Promise<SuccessResponse> {
   const res = await fetch(`${API_BASE}/message-templates/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     await handleApiError(res, 'Failed to delete message template');
   }
-  return res.json() as Promise<{ success: boolean }>;
+  return v.parse(SuccessResponseSchema, await res.json());
 }
 
-export async function reorderMessageTemplates(orderedIds: string[]): Promise<{ success: boolean }> {
+export async function reorderMessageTemplates(orderedIds: string[]): Promise<SuccessResponse> {
   const res = await fetch(`${API_BASE}/message-templates/reorder`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -1280,7 +1291,7 @@ export async function reorderMessageTemplates(orderedIds: string[]): Promise<{ s
   if (!res.ok) {
     await handleApiError(res, 'Failed to reorder message templates');
   }
-  return res.json() as Promise<{ success: boolean }>;
+  return v.parse(SuccessResponseSchema, await res.json());
 }
 
 // ===========================================================================
@@ -1428,12 +1439,12 @@ export async function fetchSharedAccounts(): Promise<SharedAccountsResponse> {
   return v.parse(ListSharedAccountsResponseSchema, await res.json());
 }
 
-export async function registerSharedAccount(username: string): Promise<{ username: string; userId: string }> {
+export async function registerSharedAccount(username: string): Promise<RegisterSharedAccountResponse> {
   const res = await api['shared-accounts'].$post({ json: { username } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to register shared account');
   }
-  return res.json() as Promise<{ username: string; userId: string }>;
+  return v.parse(RegisterSharedAccountResponseSchema, await res.json());
 }
 
 export async function unregisterSharedAccount(username: string): Promise<void> {

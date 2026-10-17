@@ -16,7 +16,7 @@
 //   node scripts/generate-schema-version.mjs --print    print version without writing
 
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -242,6 +242,31 @@ export function computeVersion(schemasDir = SCHEMAS_DIR) {
     hash.update(`${relPath}\n${hashedContent}`);
   }
   return hash.digest('hex').slice(0, 16);
+}
+
+/**
+ * Copy the hashed file set (the schema files plus their runtime-import
+ * closure) into `destDir`, preserving each file's path relative to the parent
+ * of the schemas directory (`packages/shared/src` for the real tree), so the
+ * closure's relative imports still resolve inside the copy. The copy hashes
+ * consistently with itself, not with the real tree (the hash includes the
+ * path relative to the repo root). Lets a test perturb a scratch copy instead
+ * of the real source files. Writes only under `destDir`.
+ * @param {string} destDir existing directory that receives the copy
+ * @param {string} [schemasDir] defaults to the real wire-schema directory.
+ * @returns {{ schemasDir: string, files: string[] }} the copy's `schemas/`
+ *   directory and the absolute paths of every copied file.
+ */
+export function copySchemaClosureTo(destDir, schemasDir = SCHEMAS_DIR) {
+  const srcRoot = path.dirname(schemasDir);
+  const files = [];
+  for (const file of collectSchemaFiles(schemasDir)) {
+    const target = path.join(destDir, path.relative(srcRoot, file));
+    mkdirSync(path.dirname(target), { recursive: true });
+    copyFileSync(file, target);
+    files.push(target);
+  }
+  return { schemasDir: path.join(destDir, path.relative(srcRoot, schemasDir)), files };
 }
 
 /**

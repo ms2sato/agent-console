@@ -3,6 +3,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import { RunCommandDialog } from '../RunCommandDialog';
 import { codeBlockCopyText } from '../../ui/MarkdownCodeBlock';
 import type { SessionTerminalRun } from '../SessionTerminalRunContext';
+import { completeWireBody } from '../../../test/wire-fixtures';
 
 // Fetch-boundary mock: sendWorkerMessage is the real client function; only the
 // network is faked. `events` records the cross-call order (create vs. send).
@@ -56,7 +57,7 @@ describe('RunCommandDialog', () => {
       if (String(url).includes('/messages')) {
         events.push(`send:${String((init?.body as FormData).get('toWorkerId'))}`);
       }
-      return new Response(JSON.stringify({ message: { id: 'm1' } }), {
+      return new Response(JSON.stringify(completeWireBody({ message: { id: 'm1' } })), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });

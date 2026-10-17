@@ -47,7 +47,8 @@ export function createFetchBridge<E extends Env = Env>(app: Hono<E>) {
 
   const mockFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
-    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    // Only JSON string bodies are captured; a FormData body (multipart uploads) is forwarded untouched.
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
     capturedRequests.push({
       url,
       method: init?.method || 'GET',
