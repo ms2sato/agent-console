@@ -356,11 +356,11 @@ describe('Client-Server Boundary: paged rows meet the live window (#2176)', () =
   // case of Issue #2176).
   const STREAMED_FRAMES = 1200;
 
-  async function streamThenPage(attachAtBytes: number) {
+  async function streamThenPage(attachAtBytes: number, frames = STREAMED_FRAMES) {
     const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
     const sessionId = session.id;
     const workerId = session.workers.find((w) => w.type === 'agent')!.id;
-    const stream = generateInkRepaintStream({ frames: STREAMED_FRAMES, cols: COLS, statusBar: STATUS_BAR, contentLinesPerFrame: CONTENT_LINES, chromeRepaintsPerFrame: CHROME_REPAINTS });
+    const stream = generateInkRepaintStream({ frames, cols: COLS, statusBar: STATUS_BAR, contentLinesPerFrame: CONTENT_LINES, chromeRepaintsPerFrame: CHROME_REPAINTS });
 
     const sent: WorkerServerMessage[] = [];
     const wsCtx = new WSContext({
@@ -511,10 +511,18 @@ describe('Client-Server Boundary: paged rows meet the live window (#2176)', () =
   // disposed in xterm too, and the labels missing at the boundary stay within the span
   // between the eviction cursor and the oldest surviving marker, computed from the
   // recorded end offsets.
+  //
+  // Cost: the cap needs more than 512 live markers (rows in the buffer / rows per piece) and
+  // the buffer must evict (more than 5000 rows), so the stream is the smallest that does both:
+  // CAP_FRAMES frames (~555 KB, ~5400 rows) in CAP_PIECE_BYTES pieces (~6 rows each, ~840
+  // markers). Attached at 0, the whole stream goes through the output path.
+  const CAP_FRAMES = 270;
+  const CAP_PIECE_BYTES = 600;
   it('cap tripped on purpose: no marker leaks and the gap stays within one merged span', async () => {
-    _setLiveEdgePieceBytesForTest(200);
+    _setLiveEdgePieceBytesForTest(CAP_PIECE_BYTES);
     try {
-      const r = await streamThenPage(700_000);
+      const r = await streamThenPage(0, CAP_FRAMES);
+      const labelsPerByte = (CAP_FRAMES * CONTENT_LINES) / r.stream.length;
       const { gap, topOffset } = reportStreamed(r);
       const first = r.firstInspect;
       const oldestSurvivor = first.frameMarkerEndOffsets[0];
@@ -526,9 +534,9 @@ describe('Client-Server Boundary: paged rows meet the live window (#2176)', () =
       expect(first.frameMarkerCount).toBe(512);
       expect(first.liveMarkerCount).toBe(first.frameMarkerCount);
       expect(gapBytes).toBeLessThanOrEqual(spanBytes);
-      expect(gap).toBeLessThanOrEqual(Math.ceil(spanBytes * LABELS_PER_STREAM_BYTE));
+      expect(gap).toBeLessThanOrEqual(Math.ceil(spanBytes * labelsPerByte));
       expect(r.pagedTexts.length).toBeGreaterThan(0);
-      const { m } = reportStreamed(r);
+      const m = measure(r.pagedTexts, r.liveTexts);
       expect(m.duplicateIdx).toEqual([]);
       expect(m.backwards).toEqual([]);
     } finally {
