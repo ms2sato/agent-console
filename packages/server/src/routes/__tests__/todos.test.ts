@@ -1127,6 +1127,23 @@ describe('Todo routes', () => {
       expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
     });
 
+    it('two concurrent same-session re-targets to DIFFERENT workers: exactly one wins (200), the other is refused (409), the row names the winner', async () => {
+      // The creator is worker-gone (no longer in the session), so BOTH requests are real re-targets.
+      const item = await seedAgentItem({ createdBy: { workerId: 'worker-gone' } });
+      broadcasts.length = 0;
+
+      const responses = await Promise.all([
+        move(item.id, { sessionId: 'session-1', workerId: 'worker-1' }),
+        move(item.id, { sessionId: 'session-1', workerId: 'worker-t1' }),
+      ]);
+
+      expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+      const winner = responses.findIndex((r) => r.status === 200) === 0 ? 'worker-1' : 'worker-t1';
+      expect((await repository.findById(item.id))!.createdBy).toEqual({ workerId: winner });
+      expect(JSON.stringify(await responses.find((r) => r.status === 409)!.json())).toContain('The item moved while you were moving it; reload');
+      expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
+    });
+
     describe('a concurrent change between the read and the write', () => {
       /** Runs `interfere` once, right after the route's first read of the item. */
       const racingApp = (itemId: string, interfere: () => Promise<unknown>): Hono<AppBindings> => {
@@ -1147,7 +1164,7 @@ describe('Todo routes', () => {
       it('the item moved elsewhere: 409 "moved while you were moving it", and the winner\'s placement stands', async () => {
         const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
         const target = racingApp(item.id, () =>
-          repository.adopt(item.id, { sessionId: 's', workerId: null, actor: { userId: BOB.id }, expectedSessionId: 'session-1' }),
+          repository.adopt(item.id, { sessionId: 's', workerId: null, actor: { userId: BOB.id }, expectedSessionId: 'session-1', expectedWorkerId: null }),
         );
         broadcasts.length = 0;
 

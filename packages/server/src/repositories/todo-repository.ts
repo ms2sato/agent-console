@@ -67,6 +67,11 @@ export interface AdoptTodoParams {
    * is never overwritten.
    */
   expectedSessionId: string | null;
+  /**
+   * The `created_worker_id` the caller read the item under (null for a human-created item). Part of
+   * the same compare-and-set: two callers re-targeting the item to different workers cannot both win.
+   */
+  expectedWorkerId: string | null;
   /** Who moved the item; recorded on the `todo_moves` row written with the update. */
   actor: TodoActivityActor;
   /** The human's quoted instruction, when the move was made on one. Omitted: stored NULL. */

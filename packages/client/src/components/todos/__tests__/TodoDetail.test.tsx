@@ -5,7 +5,7 @@ import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { waitForAbsent } from '../../../test/waitForAbsent';
 import { createTodoApiMock, makeTodo, makeTodoComment, makeTodoMove } from '../../../test/todo-fixtures';
-import type { Session, TodoActivity } from '@agent-console/shared';
+import type { Session, TodoActivity, Worker } from '@agent-console/shared';
 import { makeSession, SessionDataProvider } from '../../../test/session-data';
 import { setCurrentUser, setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 import { TodoDetail } from '../TodoDetail';
@@ -609,12 +609,14 @@ describe('TodoDetail', () => {
   describe('move to session', () => {
     const MINE = 'user-me';
     const THEIRS = 'user-bob';
+    const TERMINAL = { id: 'w-term', type: 'terminal', name: 'Shell', createdAt: '2026-10-15T00:00:00.000Z', activated: true } as Worker;
+    const GIT_DIFF = { id: 'w-diff', type: 'git-diff', name: 'Diff', createdAt: '2026-10-15T00:00:00.000Z', baseCommit: 'abc123' } as Worker;
     const sessions = [
-      makeSession({ id: 'current-session', title: 'Current', createdBy: MINE }),
-      makeSession({ id: 'mine-session', title: 'My work', createdBy: MINE, createdByUsername: 'me' }),
-      makeSession({ id: 'shared-session', title: 'Team room', createdBy: 'shared-acct', createdByUsername: 'team', isShared: true }),
-      makeSession({ id: 'bobs-session', title: 'Bob work', createdBy: THEIRS, createdByUsername: 'bob' }),
-      makeSession({ id: 'cccccccc-paused', title: 'Paused one', createdBy: MINE, pausedAt: '2026-10-16T00:00:00.000Z' }),
+      makeSession({ id: 'current-session', title: 'Current', createdBy: MINE, workers: [TERMINAL] }),
+      makeSession({ id: 'mine-session', title: 'My work', createdBy: MINE, createdByUsername: 'me', workers: [TERMINAL] }),
+      makeSession({ id: 'shared-session', title: 'Team room', createdBy: 'shared-acct', createdByUsername: 'team', isShared: true, workers: [TERMINAL] }),
+      makeSession({ id: 'bobs-session', title: 'Bob work', createdBy: THEIRS, createdByUsername: 'bob', workers: [TERMINAL] }),
+      makeSession({ id: 'cccccccc-paused', title: 'Paused one', createdBy: MINE, pausedAt: '2026-10-16T00:00:00.000Z', workers: [TERMINAL] }),
     ];
 
     function signInMultiUser() {
@@ -664,7 +666,7 @@ describe('TodoDetail', () => {
       signInMultiUser();
       await renderDetail(
         { sessionId: 'current-session' },
-        { sessions: [makeSession({ id: 'dddddddd-4444-4444-8444-444444444444', createdBy: MINE })] },
+        { sessions: [makeSession({ id: 'dddddddd-4444-4444-8444-444444444444', createdBy: MINE, workers: [TERMINAL] })] },
       );
 
       expect(optionTexts()).toEqual(['dddddddd']);
@@ -709,6 +711,40 @@ describe('TodoDetail', () => {
       await waitFor(() =>
         expect(onError).toHaveBeenCalledWith('Failed to Move', 'Target session has no worker that can receive notifications'),
       );
+    });
+
+    describe('delivery worker (agent-created items only)', () => {
+      const bare = makeSession({ id: 'bare-session', title: 'No workers', createdBy: MINE });
+      const diffOnly = makeSession({ id: 'diff-session', title: 'Diff only', createdBy: MINE, workers: [GIT_DIFF] });
+      const withTerminal = makeSession({ id: 'term-session', title: 'Has shell', createdBy: MINE, workers: [TERMINAL] });
+      const withAgent = makeSession({
+        id: 'agent-session',
+        title: 'Has agent',
+        createdBy: MINE,
+        workers: [{ id: 'w-agent', type: 'agent', name: 'Claude', createdAt: '2026-10-15T00:00:00.000Z', agentId: 'claude-code-builtin', activated: true } as Worker],
+      });
+
+      // Mutation: drop the needsDeliveryWorker filter -> the first two tests fail.
+      it('omits a workerless session and a git-diff-only session for an agent-created item', async () => {
+        signInMultiUser();
+        await renderDetail({ createdBy: { workerId: 'w1' }, sessionId: 'current-session' }, { sessions: [bare, diffOnly, withTerminal, withAgent] });
+
+        expect(optionTexts()).toEqual(['Has shell', 'Has agent']);
+      });
+
+      it('offers a session with a terminal or agent worker for an agent-created item', async () => {
+        signInMultiUser();
+        await renderDetail({ createdBy: { workerId: 'w1' }, sessionId: 'current-session' }, { sessions: [withTerminal, withAgent] });
+
+        expect(optionTexts()).toEqual(['Has shell', 'Has agent']);
+      });
+
+      it('keeps every live session, workerless included, for a human-created item', async () => {
+        signInMultiUser();
+        await renderDetail({ createdBy: { userId: MINE }, sessionId: 'current-session' }, { sessions: [bare, diffOnly, withTerminal] });
+
+        expect(optionTexts()).toEqual(['No workers', 'Diff only', 'Has shell']);
+      });
     });
 
     it('is offered on an open question as well as an open action', async () => {

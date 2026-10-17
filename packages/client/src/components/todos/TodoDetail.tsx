@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { canReceiveNotifications } from '@agent-console/shared';
 import type { Todo, TodoActivity, TodoActivityActor, UsersListResponse } from '@agent-console/shared';
 import { updateTodo, deleteTodo, commentTodo, moveTodo } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -197,7 +198,14 @@ function TodoMoveControls({ todo, onError }: TodoEditFormProps) {
   const [target, setTarget] = useState('');
 
   // Only a live session can take the item: its delivery needs a live worker.
-  const live = sessions.filter((session) => !session.pausedAt && session.id !== todo.sessionId);
+  // An agent-created item's delivery goes to a worker of its session, so its target needs one that can receive it.
+  const needsDeliveryWorker = 'workerId' in todo.createdBy;
+  const live = sessions.filter(
+    (session) =>
+      !session.pausedAt &&
+      session.id !== todo.sessionId &&
+      (!needsDeliveryWorker || session.workers.some(canReceiveNotifications)),
+  );
   const offered = showAll
     ? live
     : live.filter(

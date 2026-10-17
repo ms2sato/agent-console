@@ -188,7 +188,7 @@ describe('SqliteTodoRepository', () => {
     it('workerId null on a human-created item leaves created_worker_id NULL and the creator the human', async () => {
       await repository.create(params({ createdBy: { userId: 'user-1' } }));
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: null, actor: { userId: 'user-3' }, expectedSessionId: 'session-1' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: null, actor: { userId: 'user-3' }, expectedSessionId: 'session-1', expectedWorkerId: null });
 
       expect(adopted).toMatchObject({ sessionId: 'session-2', createdBy: { userId: 'user-1' } });
       const row = await db.selectFrom('todos').select(['created_worker_id', 'created_user_id']).where('id', '=', 'todo-1').executeTakeFirstOrThrow();
@@ -201,7 +201,7 @@ describe('SqliteTodoRepository', () => {
       );
       await new Promise((r) => setTimeout(r, 5));
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1', expectedWorkerId: 'worker-1' });
 
       expect(adopted).toMatchObject({
         sessionId: 'session-2',
@@ -217,7 +217,7 @@ describe('SqliteTodoRepository', () => {
     it('moves only session_id of a human-created item: its creator stays the human and no worker is set', async () => {
       await repository.create(params({ createdBy: { userId: 'user-1' } }));
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1', expectedWorkerId: null });
 
       expect(adopted).toMatchObject({ sessionId: 'session-2', createdBy: { userId: 'user-1' } });
       expect(adopted!.createdBy).not.toHaveProperty('workerId');
@@ -227,7 +227,7 @@ describe('SqliteTodoRepository', () => {
       await repository.create(params({ scope: 'global', sessionId: 'session-1', createdBy: { workerId: 'worker-1' } }));
       const before = await repository.findById('todo-1');
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: 'session-2' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: 'session-2', expectedWorkerId: 'worker-1' });
 
       expect(adopted).toBeNull();
       expect(await repository.findById('todo-1')).toEqual(before);
@@ -237,23 +237,64 @@ describe('SqliteTodoRepository', () => {
       await repository.create(params({ scope: 'global', sessionId: 'session-1', createdBy: { userId: 'user-1' } }));
       const before = await repository.findById('todo-1');
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: null });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: null, expectedWorkerId: null });
 
       expect(adopted).toBeNull();
       expect(await repository.findById('todo-1')).toEqual(before);
     });
 
+    it('a stale expectedWorkerId (another worker took the item since it was read) returns null and leaves the row untouched', async () => {
+      await repository.create(params({ createdBy: { workerId: 'worker-9' } }));
+      const before = await repository.findById('todo-1');
+
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-1', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: 'session-1', expectedWorkerId: 'worker-1' });
+
+      expect(adopted).toBeNull();
+      expect(await repository.findById('todo-1')).toEqual(before);
+    });
+
+    it('a NULL expectedWorkerId against an agent-created item returns null and leaves the row untouched', async () => {
+      await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
+      const before = await repository.findById('todo-1');
+
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-3', actor: { userId: 'user-3' }, expectedSessionId: 'session-1', expectedWorkerId: null });
+
+      expect(adopted).toBeNull();
+      expect(await repository.findById('todo-1')).toEqual(before);
+    });
+
+    it('a set expectedWorkerId against a human-created item returns null and leaves the row untouched', async () => {
+      await repository.create(params({ createdBy: { userId: 'user-1' } }));
+      const before = await repository.findById('todo-1');
+
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: null, actor: { userId: 'user-3' }, expectedSessionId: 'session-1', expectedWorkerId: 'worker-1' });
+
+      expect(adopted).toBeNull();
+      expect(await repository.findById('todo-1')).toEqual(before);
+    });
+
+    it('two same-session re-targets read under the same worker: exactly one wins and the row names the winner', async () => {
+      await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
+      const attempt = (workerId: string) =>
+        repository.adopt('todo-1', { sessionId: 'session-1', workerId, actor: { userId: 'user-3' }, expectedSessionId: 'session-1', expectedWorkerId: 'worker-1' });
+
+      const results = await Promise.all([attempt('worker-a'), attempt('worker-b')]);
+
+      expect(results.filter((r) => r !== null)).toHaveLength(1);
+      expect((await repository.findById('todo-1'))!.createdBy).toEqual(results.find((r) => r !== null)!.createdBy);
+    });
+
     it('an item with no session is adopted when NULL is expected, and refused when a session is expected', async () => {
       await repository.create(params({ scope: 'global', sessionId: null, createdBy: { userId: 'user-1' } }));
 
-      expect(await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: 'session-1' })).toBeNull();
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: null });
+      expect(await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: 'session-1', expectedWorkerId: null })).toBeNull();
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: null, expectedWorkerId: null });
 
       expect(adopted).toMatchObject({ sessionId: 'session-3', createdBy: { userId: 'user-1' } });
     });
 
     it('returns null for an unknown id and for every non-open status, leaving the row untouched', async () => {
-      expect(await repository.adopt('missing', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1' })).toBeNull();
+      expect(await repository.adopt('missing', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1', expectedWorkerId: null })).toBeNull();
 
       for (const [id, close] of [
         ['done', () => repository.resolve('done', { text: 'ok', resolvedByUserId: 'user-1' })],
@@ -264,7 +305,7 @@ describe('SqliteTodoRepository', () => {
         await close();
         const before = await repository.findById(id);
 
-        expect(await repository.adopt(id, { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1' })).toBeNull();
+        expect(await repository.adopt(id, { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1', expectedWorkerId: 'worker-1' })).toBeNull();
         expect(await repository.findById(id)).toEqual(before);
       }
     });
@@ -276,13 +317,14 @@ describe('SqliteTodoRepository', () => {
       workerId: 'worker-2',
       actor: { workerId: 'worker-2' },
       expectedSessionId: 'session-1' as string | null,
+      expectedWorkerId: null as string | null,
       ...overrides,
     });
 
     it('writes one move row with the previous session as from and the new one as to, and no statement by default', async () => {
       await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
 
-      await repository.adopt('todo-1', adoptParams());
+      await repository.adopt('todo-1', adoptParams({ expectedWorkerId: 'worker-1' }));
 
       const activities = await repository.listActivities('todo-1');
       expect(activities).toHaveLength(1);
@@ -348,7 +390,7 @@ describe('SqliteTodoRepository', () => {
     it('a re-adopt into the session the item is already in writes no move row (no session change to record)', async () => {
       await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
 
-      const again = await repository.adopt('todo-1', adoptParams({ sessionId: 'session-1', expectedSessionId: 'session-1' }));
+      const again = await repository.adopt('todo-1', adoptParams({ expectedWorkerId: 'worker-1', sessionId: 'session-1', expectedSessionId: 'session-1' }));
 
       expect(again).toMatchObject({ sessionId: 'session-1', createdBy: { workerId: 'worker-2' } });
       expect(await db.selectFrom('todo_moves').selectAll().execute()).toEqual([]);
@@ -363,7 +405,7 @@ describe('SqliteTodoRepository', () => {
       await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
       const before = await repository.findById('todo-1');
 
-      await expect(repository.adopt('todo-1', adoptParams({ statedBy: 'user-9' }))).rejects.toThrow(/todo_moves_attribution_check/);
+      await expect(repository.adopt('todo-1', adoptParams({ expectedWorkerId: 'worker-1', statedBy: 'user-9' }))).rejects.toThrow(/todo_moves_attribution_check/);
 
       expect(await repository.findById('todo-1')).toEqual(before);
       expect(await db.selectFrom('todo_moves').selectAll().execute()).toEqual([]);
@@ -376,7 +418,7 @@ describe('SqliteTodoRepository', () => {
       await db
         .transaction()
         .execute(async (trx) => {
-          expect(await repository.adopt('todo-1', adoptParams(), trx)).not.toBeNull();
+          expect(await repository.adopt('todo-1', adoptParams({ expectedWorkerId: 'worker-1' }), trx)).not.toBeNull();
           throw new Error('abort');
         })
         .catch(() => undefined);
@@ -445,7 +487,7 @@ describe('SqliteTodoRepository', () => {
       expect((await repository.dismiss('d'))!.commentCount).toBe(1);
       expect((await repository.update('u', { title: 'new' }))!.commentCount).toBe(1);
       expect(
-        (await repository.adopt('ad', { sessionId: 's2', workerId: 'w2', actor: { workerId: 'w2' }, expectedSessionId: 'session-1' }))!.commentCount,
+        (await repository.adopt('ad', { sessionId: 's2', workerId: 'w2', actor: { workerId: 'w2' }, expectedSessionId: 'session-1', expectedWorkerId: 'worker-1' }))!.commentCount,
       ).toBe(1);
       const many = await repository.resolveManyOpen(['many'], { text: 'ok', resolvedByUserId: 'u', sessionId: 'session-1' });
       expect(many[0]!.commentCount).toBe(1);

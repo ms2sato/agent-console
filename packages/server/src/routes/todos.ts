@@ -329,6 +329,7 @@ const todos = new Hono<AppBindings>()
       sessionId: body.sessionId,
       workerId,
       expectedSessionId: todo.sessionId,
+      expectedWorkerId: 'workerId' in todo.createdBy ? todo.createdBy.workerId : null,
       actor: { userId: authUser.id },
     });
     if (!moved) {
