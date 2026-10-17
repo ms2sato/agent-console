@@ -71,9 +71,9 @@ function recordBroadcast(msg: AppServerMessage): void {
  * Upper bound for a broadcast to arrive. Measured: under 16 busy-loop
  * processes on an 8-core host the whole file (both cases, including setup)
  * took 7.2 to 8.7 s, so one broadcast is well inside that; 10 s sits above
- * the worst whole-file figure. A bun:test per-test timeout does not reliably
- * fire on a never-settling await, so this deadline is what turns a broadcast
- * that never arrives into a clear failure. The two cases pass
+ * the worst whole-file figure. Measured: with the deadline removed the
+ * per-test timeout fired at 15 s here; the deadline exists to fail first
+ * (10 s) and to name the missing broadcast. The two cases pass
  * BROADCAST_TEST_TIMEOUT_MS to `it` so the runner's own (shorter, 5 s
  * default) timeout cannot pre-empt it.
  */
