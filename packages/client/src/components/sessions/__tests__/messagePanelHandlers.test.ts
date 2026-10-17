@@ -100,7 +100,7 @@ describe('escapePtyWorker', () => {
 
   it('sends the ESC byte through the terminal store instance for this session/worker', () => {
     const instance = getOrCreateTerminal('session-1', 'agent-1');
-    const spy = mock((_data: string) => {});
+    const spy = mock((_data: string) => true);
     instance.sendInput = spy;
 
     escapePtyWorker('session-1', 'agent-1');
