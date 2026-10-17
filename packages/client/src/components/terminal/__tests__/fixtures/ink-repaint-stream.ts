@@ -12,6 +12,9 @@
  *
  * Authored for a terminal of `cols` columns; every emitted line is shorter than
  * `cols`, so one logical line is one buffer row.
+ *
+ * `chromeRepaintsPerFrame` is needed for a cut to land inside a repaint often
+ * enough to show the seam class.
  */
 
 export const INK_STATUS_MARKER = 'ctx:';

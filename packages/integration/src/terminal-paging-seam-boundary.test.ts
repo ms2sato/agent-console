@@ -248,8 +248,10 @@ describe('Client-Server Boundary: paging an Ink-style repaint stream (seam corre
   // tail (~rows-1 rows, ending in the chrome pair) while its newer neighbour's
   // partition already begins with the same rows. The paged window then holds
   // each of those rows twice and the chrome pair sits at every such seam
-  // (10 of 12 interior seams in this scenario). When the duplication is fixed
-  // this test starts passing and it.failing reports that: switch it to it().
+  // (10 of 12 interior seams in this scenario). Measured: corrected = interior 20
+  // chrome rows over 1010 paged rows; uncorrected = interior 23 over 803. Tracked
+  // in Issue #2170. When the duplication is fixed this test starts passing and
+  // it.failing reports that: switch it to it() -- that flip is the fix's polarity.
   it.failing('with seam correction, no chrome row leaks into the interior of the paged window and every content line appears once', async () => {
     const result = await pageEverything();
     const { top, interior, firstInterior } = chromeSplit(result.pagedTexts);
