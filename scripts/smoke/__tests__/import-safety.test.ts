@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterAll } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { discoverSmokeFiles } from './smoke-entry-points.js';
 
@@ -115,6 +117,8 @@ function filterKnownBenignEnvAdditions<T extends EnvDiffReport>(report: T): T {
 
 interface ImportResult {
   exitCode: number | null;
+  /** The terminating signal name when the runtime reports one (it may report only an `exitCode` of 128 + n instead). */
+  signalCode: string | null;
   stdout: string;
   stderr: string;
   timedOut: boolean;
@@ -166,6 +170,7 @@ async function importInSubprocess(absPath: string, extraArgv: string[] = []): Pr
     proc.exited,
   ]);
   clearTimeout(timeout);
+  const signalCode = proc.signalCode;
 
   const trimmed = stdout.trim();
   const lines = trimmed.split('\n');
@@ -186,10 +191,166 @@ async function importInSubprocess(absPath: string, extraArgv: string[] = []): Pr
     report = null;
   }
 
-  return { exitCode: timedOut ? null : exitCode, stdout: lastLine, stderr, timedOut, report };
+  return { exitCode: timedOut ? null : exitCode, signalCode, stdout: lastLine, stderr, timedOut, report };
+}
+
+const STDERR_TAIL_LINES = 20;
+const STDERR_TAIL_MAX_CHARS = 2000;
+
+/** The name of signal number `n` from `os.constants.signals`, or null when it has none. */
+function signalNameOf(n: number): string | null {
+  const found = Object.entries(os.constants.signals).find(([, value]) => value === n);
+  return found ? found[0] : null;
+}
+
+/**
+ * One multi-line description of a failed import, so the FIRST failure names the crash instead of saying only
+ * "Expected 0, Received 133". Pure: no I/O. It is the whole point of the diagnostics: a flake seen once
+ * (an importer that exited 133, a SIGTRAP shape, after ~300 ms while the host was loaded) left nothing to compare
+ * a recurrence against.
+ *
+ * The stderr tail keeps the LAST lines (a crash message is at the end) and, when the last 20 lines still exceed the
+ * cap, keeps the last `STDERR_TAIL_MAX_CHARS` characters and says how many were cut.
+ */
+function describeImportFailure(file: string, route: 'a' | 'b', result: ImportResult): string {
+  const derivedSignal =
+    result.signalCode === null && result.exitCode !== null && result.exitCode >= 128
+      ? signalNameOf(result.exitCode - 128)
+      : null;
+  const signal =
+    result.signalCode !== null
+      ? result.signalCode
+      : derivedSignal !== null
+        ? `none reported (exitCode ${result.exitCode} = 128 + ${(result.exitCode ?? 0) - 128} -> ${derivedSignal})`
+        : 'none';
+
+  const stderrLines = result.stderr.replace(/\n+$/, '').split('\n');
+  let stderrTail = stderrLines.slice(-STDERR_TAIL_LINES).join('\n');
+  if (stderrTail.length > STDERR_TAIL_MAX_CHARS) {
+    const cut = stderrTail.length - STDERR_TAIL_MAX_CHARS;
+    stderrTail = `...(${cut} more chars)\n${stderrTail.slice(cut)}`;
+  }
+
+  return [
+    `Importing ${file} failed (route ${route})`,
+    `exitCode: ${result.exitCode}`,
+    `signalCode: ${signal}`,
+    `timedOut: ${result.timedOut}`,
+    `last stdout line: ${result.stdout === '' ? '(empty)' : result.stdout}`,
+    `stderr (last ${STDERR_TAIL_LINES} lines, capped at ${STDERR_TAIL_MAX_CHARS} chars):`,
+    stderrTail === '' ? '(empty)' : stderrTail,
+  ].join('\n');
+}
+
+/**
+ * The route-(a)/(b) wiring shared by both tests: a failed or timed-out import throws the described error BEFORE
+ * the assertions that pin the success shape, so the first failure names the crash. Deliberately NOT a retry: a
+ * retry would hide the flake this exists to catch.
+ */
+function assertImportSafe(file: string, route: 'a' | 'b', result: ImportResult): void {
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error(describeImportFailure(file, route, result));
+  }
 }
 
 const smokeFiles = discoverSmokeFiles();
+
+function baseResult(overrides: Partial<ImportResult> = {}): ImportResult {
+  return { exitCode: 0, signalCode: null, stdout: '', stderr: '', timedOut: false, report: null, ...overrides };
+}
+
+// Reach (measured, each mutation applied alone to this file and restored):
+//   m1 drop the stderr tail from the describer -> the 50-line test and the cap test fail;
+//   m2 drop the signal derivation -> the "133 -> SIGTRAP" test fails and so do the two wiring tests that use it;
+//   m3 remove the `throw` in assertImportSafe -> the two wiring tests fail (the SIGTRAP scratch describer test
+//      alone would still pass: it tests the describer, not the wiring).
+describe('describeImportFailure (a recurrence of the exit-133 flake must name the crash)', () => {
+  it('derives SIGTRAP from exit code 133 when no signal is reported, and shows the exit code', () => {
+    const text = describeImportFailure('x.mjs', 'b', baseResult({ exitCode: 133 }));
+    expect(text).toContain('SIGTRAP');
+    expect(text).toContain('133');
+    expect(text).toContain('x.mjs');
+    expect(text).toContain('route b');
+  });
+
+  it('names a reported signal as is', () => {
+    const text = describeImportFailure('x.mjs', 'a', baseResult({ exitCode: null, signalCode: 'SIGKILL' }));
+    expect(text).toContain('SIGKILL');
+    expect(text).toContain('route a');
+  });
+
+  it('shows only the last 20 stderr lines and the last stdout line', () => {
+    const stderr = Array.from({ length: 50 }, (_, i) => `err-line-${i + 1}`).join('\n') + '\n';
+    const text = describeImportFailure('x.mjs', 'b', baseResult({ exitCode: 1, stderr, stdout: 'last-out' }));
+    expect(text).toContain('err-line-50');
+    expect(text).toContain('err-line-31');
+    expect(text).not.toContain('err-line-30');
+    expect(text).toContain('last-out');
+  });
+
+  it('caps a very long stderr tail at 2000 characters and says how many were cut', () => {
+    const stderr = `${'a'.repeat(3000)}\nthe-crash-message\n`;
+    const text = describeImportFailure('x.mjs', 'b', baseResult({ exitCode: 1, stderr }));
+    expect(text).toMatch(/\.\.\.\(\d+ more chars\)/);
+    expect(text).toContain('the-crash-message');
+    const tail = text.split('capped at 2000 chars):\n')[1] ?? '';
+    expect(tail.length).toBeLessThanOrEqual(2000 + '...(1100 more chars)\n'.length);
+  });
+
+  it('returns a string for a clean result without throwing (boundary: it is not called in practice)', () => {
+    const text = describeImportFailure('x.mjs', 'b', baseResult());
+    expect(typeof text).toBe('string');
+    expect(text).toContain('exitCode: 0');
+    expect(text).toContain('(empty)');
+  });
+});
+
+describe('failed imports are described through the same path as the discovered-script cases', () => {
+  const tmpDirs: string[] = [];
+  function scratchModule(source: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'import-safety-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'scratch.mjs');
+    fs.writeFileSync(file, source);
+    return file;
+  }
+
+  it('a module that kills itself with SIGTRAP is reported as SIGTRAP (as an exit code of 133 or a signal)', async () => {
+    const file = scratchModule("process.kill(process.pid, 'SIGTRAP');\n");
+    const result = await importInSubprocess(file);
+
+    expect(result.exitCode === 133 || result.signalCode === 'SIGTRAP').toBe(true);
+    expect(describeImportFailure('scratch.mjs', 'b', result)).toContain('SIGTRAP');
+  });
+
+  it('assertImportSafe rejects with the SIGTRAP description for a crashing module (the wiring of route b)', async () => {
+    const file = scratchModule("process.kill(process.pid, 'SIGTRAP');\n");
+    const result = await importInSubprocess(file);
+
+    expect(() => assertImportSafe('scratch.mjs', 'b', result)).toThrow(/SIGTRAP/);
+  });
+
+  it('assertImportSafe rejects with the 133 description for a module that exits 133 and prints to stderr', async () => {
+    const file = scratchModule("console.error('boom-from-scratch');\nprocess.exit(133);\n");
+    const result = await importInSubprocess(file);
+
+    expect(() => assertImportSafe('scratch.mjs', 'a', result)).toThrow(/SIGTRAP[\s\S]*boom-from-scratch/);
+  });
+
+  it('assertImportSafe is silent for a module that imports cleanly', async () => {
+    const file = scratchModule('export const ok = true;\n');
+    const result = await importInSubprocess(file);
+
+    expect(() => assertImportSafe('scratch.mjs', 'b', result)).not.toThrow();
+  });
+
+  // The scratch directories live under the OS temp dir and are removed here, not left behind.
+  afterAll(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('filterKnownBenignEnvAdditions (CodeRabbit follow-up: allowlist scope)', () => {
   const KEY = 'NoDefaultCurrentDirectoryInExePath';
@@ -231,6 +392,7 @@ describe('scripts/smoke/* import safety (Issue #1479)', () => {
       const absPath = path.join(import.meta.dir, '..', file);
       const result = await importInSubprocess(absPath);
 
+      assertImportSafe(file, 'b', result);
       expect(result.timedOut).toBe(false);
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe(IMPORT_OK_MARKER);
@@ -245,6 +407,7 @@ describe('scripts/smoke/* import safety (Issue #1479)', () => {
       const absPath = path.join(import.meta.dir, '..', file);
       const result = await importInSubprocess(absPath, [HOSTILE_ARG]);
 
+      assertImportSafe(file, 'a', result);
       expect(result.timedOut).toBe(false);
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe(IMPORT_OK_MARKER);
