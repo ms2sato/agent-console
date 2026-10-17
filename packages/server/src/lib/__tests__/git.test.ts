@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach, afterAll, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { shellEscape } from '../../services/privilege-elevation.js';
 import { rootLogger } from '../logger.js';
 import { timerClearedAfter } from '../../__tests__/utils/timer-capture.js';
 
@@ -1412,6 +1416,161 @@ index abc1234..def5678 100644
           expect(runAsUserCalls[0].username).toBe('alice');
           expect(runAsUserCalls[0].cwd).toBe('/repo');
           expect(runAsUserCalls[0].command).toBe("'git' 'branch' '-m' 'old-name' 'new-name'");
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+    });
+  });
+  describe('readWorkingTreeFile', () => {
+    type Opts = { username: string; command: string; cwd: string; timeoutMs?: number };
+    const captureSeam = (result: { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean }) => {
+      const calls: Opts[] = [];
+      const fake = async (opts: Opts) => {
+        calls.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, ...result };
+      };
+      return { calls, fake };
+    };
+
+    describe('direct path (requestUser null, single-user mode)', () => {
+      let tmpDir: string;
+      beforeEach(() => {
+        tmpDir = mkdtempSync(join(tmpdir(), 'read-working-tree-'));
+      });
+      afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+      });
+
+      it('reads a file and never touches the runAsUser seam', async () => {
+        writeFileSync(join(tmpDir, 'a.txt'), 'hello\n');
+        const { calls, fake } = captureSeam({});
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          const result = await mod.readWorkingTreeFile(tmpDir, 'a.txt', null);
+          expect(result.kind).toBe('file');
+          expect(result.content.toString('utf-8')).toBe('hello\n');
+          expect(calls.length).toBe(0);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('returns null for a missing file', async () => {
+        const mod = await getGitModule();
+        expect(await mod.readWorkingTreeFile(tmpDir, 'missing.txt')).toBeNull();
+      });
+
+      it('returns kind directory for a directory', async () => {
+        mkdirSync(join(tmpDir, 'sub'));
+        const mod = await getGitModule();
+        expect(await mod.readWorkingTreeFile(tmpDir, 'sub', '')).toEqual({ kind: 'directory' });
+      });
+    });
+
+    describe('elevated path (multi-user mode, requestUser set)', () => {
+      it('runs cat as the user with the escaped path, cwd and timeout, and returns stdout as a Buffer', async () => {
+        const { calls, fake } = captureSeam({ stdout: 'line1\nline2\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          const result = await mod.readWorkingTreeFile('/work/tree', "dir/it's.ts", 'alice');
+          expect(result.kind).toBe('file');
+          expect(result.content.toString('utf-8')).toBe('line1\nline2\n');
+          expect(calls.length).toBe(1);
+          expect(calls[0].username).toBe('alice');
+          expect(calls[0].cwd).toBe('/work/tree');
+          expect(calls[0].timeoutMs).toBe(30000);
+          expect(calls[0].command).toContain(`cat -- ${shellEscape("dir/it's.ts")}`);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('maps the directory marker to kind directory', async () => {
+        const { fake } = captureSeam({ stdout: '__AC_DIR__\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          expect(await mod.readWorkingTreeFile('/work/tree', 'sub', 'alice')).toEqual({ kind: 'directory' });
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('maps a "No such file" failure to null', async () => {
+        const { fake } = captureSeam({ exitCode: 1, stderr: 'cat: x: No such file or directory\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          expect(await mod.readWorkingTreeFile('/work/tree', 'x', 'alice')).toBeNull();
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('throws GitError for any other failure', async () => {
+        const { fake } = captureSeam({ exitCode: 1, stderr: 'cat: x: Permission denied\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          const err = await mod.readWorkingTreeFile('/work/tree', 'x', 'alice').catch((e: unknown) => e);
+          expect(err).toBeInstanceOf(mod.GitError);
+          expect(err.exitCode).toBe(1);
+          expect(err.stderr).toContain('Permission denied');
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('throws GitError on timeout and on a spawn failure', async () => {
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(captureSeam({ timedOut: true, exitCode: -1 }).fake);
+        try {
+          await expect(mod.readWorkingTreeFile('/w', 'x', 'alice')).rejects.toBeInstanceOf(mod.GitError);
+          mod.__setRunAsUserForTesting(async () => {
+            throw new Error('spawn failed');
+          });
+          await expect(mod.readWorkingTreeFile('/w', 'x', 'alice')).rejects.toBeInstanceOf(mod.GitError);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+    });
+
+    describe('mode matrix (target-environment cross-check)', () => {
+      it('single-user mode: requestUser null never calls the seam', async () => {
+        const { calls, fake } = captureSeam({});
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          await mod.readWorkingTreeFile('/nonexistent-dir', 'a.txt', null);
+          expect(calls.length).toBe(0);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('single-user mode: omitted requestUser never calls the seam', async () => {
+        const { calls, fake } = captureSeam({});
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          await mod.readWorkingTreeFile('/nonexistent-dir', 'a.txt');
+          expect(calls.length).toBe(0);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('multi-user mode: a session owner name is handed to the seam', async () => {
+        const { calls, fake } = captureSeam({ stdout: 'x' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          await mod.readWorkingTreeFile('/home/bob/wt', 'a.txt', 'bob');
+          expect(calls.map((c) => c.username)).toEqual(['bob']);
         } finally {
           mod.__setRunAsUserForTesting(null);
         }

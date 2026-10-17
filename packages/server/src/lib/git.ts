@@ -15,6 +15,7 @@
  * historical `Bun.spawn(['git', ...args])` direct-spawn path runs verbatim.
  */
 import path from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
 import {
   runAsUser as defaultRunAsUser,
   shellEscape,
@@ -998,6 +999,77 @@ export async function readRepoFileAtRef(
   const object = `${ref}:${relPath}`;
   if ((await gitSafe(['cat-file', '-e', object], repoPath)) === null) return null;
   return git(['show', object], repoPath);
+}
+
+/** Marker printed by the elevated directory probe in `readWorkingTreeFile`. */
+const WORKING_TREE_DIR_MARKER = '__AC_DIR__';
+
+/**
+ * Read one file from a working tree, as the session owner when `requestUser`
+ * is set. A user worktree can be mode 0700 for another OS user in multi-user
+ * mode, so the server process cannot read it directly.
+ *
+ * Direct path (`requestUser` null/empty): `stat` + `readFile` in-process.
+ * Elevated path: `cat` through the same `_runAsUser` seam `gitExec` uses;
+ * `runAsUser` itself bypasses elevation when the user is the server user or
+ * AUTH_MODE is not multi-user.
+ *
+ * Accepted limitation: `runAsUser` returns stdout as a UTF-8 string, so on the
+ * elevated path invalid byte sequences come back as U+FFFD. NUL bytes survive,
+ * so `isBinaryContent` still classifies binaries, and no caller renders binary
+ * content.
+ *
+ * @returns the file content, `{ kind: 'directory' }` for a directory, or `null`
+ *   when the path does not exist.
+ * @throws GitError when the elevated read fails for any other reason.
+ */
+export async function readWorkingTreeFile(
+  cwd: string,
+  relPath: string,
+  requestUser?: string | null,
+): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null> {
+  if (requestUser != null && requestUser.length > 0) {
+    const escaped = shellEscape(relPath);
+    const command = `test -d ${escaped} && echo ${WORKING_TREE_DIR_MARKER} || cat -- ${escaped}`;
+    let result: RunAsUserResult;
+    try {
+      result = await _runAsUser({
+        username: requestUser,
+        command,
+        cwd,
+        timeoutMs: DEFAULT_GIT_TIMEOUT_MS,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      throw new GitError(`read ${relPath} failed: ${message}`, -1, message);
+    }
+    if (result.timedOut) {
+      throw new GitError(
+        `read ${relPath} timed out after ${DEFAULT_GIT_TIMEOUT_MS}ms`,
+        result.exitCode,
+        'Timeout'
+      );
+    }
+    if (result.exitCode !== 0) {
+      if (/No such file/.test(result.stderr)) return null;
+      throw new GitError(
+        `read ${relPath} failed: ${result.stderr.trim() || `exit code ${result.exitCode}`}`,
+        result.exitCode,
+        result.stderr
+      );
+    }
+    if (result.stdout.trim() === WORKING_TREE_DIR_MARKER) return { kind: 'directory' };
+    return { kind: 'file', content: Buffer.from(result.stdout, 'utf-8') };
+  }
+
+  const fullPath = path.join(cwd, relPath);
+  try {
+    if ((await stat(fullPath)).isDirectory()) return { kind: 'directory' };
+    return { kind: 'file', content: await readFile(fullPath) };
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 /**
