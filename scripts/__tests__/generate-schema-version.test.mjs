@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeVersion, collectSchemaFiles, copySchemaClosureTo } from '../generate-schema-version.mjs';
 
@@ -66,18 +66,39 @@ afterEach(() => {
 });
 
 describe('generate-schema-version.mjs — copySchemaClosureTo', () => {
-  it('copies the closure layout-preserving: the copy hashes like the real tree and crosses into types/', () => {
+  function makeCopy() {
     const dest = mkdtempSync(join(tmpdir(), 'schema-version-copy-test-'));
     tempDirs.push(dest);
+    return { dest, copy: copySchemaClosureTo(dest) };
+  }
 
-    const copy = copySchemaClosureTo(dest);
+  it('copies the complete closure layout-preserving, crossing into types/', () => {
+    const { dest, copy } = makeCopy();
 
     expect(copy.schemasDir).toBe(join(dest, 'schemas'));
-    expect(computeVersion(copy.schemasDir)).toBe(computeVersion());
+    const relToParent = (schemasDir) =>
+      collectSchemaFiles(schemasDir)
+        .map((file) => relative(dirname(schemasDir), file).split(sep).join('/'))
+        .sort();
+    expect(relToParent(copy.schemasDir)).toEqual(relToParent(REAL_SCHEMAS_DIR));
     const copied = copy.files.map(lastTwoSegments);
     expect(copied).toContain('schemas/embedded-agent.ts');
     expect(copied).toContain('types/system-events.ts');
     expect(copy.files.length).toBe(collectSchemaFiles().length);
+  });
+
+  it('yields a 16-hex version that moves on a code change and not on a comment-only change', () => {
+    const { copy } = makeCopy();
+    const file = join(copy.schemasDir, 'embedded-agent.ts');
+    const original = readFileSync(file, 'utf8');
+    const baseline = computeVersion(copy.schemasDir);
+    expect(baseline).toMatch(/^[0-9a-f]{16}$/);
+
+    writeFileSync(file, `${original}\n// comment only\n`);
+    expect(computeVersion(copy.schemasDir)).toBe(baseline);
+
+    writeFileSync(file, `${original}\nexport const __copyProbe = 1;\n`);
+    expect(computeVersion(copy.schemasDir)).not.toBe(baseline);
   });
 });
 

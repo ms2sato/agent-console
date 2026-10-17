@@ -71,7 +71,9 @@ describe('SCHEMA_VERSION', () => {
     // Prove the committed version actually depends on embedded-agent.ts by
     // perturbing a temp copy of the hashed file set (in-process, via the
     // generator's computeVersion) and observing the hash change, then
-    // restoring the copy. The real tree is never written.
+    // restoring the copy. The real tree is never written. Versions are compared
+    // copy-vs-copy only (the hash includes the path relative to the repo root);
+    // the committed constant is guarded by the --check tests above.
     //
     // The perturbation must be non-comment content: the generator normalizes
     // comments out of the hash input (see scripts/schema-source-normalize.mjs),
@@ -84,7 +86,6 @@ describe('SCHEMA_VERSION', () => {
     const original = fs.readFileSync(schemaFile);
 
     const baseline = computeVersion(copy.schemasDir);
-    expect(baseline).toBe(SCHEMA_VERSION);
 
     fs.writeFileSync(
       schemaFile,
@@ -112,7 +113,6 @@ describe('SCHEMA_VERSION', () => {
     const original = fs.readFileSync(schemaFile);
 
     const baseline = computeVersion(copy.schemasDir);
-    expect(baseline).toBe(SCHEMA_VERSION);
 
     fs.writeFileSync(
       schemaFile,
