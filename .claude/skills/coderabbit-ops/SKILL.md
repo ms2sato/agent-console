@@ -184,7 +184,17 @@ gh pr view <N> --json headRefOid -q .headRefOid
 
 **Clean requires some review PASS's `commit_id` to equal the current HEAD.** Not "a review exists" — reviews are per-commit and they accumulate, and not "some review object's `commit_id` matches" either: CodeRabbit also posts empty-body thread-resolution acks whose `commit_id` is the current head, and those are not a review of it (Issue #1918; see the surface 6 table row above).
 
-`acceptance-check.js`'s Q13 fires when the head is unreviewed or its state could not be retrieved. The disposition record must carry the heading `CodeRabbit disposition` in the PR body for `dispositionRecorded` to read `found`.
+`acceptance-check.js`'s Q13 fires when the head is unreviewed or its state could not be retrieved. The disposition record must carry the heading `CodeRabbit disposition` in the PR body, AND its section's first line must name the current head, for `dispositionRecorded` to read `found`:
+
+```markdown
+## CodeRabbit disposition
+Head: 0c3b60c9a41f7e2d85b6c0193ae4f2d7b85e1c46 -- unreviewed
+Reviewed range: <base>..<last reviewed sha>. Unreviewed delta: <diffstat>. Compensating control: <who read it, where it is recorded>.
+```
+
+The first line is `Head: <full 40-hex sha> -- <reviewed | unreviewed | rate-limited | skipped>`; the rest is the content described under "When the final head genuinely will not get a pass" below. **A disposition without a `Head:` line, or whose sha is not the PR's current head, counts as no disposition; rewrite the line on every push after it.** The heading survives a push and its sentence does not: a record written for the commit before yours is a claim about a different commit, and it reads `absent`, not `found`. The detector parses only a `Head:` line inside the disposition section (heading to the next heading), a prefix of at least 7 hex characters is accepted, and a stale record on a head that is `reviewed` is harmless and not flagged.
+
+(Measured instance: a PR whose review round ran on one commit, then took a push, then read `Review rate limited` on the new head. The body still said "Review completed on the current head", true for the first commit and false for the second, and the acceptance check's "the record exists" step was satisfied by that record. Class: any free-text claim about a per-commit surface must carry the commit.)
 
 **Why the other surfaces do not catch it.** Surface 4's documented trap is `SUCCESS` with `Review rate limited` in the `description`; here the description is **empty**, so a description check passes. Surface 5 finds a real review body with real findings, all of them dispositioned. Surface 2's `reviewDecision` is empty — which is the only hint, and it is the hint a reader most reasonably discounts, because empty is also the normal state for "has not reviewed yet" on a PR that visibly *has* a review.
 

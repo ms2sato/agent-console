@@ -331,17 +331,25 @@ function printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState) {
  */
 function printCodeRabbitHeadState(codeRabbitHeadState) {
   if (!codeRabbitHeadState) return;
-  const { state, headSha, statusDescription, dispositionRecorded, headReviewCount, headAckCount } = codeRabbitHeadState;
+  const { state, headSha, statusDescription, dispositionRecorded, dispositionHeadSha, dispositionMatchesHead, headReviewCount, headAckCount } = codeRabbitHeadState;
   const shortSha = headSha ? headSha.slice(0, 8) : 'unknown';
   const description = statusDescription ?? '(unknown)';
   const disposition = dispositionRecorded ? 'found' : 'absent';
+  // Older or test-injected objects may lack the disposition-head fields;
+  // treat a missing field as "no Head: line", never as a match.
+  const dispositionShort = dispositionHeadSha ? dispositionHeadSha.slice(0, 8) : 'none';
+  const dispositionHeadVerdict = dispositionMatchesHead
+    ? 'matches'
+    : dispositionHeadSha
+      ? `STALE: written for ${dispositionShort}`
+      : 'absent';
   // Older or test-injected `codeRabbitHeadState` objects may lack
   // `headReviewCount` / `headAckCount` entirely, so default to 0 rather
   // than printing "undefined".
   const reviewCount = headReviewCount ?? 0;
   const ackCount = headAckCount ?? 0;
   console.log(
-    `CodeRabbit head review: ${state} (head ${shortSha}, status "${description}", reviews on head: ${reviewCount}, of which acks: ${ackCount}, disposition record in PR body: ${disposition})`,
+    `CodeRabbit head review: ${state} (head ${shortSha}, status "${description}", reviews on head: ${reviewCount}, of which acks: ${ackCount}, disposition record in PR body: ${disposition}, disposition head: ${dispositionShort} (${dispositionHeadVerdict}))`,
   );
   console.log();
 }
@@ -654,13 +662,13 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
       focus: [
         'See `.claude/skills/coderabbit-ops/SKILL.md` "The staleness surface" and "Case-by-case dispositions" for the criterion of when a disposition is permitted — this question does not decide that; it only requires the decision to be RECORDED as a precondition of merge, not appended afterward.',
         'Mechanical procedure:',
-        '  1. Confirm the record exists NOW, before this verdict — a durable marker in the PR body (the `## CodeRabbit disposition` heading) or a linked comment, not a plan to add one after merging.',
+        '  1. Confirm the record exists NOW and names THIS head: its `Head:` line must equal `headRefOid`; a record written for an earlier commit is STALE and must be rewritten before answering. The record is a durable marker in the PR body (the `## CodeRabbit disposition` heading) or a linked comment, not a plan to add one after merging.',
         '  2. Confirm the compensating control named in the record actually covers the unreviewed delta\'s entire risk class, not just part of it.',
         '  3. Boundary: if the auto-detection line is \'unreviewed\' because the PR title matched the docs-only carve-out (`ignore_title_keywords`), that is surface 4\'s documented skip, not a missing review — answer by citing surface 4 and confirming the diff really is docs-only, rather than treating this as a merge block for the carve-out.',
         '  4. If the state is \'retrieval-failed\', the `gh` calls themselves did not succeed — re-run them manually before answering; a disposition decision cannot be made without knowing the real review state first.',
       ].join('\n  '),
       insufficient: '"The control covers it" (without pointing at a durable record) — OR — "Waiting for the window" (without a decision) — OR — citing the docs-only carve-out for a PR that is not actually docs-only',
-      sufficient: '"PR body\'s `## CodeRabbit disposition` heading reads: \'Head 9f3a1b2c unreviewed (quota went to a higher-priority PR); risk class is a one-line comment typo fix, compensating control is the Architect\'s own read of the diff recorded in this same section.\' Record is in the body now, not appended after merge. Compensating control covers the entire (trivial) risk class of this delta."',
+      sufficient: '"PR body\'s `## CodeRabbit disposition` heading starts with \'Head: 9f3a1b2c4d5e6f708192a3b4c5d6e7f801234567 -- unreviewed\' (the full headRefOid, equal to the current one) and reads: \'Head 9f3a1b2c unreviewed (quota went to a higher-priority PR); risk class is a one-line comment typo fix, compensating control is the Architect\'s own read of the diff recorded in this same section.\' Record is in the body now, not appended after merge. Compensating control covers the entire (trivial) risk class of this delta."',
     });
   }
 
