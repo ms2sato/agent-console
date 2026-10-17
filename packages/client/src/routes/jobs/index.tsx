@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { JOB_STATUS, JOB_TYPES, type Job, type JobStatus, type JobType } from '@agent-console/shared';
-import { fetchJobs, fetchJobStats, retryJob, cancelJob, type FetchJobsParams } from '../../lib/api';
+import { JOB_STATUS, JOB_TYPES, type JobStatus, type JobType } from '@agent-console/shared';
+import { fetchJobs, fetchJobStats, retryJob, cancelJob, type FetchJobsParams, type Job } from '../../lib/api';
 import { jobKeys } from '../../lib/query-keys';
 import { formatTimestamp } from '../../lib/format';
 import { PageBreadcrumb } from '../../components/PageBreadcrumb';

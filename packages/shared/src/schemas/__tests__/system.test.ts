@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { SystemOpenRequestSchema, SystemOpenVSCodeRequestSchema } from '../system';
+import {
+  SystemOpenRequestSchema,
+  SystemOpenVSCodeRequestSchema,
+  SystemHealthResponseSchema,
+} from '../system';
 
 describe('SystemOpenRequestSchema', () => {
   it('should accept a valid path', () => {
@@ -61,5 +65,27 @@ describe('SystemOpenVSCodeRequestSchema', () => {
     if (!result.success) {
       expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
     }
+  });
+});
+
+describe('SystemHealthResponseSchema', () => {
+  it('parses both appUrl cases', () => {
+    expect(
+      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, appUrl: 'https://example.test' }).success,
+    ).toBe(true);
+    expect(
+      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: false, appUrl: null }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a missing field', () => {
+    expect(v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true }).success).toBe(false);
+    expect(v.safeParse(SystemHealthResponseSchema, { appUrl: null }).success).toBe(false);
+  });
+
+  it('rejects an extra key', () => {
+    expect(
+      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, appUrl: null, extra: 1 }).success,
+    ).toBe(false);
   });
 });

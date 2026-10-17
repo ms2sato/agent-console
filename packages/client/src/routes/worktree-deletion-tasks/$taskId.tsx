@@ -2,14 +2,14 @@ import { useEffect, useRef } from 'react';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { JOB_STATUS } from '@agent-console/shared';
-import type { WorktreeDeletionStatus, HookCommandResult, Job } from '@agent-console/shared';
+import type { WorktreeDeletionStatus, HookCommandResult } from '@agent-console/shared';
 import { AlertCircleIcon, CheckIcon } from '../../components/Icons';
 import { Spinner } from '../../components/ui/Spinner';
 import { PagePendingFallback } from '../../components/PagePendingFallback';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { useWorktreeDeletionTasksContext } from '../__root';
 import { useAppWsState } from '../../hooks/useAppWs';
-import { deleteWorktreeAsync, fetchJob, ApiError } from '../../lib/api';
+import { deleteWorktreeAsync, fetchJob, ApiError, type Job } from '../../lib/api';
 import { jobKeys } from '../../lib/query-keys';
 import { logger } from '../../lib/logger';
 
