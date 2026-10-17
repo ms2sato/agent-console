@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import * as v from 'valibot';
-import type { AppServerMessage, AuthUser, Session, Todo } from '@agent-console/shared';
+import type { AppServerMessage, AuthUser, Session, Todo, Worker } from '@agent-console/shared';
 import { TodoDetailResponseSchema, TodoSchema, TodosListResponseSchema } from '@agent-console/shared';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
@@ -15,6 +15,8 @@ import { TODO_RESOLUTION_SEPARATOR } from '../../repositories/todo-repository.js
 import { todos } from '../todos.js';
 import { authMiddleware } from '../../middleware/auth.js';
 import { onApiError } from '../../lib/error-handler.js';
+import { serverConfig } from '../../lib/server-config.js';
+import type { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
 import type { UserMode, PtySpawnRequest } from '../../services/user-mode.js';
 import type { PtyInstance } from '../../lib/pty-provider.js';
@@ -24,19 +26,49 @@ import type { UserRepository } from '../../repositories/user-repository.js';
 const ALICE: AuthUser = { id: 'alice-1', username: 'alice', homeDir: '/home/alice' };
 const BOB: AuthUser = { id: 'bob-1', username: 'bob', homeDir: '/home/bob' };
 
-const LIVE_SESSION_IDS = new Set(['session-1', 'session-2', 's']);
-const PAUSED_SESSION_IDS = new Set(['paused-1']);
+const CAROL: AuthUser = { id: 'carol-1', username: 'carol', homeDir: '/home/carol' };
+const SHARED_USER_ID = 'shared-user';
+
 const KNOWN_USERS = [ALICE, BOB];
 
 const deliverWorkerNotificationMock = mock<SessionManager['deliverWorkerNotification']>(async () => ({ ok: true }));
 
-/** The lookups and the notification seam the todo routes use; a paused session exists only as a persisted row. */
+const worker = (id: string, type: 'agent' | 'terminal' | 'git-diff'): Worker => ({ id, type } as Worker);
+
+/**
+ * Live sessions the move route can target. `session-2` lists a git-diff worker FIRST, so "the first
+ * worker that can receive notifications" is distinguishable from "the first worker".
+ */
+const LIVE_SESSIONS: Record<string, Pick<Session, 'createdBy' | 'workers'>> = {
+  'session-1': { createdBy: ALICE.id, workers: [worker('worker-1', 'agent'), worker('worker-t1', 'terminal')] },
+  'session-2': { createdBy: BOB.id, workers: [worker('git-2', 'git-diff'), worker('worker-2', 'agent')] },
+  'session-bare': { createdBy: BOB.id, workers: [worker('git-bare', 'git-diff')] },
+  'shared-s': { createdBy: SHARED_USER_ID, workers: [worker('worker-sh', 'agent')] },
+  s: { createdBy: ALICE.id, workers: [worker('worker-s', 'agent')] },
+};
+/** Paused sessions exist only as persisted rows. */
+const PAUSED_SESSIONS: Record<string, Pick<Session, 'createdBy'>> = {
+  'paused-1': { createdBy: BOB.id },
+  'paused-alice': { createdBy: ALICE.id },
+};
+
+const toLive = (id: string) => ({ id, ...LIVE_SESSIONS[id] }) as Session;
+const toPaused = (id: string) => ({ id, ...PAUSED_SESSIONS[id] }) as Session;
+
+/** The lookups and the notification seam the todo routes use. */
 const sessionManagerStub: Partial<SessionManager> = {
   deliverWorkerNotification: deliverWorkerNotificationMock,
-  getSession: (id: string) => (LIVE_SESSION_IDS.has(id) ? ({ id } as Session) : undefined),
-  getPersistedSession: async (id: string) => (PAUSED_SESSION_IDS.has(id) ? ({ id } as Session) : null),
+  getSession: (id: string) => (id in LIVE_SESSIONS ? toLive(id) : undefined),
+  getPersistedSession: async (id: string) => (id in PAUSED_SESSIONS ? toPaused(id) : null),
+  getAllSessions: () => Object.keys(LIVE_SESSIONS).map(toLive),
+  getAllPersistedSessions: async () =>
+    Object.keys(PAUSED_SESSIONS).map((id) => ({ id, ...PAUSED_SESSIONS[id] })) as Awaited<ReturnType<SessionManager['getAllPersistedSessions']>>,
 };
 const stubSessionManager = sessionManagerStub as SessionManager;
+
+const stubSharedAccountRegistry = {
+  isSharedUserId: (id: string) => id === SHARED_USER_ID,
+} as Pick<SharedAccountRegistry, 'isSharedUserId'> as SharedAccountRegistry;
 
 const stubUserRepository = {
   findById: async (id: string) => KNOWN_USERS.find((u) => u.id === id) ?? null,
@@ -56,13 +88,16 @@ function buildApp(
   todoRepository: SqliteTodoRepository,
   user: AuthUser | null,
   broadcastToApp: (msg: AppServerMessage) => void = () => {},
+  overrides: Partial<AppContext> = {},
 ): Hono<AppBindings> {
   const partialContext: Partial<AppContext> = {
     todoRepository,
     sessionManager: stubSessionManager,
+    sharedAccountRegistry: stubSharedAccountRegistry,
     userRepository: stubUserRepository,
     userMode: mockUserMode(user),
     broadcastToApp,
+    ...overrides,
   };
   const app = new Hono<AppBindings>();
   app.use('*', async (c, next) => {
@@ -856,6 +891,417 @@ describe('Todo routes', () => {
         expect(deliverWorkerNotificationMock).toHaveBeenCalledTimes(2);
         expect(await repository.listActivities(item.id)).toHaveLength(2);
       });
+    });
+  });
+
+  describe('POST /api/todos/:id/move', () => {
+    const move = async (id: string, body: unknown, target: Hono<AppBindings> = app): Promise<Response> =>
+      target.request(`/api/todos/${id}/move`, json('POST', body));
+
+    const movesOf = async (id: string) => (await repository.listActivities(id)).filter((a) => a.kind === 'moved');
+
+    it('moves a human-created item: 200 { todo }, and GET /:id carries one moved activity by the human with no statement', async () => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+
+      const res = await move(item.id, { sessionId: 'session-2' });
+
+      expect(res.status).toBe(200);
+      const { todo } = (await res.json()) as { todo: Todo };
+      expect(todo).toMatchObject({ id: item.id, sessionId: 'session-2', status: 'open', createdBy: { userId: ALICE.id } });
+      const detail = v.parse(TodoDetailResponseSchema, await (await app.request(`/api/todos/${item.id}`)).json());
+      expect(detail.activities).toHaveLength(1);
+      expect(detail.activities[0]).toMatchObject({
+        kind: 'moved',
+        actor: { userId: ALICE.id },
+        statement: null,
+        attributedUserId: null,
+        fromSessionId: 'session-1',
+        toSessionId: 'session-2',
+      });
+    });
+
+    it('moves an agent-created item to the FIRST worker of the target that can receive notifications', async () => {
+      const item = await seedAgentItem();
+
+      const res = await move(item.id, { sessionId: 'session-2' });
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { todo: Todo }).todo).toMatchObject({ sessionId: 'session-2', createdBy: { workerId: 'worker-2' } });
+      expect(await movesOf(item.id)).toHaveLength(1);
+    });
+
+    it('uses body.workerId for an agent-created item when it belongs to the target and can receive notifications', async () => {
+      const item = await seedAgentItem();
+
+      const res = await move(item.id, { sessionId: 'session-1', workerId: 'worker-t1' });
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { todo: Todo }).todo.createdBy).toEqual({ workerId: 'worker-t1' });
+    });
+
+    it('moves an item that has no session (a global item) and records a move from null', async () => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '' });
+      broadcasts.length = 0;
+
+      expect((await move(item.id, { sessionId: 'session-2' })).status).toBe(200);
+
+      expect(await movesOf(item.id)).toMatchObject([{ fromSessionId: null, toSessionId: 'session-2' }]);
+      expect(broadcasts).toEqual([
+        { type: 'todos-updated', sessionId: null },
+        { type: 'todos-updated', sessionId: 'session-2' },
+      ]);
+    });
+
+    it('team-tool rule: another member may move an item of a session they do not own', async () => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+
+      const res = await move(item.id, { sessionId: 'session-2' }, buildApp(repository, BOB));
+
+      expect(res.status).toBe(200);
+      expect(await movesOf(item.id)).toMatchObject([{ actor: { userId: BOB.id } }]);
+    });
+
+    it('is 404 for an unknown item, and writes and broadcasts nothing', async () => {
+      const res = await move('missing', { sessionId: 'session-2' });
+
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).toContain('Todo not found');
+      expect(broadcasts).toEqual([]);
+    });
+
+    it('is 404 for an unknown target session (neither live nor paused), and the item stays put', async () => {
+      const item = await seedAgentItem();
+      broadcasts.length = 0;
+
+      const res = await move(item.id, { sessionId: 'nope' });
+
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).toContain('Session not found');
+      expect((await repository.findById(item.id))!.sessionId).toBe('session-1');
+      expect(broadcasts).toEqual([]);
+    });
+
+    it('is 409 for a paused target (persisted only) and says to resume it', async () => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+      broadcasts.length = 0;
+
+      const res = await move(item.id, { sessionId: 'paused-1' });
+
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('Target session is paused; resume it first');
+      expect((await repository.findById(item.id))!.sessionId).toBe('session-1');
+      expect(await movesOf(item.id)).toEqual([]);
+      expect(broadcasts).toEqual([]);
+    });
+
+    it.each(['done', 'dismissed'] as const)('is 409 naming the status for a %s item', async (status) => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+      if (status === 'done') await repository.resolve(item.id, { text: 'ok', resolvedByUserId: ALICE.id });
+      else await repository.dismiss(item.id);
+      broadcasts.length = 0;
+
+      const res = await move(item.id, { sessionId: 'session-2' });
+
+      expect(res.status).toBe(409);
+      const text = JSON.stringify(await res.json());
+      expect(text).toContain('Only an open item can be moved');
+      expect(text).toContain(status);
+      expect(await movesOf(item.id)).toEqual([]);
+      expect(broadcasts).toEqual([]);
+    });
+
+    it('an agent-created item cannot go to a session with no worker that can receive notifications (409), and stays put', async () => {
+      const item = await seedAgentItem();
+      broadcasts.length = 0;
+
+      const res = await move(item.id, { sessionId: 'session-bare' });
+
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('Target session has no worker that can receive notifications');
+      expect((await repository.findById(item.id))!.sessionId).toBe('session-1');
+      expect(broadcasts).toEqual([]);
+    });
+
+    it('a human-created item may go to a session with no notification-capable worker (it has no delivery worker)', async () => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+
+      expect((await move(item.id, { sessionId: 'session-bare' })).status).toBe(200);
+    });
+
+    it('an explicit workerId that cannot receive notifications is 409 with create_todo\'s text', async () => {
+      const item = await seedAgentItem();
+
+      const res = await move(item.id, { sessionId: 'session-2', workerId: 'git-2' });
+
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('cannot receive notifications: requires an agent, terminal, or embedded-agent worker');
+      expect((await repository.findById(item.id))!.sessionId).toBe('session-1');
+    });
+
+    it('an explicit workerId of ANOTHER session is 409 (not found in the target session)', async () => {
+      const item = await seedAgentItem();
+
+      const res = await move(item.id, { sessionId: 'session-2', workerId: 'worker-1' });
+
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('Worker worker-1 not found in session session-2');
+      expect((await repository.findById(item.id))!.sessionId).toBe('session-1');
+    });
+
+    it('a human-created item with a workerId in the body is 400 and nothing is written', async () => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+      broadcasts.length = 0;
+
+      const res = await move(item.id, { sessionId: 'session-2', workerId: 'worker-2' });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('a human-created item has no delivery worker');
+      expect((await repository.findById(item.id))!.sessionId).toBe('session-1');
+      expect(broadcasts).toEqual([]);
+    });
+
+    it('the human-created 400 comes after the target checks: an unknown target is 404 even with a workerId', async () => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+
+      expect((await move(item.id, { sessionId: 'nope', workerId: 'w' })).status).toBe(404);
+    });
+
+    describe('the same session', () => {
+      it('a human-created item is a read-only no-op: 200, no move row, updatedAt untouched, nothing emitted', async () => {
+        const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+        broadcasts.length = 0;
+
+        const res = await move(item.id, { sessionId: 'session-1' });
+
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { todo: Todo }).todo).toEqual(item);
+        expect(await movesOf(item.id)).toEqual([]);
+        expect((await repository.findById(item.id))!.updatedAt).toBe(item.updatedAt);
+        // same-session no-op emits nothing
+        expect(broadcasts).toEqual([]);
+      });
+
+      it('an agent-created item whose worker is already the chosen one is a read-only no-op: 200, no emit', async () => {
+        const item = await seedAgentItem();
+        broadcasts.length = 0;
+
+        const res = await move(item.id, { sessionId: 'session-1', workerId: 'worker-1' });
+
+        expect(res.status).toBe(200);
+        expect(await movesOf(item.id)).toEqual([]);
+        expect((await repository.findById(item.id))!.updatedAt).toBe(item.updatedAt);
+        expect(broadcasts).toEqual([]);
+      });
+
+      it('an agent-created item with a different worker of the same session: the row is updated, no move row, one todos-updated', async () => {
+        const item = await seedAgentItem();
+        broadcasts.length = 0;
+
+        const res = await move(item.id, { sessionId: 'session-1', workerId: 'worker-t1' });
+
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { todo: Todo }).todo).toMatchObject({ sessionId: 'session-1', createdBy: { workerId: 'worker-t1' } });
+        expect(await movesOf(item.id)).toEqual([]);
+        expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
+      });
+    });
+
+    it('broadcasts two todos-updated frames, the old session first and then the new one', async () => {
+      const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+      broadcasts.length = 0;
+
+      expect((await move(item.id, { sessionId: 'session-2' })).status).toBe(200);
+
+      expect(broadcasts).toEqual([
+        { type: 'todos-updated', sessionId: 'session-1' },
+        { type: 'todos-updated', sessionId: 'session-2' },
+      ]);
+    });
+
+    it('delivers nothing to any worker: a move is not a resolution', async () => {
+      const item = await seedAgentItem();
+
+      expect((await move(item.id, { sessionId: 'session-2' })).status).toBe(200);
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+    });
+
+    describe('a concurrent change between the read and the write', () => {
+      /** Runs `interfere` once, right after the route's first read of the item. */
+      const racingApp = (itemId: string, interfere: () => Promise<unknown>): Hono<AppBindings> => {
+        let done = false;
+        const racing = Object.assign(Object.create(repository) as SqliteTodoRepository, {
+          findById: async (id: string, executor?: Parameters<SqliteTodoRepository['findById']>[1]) => {
+            const row = await repository.findById(id, executor);
+            if (!done && id === itemId) {
+              done = true;
+              await interfere();
+            }
+            return row;
+          },
+        });
+        return buildApp(racing, ALICE, (m) => broadcasts.push(m));
+      };
+
+      it('the item moved elsewhere: 409 "moved while you were moving it", and the winner\'s placement stands', async () => {
+        const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+        const target = racingApp(item.id, () =>
+          repository.adopt(item.id, { sessionId: 's', workerId: null, actor: { userId: BOB.id }, expectedSessionId: 'session-1' }),
+        );
+        broadcasts.length = 0;
+
+        const res = await move(item.id, { sessionId: 'session-2' }, target);
+
+        expect(res.status).toBe(409);
+        expect(JSON.stringify(await res.json())).toContain('The item moved while you were moving it; reload');
+        expect((await repository.findById(item.id))!.sessionId).toBe('s');
+        expect(await movesOf(item.id)).toHaveLength(1);
+        expect(broadcasts).toEqual([]);
+      });
+
+      it('the item deleted: 404', async () => {
+        const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+        const target = racingApp(item.id, () => repository.delete(item.id));
+        broadcasts.length = 0;
+
+        const res = await move(item.id, { sessionId: 'session-2' }, target);
+
+        expect(res.status).toBe(404);
+        expect(JSON.stringify(await res.json())).toContain('Todo not found');
+        expect(broadcasts).toEqual([]);
+      });
+
+      it('the item closed: 409 naming its new status', async () => {
+        const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+        const target = racingApp(item.id, () => repository.dismiss(item.id));
+        broadcasts.length = 0;
+
+        const res = await move(item.id, { sessionId: 'session-2' }, target);
+
+        expect(res.status).toBe(409);
+        expect(JSON.stringify(await res.json())).toContain('dismissed');
+        expect(await movesOf(item.id)).toEqual([]);
+        expect(broadcasts).toEqual([]);
+      });
+    });
+
+    it.each([
+      ['a missing sessionId', {}],
+      ['an empty sessionId', { sessionId: '' }],
+      ['an empty workerId', { sessionId: 'session-2', workerId: '' }],
+      ['an unknown field', { sessionId: 'session-2', statement: 'because' }],
+    ])('is 400 for %s and writes nothing', async (_name, body) => {
+      const item = await seedAgentItem();
+      broadcasts.length = 0;
+
+      expect((await move(item.id, body)).status).toBe(400);
+
+      expect((await repository.findById(item.id))!.sessionId).toBe('session-1');
+      expect(broadcasts).toEqual([]);
+    });
+
+    it('rejects an unauthenticated request (401)', async () => {
+      const item = await seedAgentItem();
+
+      expect((await move(item.id, { sessionId: 'session-2' }, buildApp(repository, null))).status).toBe(401);
+      expect((await repository.findById(item.id))!.sessionId).toBe('session-1');
+    });
+  });
+
+  describe('GET /api/todos?view=mine-and-shared', () => {
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    const setAuthMode = (mode: 'none' | 'multi-user') => {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = mode;
+    };
+    afterEach(() => setAuthMode(originalAuthMode));
+
+    const titlesFor = async (target: Hono<AppBindings>, query: string): Promise<string[]> =>
+      ((await (await target.request(`/api/todos?${query}`)).json()) as { todos: Todo[] }).todos.map((t) => t.title).sort();
+
+    /** Alice's view: nothing is hers except what the rows below say. */
+    async function seedView(): Promise<void> {
+      const item = (title: string, o: Partial<Parameters<SqliteTodoRepository['create']>[0]>) =>
+        repository.create({
+          id: crypto.randomUUID(), kind: 'action', scope: 'session', title, body: '', sessionId: null,
+          createdBy: { userId: BOB.id }, assigneeUserId: null, ...o,
+        });
+      await item('assigned to me', { sessionId: 'session-2', assigneeUserId: ALICE.id });
+      await item('created by me', { sessionId: 'session-2', createdBy: { userId: ALICE.id } });
+      await item('in my session', { sessionId: 'session-1' });
+      await item('in a shared session', { sessionId: 'shared-s' });
+      await item('in my paused session', { sessionId: 'paused-alice' });
+      await item('foreign', { sessionId: 'session-2' });
+      await item('foreign in a foreign paused session', { sessionId: 'paused-1' });
+      await item('foreign global', { scope: 'global' });
+    }
+
+    it('multi-user: shows items assigned to me, created by me, in my sessions (live or paused) or in a shared session; hides the rest', async () => {
+      setAuthMode('multi-user');
+      await seedView();
+
+      expect(await titlesFor(app, 'view=mine-and-shared')).toEqual([
+        'assigned to me',
+        'created by me',
+        'in a shared session',
+        'in my paused session',
+        'in my session',
+      ]);
+    });
+
+    it('multi-user without view: every item, as before', async () => {
+      setAuthMode('multi-user');
+      await seedView();
+
+      expect(await titlesFor(app, '')).toHaveLength(8);
+    });
+
+    it('multi-user: composes with scope=global (a foreign global item is hidden) and with status', async () => {
+      setAuthMode('multi-user');
+      await seedView();
+      await createTodo({ kind: 'action', title: 'my global', body: '' });
+
+      expect(await titlesFor(app, 'view=mine-and-shared&scope=global')).toEqual(['my global']);
+      expect(await titlesFor(app, 'view=mine-and-shared&status=dismissed')).toEqual([]);
+    });
+
+    it('multi-user: a user who owns no session sees only what is assigned to them plus shared-session items', async () => {
+      setAuthMode('multi-user');
+      await seedView();
+      await repository.create({
+        id: crypto.randomUUID(), kind: 'action', scope: 'session', title: 'assigned to carol', body: '', sessionId: 'session-2',
+        createdBy: { userId: BOB.id }, assigneeUserId: CAROL.id,
+      });
+
+      expect(await titlesFor(buildApp(repository, CAROL), 'view=mine-and-shared')).toEqual(['assigned to carol', 'in a shared session']);
+    });
+
+    it('multi-user with no session of mine or shared (empty sessionIds): my assigned and created items still come back, not a 500', async () => {
+      setAuthMode('multi-user');
+      await seedView();
+      const noSessions = Object.assign(Object.create(stubSessionManager) as SessionManager, {
+        getAllSessions: () => [],
+        getAllPersistedSessions: async () => [],
+      });
+
+      const res = await buildApp(repository, ALICE, undefined, { sessionManager: noSessions }).request('/api/todos?view=mine-and-shared');
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { todos: Todo[] }).todos.map((t) => t.title).sort()).toEqual(['assigned to me', 'created by me']);
+    });
+
+    it('single-user: view is accepted and ignored, every item is listed', async () => {
+      setAuthMode('none');
+      await seedView();
+
+      const res = await app.request('/api/todos?view=mine-and-shared');
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { todos: Todo[] }).todos).toHaveLength(8);
+    });
+
+    it('rejects an unknown view value (400)', async () => {
+      expect((await app.request('/api/todos?view=everyone')).status).toBe(400);
     });
   });
 

@@ -140,7 +140,58 @@ describe('SqliteTodoRepository', () => {
     });
   });
 
+  describe('list: visibleTo (the default human view)', () => {
+    // Each of the three OR branches is reached by a user that matches only that branch.
+    beforeEach(async () => {
+      await repository.create(params({ id: 'assigned', sessionId: 'other', createdBy: { userId: 'user-9' }, assigneeUserId: 'assignee-u' }));
+      await repository.create(params({ id: 'created', sessionId: 'other', createdBy: { userId: 'creator-u' } }));
+      await repository.create(params({ id: 'in-session', sessionId: 'shared-1', createdBy: { userId: 'user-9' } }));
+      await repository.create(params({ id: 'hidden', sessionId: 'other', createdBy: { workerId: 'worker-1' }, assigneeUserId: 'user-2' }));
+    });
+
+    const ids = async (filters: Parameters<SqliteTodoRepository['list']>[0]) =>
+      (await repository.list(filters)).map((t) => t.id).sort();
+
+    it('the assignee branch alone: an item assigned to the user', async () => {
+      expect(await ids({ visibleTo: { userId: 'assignee-u', sessionIds: [] } })).toEqual(['assigned']);
+    });
+
+    it('the creator branch alone: an item the user created', async () => {
+      expect(await ids({ visibleTo: { userId: 'creator-u', sessionIds: [] } })).toEqual(['created']);
+    });
+
+    it('the session branch alone: an item of one of the listed sessions', async () => {
+      expect(await ids({ visibleTo: { userId: 'nobody', sessionIds: ['shared-1'] } })).toEqual(['in-session']);
+    });
+
+    it('an empty sessionIds list is valid (no IN () clause) and still returns the assigned and created items', async () => {
+      expect(await ids({ visibleTo: { userId: 'assignee-u', sessionIds: [] } })).toEqual(['assigned']);
+      expect(await ids({ visibleTo: { userId: 'nobody', sessionIds: [] } })).toEqual([]);
+    });
+
+    it('the three branches union, and an item matching none stays out', async () => {
+      expect(await ids({ visibleTo: { userId: 'assignee-u', sessionIds: ['shared-1'] } })).toEqual(['assigned', 'in-session']);
+    });
+
+    it('composes (AND) with the other filters', async () => {
+      await repository.dismiss('in-session');
+      const visibleTo = { userId: 'assignee-u', sessionIds: ['shared-1'] };
+      expect(await ids({ visibleTo, status: 'dismissed' })).toEqual(['in-session']);
+      expect(await ids({ visibleTo, status: 'open' })).toEqual(['assigned']);
+    });
+  });
+
   describe('adopt', () => {
+    it('workerId null on a human-created item leaves created_worker_id NULL and the creator the human', async () => {
+      await repository.create(params({ createdBy: { userId: 'user-1' } }));
+
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: null, actor: { userId: 'user-3' }, expectedSessionId: 'session-1' });
+
+      expect(adopted).toMatchObject({ sessionId: 'session-2', createdBy: { userId: 'user-1' } });
+      const row = await db.selectFrom('todos').select(['created_worker_id', 'created_user_id']).where('id', '=', 'todo-1').executeTakeFirstOrThrow();
+      expect(row).toEqual({ created_worker_id: null, created_user_id: 'user-1' });
+    });
+
     it('moves session_id and created_worker_id of an agent-created open item and bumps updatedAt', async () => {
       const created = await repository.create(
         params({ scope: 'global', sessionId: 'session-1', createdBy: { workerId: 'worker-1' } }),

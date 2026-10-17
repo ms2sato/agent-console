@@ -100,6 +100,17 @@ export class SqliteTodoRepository implements TodoRepository {
     if (filters.scope) query = query.where('scope', '=', filters.scope);
     if (filters.assigneeUserId) query = query.where('assignee_user_id', '=', filters.assigneeUserId);
     if (filters.sessionId) query = query.where('session_id', '=', filters.sessionId);
+    if (filters.visibleTo) {
+      const { userId, sessionIds } = filters.visibleTo;
+      query = query.where((eb) =>
+        eb.or([
+          eb('assignee_user_id', '=', userId),
+          eb('created_user_id', '=', userId),
+          // `IN ()` is invalid SQL: with no sessions the third branch simply does not exist.
+          ...(sessionIds.length > 0 ? [eb('session_id', 'in', sessionIds)] : []),
+        ]),
+      );
+    }
     const rows = await query.orderBy('todos.created_at', 'desc').orderBy('todos.id', 'desc').execute();
     return rows.map(toTodo);
   }
