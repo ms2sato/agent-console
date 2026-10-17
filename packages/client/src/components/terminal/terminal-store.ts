@@ -1170,7 +1170,14 @@ class TerminalController implements TerminalInstance {
     try {
       // pagedChunks[1] (if any) is newer than the top chunk and already owns the
       // top chunk's still-volatile tail rows.
-      pair = await replayHistoryPair(msg.data, topRaw, cols, rows, (d) => this.processOutput(d), this.pagedChunks.length > 1);
+      pair = await replayHistoryPair(
+        msg.data,
+        topRaw,
+        cols,
+        rows,
+        (d) => this.processOutput(d),
+        this.pagedChunks.length > 1 ? 'yield-to-newer' : 'keep',
+      );
     } catch {
       return;
     }
@@ -1256,7 +1263,7 @@ class TerminalController implements TerminalInstance {
         (d) => this.processOutput(d),
         // pagedChunks[2] (if any) is newer than the second chunk and already owns
         // its still-volatile tail rows.
-        this.pagedChunks.length > 2,
+        this.pagedChunks.length > 2 ? 'yield-to-newer' : 'keep',
       );
     } catch {
       return;
