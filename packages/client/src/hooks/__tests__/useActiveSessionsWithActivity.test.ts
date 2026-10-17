@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { renderHook } from '@testing-library/react';
-import { useActiveSessionsWithActivity } from '../useActiveSessionsWithActivity';
+import { useActiveSessionsWithActivity, compareByActivityPriority } from '../useActiveSessionsWithActivity';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
 // Helper to create mock session
@@ -434,5 +434,19 @@ describe('useActiveSessionsWithActivity', () => {
       expect(result.current).not.toBe(firstResult);
       expect(result.current).toHaveLength(2);
     });
+  });
+});
+
+describe('compareByActivityPriority', () => {
+  const make = (activityState: AgentActivityState) => ({
+    session: createMockSession(),
+    activityState,
+  });
+
+  it('orders asking before idle before active and ties as 0', () => {
+    expect(compareByActivityPriority(make('asking'), make('idle'))).toBeLessThan(0);
+    expect(compareByActivityPriority(make('idle'), make('active'))).toBeLessThan(0);
+    expect(compareByActivityPriority(make('active'), make('asking'))).toBeGreaterThan(0);
+    expect(compareByActivityPriority(make('idle'), make('idle'))).toBe(0);
   });
 });

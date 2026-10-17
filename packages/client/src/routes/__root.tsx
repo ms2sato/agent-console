@@ -21,6 +21,7 @@ import { useWorktreeCreationTasks } from '../hooks/useWorktreeCreationTasks';
 import { useWorktreeDeletionTasks } from '../hooks/useWorktreeDeletionTasks';
 import { useSessionStopTasks } from '../hooks/useSessionStopTasks';
 import { useSessionFilter, matchesUserFilter } from '../hooks/useSessionFilter';
+import { useSessionViewMode } from '../hooks/useSessionViewMode';
 import type { Session } from '@agent-console/shared';
 import { useAuth } from '../lib/auth';
 import { logger } from '../lib/logger';
@@ -145,6 +146,10 @@ function RootLayout() {
     ? { mode: filterMode, onChange: setFilterMode }
     : undefined;
 
+  const { viewMode, setViewMode } = useSessionViewMode();
+  const sessionViewMode = { mode: viewMode, onChange: setViewMode };
+  const allSessionIds = useMemo(() => new Set(sessions.map(s => s.id)), [sessions]);
+
   const handleResumeFromSidebar = useCallback(async (sessionId: string) => {
     try {
       // Only trigger the resume request. The state update will arrive
@@ -248,6 +253,8 @@ function RootLayout() {
                     onResumeSession={handleResumeFromSidebar}
                     hideResizeHandle
                     sessionFilter={sessionFilter}
+                    sessionViewMode={sessionViewMode}
+                    allSessionIds={allSessionIds}
                   />
                 }
               />
@@ -276,6 +283,8 @@ function RootLayout() {
                 pausedSessions={pausedSessions}
                 onResumeSession={handleResumeFromSidebar}
                 sessionFilter={sessionFilter}
+                sessionViewMode={sessionViewMode}
+                allSessionIds={allSessionIds}
               />
             )}
             <main className={`flex-1 flex flex-col min-h-0 ${isSessionPage ? 'overflow-hidden' : 'overflow-auto'}`}>
