@@ -34,6 +34,15 @@ import type { StartupIntentPreference } from '../services/startup-intent.js';
 
 const logger = createLogger('api:workers');
 
+/** Longest accepted worker tab name, in characters (after trimming). */
+const MAX_WORKER_NAME_LENGTH = 64;
+
+// Route-local: the rename wire is a request-only shape, so it does not live in
+// packages/shared (the response reuses the shared worker response schema).
+const RenameWorkerRequestSchema = v.strictObject({
+  name: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_WORKER_NAME_LENGTH)),
+});
+
 // Upload directory is per-uid under the OS temp directory so that:
 //   1. Different users on the same host (e.g. Model B service user `agentconsole`
 //      vs. an interactive dev user) do not collide on a single host-wide
@@ -385,6 +394,30 @@ const workers = new Hono<AppBindings>()
 
     return c.json({ success: true });
   })
+  // Rename a worker (any type). The server is the source of truth: the change
+  // is broadcast as a session update, which is what moves the client's tab;
+  // the response carries the updated worker for the caller's own use.
+  .patch(
+    '/:sessionId/workers/:workerId/name',
+    vValidator(RenameWorkerRequestSchema),
+    async (c) => {
+      const sessionId = c.req.param('sessionId');
+      const workerId = c.req.param('workerId');
+      const { name } = c.req.valid('json');
+
+      const { sessionManager } = c.get('appContext');
+      if (!sessionManager.getSession(sessionId)) {
+        throw new NotFoundError('Session');
+      }
+
+      const worker = await sessionManager.renameWorker(sessionId, workerId, name);
+      if (!worker) {
+        throw new NotFoundError('Worker');
+      }
+
+      return c.json({ worker });
+    },
+  )
   // Compaction: update an embedded-agent worker's own settings.
   //
   // REST rather than a WebSocket command because this is durable per-worker

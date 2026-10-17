@@ -21,6 +21,7 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE, MAX_IMAGE_ATTACHMENT_BYTES } from '@agent-console/shared';
+import type { Worker as SharedWorker } from '@agent-console/shared';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import { isMultiUserAuthMode, type SpawnAsUserFn, type SpawnAsUserOpts } from '../../services/privilege-elevation.js';
@@ -1220,6 +1221,95 @@ describe('Workers API', () => {
 
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Worker');
+    });
+  });
+
+  describe('PATCH /api/sessions/:sessionId/workers/:workerId/name', () => {
+    function rename(sessionId: string, workerId: string, body: unknown) {
+      return app.request(`/api/sessions/${sessionId}/workers/${workerId}/name`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    async function createTerminal() {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const terminal = await sessionManager.createWorker(session.id, { type: 'terminal' });
+      return { session, terminal: terminal! };
+    }
+
+    it('renames the worker and returns { worker } with the new name', async () => {
+      const { session, terminal } = await createTerminal();
+
+      const res = await rename(session.id, terminal.id, { name: 'build watch' });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { worker: SharedWorker };
+      expect(body.worker.id).toBe(terminal.id);
+      expect(body.worker.name).toBe('build watch');
+    });
+
+    it('stores the trimmed name', async () => {
+      const { session, terminal } = await createTerminal();
+
+      const res = await rename(session.id, terminal.id, { name: '  build watch  ' });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { worker: SharedWorker };
+      expect(body.worker.name).toBe('build watch');
+      const stored = sessionManager.getSession(session.id)!.workers.find((w) => w.id === terminal.id);
+      expect(stored!.name).toBe('build watch');
+    });
+
+    it('returns 404 for an unknown session', async () => {
+      const res = await rename('non-existent-id', 'some-worker-id', { name: 'x' });
+
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Session');
+    });
+
+    it('returns 404 for an unknown worker in an existing session', async () => {
+      const { session } = await createTerminal();
+
+      const res = await rename(session.id, 'non-existent-worker', { name: 'x' });
+
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Worker');
+    });
+
+    it.each([
+      ['an empty name', ''],
+      ['a whitespace-only name', '   '],
+      ['a name over 64 characters', 'a'.repeat(65)],
+    ])('returns 400 for %s', async (_label, name) => {
+      const { session, terminal } = await createTerminal();
+
+      const res = await rename(session.id, terminal.id, { name });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts a name of exactly 64 characters', async () => {
+      const { session, terminal } = await createTerminal();
+
+      const res = await rename(session.id, terminal.id, { name: 'a'.repeat(64) });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 400 for an unknown key', async () => {
+      const { session, terminal } = await createTerminal();
+
+      const res = await rename(session.id, terminal.id, { name: 'x', leaked: 1 });
+
+      expect(res.status).toBe(400);
     });
   });
 

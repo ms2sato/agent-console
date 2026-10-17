@@ -8047,6 +8047,104 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('renameWorker', () => {
+    const STUB_EMBEDDED_DEF = {
+      id: 'rename-embedded-agent',
+      name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    async function getManager() {
+      return getSessionManager({
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) => (id === STUB_EMBEDDED_DEF.id ? STUB_EMBEDDED_DEF : undefined),
+        },
+      });
+    }
+
+    describe.each(['agent', 'terminal', 'git-diff', 'embedded-agent'] as const)(
+      'for a %s worker',
+      (workerType) => {
+        async function setup() {
+          const manager = await getManager();
+          const session = await manager.createSession(
+            workerType === 'embedded-agent'
+              ? { type: 'quick', locationPath: '/test/path', embeddedAgentId: STUB_EMBEDDED_DEF.id }
+              : { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          );
+          if (workerType === 'terminal') {
+            await manager.createWorker(session.id, { type: 'terminal' });
+          }
+          const worker = manager.getSession(session.id)!.workers.find((w) => w.type === workerType);
+          expect(worker).toBeDefined();
+          return { manager, sessionId: session.id, workerId: worker!.id };
+        }
+
+        it('persists the new name (re-read through the session repository)', async () => {
+          const { manager, sessionId, workerId } = await setup();
+
+          const renamed = await manager.renameWorker(sessionId, workerId, 'build watch');
+
+          expect(renamed?.name).toBe('build watch');
+          const persisted = await manager.getSessionRepository().findById(sessionId);
+          expect(persisted!.workers.find((w) => w.id === workerId)!.name).toBe('build watch');
+        });
+
+        it('broadcasts exactly one session update carrying the new name', async () => {
+          const { manager, sessionId, workerId } = await setup();
+          const onSessionUpdated = mock(() => {});
+          manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+          await manager.renameWorker(sessionId, workerId, 'build watch');
+
+          expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+          expect(onSessionUpdated).toHaveBeenCalledWith(
+            expect.objectContaining({
+              id: sessionId,
+              workers: expect.arrayContaining([
+                expect.objectContaining({ id: workerId, name: 'build watch' }),
+              ]),
+            }),
+          );
+        });
+      },
+    );
+
+    it('returns null without persisting or broadcasting for an unknown worker', async () => {
+      const manager = await getManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const before = await manager.getSessionRepository().findById(session.id);
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const result = await manager.renameWorker(session.id, 'no-such-worker', 'x');
+
+      expect(result).toBeNull();
+      expect(onSessionUpdated).not.toHaveBeenCalled();
+      expect(await manager.getSessionRepository().findById(session.id)).toEqual(before);
+    });
+
+    it('returns null without broadcasting for an unknown session', async () => {
+      const manager = await getManager();
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const result = await manager.renameWorker('no-such-session', 'no-such-worker', 'x');
+
+      expect(result).toBeNull();
+      expect(onSessionUpdated).not.toHaveBeenCalled();
+    });
+  });
+
   describe('setProcessCleanupCallback', () => {
     it('should accept a cleanup callback without error', async () => {
       const sm = await getSessionManager();

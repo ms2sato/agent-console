@@ -208,6 +208,20 @@ Ending another user's session is allowed (team operation). Owner decision 2026-1
 | GET | `/api/sessions/:sessionId/workers` | List workers in session |
 | POST | `/api/sessions/:sessionId/workers` | Create new worker |
 | DELETE | `/api/sessions/:sessionId/workers/:workerId` | Delete specific worker |
+| PATCH | `/api/sessions/:sessionId/workers/:workerId/name` | Rename a worker (any type); body `{ name }`, trimmed, 1 to 64 characters; response `{ worker }` |
+
+#### Surfaces: worker name
+
+Renaming changes `worker.name`, which is persisted and broadcast as a session update. The client follows the broadcast; there is no dedicated WebSocket frame.
+
+| Operation | Tab strip (`SessionPage` / `TabLabel`) | Session sidebar | MCP | REST | Embedded-agent-visible |
+|-----------|----------------------------------------|-----------------|-----|------|------------------------|
+| Rename | do: `TabLabel` (double-click, Enter/F2 on the focused tab, or hover pencil) | not here: the sidebar lists sessions, not workers | not here: no agent use case stated; a human names tabs for humans | do: `PATCH .../workers/:workerId/name` | not here: same reason as MCP |
+| Show the custom name | do: `TabLabel` | not here: the sidebar lists sessions, not workers | do: `list_sessions` already carries worker names, unchanged | do: `GET .../workers` | do: unchanged |
+
+No panel header shows the worker name. Only the worker error fallback prints the active tab's name, and it follows a rename through the same `tabs` array.
+
+Defaults the owner may veto: the double-click plus hover-pencil triggers, and the 64-character cap.
 
 ### Request/Response Types
 
