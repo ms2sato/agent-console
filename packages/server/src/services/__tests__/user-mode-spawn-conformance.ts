@@ -67,8 +67,10 @@ export function describeAgentSpawnConformance(
     });
 
     it('echoes the sentinel before exec-ing the interactive shell', () => {
-      // The direct shape is `exec $SHELL -l -c 'echo S; exec $SHELL'`: the outer
-      // login-shell exec precedes the echo, so the interactive shell is the LAST exec.
+      // The echo must precede the INNER exec of the interactive shell; the outer
+      // `exec $SHELL -l -c` of the direct shape is the login wrapper and comes first
+      // (`exec $SHELL -l -c 'echo S; exec $SHELL'`), so compare against the LAST exec,
+      // not the first.
       const request = makeRequest(CONFORMANCE_SENTINEL);
       const shell = spawnWithSentinel(spawnShell, request);
       const echoIndex = shell.indexOf(`echo ${request.sentinel}`);

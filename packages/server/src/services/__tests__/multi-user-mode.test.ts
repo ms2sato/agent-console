@@ -637,13 +637,15 @@ describe('MultiUserMode', () => {
       expect(args[3]).toBe('-i');
       expect(args[4]).toBe('sh');
       expect(args[5]).toBe('-c');
-      // The inner command should contain cd, export, and the agent command
+      // The inner command should contain cd and export, but not the agent command
+      // (it is injected after the sentinel line)
       const innerCommand = args[6];
       expect(innerCommand).toContain("cd '/workspace/project'");
       expect(innerCommand).toContain('AGENT_CONSOLE_BASE_URL');
       expect(innerCommand).toContain('AGENT_CONSOLE_SESSION_ID');
       expect(innerCommand).toContain('AGENT_CONSOLE_WORKER_ID');
       expect(innerCommand).toContain('CUSTOM_VAR');
+      expect(innerCommand).not.toContain('claude --prompt "build feature"');
       // Elevated path should NOT have env in spawn options (env is embedded in command)
       expect(opts.env).toBeUndefined();
       expect(opts.cols).toBe(120);
