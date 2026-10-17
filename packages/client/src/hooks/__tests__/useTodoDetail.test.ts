@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useTodoDetail } from '../useTodoDetail';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
-import { fetchUrl, jsonResponse, makeTodo } from '../../test/todo-fixtures';
+import { fetchUrl, jsonResponse, makeTodo, makeTodoComment, makeTodoMove } from '../../test/todo-fixtures';
 
 // Fetch-level mock: api.ts is imported for real by many other test files in
 // this process, so it is not mocked via mock.module().
@@ -56,21 +56,34 @@ describe('useTodoDetail', () => {
 
   it('fetches the item by id', async () => {
     const todo = makeTodo({ id: 'todo-7' });
-    mockFetch.mockResolvedValue(jsonResponse({ todo }));
+    mockFetch.mockResolvedValue(jsonResponse({ todo, activities: [] }));
 
     const { result } = renderHook(() => useTodoDetail('todo-7'), { wrapper: createWrapper() });
-    await waitFor(() => expect(result.current.data).toEqual(todo));
+    await waitFor(() => expect(result.current.data).toEqual({ todo, activities: [] }));
 
     const calls = mockFetch.mock.calls as unknown[][];
     expect(fetchUrl(calls[0]?.[0])).toContain('/api/todos/todo-7');
   });
 
+  it('returns the item together with its activities, in the order the server sent them', async () => {
+    const todo = makeTodo({ id: 'todo-7', commentCount: 1 });
+    // The move is older than the comment on purpose: the hook must not re-sort by kind or id.
+    const activities = [makeTodoMove({ id: 'z-move' }), makeTodoComment({ id: 'a-comment' })];
+    mockFetch.mockResolvedValue(jsonResponse({ todo, activities }));
+
+    const { result } = renderHook(() => useTodoDetail('todo-7'), { wrapper: createWrapper() });
+    await waitFor(() => expect(result.current.data).toBeDefined());
+
+    expect(result.current.data?.todo).toEqual(todo);
+    expect(result.current.data?.activities.map((a) => a.id)).toEqual(['z-move', 'a-comment']);
+  });
+
   it('refetches for a frame naming any session, including one other than the item\'s own', async () => {
     const before = makeTodo({ id: 'todo-1', sessionId: 'session-A', title: 'Before' });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ todo: before }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ todo: before, activities: [] }));
 
     const { result } = renderHook(() => useTodoDetail('todo-1'), { wrapper: createWrapper() });
-    await waitFor(() => expect(result.current.data).toEqual(before));
+    await waitFor(() => expect(result.current.data?.todo).toEqual(before));
 
     const ws = requireLastWs();
     act(() => {
@@ -78,20 +91,20 @@ describe('useTodoDetail', () => {
     });
 
     const after = makeTodo({ id: 'todo-1', sessionId: 'session-B', title: 'After' });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ todo: after }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ todo: after, activities: [] }));
     await act(async () => {
       ws.simulateMessage(JSON.stringify({ type: 'todos-updated', sessionId: 'session-OTHER' }));
     });
 
-    await waitFor(() => expect(result.current.data).toEqual(after));
+    await waitFor(() => expect(result.current.data?.todo).toEqual(after));
   });
 
   it('refetches for a frame whose sessionId is null', async () => {
     const before = makeTodo({ id: 'todo-1', title: 'Before' });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ todo: before }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ todo: before, activities: [] }));
 
     const { result } = renderHook(() => useTodoDetail('todo-1'), { wrapper: createWrapper() });
-    await waitFor(() => expect(result.current.data).toEqual(before));
+    await waitFor(() => expect(result.current.data?.todo).toEqual(before));
 
     const ws = requireLastWs();
     act(() => {
@@ -99,12 +112,12 @@ describe('useTodoDetail', () => {
     });
 
     const after = makeTodo({ id: 'todo-1', title: 'After' });
-    mockFetch.mockResolvedValueOnce(jsonResponse({ todo: after }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ todo: after, activities: [] }));
     await act(async () => {
       ws.simulateMessage(JSON.stringify({ type: 'todos-updated', sessionId: null }));
     });
 
-    await waitFor(() => expect(result.current.data).toEqual(after));
+    await waitFor(() => expect(result.current.data?.todo).toEqual(after));
   });
 
   it('surfaces the 404 as error so the caller can render the deleted state', async () => {

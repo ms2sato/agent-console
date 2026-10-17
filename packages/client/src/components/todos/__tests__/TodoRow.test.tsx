@@ -51,6 +51,40 @@ async function renderRow(
  *        (also TodosPage.test.tsx 'a question cannot be resolved without text (nothing is sent)')
  */
 describe('TodoRow', () => {
+  describe('reply count chip', () => {
+    // Pins: 'swap singular and plural' fails 1 and 3; 'show at zero' fails the 0 case;
+    // 'count moves' cannot be pinned here (the count is the server's `commentCount`).
+    it('shows no chip when the item has no replies', async () => {
+      await renderRow({ commentCount: 0 });
+
+      expect(screen.queryByText(/repl(y|ies)$/)).toBeNull();
+    });
+
+    it('shows "1 reply" (singular) with an aria-label for one reply', async () => {
+      await renderRow({ commentCount: 1 });
+
+      const chip = screen.getByLabelText('1 reply');
+      expect(chip.textContent).toBe('1 reply');
+    });
+
+    it('shows "3 replies" (plural) with an aria-label for several replies', async () => {
+      await renderRow({ commentCount: 3 });
+
+      const chip = screen.getByLabelText('3 replies');
+      expect(chip.textContent).toBe('3 replies');
+    });
+
+    it('sits after the scope badge and before the status badge', async () => {
+      await renderRow({ commentCount: 2 });
+
+      const scope = screen.getByLabelText('Scope: session');
+      const chip = screen.getByLabelText('2 replies');
+      const status = screen.getByLabelText('Status: open');
+      expect(scope.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(chip.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  });
+
   describe('display', () => {
     it('shows the title, kind, scope and status badges', async () => {
       await renderRow({ title: 'Ship it', kind: 'question', scope: 'session', status: 'open' });

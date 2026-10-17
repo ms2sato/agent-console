@@ -46,7 +46,7 @@ function TodoDetailRoute() {
 export function TodoDetailPage({ todoId }: { todoId: string }) {
   const navigate = useNavigate();
   const { errorDialogProps, showError } = useErrorDialog();
-  const { data: todo, error } = useTodoDetail(todoId);
+  const { data: detail, error } = useTodoDetail(todoId);
   const { data: users = [] } = useQuery({ queryKey: userKeys.list(), queryFn: fetchUsers });
 
   if (isTodoGone(error)) {
@@ -66,10 +66,11 @@ export function TodoDetailPage({ todoId }: { todoId: string }) {
   // Any other failure is unexpected: let the route's error component show it.
   if (error) throw error;
 
-  if (!todo) {
+  if (!detail) {
     return <PagePendingFallback message="Loading Todo..." />;
   }
 
+  const { todo, activities } = detail;
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <PageBreadcrumb items={[{ label: 'Agent Console', to: '/' }, { label: 'Todo', to: '/todos' }, { label: todo.title }]} />
@@ -77,6 +78,7 @@ export function TodoDetailPage({ todoId }: { todoId: string }) {
         <TodoDetail
           todo={todo}
           users={users}
+          activities={activities}
           onError={showError}
           runEnabled={false}
           onDeleted={() => navigate({ to: '/todos' })}

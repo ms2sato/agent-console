@@ -575,6 +575,29 @@ describe('EmbeddedAgentWorkerView', () => {
 
       expect(screen.getByText('Todo Resolved')).toBeTruthy();
     });
+
+    it('renders the "Todo Comment" label for a notification kind of internal-todo-comment', async () => {
+      renderView({ sessionId: 's-notif-6', workerId: 'w-notif-6' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text:
+          '[internal:todo-comment] timestamp=2026-10-17T00:00:00.000Z todoId=t1 todoKind=question title="Which one?" author=alice text="Why the second?" intent=triage',
+        notification: { kind: 'internal-todo-comment' },
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Todo Comment')).toBeTruthy();
+    });
   });
 
   it('renders an ACTIVATION_FAILED error with a Retry action instead of Dismiss', async () => {

@@ -48,7 +48,8 @@ import {
   openInVSCode,
   fetchArtifacts,
   fetchTodos,
-  fetchTodo,
+  fetchTodoDetail,
+  commentTodo,
   createTodo,
   updateTodo,
   resolveTodo,
@@ -1566,6 +1567,7 @@ describe('API Client', () => {
       resolvedByUserId: null,
       resolvedByWorkerId: null,
       resolvedAt: null,
+      commentCount: 0,
       createdAt: '2026-10-15T00:00:00.000Z',
       updatedAt: '2026-10-15T00:00:00.000Z',
     };
@@ -1607,7 +1609,7 @@ describe('API Client', () => {
     });
   });
 
-  describe('fetchTodo', () => {
+  describe('fetchTodoDetail', () => {
     const wireTodo = {
       id: 'todo-1',
       kind: 'action',
@@ -1622,30 +1624,112 @@ describe('API Client', () => {
       resolvedByUserId: null,
       resolvedByWorkerId: null,
       resolvedAt: null,
+      commentCount: 1,
       createdAt: '2026-10-15T00:00:00.000Z',
       updatedAt: '2026-10-15T00:00:00.000Z',
     };
+    const wireComment = {
+      id: 'comment-1',
+      todoId: 'todo-1',
+      kind: 'comment',
+      actor: { userId: 'user-1' },
+      text: 'Why this one?',
+      createdAt: '2026-10-15T01:00:00.000Z',
+    };
+    const wireMove = {
+      id: 'move-1',
+      todoId: 'todo-1',
+      kind: 'moved',
+      actor: { workerId: 'worker-1' },
+      fromSessionId: null,
+      toSessionId: 'session-2',
+      statement: 'take it',
+      attributedUserId: 'user-1',
+      createdAt: '2026-10-15T02:00:00.000Z',
+    };
 
-    it('GETs the item by id and returns the parsed todo', async () => {
-      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
+    it('GETs the item by id and returns the parsed item with its activities in the order sent', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo, activities: [wireMove, wireComment] }));
 
-      const result = await fetchTodo('todo-1');
+      const result = await fetchTodoDetail('todo-1');
 
       expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos/todo-1');
       expect(getLastFetchMethod()).toBe('GET');
-      expect(result).toEqual(wireTodo);
+      expect(result).toEqual({ todo: wireTodo, activities: [wireMove, wireComment] });
     });
 
-    it('throws when the response fails schema validation (e.g. an unwrapped item)', async () => {
-      mockFetch.mockResolvedValue(createMockResponse(wireTodo));
+    it('throws when the response has no activities (the pre-v3 shape)', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
 
-      await expect(fetchTodo('todo-1')).rejects.toThrow();
+      await expect(fetchTodoDetail('todo-1')).rejects.toThrow();
+    });
+
+    it('throws when an activity carries a field of the other kind (the variant is strict)', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ todo: wireTodo, activities: [{ ...wireComment, toSessionId: 'session-2' }] }),
+      );
+
+      await expect(fetchTodoDetail('todo-1')).rejects.toThrow();
     });
 
     it('throws the Todo item message on failure', async () => {
       mockFetch.mockResolvedValue(createMockResponse({}, { status: 500, ok: false }));
 
-      await expect(fetchTodo('todo-1')).rejects.toThrow('Failed to fetch Todo item');
+      await expect(fetchTodoDetail('todo-1')).rejects.toThrow('Failed to fetch Todo item');
+    });
+  });
+
+  describe('commentTodo', () => {
+    const wireTodo = {
+      id: 'todo-1',
+      kind: 'question',
+      scope: 'session',
+      title: 'Which one?',
+      body: '',
+      sessionId: 'session-1',
+      createdBy: { workerId: 'worker-1' },
+      assigneeUserId: null,
+      status: 'open',
+      resolutionText: null,
+      resolvedByUserId: null,
+      resolvedByWorkerId: null,
+      resolvedAt: null,
+      commentCount: 1,
+      createdAt: '2026-10-15T00:00:00.000Z',
+      updatedAt: '2026-10-15T00:00:00.000Z',
+    };
+    const wireComment = {
+      id: 'comment-1',
+      todoId: 'todo-1',
+      kind: 'comment',
+      actor: { userId: 'user-1' },
+      text: 'Why this one?',
+      createdAt: '2026-10-15T01:00:00.000Z',
+    };
+
+    it('POSTs the text to the comments path and returns the parsed item with its activities', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo, activities: [wireComment] }));
+
+      const result = await commentTodo('todo-1', 'Why this one?');
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').pathname).toBe('/api/todos/todo-1/comments');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(await getLastFetchBody()).toEqual({ text: 'Why this one?' });
+      expect(result).toEqual({ todo: wireTodo, activities: [wireComment] });
+    });
+
+    it('surfaces the server error message on a refusal (409: the item is closed)', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ error: 'Only an open or done item takes comments' }, { status: 409, ok: false }),
+      );
+
+      await expect(commentTodo('todo-1', 'late')).rejects.toThrow('Only an open or done item takes comments');
+    });
+
+    it('throws when the response is the single-item shape without activities', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ todo: wireTodo }));
+
+      await expect(commentTodo('todo-1', 'x')).rejects.toThrow();
     });
   });
 
@@ -1664,6 +1748,7 @@ describe('API Client', () => {
       resolvedByUserId: null,
       resolvedByWorkerId: null,
       resolvedAt: null,
+      commentCount: 0,
       createdAt: '2026-10-15T00:00:00.000Z',
       updatedAt: '2026-10-15T00:00:00.000Z',
     };

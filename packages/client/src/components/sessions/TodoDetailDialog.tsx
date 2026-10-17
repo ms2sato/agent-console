@@ -30,7 +30,7 @@ interface TodoDetailDialogBodyProps {
 // Mounted only while a dialog is open and keyed on the item, so the detail
 // query, the Run selection and the error state start fresh per item.
 function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFocus }: TodoDetailDialogBodyProps) {
-  const { data: todo, error } = useTodoDetail(todoId);
+  const { data: detail, error } = useTodoDetail(todoId);
   const terminalRun = useSessionTerminalRun();
   const [pendingRunCommand, setPendingRunCommand] = useState<string | null>(null);
   const { errorDialogProps, showError } = useErrorDialog();
@@ -52,10 +52,11 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFo
             Open as page
           </Link>
         </DialogHeader>
-        {todo ? (
+        {detail ? (
           <TodoDetail
-            todo={todo}
+            todo={detail.todo}
             users={users}
+            activities={detail.activities}
             onError={showError}
             runEnabled={terminalRun !== null}
             onRun={setPendingRunCommand}

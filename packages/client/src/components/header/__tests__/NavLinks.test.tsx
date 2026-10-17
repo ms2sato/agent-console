@@ -34,6 +34,7 @@ const baseTodo = {
   resolvedByUserId: null,
   resolvedByWorkerId: null,
   resolvedAt: null,
+  commentCount: 0,
   createdAt: '2026-10-15T00:00:00.000Z',
   updatedAt: '2026-10-15T00:00:00.000Z',
 };
