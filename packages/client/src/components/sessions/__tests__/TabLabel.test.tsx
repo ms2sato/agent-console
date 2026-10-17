@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
-import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TabLabel } from '../TabLabel';
 import { waitForAbsent } from '../../../test/waitForAbsent';
@@ -7,7 +7,8 @@ import { completeWireBody } from '../../../test/wire-fixtures';
 
 // Reach (mutation -> the case that fails): dropping the Escape branch fails
 // "Escape restores"; dropping the catch fails "a failed rename"; dropping the
-// input's stopPropagation fails "clicking inside the input".
+// input's keydown stopPropagation fails "keydown inside the input"; deleting the
+// settled guard in commit fails "a blur arrives while the Enter commit is still pending".
 
 const originalFetch = globalThis.fetch;
 const mockFetch = mock((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response()));
@@ -128,12 +129,24 @@ describe('TabLabel', () => {
     await waitFor(() => expect(renameBodies()).toEqual([{ name: 'logs' }]));
   });
 
-  it('sends a single request when Enter is followed by blur', async () => {
+  it('sends a single request when a blur arrives while the Enter commit is still pending', async () => {
+    // Reach: deleting the settled guard at the top of commit fails this case. The input stays
+    // mounted until the request settles, so a blur during that window would otherwise commit again.
+    let resolveRequest: (response: Response) => void = () => {};
+    mockFetch.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
     const user = userEvent.setup();
     renderLabel();
     await user.dblClick(screen.getByRole('tab', { name: 'Shell 1' }));
     await user.keyboard('logs{Enter}');
-    await user.click(document.body);
+    const input = screen.getByRole('textbox', { name: 'Tab name' });
+
+    fireEvent.blur(input);
+    resolveRequest(okResponse());
 
     await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
     expect(renameCalls().length).toBe(1);
