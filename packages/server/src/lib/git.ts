@@ -1005,6 +1005,16 @@ export async function readRepoFileAtRef(
 const WORKING_TREE_DIR_EXIT_CODE = 42;
 
 /**
+ * Shell command the elevated path of `readWorkingTreeFile` runs in the worktree:
+ * exit `WORKING_TREE_DIR_EXIT_CODE` for a directory, else `cat` the file.
+ * @internal Exported for testing
+ */
+export function buildWorkingTreeReadCommand(relPath: string): string {
+  const escaped = shellEscape(relPath);
+  return `test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}; cat -- ${escaped}`;
+}
+
+/**
  * Read one file from a working tree, as the session owner when `requestUser`
  * is set. A user worktree can be mode 0700 for another OS user in multi-user
  * mode, so the server process cannot read it directly.
@@ -1031,8 +1041,7 @@ export async function readWorkingTreeFile(
   requestUser?: string | null,
 ): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null> {
   if (requestUser != null && requestUser.length > 0) {
-    const escaped = shellEscape(relPath);
-    const command = `test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}; cat -- ${escaped}`;
+    const command = buildWorkingTreeReadCommand(relPath);
     let result: RunAsUserResult;
     try {
       result = await _runAsUser({

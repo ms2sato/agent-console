@@ -1482,7 +1482,8 @@ index abc1234..def5678 100644
           expect(calls[0].username).toBe('alice');
           expect(calls[0].cwd).toBe('/work/tree');
           expect(calls[0].timeoutMs).toBe(30000);
-          expect(calls[0].command).toContain(`cat -- ${shellEscape("dir/it's.ts")}`);
+          const e = shellEscape("dir/it's.ts");
+          expect(calls[0].command).toBe(`test -d ${e} && exit 42; cat -- ${e}`);
         } finally {
           mod.__setRunAsUserForTesting(null);
         }
