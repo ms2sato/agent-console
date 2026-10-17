@@ -29,6 +29,7 @@ import { handleHistoryRangeRequest } from '@agent-console/server/src/websocket/h
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 import {
+  _setLiveEdgePieceBytesForTest,
   getOrCreateTerminal,
   _resetTerminals,
   _inspect,
@@ -461,13 +462,16 @@ describe('Client-Server Boundary: paged rows meet the live window (#2176)', () =
   //     30 -> 13, 38 -> 5, 45 -> 0;
   //   - live-streamed flow below (attach at 704512 bytes, then output frames): 17203 labels
   //     missing (18975 in the browser); an attach at offset 0 could not page at all.
-  // After the fix the gap is bounded by the span of one marker: one history piece (about
-  // 13 rows) on attach, one output frame on the stream. Duplicates and backwards steps are 0.
-  const ATTACH_GAP_BOUND_LABELS = 16;
+  // After the fix the gap is bounded by the span of one marker, a line-aligned piece of about
+  // LIVE_EDGE_PIECE_BYTES (4096) bytes on attach and on the stream alike. Duplicates and
+  // backwards steps are 0.
   const LABELS_PER_STREAM_BYTE = (STREAMED_FRAMES * CONTENT_LINES) / 2_466_424;
-  const STREAM_GAP_BOUND_LABELS = Math.ceil(WRITE_CHUNK_BYTES * LABELS_PER_STREAM_BYTE);
+  // One piece may overshoot its target to the next line head: allow 1.5 targets.
+  const PIECE_GAP_BOUND_LABELS = Math.ceil(4096 * 1.5 * LABELS_PER_STREAM_BYTE);
+  const ATTACH_GAP_BOUND_LABELS = PIECE_GAP_BOUND_LABELS;
+  const STREAM_GAP_BOUND_LABELS = PIECE_GAP_BOUND_LABELS;
 
-  it('attach path: the labels missing at the boundary are bounded by one history piece', () => {
+  it('attach path: the labels missing at the boundary are bounded by one piece', () => {
     if (attachGap === undefined) throw new Error('the attach scenario did not run');
     expect(attachGap).toBeLessThanOrEqual(ATTACH_GAP_BOUND_LABELS);
   });
@@ -501,5 +505,34 @@ describe('Client-Server Boundary: paged rows meet the live window (#2176)', () =
     expect(m.duplicateIdx).toEqual([]);
     expect(m.backwards).toEqual([]);
     expect(gap).toBeLessThanOrEqual(STREAM_GAP_BOUND_LABELS);
+  }, 120_000);
+
+  // Trip the 512-entry cap on purpose with tiny pieces: the marker the merge gave up is
+  // disposed in xterm too, and the labels missing at the boundary stay within the span
+  // between the eviction cursor and the oldest surviving marker, computed from the
+  // recorded end offsets.
+  it('cap tripped on purpose: no marker leaks and the gap stays within one merged span', async () => {
+    _setLiveEdgePieceBytesForTest(200);
+    try {
+      const r = await streamThenPage(700_000);
+      const { gap, topOffset } = reportStreamed(r);
+      const first = r.firstInspect;
+      const oldestSurvivor = first.frameMarkerEndOffsets[0];
+      const spanBytes = oldestSurvivor - first.liveEvictedUpTo;
+      const gapBytes = topOffset - first.liveEvictedUpTo;
+      console.log(
+        `[live-streamed] cap tripped: frameMarkerCount=${first.frameMarkerCount} liveMarkerCount=${first.liveMarkerCount} liveEvictedUpTo=${first.liveEvictedUpTo} oldest surviving marker end=${oldestSurvivor} (merged span ${spanBytes} bytes); live top at ${topOffset} (${gapBytes} bytes above the cursor); gap=${gap} labels`,
+      );
+      expect(first.frameMarkerCount).toBe(512);
+      expect(first.liveMarkerCount).toBe(first.frameMarkerCount);
+      expect(gapBytes).toBeLessThanOrEqual(spanBytes);
+      expect(gap).toBeLessThanOrEqual(Math.ceil(spanBytes * LABELS_PER_STREAM_BYTE));
+      expect(r.pagedTexts.length).toBeGreaterThan(0);
+      const { m } = reportStreamed(r);
+      expect(m.duplicateIdx).toEqual([]);
+      expect(m.backwards).toEqual([]);
+    } finally {
+      _setLiveEdgePieceBytesForTest(null);
+    }
   }, 120_000);
 });

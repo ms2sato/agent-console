@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
-import { getOrCreateTerminal, _resetTerminals, _inspect, _whenIdle } from '../terminal-store';
+import { getOrCreateTerminal, _resetTerminals, _inspect, _whenIdle, _setLiveEdgePieceBytesForTest } from '../terminal-store';
 
 // Live-edge accounting (terminal-history-paging.md section 6.5): frame markers tell the
 // store which bytes the live buffer has evicted, and the paging cursor follows.
@@ -48,6 +48,7 @@ describe('terminal-store live-edge accounting', () => {
   });
 
   afterEach(() => {
+    _setLiveEdgePieceBytesForTest(null);
     _resetTerminals();
     restoreWebSocket();
   });
@@ -98,8 +99,79 @@ describe('terminal-store live-edge accounting', () => {
     const { instance, ws } = open();
     history(ws, { offset: 0, startOffset: 0 });
     await stream(ws, 0, 700, 1);
-    expect(_inspect(instance).paging.frameMarkerCount).toBe(512);
-    expect(_inspect(instance).paging.liveEvictedUpTo).toBe(0);
+    const p = _inspect(instance).paging;
+    expect(p.frameMarkerCount).toBe(512);
+    // Every marker the deque gave up was disposed in xterm too: no leak past the cap.
+    expect(p.liveMarkerCount).toBe(p.frameMarkerCount);
+    expect(p.liveEvictedUpTo).toBe(0);
+    // The oldest entry keeps its own end offset (the second-oldest boundary was given up).
+    expect(p.frameMarkerEndOffsets[0]).toBeLessThan(p.frameMarkerEndOffsets[1]);
+  });
+
+  it('a large frame is written in line-aligned pieces, one marker per piece, ending exactly at the frame end', async () => {
+    _setLiveEdgePieceBytesForTest(200);
+    const { instance, ws } = open();
+    history(ws, { offset: 0, startOffset: 0 });
+    const line = '0123456789'.repeat(4) + '\r\n'; // 42 bytes
+    const data = line.repeat(100); // 4200 bytes, 21 pieces of ~5 lines
+    ws.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length, epoch: EPOCH }));
+    await _whenIdle();
+    const ends = _inspect(instance).paging.frameMarkerEndOffsets;
+    expect(ends.length).toBeGreaterThan(15);
+    expect(ends.at(-1)).toBe(data.length);
+    expect(ends.every((e, i) => i === 0 || e > ends[i - 1])).toBe(true);
+    expect(ends.every((e) => e % 42 === 0)).toBe(true); // line-aligned
+  });
+
+  it('piece end offsets are byte-exact for multi-byte text', async () => {
+    _setLiveEdgePieceBytesForTest(100);
+    const { instance, ws } = open();
+    history(ws, { offset: 0, startOffset: 0 });
+    const line = '\u3042'.repeat(10) + '\r\n'; // 10 x 3 bytes + 2 = 32 bytes
+    const data = line.repeat(50);
+    const bytes = new TextEncoder().encode(data).length;
+    ws.simulateMessage(JSON.stringify({ type: 'output', data, offset: bytes, epoch: EPOCH }));
+    await _whenIdle();
+    const ends = _inspect(instance).paging.frameMarkerEndOffsets;
+    expect(ends.length).toBeGreaterThan(5);
+    expect(ends.at(-1)).toBe(bytes);
+    expect(ends.every((e) => e % 32 === 0)).toBe(true);
+  });
+
+  // Alt-screen: measured on @xterm/headless 5.5, entering the alternate buffer neither
+  // disposes the normal buffer's markers nor accepts new ones (registerMarker returns
+  // undefined there), so frames written on the alt screen register none. The disposal
+  // predicate is isScrollbackEviction: normal buffer AND length >= rows + SCROLLBACK.
+  it('alt-screen enter/exit does not advance liveEvictedUpTo or move the paging cursor', async () => {
+    const { instance, ws } = open();
+    history(ws, { offset: 1000, startOffset: 400 });
+    let offset = await stream(ws, 1000, 5, 10);
+    const before = _inspect(instance).paging;
+    const markersBefore = before.frameMarkerCount;
+    const alt = '\x1b[?1049h' + Array.from({ length: 30 }, (_, i) => `alt ${i}`).join('\r\n') + '\x1b[?1049l';
+    offset += alt.length;
+    ws.simulateMessage(JSON.stringify({ type: 'output', data: alt, offset, epoch: EPOCH }));
+    await _whenIdle();
+    const after = _inspect(instance).paging;
+    expect(after.liveEvictedUpTo).toBe(0);
+    expect(after.oldestOffset).toBe(400);
+    expect(after.frameMarkerCount).toBeGreaterThanOrEqual(markersBefore);
+    instance.requestOlderHistory();
+    expect(rangeRequests(ws).at(-1)?.beforeOffset).toBe(400);
+  });
+
+  it('alt-screen after a real eviction keeps the eviction cursor', async () => {
+    const { instance, ws } = open();
+    history(ws, { offset: 1000, startOffset: 400 });
+    let offset = await stream(ws, 1000, 300, 30);
+    const evicted = _inspect(instance).paging.liveEvictedUpTo;
+    expect(evicted).toBeGreaterThan(1000);
+    const alt = '\x1b[?1049hhello\x1b[?1049l';
+    offset += alt.length;
+    ws.simulateMessage(JSON.stringify({ type: 'output', data: alt, offset, epoch: EPOCH }));
+    await _whenIdle();
+    expect(_inspect(instance).paging.liveEvictedUpTo).toBeGreaterThanOrEqual(evicted);
+    expect(_inspect(instance).paging.oldestOffset).toBe(_inspect(instance).paging.liveEvictedUpTo);
   });
 
   it('liveEvictedUpTo and the markers reset on an epoch change', async () => {
