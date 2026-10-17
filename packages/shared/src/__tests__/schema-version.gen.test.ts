@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { computeVersion, copySchemaClosureTo } from '../../../../scripts/generate-schema-version.mjs';
 import { SCHEMA_VERSION } from '../schema-version.gen.js';
 
 // Repo root relative to this test file: packages/shared/src/__tests__ -> up 4.
@@ -10,14 +12,19 @@ const GENERATOR = path.join(REPO_ROOT, 'scripts', 'generate-schema-version.mjs')
 // The generator hashes every `.ts` file directly under this directory.
 const SCHEMAS_DIR = path.join(REPO_ROOT, 'packages', 'shared', 'src', 'schemas');
 
-/** Run the generator in --print mode (no writes) and return the emitted version. */
-function printVersion(): string {
-  const result = Bun.spawnSync(['bun', GENERATOR, '--print'], {
-    cwd: REPO_ROOT,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  return new TextDecoder().decode(result.stdout).trim();
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+  }
+});
+
+/** Layout-preserving temp copy of the hashed file set; the real tree is never written. */
+function makeClosureCopy() {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-version-gen-test-'));
+  tempDirs.push(dest);
+  return copySchemaClosureTo(dest);
 }
 
 describe('SCHEMA_VERSION', () => {
@@ -62,66 +69,59 @@ describe('SCHEMA_VERSION', () => {
 
   it('is sensitive to embedded-agent.ts content (the file participates in the hash)', () => {
     // Prove the committed version actually depends on embedded-agent.ts by
-    // perturbing it and observing the hash change, then restoring. The entire
-    // mutate -> probe -> restore sequence is synchronous (writeFileSync +
-    // spawnSync), so no other test can observe the transient edit and the
-    // finally block restores the exact original bytes.
+    // perturbing a temp copy of the hashed file set (in-process, via the
+    // generator's computeVersion) and observing the hash change, then
+    // restoring the copy. The real tree is never written. Versions are compared
+    // copy-vs-copy only (the hash includes the path relative to the repo root);
+    // the committed constant is guarded by the --check tests above.
     //
-    // The perturbation must be non-comment content: the generator now
-    // normalizes comments out of the hash input (see
-    // scripts/schema-source-normalize.mjs), so a bare appended comment would
-    // no longer move the version — that is the intended behavior this test
-    // must not contradict. A harmless top-level export exercises the
-    // "the file's actual code participates in the hash" property instead.
-    const schemaFile = path.join(SCHEMAS_DIR, 'embedded-agent.ts');
+    // The perturbation must be non-comment content: the generator normalizes
+    // comments out of the hash input (see scripts/schema-source-normalize.mjs),
+    // so a bare appended comment would no longer move the version — that is
+    // the intended behavior this test must not contradict. A harmless
+    // top-level export exercises the "the file's actual code participates in
+    // the hash" property instead.
+    const copy = makeClosureCopy();
+    const schemaFile = path.join(copy.schemasDir, 'embedded-agent.ts');
     const original = fs.readFileSync(schemaFile);
 
-    const baseline = printVersion();
-    expect(baseline).toBe(SCHEMA_VERSION);
+    const baseline = computeVersion(copy.schemasDir);
 
-    let mutated: string;
-    try {
-      fs.writeFileSync(
-        schemaFile,
-        Buffer.concat([
-          original,
-          Buffer.from('\nexport const __schemaVersionSensitivityProbe = 1;\n'),
-        ]),
-      );
-      mutated = printVersion();
-    } finally {
-      fs.writeFileSync(schemaFile, original);
-    }
+    fs.writeFileSync(
+      schemaFile,
+      Buffer.concat([
+        original,
+        Buffer.from('\nexport const __schemaVersionSensitivityProbe = 1;\n'),
+      ]),
+    );
+    const mutated = computeVersion(copy.schemasDir);
 
     // A change inside the hashed set must move the version.
     expect(mutated).not.toBe(baseline);
     // Restoring the file yields the original version again (no residue).
-    expect(printVersion()).toBe(baseline);
+    fs.writeFileSync(schemaFile, original);
+    expect(computeVersion(copy.schemasDir)).toBe(baseline);
   });
 
   it('is NOT sensitive to a comment-only perturbation of embedded-agent.ts', () => {
     // The complement of the test above: appending a bare comment must NOT
     // change the version, proving the normalization documented in
     // scripts/schema-source-normalize.mjs is actually wired into
-    // computeVersion() end-to-end against a real schema file.
-    const schemaFile = path.join(SCHEMAS_DIR, 'embedded-agent.ts');
+    // computeVersion() end-to-end against a copy of a real schema file.
+    const copy = makeClosureCopy();
+    const schemaFile = path.join(copy.schemasDir, 'embedded-agent.ts');
     const original = fs.readFileSync(schemaFile);
 
-    const baseline = printVersion();
-    expect(baseline).toBe(SCHEMA_VERSION);
+    const baseline = computeVersion(copy.schemasDir);
 
-    let mutated: string;
-    try {
-      fs.writeFileSync(
-        schemaFile,
-        Buffer.concat([original, Buffer.from('\n// schema-version sensitivity probe\n')]),
-      );
-      mutated = printVersion();
-    } finally {
-      fs.writeFileSync(schemaFile, original);
-    }
+    fs.writeFileSync(
+      schemaFile,
+      Buffer.concat([original, Buffer.from('\n// schema-version sensitivity probe\n')]),
+    );
+    const mutated = computeVersion(copy.schemasDir);
 
     expect(mutated).toBe(baseline);
-    expect(printVersion()).toBe(baseline);
+    fs.writeFileSync(schemaFile, original);
+    expect(computeVersion(copy.schemasDir)).toBe(baseline);
   });
 });
