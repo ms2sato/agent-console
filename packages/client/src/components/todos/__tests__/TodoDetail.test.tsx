@@ -5,7 +5,9 @@ import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { waitForAbsent } from '../../../test/waitForAbsent';
 import { createTodoApiMock, makeTodo, makeTodoComment, makeTodoMove } from '../../../test/todo-fixtures';
-import type { TodoActivity } from '@agent-console/shared';
+import type { Session, TodoActivity } from '@agent-console/shared';
+import { makeSession, SessionDataProvider } from '../../../test/session-data';
+import { setCurrentUser, setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 import { TodoDetail } from '../TodoDetail';
 
 const ALICE = { id: 'user-alice', username: 'alice' };
@@ -19,11 +21,13 @@ let restoreFetch: () => void;
 beforeEach(() => {
   api = createTodoApiMock();
   restoreFetch = api.install();
+  resetAuth();
 });
 
 afterEach(() => {
   cleanup();
   restoreFetch();
+  resetAuth();
 });
 
 interface RenderOptions {
@@ -31,6 +35,8 @@ interface RenderOptions {
   runEnabled?: boolean;
   withOnRun?: boolean;
   activities?: TodoActivity[];
+  /** The root layout's session list (the detail reads titles and move targets from it). */
+  sessions?: Session[];
 }
 
 async function renderDetail(overrides: Parameters<typeof makeTodo>[0] = {}, options: RenderOptions = {}) {
@@ -40,15 +46,17 @@ async function renderDetail(overrides: Parameters<typeof makeTodo>[0] = {}, opti
   const onDeleted = mock(() => {});
   const onRun = mock((_command: string) => {});
   const { queryClient } = await renderWithRouter(
-    <TodoDetail
-      todo={todo}
-      users={options.users ?? [ALICE]}
-      activities={options.activities ?? []}
-      onError={onError}
-      runEnabled={options.runEnabled ?? false}
-      onRun={options.withOnRun === false ? undefined : onRun}
-      onDeleted={onDeleted}
-    />,
+    <SessionDataProvider sessions={options.sessions ?? []}>
+      <TodoDetail
+        todo={todo}
+        users={options.users ?? [ALICE]}
+        activities={options.activities ?? []}
+        onError={onError}
+        runEnabled={options.runEnabled ?? false}
+        onRun={options.withOnRun === false ? undefined : onRun}
+        onDeleted={onDeleted}
+      />
+    </SessionDataProvider>,
   );
   return { todo, onError, onDeleted, onRun, queryClient, user: userEvent.setup() };
 }
@@ -207,7 +215,11 @@ describe('TodoDetail', () => {
         );
       }
       const user = userEvent.setup();
-      await renderWithRouter(<Host />);
+      await renderWithRouter(
+        <SessionDataProvider>
+          <Host />
+        </SessionDataProvider>,
+      );
       expect((screen.getByLabelText('Edit title') as HTMLInputElement).value).toBe('Old title');
 
       await user.click(screen.getByRole('button', { name: 'simulate remote edit' }));
@@ -307,7 +319,7 @@ describe('TodoDetail', () => {
   });
 
   describe('thread', () => {
-    // Session ids are shown as their first eight characters (the component has no session titles).
+    // A session the list does not hold is shown as the first eight characters of its id.
     const FROM = 'aaaaaaaa-1111-4111-8111-111111111111';
     const TO = 'bbbbbbbb-2222-4222-8222-222222222222';
 
@@ -359,6 +371,20 @@ describe('TodoDetail', () => {
       expect(row.textContent).toContain('Moved from aaaaaaaa to bbbbbbbb by agent');
       expect(row.textContent).not.toContain('"');
       expect(row.textContent).not.toContain(' -- ');
+    });
+
+    it('a move row names a live session by its title and an unknown one by the first 8 characters of its id', async () => {
+      // Mutation: sessionLabel reverted to the 8-char id -> this fails.
+      await renderDetail(
+        {},
+        {
+          sessions: [makeSession({ id: FROM, title: 'Release prep' })],
+          activities: [makeTodoMove({ fromSessionId: FROM, toSessionId: TO })],
+        },
+      );
+
+      const row = within(thread()).getByTestId('todo-activity-move-1');
+      expect(row.textContent).toContain('Moved from Release prep to bbbbbbbb by agent');
     });
 
     it('a human move names the human', async () => {
@@ -577,6 +603,127 @@ describe('TodoDetail', () => {
       await renderDetail({ kind: 'action', scope: 'session', status: 'done', resolutionText: 'ok' });
 
       expect(screen.queryByRole('button', { name: 'Make global' })).toBeNull();
+    });
+  });
+
+  describe('move to session', () => {
+    const MINE = 'user-me';
+    const THEIRS = 'user-bob';
+    const sessions = [
+      makeSession({ id: 'current-session', title: 'Current', createdBy: MINE }),
+      makeSession({ id: 'mine-session', title: 'My work', createdBy: MINE, createdByUsername: 'me' }),
+      makeSession({ id: 'shared-session', title: 'Team room', createdBy: 'shared-acct', createdByUsername: 'team', isShared: true }),
+      makeSession({ id: 'bobs-session', title: 'Bob work', createdBy: THEIRS, createdByUsername: 'bob' }),
+      makeSession({ id: 'cccccccc-paused', title: 'Paused one', createdBy: MINE, pausedAt: '2026-10-16T00:00:00.000Z' }),
+    ];
+
+    function signInMultiUser() {
+      setAuthMode('multi-user');
+      setCurrentUser({ id: MINE, username: 'me', homeDir: '/home/me' });
+    }
+
+    function picker(): HTMLSelectElement {
+      return screen.getByLabelText('Move to session') as HTMLSelectElement;
+    }
+
+    function optionTexts(): string[] {
+      return within(picker()).getAllByRole('option').map((o) => o.textContent ?? '').filter((t) => t !== 'Choose a session');
+    }
+
+    /**
+     * Measured reach (each mutation applied alone to TodoDetail.tsx, this file re-run):
+     *   - drop the isShared disjunct -> 'lists only my own and shared live sessions ...'
+     *   - Move enabled without a choice -> 'Move is disabled until a target is chosen'
+     *   - current session not excluded -> 'lists only my own and shared live sessions ...'
+     *   - picker shown for a non-open item -> 'offers no picker on an item that is not open'
+     */
+    it('lists only my own and shared live sessions, never the item\'s current one or a paused one', async () => {
+      signInMultiUser();
+      await renderDetail({ sessionId: 'current-session' }, { sessions });
+
+      expect(optionTexts()).toEqual(['My work', 'Team room']);
+    });
+
+    it('"All sessions" adds the rest of the live sessions with their owners\' usernames', async () => {
+      signInMultiUser();
+      const { user } = await renderDetail({ sessionId: 'current-session' }, { sessions });
+
+      await user.click(screen.getByLabelText('All sessions'));
+
+      expect(optionTexts()).toEqual(['My work (me)', 'Team room (team)', 'Bob work (bob)']);
+    });
+
+    it('offers no "All sessions" checkbox in single-user mode and lists every other live session', async () => {
+      await renderDetail({ sessionId: 'current-session' }, { sessions });
+
+      expect(screen.queryByLabelText('All sessions')).toBeNull();
+      expect(optionTexts()).toEqual(['My work', 'Team room', 'Bob work']);
+    });
+
+    it('labels a session without a title by the first 8 characters of its id', async () => {
+      signInMultiUser();
+      await renderDetail(
+        { sessionId: 'current-session' },
+        { sessions: [makeSession({ id: 'dddddddd-4444-4444-8444-444444444444', createdBy: MINE })] },
+      );
+
+      expect(optionTexts()).toEqual(['dddddddd']);
+    });
+
+    it('Move is disabled until a target is chosen', async () => {
+      signInMultiUser();
+      const { user } = await renderDetail({ sessionId: 'current-session' }, { sessions });
+
+      const move = screen.getByRole('button', { name: 'Move' }) as HTMLButtonElement;
+      expect(move.disabled).toBe(true);
+      await user.selectOptions(picker(), 'mine-session');
+      expect(move.disabled).toBe(false);
+    });
+
+    it('Move posts the chosen session id, without a worker, and refetches the todo queries', async () => {
+      signInMultiUser();
+      const { todo, queryClient, user } = await renderDetail({ sessionId: 'current-session' }, { sessions });
+      const invalidate = mock(queryClient.invalidateQueries.bind(queryClient));
+      queryClient.invalidateQueries = invalidate as typeof queryClient.invalidateQueries;
+
+      await user.selectOptions(picker(), 'shared-session');
+      await user.click(screen.getByRole('button', { name: 'Move' }));
+
+      await waitFor(() => expect(api.writes()).toHaveLength(1));
+      expect(api.writes()[0]).toMatchObject({
+        method: 'POST',
+        path: `/api/todos/${todo.id}/move`,
+        body: { sessionId: 'shared-session' },
+      });
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['todos'] }));
+    });
+
+    it('surfaces the server\'s refusal text through onError', async () => {
+      signInMultiUser();
+      api.state.refusal = { status: 409, error: 'Target session has no worker that can receive notifications' };
+      const { onError, user } = await renderDetail({ sessionId: 'current-session' }, { sessions });
+
+      await user.selectOptions(picker(), 'mine-session');
+      await user.click(screen.getByRole('button', { name: 'Move' }));
+
+      await waitFor(() =>
+        expect(onError).toHaveBeenCalledWith('Failed to Move', 'Target session has no worker that can receive notifications'),
+      );
+    });
+
+    it('is offered on an open question as well as an open action', async () => {
+      signInMultiUser();
+      await renderDetail({ kind: 'question', sessionId: 'current-session' }, { sessions });
+
+      expect(picker()).toBeTruthy();
+    });
+
+    it('offers no picker on an item that is not open', async () => {
+      signInMultiUser();
+      await renderDetail({ status: 'done', resolutionText: 'ok', sessionId: 'current-session' }, { sessions });
+
+      expect(screen.queryByLabelText('Move to session')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Move' })).toBeNull();
     });
   });
 });

@@ -2,7 +2,10 @@ import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Todo, TodoActivity, TodoActivityActor, UsersListResponse } from '@agent-console/shared';
-import { updateTodo, deleteTodo, commentTodo } from '../../lib/api';
+import { updateTodo, deleteTodo, commentTodo, moveTodo } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
+import { matchesUserFilter } from '../../hooks/useSessionFilter';
+import { useSessionTitles } from '../../hooks/useSessionTitles';
 import { todoKeys } from '../../lib/query-keys';
 import { formatAbsoluteTimestamp } from '../../lib/format';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -52,9 +55,9 @@ function actorLabel(actor: TodoActivityActor, users: DirectoryUsers): string {
 
 const SESSION_ID_DISPLAY_LENGTH = 8;
 
-/** The detail has no session titles, so a session is shown by the start of its id. */
-function sessionLabel(sessionId: string | null): string {
-  return sessionId === null ? 'no session' : sessionId.slice(0, SESSION_ID_DISPLAY_LENGTH);
+/** The session's own label: its title, else the start of its id. */
+function shortSessionId(sessionId: string): string {
+  return sessionId.slice(0, SESSION_ID_DISPLAY_LENGTH);
 }
 
 interface ActivityRowProps {
@@ -63,6 +66,10 @@ interface ActivityRowProps {
 }
 
 function ActivityRow({ activity, users }: ActivityRowProps) {
+  const { titleOf } = useSessionTitles();
+  // A live session is named by its title; one the list does not hold falls back to the start of its id.
+  const sessionLabel = (sessionId: string | null): string =>
+    sessionId === null ? 'no session' : (titleOf(sessionId) ?? shortSessionId(sessionId));
   switch (activity.kind) {
     case 'comment':
       return (
@@ -177,6 +184,74 @@ function TodoEditForm({ todo, onError }: TodoEditFormProps) {
         className="btn text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
       >
         Save
+      </button>
+    </div>
+  );
+}
+
+function TodoMoveControls({ todo, onError }: TodoEditFormProps) {
+  const queryClient = useQueryClient();
+  const { currentUser, isMultiUser } = useAuth();
+  const { sessions } = useSessionTitles();
+  const [showAll, setShowAll] = useState(false);
+  const [target, setTarget] = useState('');
+
+  // Only a live session can take the item: its delivery needs a live worker.
+  const live = sessions.filter((session) => !session.pausedAt && session.id !== todo.sessionId);
+  const offered = showAll
+    ? live
+    : live.filter(
+        (session) =>
+          !isMultiUser ||
+          currentUser === null ||
+          matchesUserFilter(session.createdBy, currentUser.id) ||
+          session.isShared,
+      );
+  // The choice is dropped when a widened list narrows back (or the session leaves the list).
+  const chosen = offered.some((session) => session.id === target) ? target : '';
+
+  const optionLabel = (session: (typeof live)[number]): string => {
+    const label = session.title ?? shortSessionId(session.id);
+    return showAll && isMultiUser && session.createdByUsername ? `${label} (${session.createdByUsername})` : label;
+  };
+
+  const moveMutation = useMutation({
+    mutationFn: () => moveTodo(todo.id, { sessionId: chosen }),
+    onSuccess: async () => {
+      setTarget('');
+      await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+    },
+    onError: (err: Error) => onError('Failed to Move', err.message),
+  });
+
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      <select
+        aria-label="Move to session"
+        value={chosen}
+        onChange={(e) => setTarget(e.target.value)}
+        className="input text-sm"
+      >
+        <option value="">Choose a session</option>
+        {offered.map((session) => (
+          <option key={session.id} value={session.id}>
+            {optionLabel(session)}
+          </option>
+        ))}
+      </select>
+      {isMultiUser && (
+        <label className="flex items-center gap-1.5 text-xs text-gray-400">
+          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+          All sessions
+        </label>
+      )}
+      <button
+        type="button"
+        onClick={() => moveMutation.mutate()}
+        disabled={chosen === '' || moveMutation.isPending}
+        className="btn text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+      >
+        Move
       </button>
     </div>
   );
@@ -350,6 +425,13 @@ export function TodoDetail({ todo, users, activities, onError, runEnabled, onRun
         <section>
           <SectionHeader title="Scope" />
           <TodoReScopeControls todo={todo} onError={onError} />
+        </section>
+      )}
+
+      {isOpen && (
+        <section>
+          <SectionHeader title="Move to session" />
+          <TodoMoveControls todo={todo} onError={onError} />
         </section>
       )}
 

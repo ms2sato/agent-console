@@ -4,6 +4,7 @@ import { renderWithRouter } from '../../test/renderWithRouter';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
 import { createTodoApiMock, makeTodo, makeTodoComment, makeTodoMove } from '../../test/todo-fixtures';
+import { SessionDataProvider } from '../../test/session-data';
 import { TodoDetailPage } from '../todos/$todoId/index';
 
 const TERMINAL_BODY = 'Run it:\n\n```terminal\nbun run migrate\n```\n';
@@ -41,7 +42,7 @@ describe('Todo detail page', () => {
   it('shows the item\'s title and body', async () => {
     api.state.todos = [makeTodo({ id: 'todo-1', title: 'Page title', body: 'Page body text' })];
 
-    await renderWithRouter(<TodoDetailPage todoId="todo-1" />);
+    await renderWithRouter(<SessionDataProvider><TodoDetailPage todoId="todo-1" /></SessionDataProvider>);
 
     expect(await screen.findByText('Page title', { selector: 'h2' })).toBeTruthy();
     expect(screen.getByText('Page body text', { selector: 'p' })).toBeTruthy();
@@ -55,7 +56,7 @@ describe('Todo detail page', () => {
       makeTodoComment({ id: 'c1', actor: { userId: 'user-me' }, text: 'Page reply' }),
     ];
 
-    await renderWithRouter(<TodoDetailPage todoId="todo-1" />);
+    await renderWithRouter(<SessionDataProvider><TodoDetailPage todoId="todo-1" /></SessionDataProvider>);
 
     const thread = await screen.findByRole('region', { name: 'Thread' });
     const rows = within(thread).getAllByTestId(/^todo-activity-/);
@@ -68,7 +69,7 @@ describe('Todo detail page', () => {
     // would size to its widest descendant instead of the viewport).
     api.state.todos = [makeTodo({ id: 'todo-1', title: 'Page title', body: 'x' })];
 
-    await renderWithRouter(<TodoDetailPage todoId="todo-1" />);
+    await renderWithRouter(<SessionDataProvider><TodoDetailPage todoId="todo-1" /></SessionDataProvider>);
 
     const container = (await screen.findByTestId('todo-detail-todo-1')).closest('.card')?.parentElement;
     expect(container?.classList.contains('w-full')).toBe(true);
@@ -78,7 +79,7 @@ describe('Todo detail page', () => {
   it('a deleted item shows the deleted-state card with a back link', async () => {
     api.state.todos = [];
 
-    await renderWithRouter(<TodoDetailPage todoId="gone" />);
+    await renderWithRouter(<SessionDataProvider><TodoDetailPage todoId="gone" /></SessionDataProvider>);
 
     expect(await screen.findByText('This Todo was deleted or does not exist')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Back to Todo' }).getAttribute('href')).toBe('/todos');
@@ -87,7 +88,7 @@ describe('Todo detail page', () => {
   it('never offers Run, and offers Copy and Open in session for a terminal block', async () => {
     api.state.todos = [makeTodo({ id: 'todo-1', body: TERMINAL_BODY, sessionId: 'session-42' })];
 
-    await renderWithRouter(<TodoDetailPage todoId="todo-1" />);
+    await renderWithRouter(<SessionDataProvider><TodoDetailPage todoId="todo-1" /></SessionDataProvider>);
 
     await screen.findByRole('button', { name: 'Copy code' });
     expect(screen.queryByRole('button', { name: 'Run command in terminal' })).toBeNull();
@@ -96,7 +97,7 @@ describe('Todo detail page', () => {
 
   it('a todos-updated frame refetches the item', async () => {
     api.state.todos = [makeTodo({ id: 'todo-1', title: 'Before' })];
-    await renderWithRouter(<TodoDetailPage todoId="todo-1" />);
+    await renderWithRouter(<SessionDataProvider><TodoDetailPage todoId="todo-1" /></SessionDataProvider>);
     await screen.findByText('Before', { selector: 'h2' });
     expect(detailFetches('todo-1')).toHaveLength(1);
     const ws = MockWebSocket.getLastInstance();
