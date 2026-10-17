@@ -87,7 +87,12 @@ import {
 } from '../api';
 import * as capabilitiesModule from '../capabilities';
 import { UpdateEmbeddedAgentWorkerRequestSchema } from '@agent-console/shared';
-import type { LoginResponse, UpdateUserPreferencesResponse } from '@agent-console/shared';
+import type {
+  LoginResponse,
+  NotificationsResponse,
+  NotificationsSeenResponse,
+  UpdateUserPreferencesResponse,
+} from '@agent-console/shared';
 import * as v from 'valibot';
 import { completeWireBody } from '../../test/wire-fixtures';
 
@@ -2014,7 +2019,8 @@ describe('API Client', () => {
       };
       mockFetch.mockResolvedValue(createMockResponse(mockFeed));
 
-      const result = await fetchNotifications();
+      // Typed as the shared wire type the function now returns directly.
+      const result: NotificationsResponse = await fetchNotifications();
 
       expect((mockFetch.mock.calls as unknown[][])[0]?.[0]).toBe('/api/notifications');
       expect(result).toEqual(mockFeed);
@@ -2043,7 +2049,7 @@ describe('API Client', () => {
     it('sends the cursor timestamp via PUT and parses the response through the wire schema', async () => {
       mockFetch.mockResolvedValue(createMockResponse({ lastSeenAt: '2026-08-16T00:00:00.000Z' }));
 
-      const result = await markNotificationsSeen('2026-08-16T00:00:00.000Z');
+      const result: NotificationsSeenResponse = await markNotificationsSeen('2026-08-16T00:00:00.000Z');
 
       expect(getLastFetchUrl()).toContain('/api/notifications/seen');
       expect(getLastFetchMethod()).toBe('PUT');

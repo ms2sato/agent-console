@@ -41,6 +41,12 @@ describe('shared index exports', () => {
       'WorkerMessageSchema',
       'ArtifactSchema',
       'BookmarkSchema',
+      'TodoSchema',
+      'TodoCreatorSchema',
+      'TodoActivityActorSchema',
+      'TodoActivitySchema',
+      'NotificationItemSchema',
+      'NotificationsResponseSchema',
     ] as const) {
       expect(mod[name]).toBeDefined();
     }

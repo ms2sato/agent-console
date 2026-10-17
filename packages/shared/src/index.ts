@@ -14,7 +14,6 @@ export * from './types/git-diff.js';
 export * from './types/job.js';
 export * from './types/integration.js';
 export * from './types/notification.js';
-export * from './types/notification-item.js';
 export * from './types/system-events.js';
 export * from './types/timer.js';
 export * from './types/conditional-wakeup.js';

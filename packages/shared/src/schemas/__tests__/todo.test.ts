@@ -12,15 +12,21 @@ import {
   TodoMoveActivitySchema,
   TodoDetailResponseSchema,
   CommentTodoRequestSchema,
+  type Todo,
+  type TodoActivity,
+  type TodoCommentActivity,
+  type TodoMoveActivity,
 } from '../todo.js';
-import { TODO_ACTIVITY_KINDS, TODO_KINDS, TODO_SCOPES, TODO_STATUSES } from '../../types/todo.js';
-import type {
-  Todo,
-  TodoActivity,
-  TodoCommentActivity,
-  TodoMoveActivity,
+import {
+  TODO_ACTIVITY_KINDS,
+  TODO_KINDS,
+  TODO_SCOPES,
+  TODO_STATUSES,
+  type TodoActivityKind,
+  type TodoKind,
+  type TodoScope,
+  type TodoStatus,
 } from '../../types/todo.js';
-import type { TodoActivitySchemaOutput, TodoSchemaOutput } from '../todo.js';
 
 const humanTodo: Todo = {
   id: 'todo-1',
@@ -303,48 +309,52 @@ describe('CommentTodoRequestSchema', () => {
   });
 });
 
-// Type-level pin: the schema's output and the `Todo` interface stay mutually
-// assignable. `Assert<T extends true>` genuinely fails `tsc` when false (a
-// `declare const x: never` pin would be inert; see workflow.md "pins include
-// type-level assertions").
-type Assert<T extends true> = T;
-type _SchemaOutputIsTodo = Assert<TodoSchemaOutput extends Todo ? true : false>;
-type _TodoIsSchemaOutput = Assert<Todo extends TodoSchemaOutput ? true : false>;
-export type { _SchemaOutputIsTodo, _TodoIsSchemaOutput };
-
-// The same pin for the activity union, in both directions, for the whole union
-// and for each member separately (the whole-union form alone would accept a
-// field that moved from one member to the other).
+// Type-level pins. The wire types are derived from the schemas (`v.InferOutput`), so comparing a
+// type with its own schema output would compare it with itself. What can still drift is the
+// field SET (a field added to or dropped from a schema), the closed lists the picklists read
+// (`types/todo.ts`), and the activity discriminant. `Assert<T extends true>` over a two-sided
+// `Equals` genuinely fails `tsc` when false (a `declare const x: never` pin would be inert; see
+// workflow.md "pins include type-level assertions").
 //
-// Reach, measured by introducing each drift and reading `tsc --noEmit`
-// (the failing pins, by name; none of these pins is inert):
-//  - a field added to `TodoMoveActivity` only:
-//      _ActivityOutputIsActivity and _MoveOutputIsMove (TS2344)
-//  - `attributedUserId` dropped from `TodoMoveActivitySchema`:
-//      _ActivityOutputIsActivity and _MoveOutputIsMove
-//  - `TodoMoveActivity.toSessionId` widened to `string | null`:
-//      _ActivityIsActivityOutput and _MoveIsMoveOutput
-//  - `text` dropped from `TodoCommentActivitySchema`:
-//      _ActivityOutputIsActivity and _CommentOutputIsComment
-// The per-member pins are the ones that name which member drifted; the
-// OutputIs* direction catches a field the type has and the schema lacks, the
-// Is*Output direction catches a type the schema would reject.
-type CommentOutput = Extract<TodoActivitySchemaOutput, { kind: 'comment' }>;
-type MoveOutput = Extract<TodoActivitySchemaOutput, { kind: 'moved' }>;
-type _ActivityOutputIsActivity = Assert<TodoActivitySchemaOutput extends TodoActivity ? true : false>;
-type _ActivityIsActivityOutput = Assert<TodoActivity extends TodoActivitySchemaOutput ? true : false>;
-type _CommentOutputIsComment = Assert<CommentOutput extends TodoCommentActivity ? true : false>;
-type _CommentIsCommentOutput = Assert<TodoCommentActivity extends CommentOutput ? true : false>;
-type _MoveOutputIsMove = Assert<MoveOutput extends TodoMoveActivity ? true : false>;
-type _MoveIsMoveOutput = Assert<TodoMoveActivity extends MoveOutput ? true : false>;
-export type {
-  _ActivityOutputIsActivity,
-  _ActivityIsActivityOutput,
-  _CommentOutputIsComment,
-  _CommentIsCommentOutput,
-  _MoveOutputIsMove,
-  _MoveIsMoveOutput,
-};
+// Measured reach (`tsc --noEmit`, failing pins by name, control clean first; the typed fixtures
+// below also fail on a field-set drift, as TS2741 / TS2353 / TS2339):
+//  - `foo: v.string()` added to `TodoSchema`: _TodoKeys
+//  - `commentCount` dropped from `TodoSchema`: _TodoKeys
+//  - `attributedUserId` dropped from `TodoMoveActivitySchema`: _TodoMoveActivityKeys
+//  - `text` dropped from `TodoCommentActivitySchema`: _TodoCommentActivityKeys
+//  - `'x'` added to `TODO_ACTIVITY_KINDS` only: _TodoActivityKindIsTheList
+//  - `TodoSchema.kind` / `scope` / `status` replaced by `v.string()`: _TodoKindIsTheList /
+//    _TodoScopeIsTheList / _TodoStatusIsTheList respectively
+//  - `'x'` added to `TODO_KINDS` only: no pin (the schema picklist reads the list, so the derived
+//    type follows it by construction; the three *IsTheList pins hold the picklist to the list type
+//    if either is ever replaced by a literal)
+//  - a hand-written `Todo` re-added to `types/todo.ts`: no pin; `src/index.ts` fails to compile
+//    (TS2308, ambiguous re-export), which is the structural single-writer guarantee
+// Each diagnostic sits on the pin's line and does not name the key.
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _TodoKeys = Assert<
+  Equals<
+    keyof Todo,
+    | 'id' | 'kind' | 'scope' | 'title' | 'body' | 'sessionId' | 'createdBy' | 'assigneeUserId' | 'status'
+    | 'resolutionText' | 'resolvedByUserId' | 'resolvedByWorkerId' | 'resolvedAt' | 'commentCount'
+    | 'createdAt' | 'updatedAt'
+  >
+>;
+export type _TodoCommentActivityKeys = Assert<
+  Equals<keyof TodoCommentActivity, 'id' | 'todoId' | 'kind' | 'actor' | 'text' | 'createdAt'>
+>;
+export type _TodoMoveActivityKeys = Assert<
+  Equals<
+    keyof TodoMoveActivity,
+    | 'id' | 'todoId' | 'kind' | 'actor' | 'fromSessionId' | 'toSessionId' | 'statement'
+    | 'attributedUserId' | 'createdAt'
+  >
+>;
+export type _TodoKindIsTheList = Assert<Equals<Todo['kind'], TodoKind>>;
+export type _TodoScopeIsTheList = Assert<Equals<Todo['scope'], TodoScope>>;
+export type _TodoStatusIsTheList = Assert<Equals<Todo['status'], TodoStatus>>;
+export type _TodoActivityKindIsTheList = Assert<Equals<TodoActivity['kind'], TodoActivityKind>>;
 
 describe('closed lists vs TodoSchema', () => {
   it('are exactly what TodoSchema accepts', () => {
