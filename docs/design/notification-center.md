@@ -34,7 +34,7 @@ An event kind may appear in the list iff ALL hold:
 3. **Human-addressed**: agent-to-agent plumbing (inter-session messages, `[inbound:*]` PTY delivery) is excluded — those have their own delivery ledger and audience.
 4. **Feed-shaped**: discrete occurrences, not streams. High-frequency signals (per-token output, per-poll usage) are excluded by construction.
 
-Applying this today: **in** — artifact created; worktree deletion reached `completed`/`stalled`. **Out, with reasons recorded** — restart-restoration (fails rule 1; banner-class UX anyway, #1344), worktree creation / session-stop tasks (fail rule 1 until their #1327-sibling migrations land — they become candidates the day they get records), inter-session messages (rule 3), inbound webhook events (rule 3 — agent-directed; the agent's visible actions are the human-relevant outcome).
+Applying this today: **in** — artifact created; worktree deletion reached `completed`/`stalled`; an agent reply on a Todo (a `todo_comments` row with a worker actor, shown to the item's assignee or creator, never the human's own replies). **Out, with reasons recorded** — restart-restoration (fails rule 1; banner-class UX anyway, #1344), worktree creation / session-stop tasks (fail rule 1 until their #1327-sibling migrations land — they become candidates the day they get records), inter-session messages (rule 3), inbound webhook events (rule 3 — agent-directed; the agent's visible actions are the human-relevant outcome).
 
 ## 5. Read semantics
 
@@ -58,7 +58,7 @@ An obligation ("this failed and needs a decision") clears by **doing**, not by *
 
 ## 8. Wire shape and API
 
-- `NotificationItem` (shared type + valibot schema, strictObject; `pre-pr-completeness.md` Q10 applies): `{ kind: 'artifact-created' | 'worktree-deletion-finished', id: string, occurredAt: string, title: string, link: string, outcome?: 'completed' | 'failed' }`. `id` is `kind`-scoped (the domain row's id); `(kind, id)` is the stable identity.
+- `NotificationItem` (shared type + valibot schema, strictObject; `pre-pr-completeness.md` Q10 applies): `{ kind: 'artifact-created' | 'worktree-deletion-finished' | 'todo-agent-replied', id: string, occurredAt: string, title: string, link: string, outcome?: 'completed' | 'failed' }`. `id` is `kind`-scoped (the domain row's id); `(kind, id)` is the stable identity.
 - `GET /api/notifications` → `{ items: NotificationItem[], lastSeenAt: string | null, unreadCount: number }` — newest first, capped (v1: 50, an accepted cut; no pagination). **Amendment (Phase 1 AC, #1353):** `unreadCount` is computed server-side **pre-cap** (before the 50-item cap is applied), so the badge stays accurate once unread exceeds the cap — `items` alone cannot express this since it is truncated.
 - `PUT /api/notifications/seen { lastSeenAt }` — monotonic (server rejects moving the cursor backwards).
 - **v1 scope: personal feed** (owner-confirmed, 2026-08-18) — items the user owns or initiated (artifacts by `user_id`; deletion jobs by payload `requestUsername`). A global team feed is a deliberate non-goal, revisitable later; personal-to-global is an easy widening, global-to-personal is not.
@@ -68,7 +68,8 @@ An obligation ("this failed and needs a decision") clears by **doing**, not by *
 
 - **Phase 1 — server**: shared type/schema, the two v1 composers, cursor table + migration, `GET`/`PUT` routes, sibling + wire-boundary tests (Q10 integration test for the new wire shape).
 - **Phase 2 — client**: bell + list panel + badge + seen-advance + WS invalidation hints; Browser QA with true-path screenshots (bell showing a real unread artifact/deletion, panel open, badge clearing).
-- **Phase 3+ (each its own decision)**: additional sources as they earn records (§4 rule 1); obligations lane (§6); banner-class events (#1344); Slack-consumer unification; global feed.
+- **Phase 3, first source landed**: `todo-agent-replied`, one entry per agent comment on a Todo (`id` is the comment id, `link` is `/todos/:id`, the personal feed is the item's assignee or creator, identity filtered in the query before the per-source limit). It follows the read-model rule: entries age out and are never cleared when the item is resolved or dismissed.
+- **Phase 3+ (each its own decision)**: further sources as they earn records (§4 rule 1); obligations lane (§6); banner-class events (#1344); Slack-consumer unification; global feed.
 
 ## 10. Non-goals (v1)
 

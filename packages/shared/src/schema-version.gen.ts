@@ -2,4 +2,4 @@
 // Content hash over packages/shared/src/schemas/*.ts plus its transitive
 // runtime-import closure (26 files as of generation; see
 // resolveRuntimeImportClosure in scripts/generate-schema-version.mjs).
-export const SCHEMA_VERSION = 'dc9ca1f355afac1a';
+export const SCHEMA_VERSION = '66c6fd45289d0f67';

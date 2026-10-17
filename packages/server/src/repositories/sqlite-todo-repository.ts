@@ -1,8 +1,9 @@
 import { sql } from 'kysely';
 import type { Kysely, Transaction } from 'kysely';
+import { TODO_KINDS, TODO_STATUSES } from '@agent-console/shared';
 import type { Todo, TodoActivity, TodoCommentActivity, TodoMoveActivity } from '@agent-console/shared';
 import type { Database, TodoActivityRow } from '../database/schema.js';
-import { toTodo, toTodoActivity } from '../database/mappers.js';
+import { DataIntegrityError, toTodo, toTodoActivity } from '../database/mappers.js';
 import { createLogger } from '../lib/logger.js';
 import {
   TODO_RESOLUTION_SEPARATOR,
@@ -371,6 +372,57 @@ export class SqliteTodoRepository implements TodoRepository {
       for (const row of rows) byTodo.get(row.todo_id)!.push(toTodoActivity(row));
     }
     return byTodo;
+  }
+
+  async listAgentCommentsFor(
+    params: { userId: string; limit: number },
+    executor?: TodoExecutor,
+  ): Promise<Array<{ comment: TodoCommentActivity; todo: Pick<Todo, 'id' | 'title' | 'kind' | 'status'> }>> {
+    // One statement. The identity predicate sits in the WHERE, before the LIMIT: a fetch of the newest
+    // N comments across every user followed by a filter would lose this user's older rows once other
+    // users' newer comments filled the window. `id DESC` makes the order total for equal timestamps.
+    const rows = await (executor ?? this.db)
+      .selectFrom('todo_comments')
+      .innerJoin('todos', 'todos.id', 'todo_comments.todo_id')
+      .select([
+        'todo_comments.id as comment_id',
+        'todo_comments.todo_id as todo_id',
+        'todo_comments.actor_worker_id as actor_worker_id',
+        'todo_comments.text as text',
+        'todo_comments.created_at as created_at',
+        'todos.title as todo_title',
+        'todos.kind as todo_kind',
+        'todos.status as todo_status',
+      ])
+      .where('todo_comments.actor_worker_id', 'is not', null)
+      .where((eb) =>
+        eb.or([eb('todos.assignee_user_id', '=', params.userId), eb('todos.created_user_id', '=', params.userId)]),
+      )
+      .orderBy('todo_comments.created_at', 'desc')
+      .orderBy('todo_comments.id', 'desc')
+      .limit(params.limit)
+      .execute();
+
+    return rows.map((row) => {
+      const kind = TODO_KINDS.find((k) => k === row.todo_kind);
+      if (!kind) throw new DataIntegrityError('todo', row.todo_id, `kind (unexpected value: ${row.todo_kind})`);
+      const status = TODO_STATUSES.find((s) => s === row.todo_status);
+      if (!status) throw new DataIntegrityError('todo', row.todo_id, `status (unexpected value: ${row.todo_status})`);
+      if (row.actor_worker_id === null) {
+        throw new DataIntegrityError('todo-activity', row.comment_id, 'actor_worker_id (NULL after IS NOT NULL)');
+      }
+      return {
+        comment: {
+          id: row.comment_id,
+          todoId: row.todo_id,
+          kind: 'comment' as const,
+          actor: { workerId: row.actor_worker_id },
+          text: row.text,
+          createdAt: row.created_at,
+        },
+        todo: { id: row.todo_id, title: row.todo_title, kind, status },
+      };
+    });
   }
 
   async delete(id: string, executor?: TodoExecutor): Promise<boolean> {

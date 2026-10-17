@@ -1,6 +1,7 @@
 import type { Artifact, NotificationItem } from '@agent-console/shared';
 import { JOB_TYPES, JOB_STATUS, type WorktreeDeletePayload } from '@agent-console/shared';
 import type { ArtifactRepository } from '../repositories/artifact-repository.js';
+import type { TodoRepository } from '../repositories/todo-repository.js';
 import type { NotificationCursorRepository } from '../repositories/notification-cursor-repository.js';
 import type { JobQueue } from '../jobs/job-queue.js';
 import { createLogger } from '../lib/logger.js';
@@ -39,6 +40,7 @@ export interface FeedIdentity {
 export interface NotificationServiceDeps {
   artifactRepository: Pick<ArtifactRepository, 'findByUserId'>;
   jobs: Pick<JobQueue, 'getJobs'>;
+  todoRepository: Pick<TodoRepository, 'listAgentCommentsFor'>;
   cursorRepository: NotificationCursorRepository;
 }
 
@@ -54,6 +56,19 @@ async function composeArtifactCreated(identity: FeedIdentity, deps: Notification
     occurredAt: a.createdAt,
     title: a.title,
     link: `/artifacts/${a.id}`,
+  }));
+}
+
+async function composeTodoAgentReplies(identity: FeedIdentity, deps: NotificationServiceDeps): Promise<NotificationItem[]> {
+  // The repository filters by identity inside its query, before its LIMIT, so the per-source limit
+  // bounds this user's own replies rather than a window shared with other users'.
+  const replies = await deps.todoRepository.listAgentCommentsFor({ userId: identity.userId, limit: PER_SOURCE_FETCH_LIMIT });
+  return replies.map(({ comment, todo }) => ({
+    kind: 'todo-agent-replied' as const,
+    id: comment.id,
+    occurredAt: comment.createdAt,
+    title: `Reply on: ${todo.title}`,
+    link: `/todos/${todo.id}`,
   }));
 }
 
@@ -138,7 +153,7 @@ async function composeWorktreeDeletionFinished(identity: FeedIdentity, deps: Not
  * The per-source composer registry (R1) — the §4 admission rule's
  * enforcement point. Adding a new source is one entry here.
  */
-const SOURCES: ReadonlyArray<ComposerFn> = [composeArtifactCreated, composeWorktreeDeletionFinished];
+const SOURCES: ReadonlyArray<ComposerFn> = [composeArtifactCreated, composeWorktreeDeletionFinished, composeTodoAgentReplies];
 
 function compareNotificationItems(a: NotificationItem, b: NotificationItem): number {
   // R4.2: deterministic tie-break — occurredAt desc, then kind, then id.

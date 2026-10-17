@@ -31,7 +31,7 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 interface FeedItem {
-  kind: 'artifact-created' | 'worktree-deletion-finished';
+  kind: 'artifact-created' | 'worktree-deletion-finished' | 'todo-agent-replied';
   id: string;
   occurredAt: string;
   title: string;
@@ -477,6 +477,22 @@ describe('NotificationBell', () => {
       expect(capturedWsOptions?.onArtifactDeleted).toBeDefined();
       await act(async () => {
         capturedWsOptions?.onArtifactDeleted?.('phantom-session-id-2', 'phantom-artifact-id-2');
+      });
+
+      await waitFor(() => expect(mockFetch.mock.calls.length).toBe(callsBefore + 1));
+      expect(document.body.textContent).not.toContain('phantom');
+    });
+    it('a todos-updated hint triggers exactly one refetch, even for an unrelated session, and renders nothing from the payload', async () => {
+      serverItems = [];
+      serverUnreadCount = 0;
+      await renderWithRouter(<NotificationBell />);
+
+      await waitFor(() => expect(mockFetch.mock.calls.length).toBeGreaterThan(0));
+      const callsBefore = mockFetch.mock.calls.length;
+
+      expect(capturedWsOptions?.onTodosUpdated).toBeDefined();
+      await act(async () => {
+        capturedWsOptions?.onTodosUpdated?.('phantom-unrelated-session-id');
       });
 
       await waitFor(() => expect(mockFetch.mock.calls.length).toBe(callsBefore + 1));

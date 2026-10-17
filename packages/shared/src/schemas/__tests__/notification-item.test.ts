@@ -13,6 +13,16 @@ import type {
   NotificationsSeenResponse,
 } from '../../types/notification-item.js';
 
+// Type pins (the `Assert<T extends true>` shape, not `declare const x: never`): the hand-written wire type and the
+// schema's inferred output must stay one shape in BOTH directions, so adding a notification kind to only one of the
+// two literals (the picklist or the union) is a compile error here, not a silently dropped item at the wire.
+// Reach (measured): removing 'todo-agent-replied' from the picklist fails `_NotificationItemIsSchemaOutput` (TS2344);
+// removing it from the hand-written union fails `_SchemaOutputIsNotificationItem` (TS2344).
+type Assert<T extends true> = T;
+type SchemaOutput = v.InferOutput<typeof NotificationItemSchema>;
+export type _NotificationItemIsSchemaOutput = Assert<NotificationItem extends SchemaOutput ? true : false>;
+export type _SchemaOutputIsNotificationItem = Assert<SchemaOutput extends NotificationItem ? true : false>;
+
 describe('NotificationItemSchema', () => {
   it('accepts a well-formed NotificationItem object (parse-path, closes the #926 silent-drop gap)', () => {
     // Constructed as the shared `NotificationItem` TS type, then parsed
@@ -49,6 +59,23 @@ describe('NotificationItemSchema', () => {
     if (result.success) {
       expect(result.output).toEqual(item);
     }
+  });
+
+  it('accepts a well-formed todo-agent-replied item and rejects an unknown kind', () => {
+    const item: NotificationItem = {
+      kind: 'todo-agent-replied',
+      id: 'comment-1',
+      occurredAt: '2026-10-17T00:00:00.000Z',
+      title: 'Reply on: Which database?',
+      link: '/todos/todo-1',
+    };
+
+    const parsed = v.safeParse(NotificationItemSchema, item);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.output).toEqual(item);
+    }
+    expect(v.safeParse(NotificationItemSchema, { ...item, kind: 'todo-replied' }).success).toBe(false);
   });
 
   it('rejects a missing required field', () => {

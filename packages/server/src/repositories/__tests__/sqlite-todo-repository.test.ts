@@ -1152,4 +1152,107 @@ describe('SqliteTodoRepository', () => {
       expect((await repository.findById('later'))!.status).toBe('open');
     });
   });
+
+  describe('listAgentCommentsFor', () => {
+    async function setCommentTime(commentId: string, createdAt: string): Promise<void> {
+      await db.updateTable('todo_comments').set({ created_at: createdAt }).where('id', '=', commentId).execute();
+    }
+
+    /** An agent comment on `todoId` stamped at `createdAt`. */
+    async function agentComment(todoId: string, createdAt: string, text = 'answer'): Promise<string> {
+      const comment = await repository.addComment({ todoId, actor: { workerId: 'worker-1' }, text });
+      await setCommentTime(comment!.id, createdAt);
+      return comment!.id;
+    }
+
+    it('the assignee branch alone: an item assigned to the user, created by someone else, is included with its item fields', async () => {
+      await repository.create(params({ id: 'assigned', title: 'Assigned item', createdBy: { userId: 'other' }, assigneeUserId: 'me' }));
+      const id = await agentComment('assigned', '2026-10-01T00:00:00.000Z', 'here you go');
+
+      const rows = await repository.listAgentCommentsFor({ userId: 'me', limit: 50 });
+
+      expect(rows).toEqual([
+        {
+          comment: {
+            id,
+            todoId: 'assigned',
+            kind: 'comment',
+            actor: { workerId: 'worker-1' },
+            text: 'here you go',
+            createdAt: '2026-10-01T00:00:00.000Z',
+          },
+          todo: { id: 'assigned', title: 'Assigned item', kind: 'action', status: 'open' },
+        },
+      ]);
+    });
+
+    it('the creator branch alone: an item the user created and did not assign to anyone is included', async () => {
+      await repository.create(params({ id: 'created', createdBy: { userId: 'me' }, assigneeUserId: null }));
+      const id = await agentComment('created', '2026-10-01T00:00:00.000Z');
+
+      const rows = await repository.listAgentCommentsFor({ userId: 'me', limit: 50 });
+
+      expect(rows.map((r) => r.comment.id)).toEqual([id]);
+    });
+
+    it('neither branch: a comment on an item another user created and is assigned to is excluded', async () => {
+      await repository.create(params({ id: 'theirs', createdBy: { userId: 'other' }, assigneeUserId: 'other' }));
+      await repository.create(params({ id: 'nobody', createdBy: { userId: 'other' }, assigneeUserId: null }));
+      await agentComment('theirs', '2026-10-01T00:00:00.000Z');
+      await agentComment('nobody', '2026-10-01T00:00:00.000Z');
+
+      expect(await repository.listAgentCommentsFor({ userId: 'me', limit: 50 })).toEqual([]);
+    });
+
+    it("a human's comment on the user's own item is excluded (control: the agent comment on the same item is returned)", async () => {
+      await repository.create(params({ id: 'mine', createdBy: { userId: 'me' } }));
+      await repository.addComment({ todoId: 'mine', actor: { userId: 'me' }, text: 'my own note' });
+      await repository.addComment({ todoId: 'mine', actor: { userId: 'other' }, text: 'a teammate note' });
+      const agentId = await agentComment('mine', '2026-10-01T00:00:00.000Z');
+
+      const rows = await repository.listAgentCommentsFor({ userId: 'me', limit: 50 });
+
+      expect(rows.map((r) => r.comment.id)).toEqual([agentId]);
+    });
+
+    it('returns newest first, and orders equal timestamps by id descending', async () => {
+      await repository.create(params({ id: 'mine', createdBy: { userId: 'me' } }));
+      const older = await agentComment('mine', '2026-10-01T00:00:00.000Z');
+      const newest = await agentComment('mine', '2026-10-03T00:00:00.000Z');
+      const tieA = await agentComment('mine', '2026-10-02T00:00:00.000Z');
+      const tieB = await agentComment('mine', '2026-10-02T00:00:00.000Z');
+      const [tieHigh, tieLow] = [tieA, tieB].sort().reverse();
+
+      const rows = await repository.listAgentCommentsFor({ userId: 'me', limit: 50 });
+
+      expect(rows.map((r) => r.comment.id)).toEqual([newest, tieHigh, tieLow, older]);
+    });
+
+    it("cap boundary: 60 newer agent comments on other users' items do not push out the user's three oldest comments", async () => {
+      await repository.create(params({ id: 'mine', createdBy: { userId: 'me' } }));
+      await repository.create(params({ id: 'others', createdBy: { userId: 'other' }, assigneeUserId: 'other' }));
+      const mine = [
+        await agentComment('mine', '2026-01-01T00:00:00.000Z', 'oldest'),
+        await agentComment('mine', '2026-01-02T00:00:00.000Z', 'second'),
+        await agentComment('mine', '2026-01-03T00:00:00.000Z', 'third'),
+      ];
+      for (let i = 0; i < 60; i += 1) {
+        await agentComment('others', new Date(Date.UTC(2026, 5, 1, 0, i)).toISOString());
+      }
+
+      const rows = await repository.listAgentCommentsFor({ userId: 'me', limit: 50 });
+
+      expect(rows.map((r) => r.comment.id)).toEqual([...mine].reverse());
+    });
+
+    it('limit bounds the result to the newest rows of this user', async () => {
+      await repository.create(params({ id: 'mine', createdBy: { userId: 'me' } }));
+      await agentComment('mine', '2026-10-01T00:00:00.000Z');
+      const newer = await agentComment('mine', '2026-10-02T00:00:00.000Z');
+
+      const rows = await repository.listAgentCommentsFor({ userId: 'me', limit: 1 });
+
+      expect(rows.map((r) => r.comment.id)).toEqual([newer]);
+    });
+  });
 });

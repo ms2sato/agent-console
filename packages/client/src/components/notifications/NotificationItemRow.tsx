@@ -62,6 +62,22 @@ export function NotificationItemRow({ item, onNavigate }: NotificationItemRowPro
     );
   }
 
+  if (item.kind === 'todo-agent-replied') {
+    // `item.link` is `/todos/<todoId>`; the router needs the id as a param.
+    return (
+      <Link
+        to="/todos/$todoId"
+        params={{ todoId: item.link.slice('/todos/'.length) }}
+        className={rowClassName}
+        data-testid="notification-item"
+        data-kind={item.kind}
+        onClick={onNavigate}
+      >
+        {content}
+      </Link>
+    );
+  }
+
   // Exhaustive guard: NotificationItem.kind is a closed union.
   const _exhaustive: never = item.kind;
   throw new Error(`Unhandled notification kind: ${String(_exhaustive)}`);
