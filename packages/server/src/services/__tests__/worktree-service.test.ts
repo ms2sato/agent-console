@@ -3413,32 +3413,164 @@ detached
         expect(elapsedMs).toBeLessThan(1000);
       });
 
-      it('returns at the deadline even when the pipes never close, and kills the child', async () => {
+      it('returns at the deadline even when the pipes never close, and signals the child', async () => {
         delete process.env.AUTH_MODE;
-        let killed = false;
-        (Bun as { spawn: typeof Bun.spawn }).spawn = (() => ({
-          exited: new Promise<number>(() => {}),
-          stdout: new ReadableStream<Uint8Array>({ start() {} }),
-          stderr: new ReadableStream<Uint8Array>({ start() {} }),
-          kill: () => {
-            killed = true;
-          },
-        })) as unknown as typeof Bun.spawn;
+        // A pid far above any kernel pid_max, so a stray real signal is ESRCH.
+        const fakePid = 2_147_483_000;
+        // The process-table read (`ps`) goes through Bun.spawn too, so it must
+        // reach the real one; only the hook shell is faked.
+        (Bun as { spawn: typeof Bun.spawn }).spawn = ((cmd: string[], ...rest: unknown[]) => {
+          if (cmd[0] === 'ps') {
+            return (originalBunSpawn as (...args: unknown[]) => unknown)(cmd, ...rest);
+          }
+          return {
+            pid: fakePid,
+            exited: new Promise<number>(() => {}),
+            stdout: new ReadableStream<Uint8Array>({ start() {} }),
+            stderr: new ReadableStream<Uint8Array>({ start() {} }),
+          };
+        }) as unknown as typeof Bun.spawn;
+        const signalled: Array<[number, string | number | undefined]> = [];
+        const killSpy = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+          signalled.push([pid, signal]);
+          return true;
+        }) as typeof process.kill);
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService({ worktreeRepository: mockRepo });
 
-        const result = await service.executeHookCommand(
-          'hang',
-          '/test/worktree',
-          { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
-          null,
-          50,
-        );
+        try {
+          const result = await service.executeHookCommand(
+            'hang',
+            '/test/worktree',
+            { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+            null,
+            50,
+          );
 
-        expect(result.success).toBe(false);
-        expect(result.error).toBe('Command timed out after 50 ms');
-        expect(killed).toBe(true);
+          expect(result.success).toBe(false);
+          expect(result.error).toBe('Command timed out after 50 ms');
+          // The tree kill runs in the background after the request returned.
+          const deadline = Date.now() + 2000;
+          while (!signalled.some(([pid, sig]) => pid === fakePid && sig === 'SIGTERM') && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(signalled).toContainEqual([fakePid, 'SIGTERM']);
+        } finally {
+          killSpy.mockRestore();
+        }
       });
+
+      // Real-spawn coverage of the process-tree kill. The hook shell backgrounds
+      // a `sleep` (a grandchild) whose duration token is unique per run, so
+      // `ps` can tell it from every other sleep on the host. Killing only the
+      // shell (the old `proc.kill()`) leaves that grandchild running, the same
+      // residue process-tree.test.ts reproduces at its 'reproduces the leak'
+      // case.
+      //
+      // Measured polarity (reach recorded as test names that failed):
+      //  - new kill logic replaced by `proc.kill()` only: 'kills a grandchild of
+      //    the hook shell at the deadline', 'kills a grandchild that ignores
+      //    SIGTERM, via the SIGKILL after the grace' and 'returns at the
+      //    deadline even when the pipes never close, and signals the child'
+      //    all fail (the grandchildren survive).
+      //  - only the SIGKILL-after-grace step removed: 'kills a grandchild of
+      //    the hook shell at the deadline' still PASSES (a plain `sleep` dies
+      //    on SIGTERM, so it does not pin the SIGKILL step); only 'kills a
+      //    grandchild that ignores SIGTERM, via the SIGKILL after the grace'
+      //    FAILS, and it is the case that pins it.
+      const psLinesContaining = async (token: string): Promise<string[]> => {
+        const ps = originalBunSpawn(['ps', '-eo', 'pid,args'], { stdout: 'pipe', stderr: 'ignore' });
+        const text = await new Response(ps.stdout).text();
+        await ps.exited;
+        return text.split('\n').filter((line) => line.includes(token));
+      };
+      const killByToken = async (token: string): Promise<void> => {
+        for (const line of await psLinesContaining(token)) {
+          const pid = Number(line.trim().split(/\s+/)[0]);
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // already gone
+          }
+        }
+      };
+      const waitForTokenGone = async (token: string, withinMs: number): Promise<boolean> => {
+        const deadline = Date.now() + withinMs;
+        while (Date.now() < deadline) {
+          if ((await psLinesContaining(token)).length === 0) return true;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return (await psLinesContaining(token)).length === 0;
+      };
+      const waitForTokenVisible = async (token: string): Promise<boolean> => {
+        const deadline = Date.now() + 150;
+        while (Date.now() < deadline) {
+          if ((await psLinesContaining(token)).length > 0) return true;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return (await psLinesContaining(token)).length > 0;
+      };
+      const uniqueSleepToken = (): string =>
+        `30.${Math.floor(Math.random() * 1e9).toString().padStart(9, '0')}`;
+
+      it('kills a grandchild of the hook shell at the deadline', async () => {
+        delete process.env.AUTH_MODE;
+        (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+        const token = uniqueSleepToken();
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        try {
+          const startedAt = Date.now();
+          const call = service.executeHookCommand(
+            `sh -c 'sleep ${token} & sleep ${token}; true # hook-grandchild-${crypto.randomUUID()}'`,
+            '/tmp',
+            { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+            null,
+            200,
+          );
+          // Positive control: the instrument can see the grandchild while it runs.
+          expect(await waitForTokenVisible(token)).toBe(true);
+          const result = await call;
+          const elapsedMs = Date.now() - startedAt;
+
+          expect(result.success).toBe(false);
+          expect(result.error).toBe('Command timed out after 200 ms');
+          expect(elapsedMs).toBeLessThan(1500);
+          expect(await waitForTokenGone(token, 3000)).toBe(true);
+        } finally {
+          await killByToken(token);
+        }
+      }, 15000);
+
+      it('kills a grandchild that ignores SIGTERM, via the SIGKILL after the grace', async () => {
+        delete process.env.AUTH_MODE;
+        (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+        const token = uniqueSleepToken();
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        try {
+          const call = service.executeHookCommand(
+            `sh -c 'trap "" TERM; sleep ${token} # hook-grandchild-${crypto.randomUUID()}'`,
+            '/tmp',
+            { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+            null,
+            200,
+          );
+          expect(await waitForTokenVisible(token)).toBe(true);
+          const result = await call;
+          expect(result.error).toBe('Command timed out after 200 ms');
+
+          // Still alive just after the deadline plus most of the grace: it
+          // ignores SIGTERM. Then gone once the SIGKILL lands (200 ms + 2 s).
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          expect((await psLinesContaining(token)).length).toBeGreaterThan(0);
+          expect(await waitForTokenGone(token, 4000)).toBe(true);
+        } finally {
+          await killByToken(token);
+        }
+      }, 15000);
 
       it('arms no timer when timeoutMs is absent', async () => {
         delete process.env.AUTH_MODE;

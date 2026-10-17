@@ -45,7 +45,7 @@ import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
 import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
 import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../lib/mcp-server-permissions.js';
-import { serverConfig, SESSION_HOOK_COMMAND_TIMEOUT_MS } from '../lib/server-config.js';
+import { serverConfig } from '../lib/server-config.js';
 import { canOperateSession } from '../lib/session-access.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
@@ -2058,7 +2058,7 @@ export class SessionManager {
         session.locationPath,
         { worktreeNum, branch, repo },
         username,
-        SESSION_HOOK_COMMAND_TIMEOUT_MS,
+        serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS,
       );
     } catch (err) {
       result = { success: false, error: err instanceof Error ? err.message : 'Unknown error' };

@@ -82,6 +82,16 @@ export const serverConfig = {
   ),
 
   /**
+   * Time box (ms) for a repository's pause / resume command. The command never
+   * blocks the pause or resume itself, but a hung command must not hold the
+   * request open indefinitely.
+   */
+  SESSION_HOOK_COMMAND_TIMEOUT_MS: parsePositiveIntWithDefault(
+    process.env.SESSION_HOOK_COMMAND_TIMEOUT_MS,
+    60_000,
+  ),
+
+  /**
    * Ceiling on how far restore walks BACK through archived segments looking
    * for a compaction boundary. Generous by default: the walk stops at a
    * boundary or the true start in the ordinary case, and this only bounds the
@@ -464,13 +474,6 @@ function parseFileWatchIgnorePatterns(): string[] {
   }
   return envValue.split(',').map(p => p.trim()).filter(p => p.length > 0);
 }
-
-/**
- * Time box for a repository's pause / resume command. The command never blocks
- * the pause or resume itself, but a hung command must not hold the request open
- * indefinitely.
- */
-export const SESSION_HOOK_COMMAND_TIMEOUT_MS = 60_000;
 
 /**
  * Patterns to ignore when watching for file changes.

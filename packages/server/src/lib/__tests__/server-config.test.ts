@@ -4,7 +4,6 @@ import {
   shouldWarnInsecureAuthCookie,
   shouldLogUnconfiguredPublicOrigin,
   shouldCheckEmbeddedAgentBunPath,
-  SESSION_HOOK_COMMAND_TIMEOUT_MS,
 } from '../server-config.js';
 
 describe('server-config', () => {
@@ -637,10 +636,29 @@ describe('WORKER_OUTPUT_MAX_SEGMENTS (NaN-guard contract, not positive-only)', (
     expect(serverConfig.WORKER_OUTPUT_MAX_SEGMENTS).toBe(-5);
   });
 });
-});
 
 describe('SESSION_HOOK_COMMAND_TIMEOUT_MS', () => {
-  it('is the 60 second time box for a pause or resume command', () => {
-    expect(SESSION_HOOK_COMMAND_TIMEOUT_MS).toBe(60_000);
+  it('defaults to the 60 second time box for a pause or resume command', async () => {
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS).toBe(60_000);
   });
+
+  it('falls back to the default on a malformed value, rather than becoming NaN', async () => {
+    process.env.SESSION_HOOK_COMMAND_TIMEOUT_MS = 'not-a-number';
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it('falls back on a non-positive value (0 is rejected, like the sibling WORKER_OUTPUT_RESTORE_MAX_BYTES)', async () => {
+    process.env.SESSION_HOOK_COMMAND_TIMEOUT_MS = '0';
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it('uses a valid override', async () => {
+    process.env.SESSION_HOOK_COMMAND_TIMEOUT_MS = '1234';
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS).toBe(1234);
+  });
+});
 });

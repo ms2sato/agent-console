@@ -30,6 +30,7 @@ import { classifyRepositoryPath, type RepositoryPathStatus } from '../lib/reposi
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { isErrnoException } from '../lib/type-guards.js';
+import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
 import {
   isMultiUserAuthMode,
@@ -95,6 +96,31 @@ const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
  * branch). Local fs only, short content -- 10s is generous.
  */
 const TEMPLATE_MATERIALIZE_TIMEOUT_MS = 10000;
+
+/**
+ * Grace between the SIGTERM and the SIGKILL sent to a timed-out hook command's
+ * process tree. A well-behaved process exits on SIGTERM; the SIGKILL reaches
+ * the ones that ignore it.
+ */
+const HOOK_KILL_GRACE_MS = 2_000;
+
+/**
+ * Terminates a timed-out hook command: SIGTERM to the shell and every
+ * descendant, then SIGKILL to the same pids after `HOOK_KILL_GRACE_MS`.
+ *
+ * The descendants are snapshotted BEFORE any signal is sent, because killing
+ * the shell first would reparent its children to init and hide them from the
+ * walk. The kill follows the process tree as observed at the deadline, so a
+ * process that re-parents itself or changes process group before the deadline
+ * can escape it. The grace timer is unref'd so it never keeps the server
+ * alive, and the caller does not await it.
+ */
+async function terminateHookProcessTree(rootPid: number): Promise<void> {
+  const pids = [...(await listDescendantPids(rootPid)), rootPid];
+  signalPids(pids, 'SIGTERM');
+  const escalation = setTimeout(() => signalPids(pids, 'SIGKILL'), HOOK_KILL_GRACE_MS);
+  escalation.unref?.();
+}
 
 /**
  * Generate a random alphanumeric suffix
@@ -1279,6 +1305,7 @@ export class WorktreeService {
     // requestUsername differs from the server-process user — otherwise the
     // historical direct-spawn path below is preserved verbatim (including
     // the getCleanChildProcessEnv() env filter).
+    // The time box on this branch is enforced by runAsUser's own timeout.
     if (shouldElevateForUser(requestUsername)) {
       try {
         const result = await this._runAsUser({
@@ -1369,7 +1396,11 @@ export class WorktreeService {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timeout = new Promise<'timed-out'>((resolve) => {
           timer = setTimeout(() => {
-            proc.kill();
+            // The request returns at the deadline; the tree kill (and its
+            // SIGKILL escalation) proceeds in the background.
+            terminateHookProcessTree(proc.pid).catch((error) => {
+              logger.warn({ worktreePath, err: error }, 'Failed to terminate hook process tree');
+            });
             resolve('timed-out');
           }, timeoutMs);
         });

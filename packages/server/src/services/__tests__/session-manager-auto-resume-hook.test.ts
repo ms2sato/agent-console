@@ -17,7 +17,7 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import { SingleUserMode } from '../user-mode.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { createTestSessionRepository } from '../../__tests__/utils/test-session-repository.js';
-import { SESSION_HOOK_COMMAND_TIMEOUT_MS } from '../../lib/server-config.js';
+import { serverConfig } from '../../lib/server-config.js';
 import type { WorktreeService } from '../worktree-service.js';
 
 type ExecuteHookCommand = WorktreeService['executeHookCommand'];
@@ -118,7 +118,7 @@ describe('SessionManager auto-resume runs the resume command', () => {
     const [command, locationPath, , , timeoutMs] = executeHookCommand.mock.calls[0];
     expect(command).toBe(RESUME_COMMAND);
     expect(locationPath).toBe('/path/to/worktree');
-    expect(timeoutMs).toBe(SESSION_HOOK_COMMAND_TIMEOUT_MS);
+    expect(timeoutMs).toBe(serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS);
 
     expect(callLog).toContain('hook');
     expect(callLog).toContain('activate');
@@ -156,7 +156,7 @@ describe('SessionManager auto-resume runs the resume command', () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(executeHookCommand).toHaveBeenCalledTimes(1);
-    expect(receivedTimeoutMs).toBe(SESSION_HOOK_COMMAND_TIMEOUT_MS);
+    expect(receivedTimeoutMs).toBe(serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS);
     expect(settled).toBe(false);
     expect(callLog).not.toContain('activate');
 

@@ -37,7 +37,7 @@ import { composeEmbeddedAgentDeliveryText } from '../session-manager.js';
 import { buildPtyNotificationText, type PtyNotificationParams } from '../../lib/pty-notification.js';
 import type { McpServerPermissionRow } from '../../repositories/mcp-server-permission-repository.js';
 import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
-import { serverConfig, SESSION_HOOK_COMMAND_TIMEOUT_MS } from '../../lib/server-config.js';
+import { serverConfig } from '../../lib/server-config.js';
 import { createTestSessionRepository } from '../../__tests__/utils/test-session-repository.js';
 
 // Test config directory
@@ -7109,7 +7109,7 @@ describe('SessionManager', () => {
         '/test/path',
         hookVars,
         os.userInfo().username,
-        SESSION_HOOK_COMMAND_TIMEOUT_MS,
+        serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS,
       );
     });
 
@@ -7132,7 +7132,7 @@ describe('SessionManager', () => {
         '/test/path',
         hookVars,
         os.userInfo().username,
-        SESSION_HOOK_COMMAND_TIMEOUT_MS,
+        serverConfig.SESSION_HOOK_COMMAND_TIMEOUT_MS,
       ]);
     });
 
