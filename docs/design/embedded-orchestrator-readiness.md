@@ -43,6 +43,8 @@ jq -s '[.[] | select(.type=="assistant")] | group_by(.message.id) | map(last.mes
 
 List prices (per million tokens): input 3, cache write 3.75, cache read 0.30, output 15.
 
+**Single writer of the table.** `bun scripts/phase6-analyze-run.ts --ndjson <worker log> --transcript <cli-transcript>.jsonl --session-id <id> [--journal <server journal window>] [--json metrics.json] [--baseline <earlier metrics.json>]` computes every row of the run tables (timer counts, eligible `create_timer` attempts split refused/accepted, polls, Cause A/B turns, the inline `exited: true` count, the de-duplicated cost, the substitute-channel watch, and with a journal the server-clock correlation) with the recipe above and the list prices above; its pure functions live in `scripts/lib/phase6-run-metrics.ts`. Quote its output, not a hand-run script. An unreadable transcript prints `cost: UNAVAILABLE` and exits 2, never 0. The `jq` line above stays as the independent manual cross-check of the cost row: when the two disagree, the disagreement is a finding about one of them, not a number to pick. During a run the same command can be re-run on the growing logs to read the cost so far.
+
 | | calls | input | cache_creation | cache_read | output | list-price equivalent (USD) |
 |---|---|---|---|---|---|---|
 | run 2 | 389 | 778 | 1,113,303 | 104,772,742 | 116,477 | ~37.4 |
