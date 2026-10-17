@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent as ReactDragEvent, ReactNode, RefObject } from 'react';
 import type { TerminalInstance } from './terminal-store';
+import { TerminalClipboardNotice } from './TerminalClipboardNotice';
 import type { TerminalRow, TerminalSegment, TerminalStyle } from './buffer-to-rows';
 import type { LinkRange } from './link-detection';
 import { joinSelectedRows, collectSelectedRowPieces } from './copy-text';
@@ -792,6 +793,8 @@ export function TerminalView({
       {/* tick = scroll events + snapshot version, so the thumb appears on scroll
           and on content growth, then fades after inactivity. */}
       <TerminalScrollIndicator containerRef={scrollRef} tick={scrollTick + snapshot.version} />
+
+      <TerminalClipboardNotice instance={instance} />
 
       {!atBottom && (
         <button

@@ -73,6 +73,7 @@ function makeInstance(snapshot: TerminalSnapshot): TerminalInstance {
     dismissNotice: () => {},
     requestOlderHistory: () => {},
     evictTopChunk: () => {},
+    onClipboardWrite: () => () => {},
     acquire: () => () => {},
     dispose: () => {},
   };
@@ -80,6 +81,20 @@ function makeInstance(snapshot: TerminalSnapshot): TerminalInstance {
 
 describe('TerminalView row rendering', () => {
   afterEach(cleanup);
+
+  it('mounts the OSC 52 clipboard notice: an event without recent input shows it', async () => {
+    let emit: (event: { text: string; atMs: number; recentInput: boolean }) => void = () => {};
+    const instance: TerminalInstance = {
+      ...makeInstance(makeSnapshot(ROWS)),
+      onClipboardWrite: (listener) => {
+        emit = listener;
+        return () => {};
+      },
+    };
+    render(<TerminalView instance={instance} />);
+    await act(async () => emit({ text: 'from the TUI', atMs: 1, recentInput: false }));
+    expect(screen.getByText(/Copied from the terminal/)).toBeTruthy();
+  });
 
   it('renders each row segment as text', () => {
     render(<TerminalView instance={makeInstance(makeSnapshot(ROWS))} />);

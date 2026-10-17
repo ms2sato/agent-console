@@ -84,6 +84,24 @@ Classification legend:
 | Clickable links (WebLinksAddon) | `Terminal.tsx:420-425` | missing | In a DOM renderer this is URL detection over row text → `<a>` (or click handler) — simpler and safer than the addon (`noopener,noreferrer` preserved). |
 | Output filters (`stripSystemMessages`, `stripScrollbackClear`) | `Terminal.tsx:92-107`, `terminal-utils.ts:62-88` | covered (fast-tracked) | Fast-tracked into #934 after owner dogfood surfaced that Claude Code's CSI 3J redraws left nothing to scroll: the PoC reuses the production filters, always-on. The remaining PR-1 work is making `stripScrollbackClear` conditional per agent config (flag arrives through the adapter, `SessionPage.tsx:434-438`). |
 
+#### OSC 52 clipboard
+
+A terminal program (Claude's `/copy`, tmux, vim) asks the terminal to set the clipboard with OSC 52, `ESC ] 52 ; Pc ; Pd BEL`, where `Pd` is base64 text. The live terminal in the store registers a parser handler for it (the throwaway replay terminals do not). Rule:
+
+- **Write silently only when this client typed into this worker within the last 5 seconds (`CLIPBOARD_INTENT_WINDOW_MS`, inclusive) and the document has focus.** Otherwise, and on any `writeText` rejection or a missing Clipboard API, show a non-modal notice "Copied from the terminal -- click to put it on your clipboard"; its click performs the write inside the user gesture and dismisses it. A second event replaces the pending text.
+- **Reads are never answered.** `Pd` equal to `?` is dropped, as is an empty payload, an undecodable one, and a decoded payload over 64 KB. The client never reads the clipboard.
+- **Replayed bytes never write.** The initial `history` payload and the resync replay are applied with the handler suppressed, so an OSC 52 in old output does not fire on attach.
+
+Why: browsers differ (Chrome allows `writeText` from a focused tab without a gesture; Firefox and Safari need recent user activation), and the typed-recently test is the intent signal that satisfies both. Security note: any program running in the terminal can emit OSC 52, which is why iTerm2 asks and xterm disables it by default; this design bounds the silent path to a client that just typed, and refuses the read half entirely. In a shared session another viewer's `/copy` never lands in my clipboard silently, because only the client that typed writes silently; at most I see the notice and may click it. Owner-vetoable defaults: the 5 second window (0 means always ask), the notice wording, and whether silent writes exist at all.
+
+Decision table (surfaces by operation):
+
+| Operation | PTY worker view | embedded worker view | shared-session viewer |
+|---|---|---|---|
+| silent write | do (gated by own recent input + focus) | n/a: no PTY | not here: never fires for a viewer who did not type |
+| notice click | do | n/a | do: a viewer may still click |
+| read request | not here: never answered | not here: never answered | not here: never answered |
+
 ### E. Integration surface
 
 | Feature | Current location | Status | Notes |

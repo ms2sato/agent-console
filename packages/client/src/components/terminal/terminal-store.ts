@@ -61,8 +61,23 @@ export interface TerminalSnapshot {
   retentionFloorReached: boolean;
 }
 
+/** An OSC 52 clipboard write the terminal program asked for (design doc "OSC 52 clipboard"). */
+export interface ClipboardWriteEvent {
+  text: string;
+  atMs: number;
+  /** This client sent input to the worker within CLIPBOARD_INTENT_WINDOW_MS before the write. */
+  recentInput: boolean;
+}
+
+/** Intent window: a terminal-originated clipboard write is silent only after own input this recently (inclusive). */
+export const CLIPBOARD_INTENT_WINDOW_MS = 5000;
+// Decoded OSC 52 payload cap; larger payloads are ignored.
+const CLIPBOARD_MAX_BYTES = 64 * 1024;
+
 export interface TerminalInstance {
   subscribe(listener: () => void): () => void;
+  /** Subscribe to OSC 52 clipboard writes from the live terminal (never to reads). */
+  onClipboardWrite(listener: (event: ClipboardWriteEvent) => void): () => void;
   getSnapshot(): TerminalSnapshot;
   sendInput(data: string): void;
   resize(cols: number, rows: number): void;
@@ -156,6 +171,9 @@ const nowMs: () => number =
     ? () => performance.now()
     : () => Date.now();
 
+// Clock for the clipboard intent gate; tests pin it through _setClockForTest.
+let clipboardClock: () => number = nowMs;
+
 // rAF batching: guard for non-browser (bun test) where requestAnimationFrame
 // may be absent — fall back to a ~1-frame timeout.
 const scheduleFrame: (fn: () => void) => void =
@@ -173,6 +191,12 @@ class TerminalController implements TerminalInstance {
   private terminal: Terminal;
   private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();
+  private clipboardListeners = new Set<(event: ClipboardWriteEvent) => void>();
+  // Last time this client sent input to the worker (clipboard intent gate); null until it has.
+  private lastInputSentAtMs: number | null = null;
+  // True while bytes that are replay, not live output, are being parsed (initial history,
+  // resync replay): an OSC 52 in old bytes must not write the clipboard on attach.
+  private clipboardSuppressed = false;
   private snapshot: TerminalSnapshot;
   private frameScheduled = false;
   private disposed = false;
@@ -292,6 +316,11 @@ class TerminalController implements TerminalInstance {
       scrollback: SCROLLBACK,
       allowProposedApi: true,
     });
+    // Live terminal only: the throwaway replay terminals (history-replay.ts) never register this.
+    this.terminal.parser.registerOscHandler(52, (data) => {
+      this.handleOsc52(data);
+      return true;
+    });
     this.snapshot = {
       version: 0,
       status: 'connecting',
@@ -343,7 +372,15 @@ class TerminalController implements TerminalInstance {
     return this.snapshot;
   };
 
+  onClipboardWrite = (listener: (event: ClipboardWriteEvent) => void): (() => void) => {
+    this.clipboardListeners.add(listener);
+    return () => {
+      this.clipboardListeners.delete(listener);
+    };
+  };
+
   sendInput = (data: string): void => {
+    this.lastInputSentAtMs = clipboardClock();
     this.send({ type: 'input', data });
   };
 
@@ -508,6 +545,7 @@ class TerminalController implements TerminalInstance {
     this.clearFrameMarkers();
     this.terminal.dispose();
     this.listeners.clear();
+    this.clipboardListeners.clear();
     removeInstance(this.sessionId, this.workerId);
   };
 
@@ -1033,7 +1071,7 @@ class TerminalController implements TerminalInstance {
       // covered by this history payload (§3.4).
       if (this.resyncing) this.flushResyncQueue(offset);
       this.scheduleNotify();
-    });
+    }, true);
   }
 
   /**
@@ -1046,7 +1084,7 @@ class TerminalController implements TerminalInstance {
    * (system-message or scrollback-clear stripping) the byte accounting is unknown and the
    * payload stays one piece: coarse but safe, a marker never claims more than was evicted.
    */
-  private writeTracked(data: string, endOffset: number, onDone: () => void): void {
+  private writeTracked(data: string, endOffset: number, onDone: () => void, replay = false): void {
     const processed = this.processOutput(data);
     const pieces: Array<{ text: string; endOffset: number }> = [];
     if (processed !== data || processed.length <= liveEdgePieceBytes) {
@@ -1065,9 +1103,15 @@ class TerminalController implements TerminalInstance {
       }
     }
     const generation = this.writeGeneration;
+    // Replayed bytes (initial history, resync replay) must not fire an OSC 52 write. The flag
+    // flips inside the write stream itself: the empty write's callback runs after every earlier
+    // chunk is parsed and before the first replay piece is, and the last piece's callback
+    // clears it before anything queued later is parsed.
+    if (replay) this.terminal.write('', () => { this.clipboardSuppressed = true; });
     pieces.forEach((piece, index) => {
       const last = index === pieces.length - 1;
       this.terminal.write(piece.text, () => {
+        if (last && replay) this.clipboardSuppressed = false;
         // A reset after this write was queued makes its offset foreign to the new buffer.
         if (generation === this.writeGeneration && piece.text.length > 0) this.trackFrame(piece.endOffset);
         if (last) onDone();
@@ -1086,7 +1130,7 @@ class TerminalController implements TerminalInstance {
       // covered by the history payload; drop them to avoid double-application.
       if (item.offset <= historyOffset) continue;
       this.lastOffset = item.offset;
-      this.writeTracked(item.data, item.offset, () => this.scheduleNotify());
+      this.writeTracked(item.data, item.offset, () => this.scheduleNotify(), true);
     }
     this.reseedFromLiveEdge();
   }
@@ -1486,6 +1530,39 @@ class TerminalController implements TerminalInstance {
   private recomputePagedRowCount(): void {
     this.pagedRowCount = this.pagedChunks.reduce((sum, c) => sum + c.rows.length, 0);
     if (this.pagedRowCount >= MAX_PAGED_ROWS) this.pagedCapReached = true;
+  }
+
+  /**
+   * OSC 52 `Pc;Pd`: set-clipboard. Reads (`Pd === '?'`) are never answered: a program reading
+   * the clipboard is exfiltration. Empty, oversize and undecodable payloads are ignored.
+   */
+  private handleOsc52(data: string): void {
+    if (this.clipboardSuppressed || this.disposed) return;
+    const separator = data.indexOf(';');
+    if (separator === -1) return;
+    const payload = data.slice(separator + 1);
+    if (payload === '' || payload === '?') return;
+    // Cheap pre-check before decoding: the largest base64 text a capped payload can have.
+    if (payload.length > Math.ceil(CLIPBOARD_MAX_BYTES / 3) * 4) {
+      logger.debug(`[terminal] OSC 52 payload ignored: ${payload.length} base64 chars exceeds the ${CLIPBOARD_MAX_BYTES}-byte cap`);
+      return;
+    }
+    let text: string;
+    try {
+      const binary = atob(payload);
+      const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+      if (bytes.length > CLIPBOARD_MAX_BYTES) {
+        logger.debug(`[terminal] OSC 52 payload ignored: ${bytes.length} bytes exceeds the ${CLIPBOARD_MAX_BYTES}-byte cap`);
+        return;
+      }
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      return;
+    }
+    if (text === '') return;
+    const atMs = clipboardClock();
+    const recentInput = this.lastInputSentAtMs !== null && atMs - this.lastInputSentAtMs <= CLIPBOARD_INTENT_WINDOW_MS;
+    for (const listener of Array.from(this.clipboardListeners)) listener({ text, atMs, recentInput });
   }
 
   /** terminal.reset() disposes every marker; detach the listeners first so that is not read as eviction. */
@@ -1906,6 +1983,11 @@ export function _setSeamCorrectionForTest(enabled: boolean): void {
   seamCorrectionEnabled = enabled;
 }
 
+/** @internal Exported for testing: clock of the clipboard intent gate; `null` restores the default. */
+export function _setClockForTest(fn: (() => number) | null): void {
+  clipboardClock = fn ?? nowMs;
+}
+
 /** @internal Exported for testing: piece size of the live-edge frame writes; `null` restores the default. */
 export function _setLiveEdgePieceBytesForTest(n: number | null): void {
   liveEdgePieceBytes = n ?? LIVE_EDGE_PIECE_BYTES;
@@ -1936,6 +2018,7 @@ export function _resetTerminals(): void {
   appSubscribeImpl = subscribeApp;
   seamCorrectionEnabled = true;
   liveEdgePieceBytes = LIVE_EDGE_PIECE_BYTES;
+  clipboardClock = nowMs;
 }
 
 /** @internal Test helper: resolve once every live instance has parsed all pending output and flushed its snapshot frame. */

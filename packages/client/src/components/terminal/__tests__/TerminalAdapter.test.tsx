@@ -43,6 +43,7 @@ const stubInstance: TerminalInstance = {
   dismissNotice: () => {},
   requestOlderHistory: () => {},
   evictTopChunk: () => {},
+  onClipboardWrite: () => () => {},
   acquire: () => () => {},
   dispose: () => {},
 };

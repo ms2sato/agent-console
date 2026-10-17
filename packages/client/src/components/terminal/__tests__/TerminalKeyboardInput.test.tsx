@@ -61,6 +61,7 @@ function makeMockInstance(): TerminalInstance {
     dismissNotice: () => {},
     requestOlderHistory: () => {},
     evictTopChunk: () => {},
+    onClipboardWrite: () => () => {},
     acquire: () => () => {},
     dispose: () => {},
   };
@@ -139,6 +140,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
       dismissNotice: () => {},
       requestOlderHistory: () => {},
       evictTopChunk: () => {},
+      onClipboardWrite: () => () => {},
       acquire: () => () => {},
       dispose: () => {},
       getApplicationCursorMode: () => applicationCursorMode,
