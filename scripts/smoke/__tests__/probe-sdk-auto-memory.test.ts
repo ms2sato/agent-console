@@ -873,14 +873,17 @@ describe('classifyRealTreeDiff', () => {
 // ---------------------------------------------------------------------------
 
 describe('seedMemoryTopic', () => {
+  let rootDir: string;
   let memoryDir: string;
 
   afterEach(() => {
-    if (memoryDir) rmSync(memoryDir, { recursive: true, force: true });
+    // Remove the whole mkdtemp parent, not only its `memory` child.
+    if (rootDir) rmSync(rootDir, { recursive: true, force: true });
   });
 
   it('writes a frontmatter-carrying topic file and a new MEMORY.md index when neither existed (boundary: fresh dir)', () => {
-    memoryDir = join(mkdtempSync(join(tmpdir(), 'probe-sdk-automem-seed-')), 'memory');
+    rootDir = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-seed-'));
+    memoryDir = join(rootDir, 'memory');
     const { topicPath, indexPath } = seedMemoryTopic({
       memoryDir,
       topicFilename: 'fact.md',
@@ -902,7 +905,8 @@ describe('seedMemoryTopic', () => {
   });
 
   it('appends to an existing MEMORY.md rather than overwriting a prior entry', () => {
-    memoryDir = join(mkdtempSync(join(tmpdir(), 'probe-sdk-automem-seed-')), 'memory');
+    rootDir = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-seed-'));
+    memoryDir = join(rootDir, 'memory');
     seedMemoryTopic({
       memoryDir,
       topicFilename: 'first.md',

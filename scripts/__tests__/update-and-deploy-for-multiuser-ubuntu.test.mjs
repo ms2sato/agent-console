@@ -1,12 +1,21 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '..', 'update-and-deploy-for-multiuser-ubuntu.sh');
+
+// Every scratch root the behavioural harnesses below create is registered here
+// and removed after each test, so a run leaves nothing behind in tmpdir().
+const scratchRoots = [];
+afterEach(() => {
+  while (scratchRoots.length > 0) {
+    rmSync(scratchRoots.pop(), { recursive: true, force: true });
+  }
+});
 
 // This script's fail-closed unified-entry-path gate (Issue #1668) still
 // cannot be exercised end-to-end by a unit test -- a real run needs a real
@@ -415,6 +424,7 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: the archive pipeline fails 
 
   function runPipeline(inner, producerFails) {
     const root = mkdtempSync(join(tmpdir(), 'archive-pipe-'));
+    scratchRoots.push(root);
     const bin = join(root, 'bin');
     const payload = join(root, 'payload');
     const out = join(root, 'out');
@@ -464,6 +474,7 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: the archive pipeline fails 
 describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against a scratch repository (Issue #2090)', () => {
   function makeHarness() {
     const root = mkdtempSync(join(tmpdir(), 'deploy-sha-'));
+    scratchRoots.push(root);
     const dataRoot = join(root, 'data');
     const src = join(dataRoot, 'source-repos', 'agent-console');
     const dst = join(root, 'deploy-target');
