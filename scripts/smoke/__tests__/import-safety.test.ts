@@ -211,6 +211,10 @@ function signalNameOf(n: number): string | null {
  *
  * The stderr tail keeps the LAST lines (a crash message is at the end) and, when the last 20 lines still exceed the
  * cap, keeps the last `STDERR_TAIL_MAX_CHARS` characters and says how many were cut.
+ *
+ * Why the signal has two paths: Bun reports a SIGTRAP self-kill as BOTH `exitCode` 133 and `signalCode` 'SIGTRAP', so
+ * the derived name (128 + n) is only reached when a runtime reports the code alone; the SIGTRAP self-kill scratch
+ * test and the exit(133) scratch test cover the two cases separately for that reason.
  */
 function describeImportFailure(file: string, route: 'a' | 'b', result: ImportResult): string {
   const derivedSignal =
