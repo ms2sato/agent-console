@@ -111,6 +111,9 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 CREATE INDEX IF NOT EXISTS idx_todos_status_assignee ON todos (status, assignee_user_id);
 CREATE INDEX IF NOT EXISTS idx_todos_session_status  ON todos (session_id, status);
+-- added by migration v53 (index rule: sqlite-migration-design.md, "Index rule"); both columns are query predicates (list, listAgentCommentsFor)
+CREATE INDEX IF NOT EXISTS idx_todos_assignee_user_id ON todos (assignee_user_id);
+CREATE INDEX IF NOT EXISTS idx_todos_created_user_id  ON todos (created_user_id);
 ```
 
 Owner approval: 2026-10-15, as written above (scope revision included). `LATEST_SCHEMA_VERSION` was 49 at `ee176a3e`, so v50 is the next free version. Notes: the `CHECK` constraints follow `mcp_server_permissions_decision_check` (`database/connection.ts:2869`); the table is additive, following the `migrateToV33` shape. There is **no foreign key** on `session_id` (a row must outlive the session, as in `timers` and `bookmarks`) and none on the user columns either (a row must outlive everything it references; users are never deleted today).

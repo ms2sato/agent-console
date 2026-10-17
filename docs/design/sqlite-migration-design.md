@@ -378,6 +378,18 @@ CREATE TABLE agents (
 );
 ```
 
+### Index rule: every foreign-key column leads an index
+
+SQLite does not create an index on the child side of a foreign key. Without one, every parent `DELETE` (or key update) with `ON DELETE CASCADE`, `SET NULL` or `RESTRICT` scans the whole child table, and so does every join or filter on that column.
+
+**Rule.** Every column that has a `REFERENCES` clause is the leading column of some index. A primary key, a unique constraint, or a composite index that leads with the column satisfies the rule; no extra index is needed in those cases.
+
+**Mechanical guard.** `packages/server/src/database/__tests__/fk-index-guard.test.ts` runs every migration on an in-memory database, enumerates `PRAGMA foreign_key_list` for each table, and fails with the list of `table.column -> parent` pairs that lead no index. It also asserts a minimum number of enumerated foreign keys so an empty enumeration cannot pass.
+
+**Authoring.** A migration that adds a table or column with `REFERENCES` creates the index in the same migration (`CREATE INDEX IF NOT EXISTS`). Migration v53 brought the existing schema into line.
+
+**Soft references.** A `*_id` column without `REFERENCES` is not enumerable from the schema and is out of the rule. Index it when a query predicate needs it, decided per query (for example `todos.assignee_user_id` and `todos.created_user_id`, used by the todo list filter and the agent-comment feed).
+
 ## Challenges and Considerations
 
 ### 1. Async Conversion
