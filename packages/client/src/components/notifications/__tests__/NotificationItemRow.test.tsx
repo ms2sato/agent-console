@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, mock } from 'bun:test';
-import { screen, cleanup } from '@testing-library/react';
+import { screen, cleanup, fireEvent } from '@testing-library/react';
 import type { NotificationItem } from '@agent-console/shared';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { NotificationItemRow } from '../NotificationItemRow';
@@ -32,6 +32,14 @@ const failedDeletionItem: NotificationItem = {
   title: 'Worktree deletion failed: feature-branch',
   link: '/worktree-deletion-tasks/job-2',
   outcome: 'failed',
+};
+
+const agentReplyItem: NotificationItem = {
+  kind: 'todo-agent-replied',
+  id: 'comment-1',
+  occurredAt: new Date().toISOString(),
+  title: 'Reply on: Review the draft',
+  link: '/todos/todo-42',
 };
 
 describe('NotificationItemRow', () => {
@@ -77,6 +85,22 @@ describe('NotificationItemRow', () => {
     const link = screen.getByText('My Dashboard').closest('a')!;
     link.click();
 
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a todo-agent-replied item as an SPA Link to the Todo detail page', async () => {
+    const onNavigate = mock(() => {});
+    await renderWithRouter(<NotificationItemRow item={agentReplyItem} onNavigate={onNavigate} />);
+
+    const link = screen.getByText('Reply on: Review the draft').closest('a')!;
+    expect(link.getAttribute('href')).toBe('/todos/todo-42');
+    expect(link.getAttribute('target')).not.toBe('_blank');
+    expect(link.getAttribute('data-kind')).toBe('todo-agent-replied');
+
+    // A router Link intercepts the click (preventDefault, client-side
+    // navigation); a plain anchor would let the browser do a full-document load.
+    const notPrevented = fireEvent.click(link);
+    expect(notPrevented).toBe(false);
     expect(onNavigate).toHaveBeenCalledTimes(1);
   });
 });

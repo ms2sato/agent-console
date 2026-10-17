@@ -63,6 +63,12 @@ export function NotificationBell() {
     onArtifactDeleted: () => {
       queryClient.invalidateQueries({ queryKey: notificationCenterKeys.root() });
     },
+    // An agent comment on a Todo composes into this feed. The frame names at
+    // most a session, so it is a hint for any Todo change: refetch regardless
+    // of which session it names.
+    onTodosUpdated: () => {
+      queryClient.invalidateQueries({ queryKey: notificationCenterKeys.root() });
+    },
   });
 
   // v1 refetch trigger: app-WS reconnect (false -> true transition only,
