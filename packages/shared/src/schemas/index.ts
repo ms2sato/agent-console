@@ -39,8 +39,10 @@
  *
  * So the question to ask of a new field is NOT "how do old clients cope with
  * it" — it is answered above, identically for every field. Ask instead whether
- * the field's own semantics are right, and whether its schema and its
- * hand-written type were changed together.
+ * the field's own semantics are right, and, for an entity that still has a
+ * hand-written type beside its schema, whether the two were changed together
+ * (an entity whose type is derived from its schema with `v.InferOutput` has
+ * one declaration, so there is nothing to keep in step).
  *
  * @see `packages/client/src/lib/schema-version.ts` — the comparison and the
  *   reload guard.
