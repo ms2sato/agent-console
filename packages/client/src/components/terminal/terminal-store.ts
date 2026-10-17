@@ -1141,7 +1141,7 @@ class TerminalController implements TerminalInstance {
     const secondChunk = this.pagedChunks[1];
     const topRaw = topChunk?.rawData;
     const secondRaw = secondChunk?.rawData;
-    if (topRaw === undefined) {
+    if (topRaw === undefined || !seamCorrectionEnabled) {
       await this.applyStandaloneChunk(msg, reqMaxBytes, cols, rows);
       return;
     }
@@ -1738,6 +1738,19 @@ export interface TerminalOptions {
   stripScrollbackClear?: boolean;
 }
 
+// Mutable so a test can route every range fetch through the standalone replay
+// and measure what the seam correction removes. Reset by _resetTerminals.
+let seamCorrectionEnabled = true;
+
+/**
+ * @internal Exported for testing. When false, `applyRangeChunk` skips the pair /
+ * joint seam-correction replays and applies every fetched chunk with the
+ * standalone `replayHistoryChunk` (the pre-#979 behaviour). Default true.
+ */
+export function _setSeamCorrectionForTest(enabled: boolean): void {
+  seamCorrectionEnabled = enabled;
+}
+
 export function getOrCreateTerminal(
   sessionId: string,
   workerId: string,
@@ -1761,6 +1774,7 @@ export function _resetTerminals(): void {
   instances.clear();
   timings = { ...DEFAULT_TIMINGS };
   appSubscribeImpl = subscribeApp;
+  seamCorrectionEnabled = true;
 }
 
 /** @internal Test helper: resolve once every live instance has parsed all pending output and flushed its snapshot frame. */
