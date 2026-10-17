@@ -209,7 +209,7 @@ export function TodoDetail({ todo, users, onError, runEnabled, onRun, onDeleted 
       {todo.body !== '' && (
         <section>
           <SectionHeader title="Body" />
-          <div className="text-sm text-gray-300 break-words">
+          <div className="memo-content min-w-0 text-sm text-gray-300">
             <TodoBodyMarkdown body={todo.body} focusable onRun={runEnabled ? onRun : undefined} />
           </div>
         </section>

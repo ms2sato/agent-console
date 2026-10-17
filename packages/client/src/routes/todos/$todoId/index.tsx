@@ -71,7 +71,7 @@ export function TodoDetailPage({ todoId }: { todoId: string }) {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="p-6 w-full max-w-4xl mx-auto">
       <PageBreadcrumb items={[{ label: 'Agent Console', to: '/' }, { label: 'Todo', to: '/todos' }, { label: todo.title }]} />
       <div className="card">
         <TodoDetail

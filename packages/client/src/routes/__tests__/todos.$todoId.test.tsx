@@ -47,6 +47,18 @@ describe('Todo detail page', () => {
     expect(screen.getByText('Page body text', { selector: 'p' })).toBeTruthy();
   });
 
+  it('keeps the page container full-width so a wide code block cannot widen the card', async () => {
+    // Mutation: drop `w-full` from the page container -> this fails (the auto-margin flex item
+    // would size to its widest descendant instead of the viewport).
+    api.state.todos = [makeTodo({ id: 'todo-1', title: 'Page title', body: 'x' })];
+
+    await renderWithRouter(<TodoDetailPage todoId="todo-1" />);
+
+    const container = (await screen.findByTestId('todo-detail-todo-1')).closest('.card')?.parentElement;
+    expect(container?.classList.contains('w-full')).toBe(true);
+    expect(container?.classList.contains('max-w-4xl')).toBe(true);
+  });
+
   it('a deleted item shows the deleted-state card with a back link', async () => {
     api.state.todos = [];
 
