@@ -12,24 +12,6 @@ export type AuthMode = 'none' | 'multi-user';
 export type VSCodeOpenMode = 'local-spawn' | 'remote-url-scheme';
 
 /**
- * Authenticated user identity.
- *
- * Represents the OS user who is currently authenticated.
- * In single-user mode, this is always the server process user.
- * In multi-user mode, this is the user who logged in via OS credentials.
- */
-export interface AuthUser {
-  /** Stable user identifier (UUID from users table) */
-  id: string;
-  username: string;
-  homeDir: string;
-}
-
-export interface LoginResponse {
-  user: AuthUser;
-}
-
-/**
  * Per-user preferences. Persisted on the `users`
  * table; resolved fresh at every `claude-sdk` embedded-agent worker
  * activation from `session.createdBy`, never read from `AuthUser` or the
@@ -46,10 +28,4 @@ export interface UserPreferences {
    * effect at the worker's next activation, not live.
    */
   disableClaudeAiConnectors: boolean;
-}
-
-/** `PATCH /api/auth/me/preferences`'s response body. */
-export interface UpdateUserPreferencesResponse {
-  user: AuthUser;
-  preferences: UserPreferences;
 }

@@ -126,8 +126,8 @@ import type {
   WorktreeAcceptedResponse,
   WorktreeDeletionAcceptedResponse,
   SendWorkerMessageResponse,
-  LoginResponseWire,
-  UpdateUserPreferencesResponseWire,
+  LoginResponse,
+  UpdateUserPreferencesResponse,
   ReviewStatusResponse,
   MessageTemplateResponse,
   SuccessResponse,
@@ -1162,7 +1162,7 @@ export async function sendWorkerMessage(
 // Authentication
 // ===========================================================================
 
-export async function login(request: LoginRequest): Promise<LoginResponseWire> {
+export async function login(request: LoginRequest): Promise<LoginResponse> {
   const res = await api.auth.login.$post({ json: request });
   if (!res.ok) {
     await handleApiError(res, 'Login failed');
@@ -1187,7 +1187,7 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
 
 export async function updateAuthPreferences(
   preferences: UserPreferences
-): Promise<UpdateUserPreferencesResponseWire> {
+): Promise<UpdateUserPreferencesResponse> {
   const res = await api.auth.me.preferences.$patch({ json: preferences });
   if (!res.ok) {
     await handleApiError(res, 'Failed to update preferences');

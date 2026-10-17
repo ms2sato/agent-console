@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import type { WorkerMessage } from '../../types/worker-message';
 import {
   SendWorkerMessageRequestSchema,
   WorkerMessageSchema,
   SendWorkerMessageResponseSchema,
+  type WorkerMessage,
 } from '../message';
 
 describe('SendWorkerMessageRequestSchema', () => {
@@ -68,11 +68,23 @@ describe('SendWorkerMessageRequestSchema', () => {
   });
 });
 
-// `WorkerMessage` stays a hand-written interface the server imports; this pin fixes the schema's
-// output to it exactly. `Assert<Equals<...>>` fails `tsc` (TS2344) under drift in either direction.
+// Key-set pin. `WorkerMessage` is derived from `WorkerMessageSchema`, so the schema is the only
+// place a field is edited; the pin compares `keyof` with an explicit literal union, so a field
+// added to (or removed from) the schema alone is a `tsc` failure (TS2344) naming the difference.
+// `Assert<Equals<...>>` is the form that fails under drift; a `declare const x: never` form
+// would type-check under it.
+//
+// Measured reach: (`tsc` diagnostics, control clean first): adding a field to, or removing
+// one from, `WorkerMessageSchema` fails `_WorkerMessageKeys` (TS2344) plus the `workerMessage` fixture below
+// (TS2741 on an added field, TS2353 on a removed one). The pin's diagnostic does not name the key.
 type Assert<T extends true> = T;
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
-export type _WorkerMessageIsExact = Assert<Equals<v.InferOutput<typeof WorkerMessageSchema>, WorkerMessage>>;
+export type _WorkerMessageKeys = Assert<
+  Equals<
+    keyof WorkerMessage,
+    'id' | 'sessionId' | 'fromWorkerId' | 'fromWorkerName' | 'toWorkerId' | 'toWorkerName' | 'content' | 'timestamp'
+  >
+>;
 
 const workerMessage: WorkerMessage = {
   id: 'm1',

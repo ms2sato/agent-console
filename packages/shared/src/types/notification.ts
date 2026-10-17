@@ -122,18 +122,3 @@ export interface NotificationContext {
   /** Full URL to access this session/worker in Agent Console */
   agentConsoleUrl: string;
 }
-
-// === Repository-level Integration Settings ===
-
-/**
- * Repository-level Slack integration settings.
- * Allows per-repository webhook URL configuration.
- */
-export interface RepositorySlackIntegration {
-  id: string;
-  repositoryId: string;
-  webhookUrl: string;
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-}

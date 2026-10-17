@@ -393,18 +393,9 @@ CREATE TABLE repository_slack_integrations (
 > **Note**: Modern Slack App webhooks ignore `username` and `icon_emoji` in the payload.
 > These must be configured in the Slack App settings, not per-message.
 
-#### TypeScript Interface
+#### TypeScript Type
 
-```typescript
-interface RepositorySlackIntegration {
-  id: string;
-  repositoryId: string;
-  webhookUrl: string;
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-```
+`RepositorySlackIntegration` is derived from `RepositorySlackIntegrationSchema` in `packages/shared/src/schemas/notification.ts` (`v.InferOutput`); the schema is the single writer of its fields (`id`, `repositoryId`, `webhookUrl`, `enabled`, `createdAt`, `updatedAt`).
 
 #### Webhook Resolution
 

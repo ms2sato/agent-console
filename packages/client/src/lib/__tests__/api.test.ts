@@ -86,6 +86,7 @@ import {
 } from '../api';
 import * as capabilitiesModule from '../capabilities';
 import { UpdateEmbeddedAgentWorkerRequestSchema } from '@agent-console/shared';
+import type { LoginResponse, UpdateUserPreferencesResponse } from '@agent-console/shared';
 import * as v from 'valibot';
 import { completeWireBody } from '../../test/wire-fixtures';
 
@@ -93,6 +94,16 @@ import { completeWireBody } from '../../test/wire-fixtures';
 // Tests use partial mock data intentionally (verifying passthrough, not shape), so we wrap
 // expect to accept unknown values. This avoids `any` while allowing structural comparison.
 const expect = (value: unknown) => bunExpect(value);
+
+// Type pins: the auth wrappers return the schema-derived response types, so a
+// return type edited away from them is a `tsc` failure (TS2344) here. The
+// `Assert<Equals<...>>` form fails under drift; `declare const x: never` would not.
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+export type _LoginReturnsLoginResponse = Assert<Equals<Awaited<ReturnType<typeof login>>, LoginResponse>>;
+export type _UpdateAuthPreferencesReturnsResponse = Assert<
+  Equals<Awaited<ReturnType<typeof updateAuthPreferences>>, UpdateUserPreferencesResponse>
+>;
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
