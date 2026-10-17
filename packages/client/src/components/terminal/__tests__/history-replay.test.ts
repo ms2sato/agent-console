@@ -192,7 +192,7 @@ describe('replayHistoryPair (seam correction §6.2)', () => {
   });
 
   it('pair re-replay corrects the seam: the boundary row is content, not chrome', async () => {
-    const pair = await replayHistoryPair(OLDER_RANGE, NEWER_RANGE, 80, 24, (d) => d);
+    const pair = await replayHistoryPair(OLDER_RANGE, NEWER_RANGE, 80, 24, (d) => d, 'keep');
     expect(pair.overflow).toBe(false);
     // The top chunk (C_top) is the seam-sensitive one. With the predecessor
     // replayed first, its leading (boundary) row is real content, NOT the
@@ -211,7 +211,7 @@ describe('replayHistoryPair (seam correction §6.2)', () => {
     const B = Array.from({ length: 15 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
     const sa = await replayHistoryChunk(A, 80, 24, (d) => d);
     const sb = await replayHistoryChunk(B, 80, 24, (d) => d);
-    const pair = await replayHistoryPair(A, B, 80, 24, (d) => d);
+    const pair = await replayHistoryPair(A, B, 80, 24, (d) => d, 'keep');
     // The joined partition equals the concatenation of the two standalone
     // extractions (the split index differs — splitBaseY counts only C_new's
     // scrolled rows — but the JOINED set is loss- and duplication-free).
@@ -226,7 +226,7 @@ describe('replayHistoryPair (seam correction §6.2)', () => {
     const A = Array.from({ length: 10 }, (_, i) => `A${i}\r\n`).join('');
     // B alone stays under the cap; A + B together exceed it.
     const B = Array.from({ length: 45 }, (_, i) => `B${i}\r\n`).join('');
-    const pairResult = await replayHistoryPair(A, B, 80, 24, (d) => d);
+    const pairResult = await replayHistoryPair(A, B, 80, 24, (d) => d, 'keep');
     const standaloneB = await replayHistoryChunk(B, 80, 24, (d) => d);
     expect(pairResult.overflow).toBe(true); // joined overflowed -> store falls back
     expect(pairResult.newChunkRows).toEqual([]);
@@ -239,9 +239,21 @@ describe('replayHistoryPair (seam correction §6.2)', () => {
     // (wrapped) line; link detection over the joined extraction reconnects it.
     const newer = 'start of line https://example.com/very/long/';
     const top = 'path/that/continues/here end\r\n';
-    const pair = await replayHistoryPair(newer, top, 20, 24, (d) => d);
+    const pair = await replayHistoryPair(newer, top, 20, 24, (d) => d, 'keep');
     const hrefs = [...pair.newChunkRows, ...pair.topChunkRows].flatMap((r) => r.links.map((l) => l.href));
     expect(hrefs.some((h) => h.includes('very/long/path/that/continues'))).toBe(true);
+  });
+
+  it("'keep' keeps the top chunk's on-screen tail; 'yield-to-newer' drops it from topChunkRows", async () => {
+    const A = Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const B = Array.from({ length: 30 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const keep = await replayHistoryPair(A, B, 80, 24, (d) => d, 'keep');
+    const yielded = await replayHistoryPair(A, B, 80, 24, (d) => d, 'yield-to-newer');
+    expect(textOf(yielded.newChunkRows)).toEqual(textOf(keep.newChunkRows));
+    const dropped = keep.topChunkRows.length - yielded.topChunkRows.length;
+    expect(dropped).toBeGreaterThan(0);
+    expect(dropped).toBeLessThanOrEqual(23);
+    expect(textOf(keep.topChunkRows).slice(0, yielded.topChunkRows.length)).toEqual(textOf(yielded.topChunkRows));
   });
 });
 
@@ -258,7 +270,7 @@ describe('replayHistoryJoint (triple seam correction §6.2, #994)', () => {
     const sa = await replayHistoryChunk(A, 80, 24, (d) => d);
     const sb = await replayHistoryChunk(B, 80, 24, (d) => d);
     const sc = await replayHistoryChunk(C, 80, 24, (d) => d);
-    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d);
+    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, 'keep');
     expect(joint.overflow).toBe(false);
     expect(joint.partitions.length).toBe(3);
     // The joined partition equals the concatenation of the three standalone
@@ -270,13 +282,45 @@ describe('replayHistoryJoint (triple seam correction §6.2, #994)', () => {
     ).toEqual([...textOf(sa.rows), ...textOf(sb.rows), ...textOf(sc.rows)]);
   });
 
+  it("'yield-to-newer' ends the last partition at its recorded baseY and leaves the on-screen tail to the newer chunk", async () => {
+    const A = Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const B = Array.from({ length: 30 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const C = Array.from({ length: 30 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const newest = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, 'keep');
+    const withNewer = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, 'yield-to-newer');
+    // Boundaries before the last are untouched.
+    expect(textOf(withNewer.partitions[0])).toEqual(textOf(newest.partitions[0]));
+    expect(textOf(withNewer.partitions[1])).toEqual(textOf(newest.partitions[1]));
+    // The last chunk keeps its settled scrollback only: it drops exactly the tail
+    // that stays on the replay screen (up to rows - 1 rows).
+    const dropped = newest.partitions[2].length - withNewer.partitions[2].length;
+    expect(dropped).toBeGreaterThan(0);
+    expect(dropped).toBeLessThanOrEqual(23);
+    expect(textOf(newest.partitions[2]).slice(0, withNewer.partitions[2].length)).toEqual(textOf(withNewer.partitions[2]));
+  });
+
+  it("'keep' ends the last partition at extracted.length; 'yield-to-newer' ends it at the last recorded baseY", async () => {
+    const A = Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const B = Array.from({ length: 30 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const C = Array.from({ length: 30 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const standalone = await replayHistoryChunk(A + B + C, 80, 24, (d) => d);
+    const keep = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, 'keep');
+    const yielded = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, 'yield-to-newer');
+    const total = (r: typeof keep) => r.partitions.reduce((n, p) => n + p.length, 0);
+    // 'keep' covers the whole extraction; 'yield-to-newer' stops at the baseY
+    // after the last write, which is the same extraction minus the on-screen tail.
+    expect(total(keep)).toBe(standalone.rows.length);
+    expect(total(yielded)).toBeLessThan(total(keep));
+    expect(total(keep) - total(yielded)).toBeLessThanOrEqual(23);
+  });
+
   it('reports overflow (empty partitions) when the joined triple exceeds the scrollback cap', async () => {
     _setReplayScrollbackForTest(50);
     // Each chunk alone stays under the cap; all three together exceed it.
     const A = Array.from({ length: 10 }, (_, i) => `A${i}\r\n`).join('');
     const B = Array.from({ length: 10 }, (_, i) => `B${i}\r\n`).join('');
     const C = Array.from({ length: 40 }, (_, i) => `C${i}\r\n`).join('');
-    const result = await replayHistoryJoint([A, B, C], 80, 24, (d) => d);
+    const result = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, 'keep');
     expect(result.overflow).toBe(true);
     expect(result.partitions).toEqual([]);
   });
@@ -293,7 +337,7 @@ describe('replayHistoryJoint (triple seam correction §6.2, #994)', () => {
     const C =
       'ld world\r\n' +
       Array.from({ length: 15 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('');
-    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d);
+    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, 'keep');
     expect(joint.overflow).toBe(false);
     const [, bPart, cPart] = joint.partitions;
     const bText = textOf(bPart);
@@ -339,7 +383,7 @@ describe('replayHistoryJoint (triple seam correction §6.2, #994)', () => {
     const standaloneC = await replayHistoryChunk(C, 80, 24, (d) => d);
     expect(textOf(standaloneC.rows)[0]).toBe('CHROME-BAR');
     // Joint (A, B, C) — the chrome row is corrected.
-    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d);
+    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d, 'keep');
     expect(joint.overflow).toBe(false);
     const cPart = textOf(joint.partitions[2]);
     // C's leading row is NOT the chrome bar — it is real content, because
