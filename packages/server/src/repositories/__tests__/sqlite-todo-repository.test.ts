@@ -164,6 +164,9 @@ describe('SqliteTodoRepository', () => {
       expect(await ids({ visibleTo: { userId: 'nobody', sessionIds: ['shared-1'] } })).toEqual(['in-session']);
     });
 
+    // Reach (measured): removing the empty-list guard is NOT detectable here: SQLite accepts `IN ()`
+    // (always false), so the mutation is behaviour-preserving. The test pins the behaviour a reader
+    // expects (an empty list still lets the assigned and created branches through).
     it('an empty sessionIds list is valid (no IN () clause) and still returns the assigned and created items', async () => {
       expect(await ids({ visibleTo: { userId: 'assignee-u', sessionIds: [] } })).toEqual(['assigned']);
       expect(await ids({ visibleTo: { userId: 'nobody', sessionIds: [] } })).toEqual([]);

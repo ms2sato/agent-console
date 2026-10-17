@@ -106,7 +106,7 @@ export class SqliteTodoRepository implements TodoRepository {
         eb.or([
           eb('assignee_user_id', '=', userId),
           eb('created_user_id', '=', userId),
-          // `IN ()` is invalid SQL: with no sessions the third branch simply does not exist.
+          // SQLite accepts `IN ()`; the guard is for readers and for any engine that does not.
           ...(sessionIds.length > 0 ? [eb('session_id', 'in', sessionIds)] : []),
         ]),
       );
