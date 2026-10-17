@@ -3,12 +3,8 @@ import { screen, cleanup, waitFor } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { completeWireBody } from '../../../test/wire-fixtures';
 import { setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
-import {
-  TodosNavLink,
-  ArtifactsNavLink,
-  ReviewNavLink,
-  ValidationWarningIndicator,
-} from '../NavLinks';
+import { TopNavLink, ValidationWarningIndicator } from '../NavLinks';
+import { NAV_ITEMS, type NavItem } from '../nav-items';
 
 // --- Fetch-level mocking ---
 
@@ -74,22 +70,51 @@ afterEach(() => {
   mockFetch.mockClear();
 });
 
-describe('TodosNavLink', () => {
-  it('links to /todos with the label "Todo"', async () => {
-    await renderWithRouter(<TodosNavLink />);
-    const link = screen.getByText('Todo').closest('a');
-    expect(link?.getAttribute('href')).toBe('/todos');
+function item(id: string): NavItem {
+  const found = NAV_ITEMS.find((i) => i.id === id);
+  if (!found) throw new Error(`no nav item ${id}`);
+  return found;
+}
+
+describe('TopNavLink', () => {
+  it('links to the item destination with its label', async () => {
+    await renderWithRouter(<TopNavLink item={item('artifacts')} />);
+    const link = screen.getByRole('link', { name: 'Artifacts' });
+    expect(link.getAttribute('href')).toBe('/artifacts');
   });
 
-  it('is active on /todos and inactive elsewhere', async () => {
-    await renderWithRouter(<TodosNavLink />, '/todos');
-    expect(screen.getByText('Todo').closest('a')?.className).toContain('bg-white/10');
+  it('is active on the item path and its sub-paths, inactive elsewhere', async () => {
+    await renderWithRouter(<TopNavLink item={item('artifacts')} />, '/artifacts');
+    expect(screen.getByRole('link').className).toContain('text-white');
+    expect(screen.getByRole('link').className).toContain('bg-white/10');
     cleanup();
-    await renderWithRouter(<TodosNavLink />, '/jobs');
-    expect(screen.getByText('Todo').closest('a')?.className).not.toContain('bg-white/10');
+    await renderWithRouter(<TopNavLink item={item('artifacts')} />, '/artifacts/123');
+    expect(screen.getByRole('link').className).toContain('bg-white/10');
+    cleanup();
+    await renderWithRouter(<TopNavLink item={item('artifacts')} />, '/jobs');
+    expect(screen.getByRole('link').className).toContain('text-slate-400');
+    expect(screen.getByRole('link').className).not.toContain('bg-white/10');
   });
 
-  it('shows the number of open items assigned to the current user', async () => {
+  it('is active on /todos and /review for their own items', async () => {
+    await renderWithRouter(<TopNavLink item={item('todos')} />, '/todos');
+    expect(screen.getByRole('link').className).toContain('bg-white/10');
+    cleanup();
+    await renderWithRouter(<TopNavLink item={item('review')} />, '/review');
+    expect(screen.getByRole('link').className).toContain('bg-white/10');
+    cleanup();
+    await renderWithRouter(<TopNavLink item={item('todos')} />, '/jobs');
+    expect(screen.getByRole('link').className).not.toContain('bg-white/10');
+  });
+
+  it('shows no badge for an item without one', async () => {
+    reviewQueueResponse = [{ sourceSessionId: 's1', sourceSessionTitle: 'S', items: [{ workerId: 'w' }] }];
+    await renderWithRouter(<TopNavLink item={item('artifacts')} />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByRole('link').textContent).toBe('Artifacts');
+  });
+
+  it('shows the Todo count for the todos item', async () => {
     setCurrentUser({ id: 'user-me', username: 'me', homeDir: '/home/me' });
     todosResponse = {
       todos: [
@@ -97,83 +122,30 @@ describe('TodosNavLink', () => {
         { ...baseTodo, id: 'b', assigneeUserId: 'user-me' },
       ],
     };
-    await renderWithRouter(<TodosNavLink />);
+    await renderWithRouter(<TopNavLink item={item('todos')} />);
     await waitFor(() => {
       expect(
         screen.getByRole('link', { name: /2 open Todo items assigned to you/ }).getAttribute('href'),
       ).toBe('/todos');
     });
   });
-});
 
-describe('ArtifactsNavLink', () => {
-  it('should render a link with text "Artifacts"', async () => {
-    await renderWithRouter(<ArtifactsNavLink />);
-    const link = screen.getByText('Artifacts');
-    expect(link).toBeTruthy();
-    expect(link.getAttribute('href')).toBe('/artifacts');
-  });
-
-  it('should have active styling when on /artifacts path', async () => {
-    await renderWithRouter(<ArtifactsNavLink />, '/artifacts');
-    const link = screen.getByText('Artifacts');
-    expect(link.className).toContain('text-white');
-    expect(link.className).toContain('bg-white/10');
-  });
-
-  it('should have inactive styling when on a different path', async () => {
-    await renderWithRouter(<ArtifactsNavLink />, '/jobs');
-    const link = screen.getByText('Artifacts');
-    expect(link.className).toContain('text-slate-400');
-    expect(link.className).not.toContain('bg-white/10');
-  });
-
-  it('should be active on sub-paths like /artifacts/123', async () => {
-    await renderWithRouter(<ArtifactsNavLink />, '/artifacts/123');
-    const link = screen.getByText('Artifacts');
-    expect(link.className).toContain('text-white');
-  });
-});
-
-describe('ReviewNavLink', () => {
-  it('should render a link with text "Review"', async () => {
-    await renderWithRouter(<ReviewNavLink />);
-    const link = screen.getByText('Review');
-    expect(link).toBeTruthy();
-  });
-
-  it('should not show badge when there are no pending items', async () => {
+  it('shows no review badge when there are no pending items', async () => {
     reviewQueueResponse = [];
-    await renderWithRouter(<ReviewNavLink />);
-    // No badge should be rendered
+    await renderWithRouter(<TopNavLink item={item('review')} />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(screen.queryByText(/^\d+$/)).toBeNull();
   });
 
-  it('should show pending count badge when there are review items', async () => {
+  it('shows the pending count for the review item', async () => {
     reviewQueueResponse = [
-      {
-        sourceSessionId: 's1',
-        sourceSessionTitle: 'Session 1',
-        items: [{ workerId: 'item-1' }, { workerId: 'item-2' }],
-      },
-      {
-        sourceSessionId: 's2',
-        sourceSessionTitle: 'Session 2',
-        items: [{ workerId: 'item-3' }],
-      },
+      { sourceSessionId: 's1', sourceSessionTitle: 'Session 1', items: [{ workerId: 'item-1' }, { workerId: 'item-2' }] },
+      { sourceSessionId: 's2', sourceSessionTitle: 'Session 2', items: [{ workerId: 'item-3' }] },
     ];
-    await renderWithRouter(<ReviewNavLink />);
-
-    // Wait for the query to resolve and badge to appear
+    await renderWithRouter(<TopNavLink item={item('review')} />);
     await waitFor(() => {
       expect(screen.getByText('3')).toBeTruthy();
     });
-  });
-
-  it('should have active styling when on /review path', async () => {
-    await renderWithRouter(<ReviewNavLink />, '/review');
-    const link = screen.getByText('Review');
-    expect(link.closest('a')!.className).toContain('text-white');
   });
 });
 

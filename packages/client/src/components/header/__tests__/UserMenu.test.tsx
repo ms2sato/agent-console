@@ -14,6 +14,7 @@ let logoutRequests: number;
 
 beforeEach(() => {
   resetAuth();
+  auth.multiUser = false;
   logoutRequests = 0;
   globalThis.fetch = Object.assign(
     mock(async (input: RequestInfo | URL): Promise<Response> => {
@@ -30,7 +31,10 @@ afterEach(() => {
   resetAuth();
 });
 
+const auth = { multiUser: false };
+
 function asMultiUser() {
+  auth.multiUser = true;
   setAuthMode('multi-user');
   setCurrentUser(ME);
 }
@@ -40,8 +44,9 @@ async function renderMenu(path = '/') {
   return { ...view, user: userEvent.setup() };
 }
 
+/** Multi-user: named by the visible username. Single-user: named by its aria-label. */
 function trigger() {
-  return screen.getByRole('button', { name: 'Account menu' });
+  return screen.getByRole('button', { name: auth.multiUser ? 'alice' : 'Account menu' });
 }
 
 function menu() {
@@ -59,12 +64,14 @@ describe('UserMenu trigger', () => {
     asMultiUser();
     await renderMenu();
     expect(trigger().textContent).toBe('alice');
+    expect(trigger().getAttribute('aria-label')).toBeNull();
     expect(trigger().getAttribute('aria-haspopup')).toBe('menu');
   });
 
   it('shows no username in single-user mode and is found by its label', async () => {
     await renderMenu();
     expect(trigger().textContent).toBe('');
+    expect(trigger().getAttribute('aria-label')).toBe('Account menu');
     expect(trigger().getAttribute('aria-haspopup')).toBe('menu');
   });
 

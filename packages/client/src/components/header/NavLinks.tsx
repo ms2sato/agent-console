@@ -5,53 +5,23 @@ import { sessionKeys } from '../../lib/query-keys';
 import { WarningIcon } from '../Icons';
 import { TodoCountBadge } from './TodoCountBadge';
 import { ReviewCountBadge } from './ReviewCountBadge';
+import { isNavItemActive, type NavItem } from './nav-items';
 
-export function TodosNavLink() {
+/** A top-level desktop header link rendered from a NAV_ITEMS entry. */
+export function TopNavLink({ item }: { item: NavItem }) {
   const location = useLocation();
-  const isActive = location.pathname.startsWith('/todos');
+  const isActive = isNavItemActive(item, location.pathname);
 
   return (
     <Link
-      to="/todos"
+      to={item.to}
       className={`text-sm py-1 px-2 rounded no-underline flex items-center gap-1.5 ${
         isActive ? 'text-white bg-white/10' : 'text-slate-400'
       }`}
     >
-      Todo
-      <TodoCountBadge />
-    </Link>
-  );
-}
-
-export function ArtifactsNavLink() {
-  const location = useLocation();
-  const isActive = location.pathname === '/artifacts' || location.pathname.startsWith('/artifacts/');
-
-  return (
-    <Link
-      to="/artifacts"
-      className={`text-sm py-1 px-2 rounded no-underline ${
-        isActive ? 'text-white bg-white/10' : 'text-slate-400'
-      }`}
-    >
-      Artifacts
-    </Link>
-  );
-}
-
-export function ReviewNavLink() {
-  const location = useLocation();
-  const isActive = location.pathname.startsWith('/review');
-
-  return (
-    <Link
-      to="/review"
-      className={`text-sm py-1 px-2 rounded no-underline flex items-center gap-1.5 ${
-        isActive ? 'text-white bg-white/10' : 'text-slate-400'
-      }`}
-    >
-      Review
-      <ReviewCountBadge />
+      {item.label}
+      {item.badge === 'todo' && <TodoCountBadge />}
+      {item.badge === 'review' && <ReviewCountBadge />}
     </Link>
   );
 }

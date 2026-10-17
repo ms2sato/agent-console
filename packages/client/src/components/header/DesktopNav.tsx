@@ -1,6 +1,8 @@
 import { PlusIcon } from '../Icons';
 import { NotificationBell } from '../notifications';
-import { TodosNavLink, ReviewNavLink, ArtifactsNavLink, ValidationWarningIndicator } from './NavLinks';
+import { useAuth } from '../../lib/auth';
+import { TopNavLink, ValidationWarningIndicator } from './NavLinks';
+import { navItemsByPlacement } from './nav-items';
 import { UserMenu } from './UserMenu';
 
 interface DesktopNavProps {
@@ -10,6 +12,8 @@ interface DesktopNavProps {
 
 /** The desktop header's navigation contents; the caller owns the surrounding <nav>. */
 export function DesktopNav({ onCreateWorktree, isMobile }: DesktopNavProps) {
+  const { isMultiUser } = useAuth();
+
   return (
     <>
       <button
@@ -21,9 +25,9 @@ export function DesktopNav({ onCreateWorktree, isMobile }: DesktopNavProps) {
         <PlusIcon className="w-4 h-4" />
       </button>
       <ValidationWarningIndicator />
-      <TodosNavLink />
-      <ReviewNavLink />
-      <ArtifactsNavLink />
+      {navItemsByPlacement('top', isMultiUser).map((item) => (
+        <TopNavLink key={item.id} item={item} />
+      ))}
       {/* isMobile-gated: the parent <nav> is only CSS-hidden (hidden md:flex) on mobile, not
           unmounted, so without this gate NotificationBell would double-mount alongside
           MobileHeaderControls' own instance. */}

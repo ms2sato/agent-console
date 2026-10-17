@@ -8,6 +8,7 @@ import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { makeTodo, jsonResponse, fetchUrl } from '../../../test/todo-fixtures';
 import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 import { DesktopNav } from '../DesktopNav';
+import { navItemsByPlacement } from '../nav-items';
 
 const originalFetch = globalThis.fetch;
 const ME = { id: 'user-me', username: 'alice', homeDir: '/home/alice' };
@@ -78,7 +79,8 @@ function bellButton() {
   return screen.getByRole('button', { name: /notifications/i });
 }
 function accountTrigger() {
-  return screen.getByRole('button', { name: 'Account menu' });
+  // Multi-user (the beforeEach default): named by the visible username.
+  return screen.getByRole('button', { name: 'alice' });
 }
 
 describe('DesktopNav', () => {
@@ -128,5 +130,23 @@ describe('DesktopNav', () => {
     // An open Radix menu marks everything outside it aria-hidden, so the lookups opt in to hidden nodes.
     expect(screen.getByRole('link', { name: /^Todo/, hidden: true }).textContent).toContain('2');
     expect(screen.getByRole('link', { name: /^Review/, hidden: true }).textContent).toContain('3');
+  });
+
+  describe.each([
+    ['single-user', false],
+    ['multi-user', true],
+  ])('parity with NAV_ITEMS (%s)', (_label, multiUser) => {
+    it('renders a link for every top-placement item visible in that mode, and no other destination', async () => {
+      if (!multiUser) {
+        resetAuth();
+      }
+      const { container } = await renderNav();
+      await waitFor(() => expect(maintenanceLink()).toBeTruthy());
+
+      const hrefs = Array.from(container.querySelectorAll('a'))
+        .map((a) => a.getAttribute('href') ?? '')
+        .filter((href) => href !== '/maintenance');
+      expect(hrefs).toEqual(navItemsByPlacement('top', multiUser).map((i) => i.to));
+    });
   });
 });

@@ -23,7 +23,8 @@ export function UserMenu() {
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          aria-label="Account menu"
+          // Single-user mode shows only an icon, so it needs a label; multi-user is named by the visible username.
+          aria-label={username ? undefined : 'Account menu'}
           className={`text-sm py-1 px-2 rounded flex items-center gap-1.5 ${
             anyActive ? 'text-white bg-white/10' : 'text-slate-400'
           }`}
