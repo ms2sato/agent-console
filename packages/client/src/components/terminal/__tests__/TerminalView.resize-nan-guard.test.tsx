@@ -52,7 +52,7 @@ function Harness({ instance }: { instance: TerminalInstance }) {
           a parent re-render; it is read nowhere else. */}
       <div data-generation={generation}>
         <ErrorBoundary fallback={() => <div data-testid="boundary-fallback">boundary tripped</div>}>
-          <TerminalView instance={instance} />
+          <TerminalView allowSilentClipboardWrite instance={instance} />
         </ErrorBoundary>
       </div>
     </div>

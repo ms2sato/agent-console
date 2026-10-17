@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent as ReactDragEvent, ReactNode, RefObject } from 'react';
 import type { TerminalInstance } from './terminal-store';
+import { TerminalClipboardNotice } from './TerminalClipboardNotice';
 import type { TerminalRow, TerminalSegment, TerminalStyle } from './buffer-to-rows';
 import type { LinkRange } from './link-detection';
 import { joinSelectedRows, collectSelectedRowPieces } from './copy-text';
@@ -38,6 +39,9 @@ const CLICK_MOVE_THRESHOLD_PX = 5;
 
 interface TerminalViewProps {
   instance: TerminalInstance;
+  // False in multi-user mode: OSC 52 writes then always go through the click-to-copy
+  // notice, because the shared PTY bytes carry no sender (see TerminalClipboardNotice).
+  allowSilentClipboardWrite: boolean;
   onRequestFocus?: () => void;
   // Called when files are dropped onto the terminal. Threaded to the same
   // handler as image paste; the labs route surfaces a toast.
@@ -205,6 +209,7 @@ const Row = memo(function Row({
 
 export function TerminalView({
   instance,
+  allowSilentClipboardWrite,
   onRequestFocus,
   onFilesReceived,
   inputRef,
@@ -792,6 +797,8 @@ export function TerminalView({
       {/* tick = scroll events + snapshot version, so the thumb appears on scroll
           and on content growth, then fades after inactivity. */}
       <TerminalScrollIndicator containerRef={scrollRef} tick={scrollTick + snapshot.version} />
+
+      <TerminalClipboardNotice instance={instance} allowSilentWrite={allowSilentClipboardWrite} />
 
       {!atBottom && (
         <button

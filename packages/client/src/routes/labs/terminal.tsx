@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fetchWorkers } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
 import { getOrCreateTerminal } from '../../components/terminal/terminal-store';
 import { TerminalView } from '../../components/terminal/TerminalView';
 import { TerminalKeyboardInput } from '../../components/terminal/TerminalKeyboardInput';
@@ -37,6 +38,7 @@ function TerminalRoute() {
 
 function TerminalPage({ sessionId, workerId }: { sessionId: string; workerId: string }) {
   const vvh = useVisualViewportHeight();
+  const { isMultiUser } = useAuth();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Instance is keyed by sessionId:workerId and lives in the module store, so
   // this memo just fetches the live handle (never re-creates on re-render).
@@ -91,6 +93,7 @@ function TerminalPage({ sessionId, workerId }: { sessionId: string; workerId: st
 
       <TerminalView
         instance={instance}
+        allowSilentClipboardWrite={!isMultiUser}
         onRequestFocus={focusInput}
         onFilesReceived={handleFilesReceived}
         inputRef={inputRef}

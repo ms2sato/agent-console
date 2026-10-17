@@ -5,6 +5,7 @@ import type { TerminalProps } from './terminal-contract';
 import { WorkerErrorRecovery } from '../../components/WorkerErrorRecovery';
 import { TerminalLoadingBar } from '../../components/ui/TerminalLoadingBar';
 import { deleteSession } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
 import { emitSessionDeleted } from '../../lib/app-websocket';
 import { getOrCreateTerminal, type TerminalStatus, type TerminalInstance } from './terminal-store';
 import { TerminalView } from './TerminalView';
@@ -44,6 +45,7 @@ export function TerminalAdapter({
   createInstance = getOrCreateTerminal,
 }: TerminalProps & { createInstance?: typeof getOrCreateTerminal }) {
   const navigate = useNavigate();
+  const { isMultiUser } = useAuth();
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // The instance is keyed by sessionId:workerId in the module store and outlives
@@ -103,6 +105,7 @@ export function TerminalAdapter({
         <AdapterLoadingBar instance={instance} />
         <TerminalView
           instance={instance}
+          allowSilentClipboardWrite={!isMultiUser}
           onRequestFocus={focusInput}
           onFilesReceived={onFilesReceived}
           inputRef={inputRef}

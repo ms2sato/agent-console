@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, beforeEach, spyOn } from 'bun:test';
 import type { TerminalInstance, TerminalSnapshot } from '../terminal-store';
 
 // TerminalAdapter resolves its instance via an injected `createInstance` factory
@@ -33,7 +33,8 @@ const EXITED_SNAPSHOT: TerminalSnapshot = Object.freeze({
 const stubInstance: TerminalInstance = {
   subscribe: () => () => {},
   getSnapshot: () => EXITED_SNAPSHOT,
-  sendInput: () => {},
+  sendInput: () => true,
+  sendUserInput: () => {},
   resize: () => {},
   forwardScroll: () => {},
   reportMouseButton: () => {},
@@ -43,6 +44,7 @@ const stubInstance: TerminalInstance = {
   dismissNotice: () => {},
   requestOlderHistory: () => {},
   evictTopChunk: () => {},
+  onClipboardWrite: () => () => {},
   acquire: () => () => {},
   dispose: () => {},
 };
@@ -54,6 +56,7 @@ const mockGetOrCreateTerminal = mock(
 import { act, cleanup, screen } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { TerminalAdapter } from '../TerminalAdapter';
+import { setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 
 // Fully-typed MediaQueryList stub (no double-cast); TerminalKeyboardInput's
 // useIsMobile only reads `.matches`.
@@ -125,6 +128,37 @@ describe('TerminalAdapter', () => {
     // The stub instance's exited snapshot flows through the adapter's banner,
     // proving the resolved instance is the one the adapter renders from.
     expect(screen.getByText(/Process exited \(code 0/)).toBeTruthy();
+  });
+
+  it('multi-user mode: an OSC 52 write with recent input and focus shows the notice and does not write silently', async () => {
+    const writeText = mock((_text: string) => Promise.resolve());
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const hasFocusSpy = spyOn(document, 'hasFocus').mockReturnValue(true);
+    setAuthMode('multi-user');
+    try {
+      let emit: (event: { text: string; atMs: number; recentInput: boolean }) => void = () => {};
+      const instance: TerminalInstance = {
+        ...stubInstance,
+        onClipboardWrite: (listener) => {
+          emit = listener;
+          return () => {};
+        },
+      };
+      await act(async () =>
+        renderWithRouter(
+          <TerminalAdapter sessionId="s" workerId="w" createInstance={() => instance} />,
+        ),
+      );
+      await act(async () => emit({ text: 'from the TUI', atMs: 1, recentInput: true }));
+      expect(writeText).not.toHaveBeenCalled();
+      expect(screen.getByText(/Copied from the terminal/)).toBeTruthy();
+    } finally {
+      resetAuth();
+      hasFocusSpy.mockRestore();
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
   });
 
   it('omits the store option when stripScrollbackClear is undefined', async () => {
