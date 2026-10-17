@@ -1,8 +1,8 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact, Bookmark, Todo, TodoKind, TodoScope, TodoStatus } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact, Bookmark, Todo, TodoActivity, TodoActivityActor, TodoKind, TodoScope, TodoStatus } from '@agent-console/shared';
 import type { ArtifactRecord } from '../repositories/artifact-repository.js';
 import type { BookmarkRecord } from '../repositories/bookmark-repository.js';
 import { computeCapabilities, TODO_KINDS, TODO_SCOPES, TODO_STATUSES } from '@agent-console/shared';
-import type { Session, Worker, NewRepository, RepositoryRow, AgentRow, MessageTemplateRow, EmbeddedAgentRow, ArtifactRow, BookmarkRow, TodoRow, SessionRowFull, WorkerRowFull, AgentRowFull, EmbeddedAgentRowFull, RepositoryRowFull } from './schema.js';
+import type { Session, Worker, NewRepository, RepositoryRow, AgentRow, MessageTemplateRow, EmbeddedAgentRow, ArtifactRow, BookmarkRow, TodoActivityRow, TodoRowWithCommentCount, SessionRowFull, WorkerRowFull, AgentRowFull, EmbeddedAgentRowFull, RepositoryRowFull } from './schema.js';
 import type {
   PersistedSession,
   PersistedWorker,
@@ -38,7 +38,7 @@ export function assertNever(x: never, message?: string): never {
  */
 export class DataIntegrityError extends Error {
   constructor(
-    public readonly entityType: 'session' | 'worker' | 'embedded-agent' | 'bookmark' | 'todo',
+    public readonly entityType: 'session' | 'worker' | 'embedded-agent' | 'bookmark' | 'todo' | 'todo-activity',
     public readonly entityId: string,
     public readonly issue: string
   ) {
@@ -903,14 +903,15 @@ function isOneOf<T extends string>(list: readonly T[], value: string): value is 
 }
 
 /**
- * Convert a database todo row to the shared `Todo` wire shape. The CHECK
+ * Convert a database todo row (with its derived comment count) to the shared
+ * `Todo` wire shape. The CHECK
  * constraints already guard the closed lists and the exactly-one-creator
  * rule; the runtime checks here narrow the TEXT columns to their unions and
  * fail loudly on a row that somehow bypassed them.
  *
  * @throws DataIntegrityError if kind, scope, status or the creator columns are invalid
  */
-export function toTodo(row: TodoRow): Todo {
+export function toTodo(row: TodoRowWithCommentCount): Todo {
   if (!isOneOf(TODO_KINDS, row.kind)) {
     throw new DataIntegrityError('todo', row.id, `kind (unexpected value: ${row.kind})`);
   }
@@ -947,7 +948,62 @@ export function toTodo(row: TodoRow): Todo {
     resolvedByUserId: row.resolved_by_user_id,
     resolvedByWorkerId: row.resolved_by_worker_id,
     resolvedAt: row.resolved_at,
+    commentCount: row.comment_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/**
+ * Convert one row of the merged activity timeline to its `TodoActivity`
+ * variant, switching on `kind`. The row is the UNION ALL projection, so a
+ * column the other branch pads with NULL is typed nullable; `requireColumn` is
+ * the typed boundary between that padded row and the variant (the table's NOT
+ * NULL makes the NULL impossible for a branch's own columns, so it is not
+ * defensive logic).
+ *
+ * @throws DataIntegrityError if a branch's own column is NULL or the actor columns are not exactly one
+ */
+export function toTodoActivity(row: TodoActivityRow): TodoActivity {
+  const requireColumn = <T>(value: T | null, column: string): T => {
+    if (value === null) {
+      throw new DataIntegrityError('todo-activity', row.id, `${column} (NULL where the table declares NOT NULL)`);
+    }
+    return value;
+  };
+
+  let actor: TodoActivityActor;
+  if (row.actor_user_id !== null && row.actor_worker_id === null) {
+    actor = { userId: row.actor_user_id };
+  } else if (row.actor_user_id === null && row.actor_worker_id !== null) {
+    actor = { workerId: row.actor_worker_id };
+  } else {
+    throw new DataIntegrityError('todo-activity', row.id, 'actor (exactly one of user and worker is required)');
+  }
+
+  switch (row.kind) {
+    case 'comment':
+      return {
+        id: row.id,
+        todoId: row.todo_id,
+        kind: 'comment',
+        actor,
+        text: requireColumn(row.text, 'todo_comments.text'),
+        createdAt: row.created_at,
+      };
+    case 'moved':
+      return {
+        id: row.id,
+        todoId: row.todo_id,
+        kind: 'moved',
+        actor,
+        fromSessionId: row.from_session_id,
+        toSessionId: requireColumn(row.to_session_id, 'todo_moves.to_session_id'),
+        statement: row.statement,
+        attributedUserId: row.attributed_user_id,
+        createdAt: row.created_at,
+      };
+    default:
+      return assertNever(row.kind, 'todo activity kind');
+  }
 }

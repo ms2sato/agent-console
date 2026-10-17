@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { Todo, UsersListResponse } from '@agent-console/shared';
-import { updateTodo, deleteTodo } from '../../lib/api';
+import type { Todo, TodoActivity, TodoActivityActor, UsersListResponse } from '@agent-console/shared';
+import { updateTodo, deleteTodo, commentTodo } from '../../lib/api';
 import { todoKeys } from '../../lib/query-keys';
 import { formatAbsoluteTimestamp } from '../../lib/format';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -16,6 +16,8 @@ type DirectoryUsers = UsersListResponse['users'];
 interface TodoDetailProps {
   todo: Todo;
   users: DirectoryUsers;
+  /** The item's timeline in the server's order (comments and moves); rendered as sent, never re-sorted. */
+  activities: TodoActivity[];
   /** Shows a refused or failed action; the message is the server's own. */
   onError: (title: string, message: string) => void;
   /** True where a terminal of the item's session can run a ```terminal block (the in-session dialog). */
@@ -42,6 +44,96 @@ function provenanceLabel(todo: Todo, users: DirectoryUsers): string | null {
   return resolvedByUserId === null
     ? 'recorded by an agent'
     : `recorded by an agent from ${usernameOf(users, resolvedByUserId)}'s statement`;
+}
+
+function actorLabel(actor: TodoActivityActor, users: DirectoryUsers): string {
+  return 'userId' in actor ? usernameOf(users, actor.userId) : 'agent';
+}
+
+const SESSION_ID_DISPLAY_LENGTH = 8;
+
+/** The detail has no session titles, so a session is shown by the start of its id. */
+function sessionLabel(sessionId: string | null): string {
+  return sessionId === null ? 'no session' : sessionId.slice(0, SESSION_ID_DISPLAY_LENGTH);
+}
+
+interface ActivityRowProps {
+  activity: TodoActivity;
+  users: DirectoryUsers;
+}
+
+function ActivityRow({ activity, users }: ActivityRowProps) {
+  switch (activity.kind) {
+    case 'comment':
+      return (
+        <li data-testid={`todo-activity-${activity.id}`} className="text-sm">
+          <p className="text-xs text-gray-500">
+            {actorLabel(activity.actor, users)} · {formatIso(activity.createdAt)}
+          </p>
+          <p className="text-gray-300 whitespace-pre-wrap break-words">{activity.text}</p>
+        </li>
+      );
+    case 'moved':
+      return (
+        <li data-testid={`todo-activity-${activity.id}`} className="text-sm">
+          <p className="text-xs text-gray-500">
+            Moved from {sessionLabel(activity.fromSessionId)} to {sessionLabel(activity.toSessionId)} by{' '}
+            {actorLabel(activity.actor, users)} · {formatIso(activity.createdAt)}
+          </p>
+          {activity.statement !== null && (
+            <p className="text-gray-300 whitespace-pre-wrap break-words">
+              {activity.attributedUserId === null
+                ? `on a human's instruction: "${activity.statement}"`
+                : `"${activity.statement}" -- ${usernameOf(users, activity.attributedUserId)}`}
+            </p>
+          )}
+        </li>
+      );
+    default: {
+      const _exhaustive: never = activity;
+      throw new Error(`Unhandled Todo activity: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
+}
+
+interface TodoReplyFormProps {
+  todoId: string;
+  onError: TodoDetailProps['onError'];
+}
+
+function TodoReplyForm({ todoId, onError }: TodoReplyFormProps) {
+  const queryClient = useQueryClient();
+  const [text, setText] = useState('');
+
+  const replyMutation = useMutation({
+    mutationFn: () => commentTodo(todoId, text.trim()),
+    onSuccess: async () => {
+      setText('');
+      await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+    },
+    onError: (err: Error) => onError('Failed to Reply', err.message),
+  });
+
+  return (
+    <div className="space-y-2 mt-3">
+      <textarea
+        aria-label="Reply"
+        placeholder="Reply on this item"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={3}
+        className="input text-sm w-full"
+      />
+      <button
+        type="button"
+        onClick={() => replyMutation.mutate()}
+        disabled={text.trim() === '' || replyMutation.isPending}
+        className="btn text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+      >
+        Reply
+      </button>
+    </div>
+  );
 }
 
 interface TodoEditFormProps {
@@ -164,7 +256,7 @@ function TodoReScopeControls({ todo, onError }: TodoEditFormProps) {
  * with its provenance, and the actions the summary row does not carry (edit,
  * re-scope, delete). Hosted by the `/todos/:id` page and the in-session dialog.
  */
-export function TodoDetail({ todo, users, onError, runEnabled, onRun, onDeleted }: TodoDetailProps) {
+export function TodoDetail({ todo, users, activities, onError, runEnabled, onRun, onDeleted }: TodoDetailProps) {
   const queryClient = useQueryClient();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -172,6 +264,8 @@ export function TodoDetail({ todo, users, onError, runEnabled, onRun, onDeleted 
   // A question is always session-scoped; only an open action can be re-scoped.
   const canReScope = isOpen && todo.kind === 'action';
   const provenance = provenanceLabel(todo, users);
+  // The server takes a reply on an open or done item only; a closed item keeps its timeline read-only.
+  const canReply = todo.status === 'open' || todo.status === 'done';
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteTodo(todo.id),
@@ -223,6 +317,20 @@ export function TodoDetail({ todo, users, onError, runEnabled, onRun, onDeleted 
         >
           Open in session
         </Link>
+      )}
+
+      {(activities.length > 0 || canReply) && (
+        <section aria-label="Thread">
+          <SectionHeader title="Thread" />
+          {activities.length > 0 && (
+            <ul className="space-y-3">
+              {activities.map((activity) => (
+                <ActivityRow key={activity.id} activity={activity} users={users} />
+              ))}
+            </ul>
+          )}
+          {canReply && <TodoReplyForm todoId={todo.id} onError={onError} />}
+        </section>
       )}
 
       {(todo.resolutionText || provenance !== null) && (

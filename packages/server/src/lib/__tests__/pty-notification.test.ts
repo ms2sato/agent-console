@@ -493,6 +493,31 @@ describe('buildPtyNotificationText -- internal-todo-resolved', () => {
   });
 });
 
+describe('buildPtyNotificationText -- internal-todo-comment', () => {
+  it('builds an internal-todo-comment notification with every field', () => {
+    const result = buildPtyNotificationText({
+      kind: 'internal-todo-comment',
+      tag: 'internal:todo-comment',
+      fields: {
+        todoId: 'todo-1',
+        todoKind: 'question',
+        title: 'Which port?',
+        author: 'alice',
+        text: 'not 3457, the other one',
+      },
+      intent: 'triage',
+    });
+
+    expect(result).toContain('[internal:todo-comment]');
+    expect(result).toContain('todoId=todo-1');
+    expect(result).toContain('todoKind=question');
+    expect(result).toContain('title="Which port?"');
+    expect(result).toContain('author=alice');
+    expect(result).toContain('text="not 3457, the other one"');
+    expect(result).toContain('intent=triage');
+  });
+});
+
 describe('extractNotificationSummary — internal-worker-interrupted', () => {
   it('returns the summary field for an internal-worker-interrupted notification', () => {
     const summary = extractNotificationSummary({

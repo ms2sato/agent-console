@@ -105,6 +105,11 @@ The on-disk Git repository a [Repository](#repository) is registered from, livin
 - **Contrast:** the [Memo](#memo) keeps status; the TODO list takes requests (questions and commands).
 - **See:** [human-todo-list.md](design/human-todo-list.md)
 
+### TodoActivity
+An entry in a [TodoItem](#todoitem)'s timeline (human TODO list v3), a discriminated union on `kind`: a `comment` (stored in `todo_comments`: words left by a human in the UI, or by an agent of the item's session through the MCP tool `comment_todo`, the status unchanged) or a `moved` row (stored in `todo_moves`: every change of the item's session, the human move or `adopt_todo`, with `from`, `to` and, when an agent moved it on a human's instruction, the quoted `statement` and the attributed user). Both are deleted with their item (foreign keys with `ON DELETE CASCADE`) and kept through a session deletion. The timeline is read as ONE query ordered by `created_at`, then `kind`, then `id`; `Todo.commentCount` counts comments only.
+- **Aliases:** comment, reply, thread, move record
+- **See:** [human-todo-list.md](design/human-todo-list.md)
+
 ### RepositoryInUseError
 The single-writer rule for whether a [Repository](#repository) is currently in use by any session. Enforced by `RepositoryManager.assertRepositoryNotInUse`, which combines the in-memory active-session check with a check over persisted session rows that are not currently active in memory — a repository with a paused [WorktreeSession](#worktreesession) counts as in-use, not only one with active sessions. The `DELETE /api/repositories/:id` route maps a thrown `RepositoryInUseError` to `409 Conflict`. Session creation and repository unregister serialize on the per-repository lock (`RepositoryManager.withRegisteredRepository`): unregister holds it from the in-use check through the row deletion, so a creation that starts in that interval waits, then fails with `RepositoryNotFoundError` — the repository row's absence is the durable "unregister in progress" marker, surviving a restart together with the queued cleanup job. A paused worktree session is a persisted row the in-use check already reads, so resume does not race.
 - **See:** `packages/server/src/services/repository-manager.ts`

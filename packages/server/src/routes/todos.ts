@@ -12,10 +12,11 @@ import * as v from 'valibot';
 import type { AppBindings, AppContext } from '../app-context.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
-import { deliverTodoResolution, emitTodosUpdated } from '../lib/todo-triggers.js';
+import { deliverTodoComment, deliverTodoResolution, emitTodosUpdated } from '../lib/todo-triggers.js';
 import { vQueryValidator, vValidator } from '../middleware/validation.js';
 import type { UpdateTodoParams } from '../repositories/todo-repository.js';
 import {
+  CommentTodoRequestSchema,
   CreateTodoRequestSchema,
   ResolveTodoRequestSchema,
   TODO_SCOPES,
@@ -67,9 +68,10 @@ const todos = new Hono<AppBindings>()
   })
   .get('/:id', async (c) => {
     const { todoRepository } = c.get('appContext');
-    const todo = await todoRepository.findById(c.req.param('id'));
+    const id = c.req.param('id');
+    const todo = await todoRepository.findById(id);
     if (!todo) throw new NotFoundError('Todo');
-    return c.json({ todo });
+    return c.json({ todo, activities: await todoRepository.listActivities(id) });
   })
   // Human create. An explicit `scope` wins; otherwise `session` when the
   // request carries a sessionId (the per-session panel) and `global` when it
@@ -201,6 +203,52 @@ const todos = new Hono<AppBindings>()
       });
 
     return c.json({ todo: resolved });
+  })
+  // Comment. Allowed on open and done items only; the status never changes. A human's comment
+  // on an agent-created item is delivered to the creating worker.
+  .post('/:id/comments', vValidator(CommentTodoRequestSchema), async (c) => {
+    const id = c.req.param('id');
+    const body = c.req.valid('json');
+    const { todoRepository, broadcastToApp, sessionManager } = c.get('appContext');
+    const authUser = c.get('authUser');
+
+    const existing = await todoRepository.findById(id);
+    if (!existing) throw new NotFoundError('Todo');
+    if (existing.status !== 'open' && existing.status !== 'done') {
+      throw new ConflictError(`An item that is ${existing.status} cannot take a comment`);
+    }
+
+    const added = await todoRepository.addComment({ todoId: id, actor: { userId: authUser.id }, text: body.text });
+    if (!added) {
+      // The conditional insert wrote nothing: the item was deleted or closed since the read above.
+      const current = await todoRepository.findById(id);
+      if (!current) throw new NotFoundError('Todo');
+      throw new ConflictError(`An item that is ${current.status} cannot take a comment`);
+    }
+    const [todo, activities] = await Promise.all([todoRepository.findById(id), todoRepository.listActivities(id)]);
+    if (!todo) {
+      // Deleted between the write and the read: the comment went with it.
+      throw new NotFoundError('Todo');
+    }
+
+    emitTodosUpdated(broadcastToApp, todo.sessionId);
+
+    // Best effort and not awaited: the response never depends on the worker.
+    const workerId = 'workerId' in todo.createdBy ? todo.createdBy.workerId : undefined;
+    void deliverTodoComment(sessionManager, todo, authUser.username, body.text)
+      .then((result) => {
+        if (result && !result.ok) {
+          logger.warn(
+            { todoId: id, sessionId: todo.sessionId, workerId, reason: result.reason, error: result.error },
+            'Failed to deliver todo comment',
+          );
+        }
+      })
+      .catch((err) => {
+        logger.warn({ todoId: id, sessionId: todo.sessionId, workerId, err }, 'Failed to deliver todo comment');
+      });
+
+    return c.json({ todo, activities });
   })
   .post('/:id/dismiss', async (c) => {
     const id = c.req.param('id');

@@ -4,7 +4,8 @@ import { screen, cleanup, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { waitForAbsent } from '../../../test/waitForAbsent';
-import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
+import { createTodoApiMock, makeTodo, makeTodoComment, makeTodoMove } from '../../../test/todo-fixtures';
+import type { TodoActivity } from '@agent-console/shared';
 import { TodoDetail } from '../TodoDetail';
 
 const ALICE = { id: 'user-alice', username: 'alice' };
@@ -29,6 +30,7 @@ interface RenderOptions {
   users?: { id: string; username: string }[];
   runEnabled?: boolean;
   withOnRun?: boolean;
+  activities?: TodoActivity[];
 }
 
 async function renderDetail(overrides: Parameters<typeof makeTodo>[0] = {}, options: RenderOptions = {}) {
@@ -41,6 +43,7 @@ async function renderDetail(overrides: Parameters<typeof makeTodo>[0] = {}, opti
     <TodoDetail
       todo={todo}
       users={options.users ?? [ALICE]}
+      activities={options.activities ?? []}
       onError={onError}
       runEnabled={options.runEnabled ?? false}
       onRun={options.withOnRun === false ? undefined : onRun}
@@ -199,7 +202,7 @@ describe('TodoDetail', () => {
             <button type="button" onClick={() => setTodo(second)}>
               simulate remote edit
             </button>
-            <TodoDetail todo={todo} users={[ALICE]} onError={() => {}} runEnabled={false} onDeleted={() => {}} />
+            <TodoDetail todo={todo} users={[ALICE]} activities={[]} onError={() => {}} runEnabled={false} onDeleted={() => {}} />
           </>
         );
       }
@@ -300,6 +303,214 @@ describe('TodoDetail', () => {
 
       await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Delete Todo', 'Todo not found'));
       expect(onDeleted).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('thread', () => {
+    // Session ids are shown as their first eight characters (the component has no session titles).
+    const FROM = 'aaaaaaaa-1111-4111-8111-111111111111';
+    const TO = 'bbbbbbbb-2222-4222-8222-222222222222';
+
+    function thread(): HTMLElement {
+      return screen.getByRole('region', { name: 'Thread' });
+    }
+
+    /**
+     * Measured reach (each mutation applied alone to TodoDetail.tsx, the three
+     * host-level files re-run; the failing tests are named here):
+     *   - moved rows not rendered -> the five 'a ... move ...' row tests, 'lists the
+     *     activities in the order ...', 'keeps the Thread on a dismissed item ...' (and the
+     *     page test in todos.$todoId.test.tsx)
+     *   - comment rendered without the author -> 'a human comment reads ...' and
+     *     'an agent comment is attributed to "agent"'
+     *   - Reply allowed on every status -> 'keeps the Thread on a dismissed item ...',
+     *     'offers no Reply on a superseded / withdrawn item', 'shows no Thread section ...'
+     *   - Thread shown only when activities exist -> both 'with no activities shows the Reply
+     *     input alone' tests and the three 'reply' tests
+     *   - activities sorted in the component -> 'lists the activities in the order ...'
+     *   - a `never` default is a type-level pin: a third kind in the union fails tsc at the switch.
+     */
+    it('a human comment reads "<username> · <time>" and keeps the text\'s line breaks', async () => {
+      await renderDetail(
+        {},
+        { users: [ALICE, BOB], activities: [makeTodoComment({ actor: { userId: BOB.id }, text: 'First line\nSecond line' })] },
+      );
+
+      const row = within(thread()).getByTestId('todo-activity-comment-1');
+      expect(row.textContent).toContain('bob');
+      expect(row.textContent).toContain(' · ');
+      const text = within(row).getByText(/First line/);
+      expect(text.textContent).toBe('First line\nSecond line');
+      expect(text.className).toContain('whitespace-pre-wrap');
+    });
+
+    it('an agent comment is attributed to "agent"', async () => {
+      await renderDetail({}, { activities: [makeTodoComment({ actor: { workerId: 'worker-9' }, text: 'It is the second one' })] });
+
+      const row = within(thread()).getByTestId('todo-activity-comment-1');
+      expect(row.textContent).toContain('agent');
+      expect(within(row).getByText('It is the second one')).toBeTruthy();
+    });
+
+    it('a move without a statement reads "Moved from <from> to <to> by <agent>" and quotes nothing', async () => {
+      await renderDetail({}, { activities: [makeTodoMove({ fromSessionId: FROM, toSessionId: TO, statement: null })] });
+
+      const row = within(thread()).getByTestId('todo-activity-move-1');
+      expect(row.textContent).toContain('Moved from aaaaaaaa to bbbbbbbb by agent');
+      expect(row.textContent).not.toContain('"');
+      expect(row.textContent).not.toContain(' -- ');
+    });
+
+    it('a human move names the human', async () => {
+      await renderDetail({}, { users: [ALICE], activities: [makeTodoMove({ actor: { userId: ALICE.id }, fromSessionId: FROM, toSessionId: TO })] });
+
+      expect(within(thread()).getByTestId('todo-activity-move-1').textContent).toContain('by alice');
+    });
+
+    it('a move with a statement and an attributed user quotes the words and names whose they are', async () => {
+      await renderDetail(
+        {},
+        {
+          users: [ALICE, BOB],
+          activities: [
+            makeTodoMove({ fromSessionId: FROM, toSessionId: TO, statement: 'take this one over', attributedUserId: BOB.id }),
+          ],
+        },
+      );
+
+      const row = within(thread()).getByTestId('todo-activity-move-1');
+      expect(row.textContent).toContain('"take this one over"');
+      expect(row.textContent).toContain(' -- bob');
+    });
+
+    it('an unattributed statement reads exactly: on a human\'s instruction: "<words>", with no name and no " -- "', async () => {
+      await renderDetail({}, { activities: [makeTodoMove({ statement: 'take this one over', attributedUserId: null })] });
+
+      const row = within(thread()).getByTestId('todo-activity-move-1');
+      expect(within(row).getByText('on a human\'s instruction: "take this one over"')).toBeTruthy();
+      expect(row.textContent).not.toContain(' -- ');
+    });
+
+    it('an attributed statement names the user once', async () => {
+      await renderDetail(
+        {},
+        { users: [ALICE, BOB], activities: [makeTodoMove({ statement: 'take this one over', attributedUserId: BOB.id })] },
+      );
+
+      const row = within(thread()).getByTestId('todo-activity-move-1');
+      expect(within(row).getByText('"take this one over" -- bob')).toBeTruthy();
+      expect(row.textContent).not.toContain('a human');
+      expect(row.textContent?.match(/bob/g)).toHaveLength(1);
+    });
+
+    it('a move with no statement shows no instruction text', async () => {
+      await renderDetail({}, { activities: [makeTodoMove({ statement: null, attributedUserId: null })] });
+
+      const row = within(thread()).getByTestId('todo-activity-move-1');
+      expect(row.textContent).not.toContain('instruction');
+      expect(row.textContent).not.toContain('"');
+      expect(row.textContent).not.toContain(' -- ');
+    });
+
+    it('a move whose item had no session reads "from no session"', async () => {
+      await renderDetail({}, { activities: [makeTodoMove({ fromSessionId: null, toSessionId: TO })] });
+
+      expect(within(thread()).getByTestId('todo-activity-move-1').textContent).toContain('Moved from no session to bbbbbbbb');
+    });
+
+    it('lists the activities in the order the server returned them, without sorting', async () => {
+      // Out of id order and out of created-at order on purpose: the thread must not re-sort.
+      await renderDetail(
+        {},
+        {
+          activities: [
+            makeTodoMove({ id: 'm-b', createdAt: '2026-10-15T09:00:00.000Z' }),
+            makeTodoComment({ id: 'c-z', createdAt: '2026-10-15T01:00:00.000Z' }),
+            makeTodoComment({ id: 'c-a', createdAt: '2026-10-15T05:00:00.000Z' }),
+          ],
+        },
+      );
+
+      const ids = within(thread())
+        .getAllByTestId(/^todo-activity-/)
+        .map((row) => row.getAttribute('data-testid'));
+      expect(ids).toEqual(['todo-activity-m-b', 'todo-activity-c-z', 'todo-activity-c-a']);
+    });
+
+    it('shows no Thread section for an item that is not open or done and has no activities', async () => {
+      await renderDetail({ status: 'dismissed' });
+
+      expect(screen.queryByRole('region', { name: 'Thread' })).toBeNull();
+      expect(screen.queryByRole('textbox', { name: 'Reply' })).toBeNull();
+    });
+
+    it('keeps the Thread on a dismissed item that has activities, read-only (move rows are not hidden)', async () => {
+      await renderDetail({ status: 'dismissed' }, { activities: [makeTodoMove({ toSessionId: TO })] });
+
+      expect(within(thread()).getByTestId('todo-activity-move-1')).toBeTruthy();
+      expect(screen.queryByRole('textbox', { name: 'Reply' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
+    });
+
+    it.each(['superseded', 'withdrawn'] as const)('offers no Reply on a %s item', async (status) => {
+      await renderDetail({ status }, { activities: [makeTodoComment()] });
+
+      expect(within(thread()).getByTestId('todo-activity-comment-1')).toBeTruthy();
+      expect(screen.queryByRole('textbox', { name: 'Reply' })).toBeNull();
+    });
+
+    it.each(['open', 'done'] as const)('a(n) %s item with no activities shows the Reply input alone', async (status) => {
+      await renderDetail({ status, resolutionText: status === 'done' ? 'ok' : null });
+
+      expect(within(thread()).getByRole('textbox', { name: 'Reply' })).toBeTruthy();
+      expect(within(thread()).queryByTestId(/^todo-activity-/)).toBeNull();
+    });
+  });
+
+  describe('reply', () => {
+    it('posts the trimmed words to the comments endpoint, refetches the todo queries and clears the input', async () => {
+      const { todo, queryClient, user } = await renderDetail({ kind: 'question' });
+      const invalidate = mock(queryClient.invalidateQueries.bind(queryClient));
+      queryClient.invalidateQueries = invalidate as typeof queryClient.invalidateQueries;
+
+      const input = screen.getByRole('textbox', { name: 'Reply' }) as HTMLTextAreaElement;
+      await user.type(input, '  Why the second one?  ');
+      await user.click(screen.getByRole('button', { name: 'Reply' }));
+
+      await waitFor(() => expect(api.writes()).toHaveLength(1));
+      expect(api.writes()[0]).toMatchObject({
+        method: 'POST',
+        path: `/api/todos/${todo.id}/comments`,
+        body: { text: 'Why the second one?' },
+      });
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['todos'] }));
+      await waitFor(() => expect(input.value).toBe(''));
+    });
+
+    it('Reply is disabled for empty and whitespace-only words', async () => {
+      const { user } = await renderDetail({});
+      const reply = screen.getByRole('button', { name: 'Reply' }) as HTMLButtonElement;
+
+      expect(reply.disabled).toBe(true);
+      await user.type(screen.getByRole('textbox', { name: 'Reply' }), '   ');
+      expect(reply.disabled).toBe(true);
+      await user.type(screen.getByRole('textbox', { name: 'Reply' }), 'x');
+      expect(reply.disabled).toBe(false);
+      expect(api.writes()).toHaveLength(0);
+    });
+
+    it("shows the server's message and keeps the words when the reply is refused", async () => {
+      api.state.refusal = { status: 409, error: 'Only an open or done item takes comments' };
+      const { onError, user } = await renderDetail({});
+      const input = screen.getByRole('textbox', { name: 'Reply' }) as HTMLTextAreaElement;
+
+      await user.type(input, 'too late');
+      await user.click(screen.getByRole('button', { name: 'Reply' }));
+
+      await waitFor(() =>
+        expect(onError).toHaveBeenCalledWith('Failed to Reply', 'Only an open or done item takes comments'),
+      );
+      expect(input.value).toBe('too late');
     });
   });
 

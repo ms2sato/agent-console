@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach, beforeEach } from 'bun:test';
-import { screen, cleanup, waitFor, act } from '@testing-library/react';
+import { screen, cleanup, waitFor, act, within } from '@testing-library/react';
 import { renderWithRouter } from '../../test/renderWithRouter';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
-import { createTodoApiMock, makeTodo } from '../../test/todo-fixtures';
+import { createTodoApiMock, makeTodo, makeTodoComment, makeTodoMove } from '../../test/todo-fixtures';
 import { TodoDetailPage } from '../todos/$todoId/index';
 
 const TERMINAL_BODY = 'Run it:\n\n```terminal\nbun run migrate\n```\n';
@@ -45,6 +45,22 @@ describe('Todo detail page', () => {
 
     expect(await screen.findByText('Page title', { selector: 'h2' })).toBeTruthy();
     expect(screen.getByText('Page body text', { selector: 'p' })).toBeTruthy();
+  });
+
+  it('hands the response\'s activities to the Thread, in the order sent', async () => {
+    // Mutation: pass [] to TodoDetail on the page -> no activity rows, this test fails.
+    api.state.todos = [makeTodo({ id: 'todo-1', commentCount: 1 })];
+    api.state.activities['todo-1'] = [
+      makeTodoMove({ id: 'm1', toSessionId: 'cccccccc-3333-4333-8333-333333333333' }),
+      makeTodoComment({ id: 'c1', actor: { userId: 'user-me' }, text: 'Page reply' }),
+    ];
+
+    await renderWithRouter(<TodoDetailPage todoId="todo-1" />);
+
+    const thread = await screen.findByRole('region', { name: 'Thread' });
+    const rows = within(thread).getAllByTestId(/^todo-activity-/);
+    expect(rows.map((row) => row.getAttribute('data-testid'))).toEqual(['todo-activity-m1', 'todo-activity-c1']);
+    expect(within(thread).getByText('Page reply')).toBeTruthy();
   });
 
   it('keeps the page container full-width so a wide code block cannot widen the card', async () => {

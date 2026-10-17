@@ -4,7 +4,7 @@ import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { installMockWebSocket } from '../../../test/mock-websocket';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
-import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
+import { createTodoApiMock, makeTodo, makeTodoComment } from '../../../test/todo-fixtures';
 import { SessionTerminalRunContext, type SessionTerminalRun } from '../SessionTerminalRunContext';
 import { TodoDetailDialog } from '../TodoDetailDialog';
 import { waitForAbsent } from '../../../test/waitForAbsent';
@@ -73,6 +73,19 @@ describe('TodoDetailDialog', () => {
     const dialog = await screen.findByRole('dialog');
     expect(await within(dialog).findByText('Look closer')).toBeTruthy();
     expect(within(dialog).getByText('The long body text', { selector: 'p' })).toBeTruthy();
+  });
+
+  it('shows the item\'s thread inside the dialog', async () => {
+    // Mutation: pass [] to TodoDetail in the dialog -> the reply is absent, this test fails.
+    api.state.todos = [makeTodo({ id: 'todo-1', commentCount: 1 })];
+    api.state.activities['todo-1'] = [makeTodoComment({ id: 'c1', text: 'Dialog reply' })];
+
+    await renderDialog('todo-1');
+
+    const dialog = await screen.findByRole('dialog');
+    const thread = await within(dialog).findByRole('region', { name: 'Thread' });
+    expect(within(thread).getByText('Dialog reply')).toBeTruthy();
+    expect(within(thread).getByRole('textbox', { name: 'Reply' })).toBeTruthy();
   });
 
   it('closes on Escape', async () => {

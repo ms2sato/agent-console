@@ -18,7 +18,7 @@ A web application for managing multiple AI coding agent instances running in dif
 - **Git Worktree Integration**: Create and delete git worktrees directly from the UI; add a repository by cloning from a URL (optionally as a bare repository) or by registering an existing path
 - **Diff Review with Annotations**: A git-diff worker shows a worktree's changes; agents can push review annotations that appear in the diff in real time, and the Review page lists pending reviews
 - **Session Memo**: Agents write Markdown memos for a session; fenced code blocks have a one-click Copy control, and the memo's command blocks can be run in the session's terminal after a confirmation
-- **Human Todo List**: A Todo page, a per-item detail page (`/todos/:id`) and a per-session panel where agents leave questions and actions that need a human, and humans resolve or dismiss them
+- **Human Todo List**: A Todo page, a per-item detail page (`/todos/:id`) and a per-session panel where agents leave questions and actions that need a human, and humans resolve, dismiss or reply on them (the agent answers on the same item)
 - **Bookmarks and HTML Artifacts**: Agents register URLs as session bookmarks and publish self-contained HTML pages that you open from the session sidebar or the Artifacts page
 - **Timers and Conditional Wakeups**: Periodic timers (with optional exponential backoff) and silent polling wakeups that notify an agent only when a shell condition becomes true
 - **Notifications and Integrations**: A notification center, per-repository Slack notifications, and inbound GitHub webhook events (see [GitHub Webhook Integration](#github-webhook-integration-inbound-events))
@@ -303,7 +303,8 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 | `create_todo` | Add an item to the human Todo list: a question that needs a human answer, or an action a human has to carry out |
 | `list_todos` | List this session's Todo items, newest first (to catch up on what humans resolved or dismissed) |
 | `resolve_todo` | Mark items of this session done on the strength of a human's words (the human's statement quoted), for example when the human answered in chat; several items can be resolved in one call |
-| `adopt_todo` | Take over an open Todo item of another session (a successor session after a handoff): the item moves to this session and worker, so the human's resolution reaches the live session; `list_todos` with `global: true` lists the other sessions' global items |
+| `adopt_todo` | Take over an open Todo item of another session (a successor session after a handoff): the item moves to this session and worker, so the human's resolution reaches the live session; `list_todos` with `global: true` lists the other sessions' global items; taking over an item of a session owned by another user needs the human's quoted words as `statement` |
+| `comment_todo` | Reply on an open or done Todo item of this session (the human reads the reply in the item's thread; the item stays as it is) |
 
 #### Timer and Wakeup
 

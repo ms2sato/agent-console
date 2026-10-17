@@ -10,6 +10,7 @@ import {
   TODO_RESOLUTION_SEPARATOR,
   TodoResolveRefusedError,
   TodoSupersedeRefusedError,
+  type AddTodoMoveParams,
   type CreateTodoParams,
 } from '../todo-repository.js';
 
@@ -146,7 +147,7 @@ describe('SqliteTodoRepository', () => {
       );
       await new Promise((r) => setTimeout(r, 5));
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', expectedSessionId: 'session-1' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1' });
 
       expect(adopted).toMatchObject({
         sessionId: 'session-2',
@@ -162,7 +163,7 @@ describe('SqliteTodoRepository', () => {
     it('moves only session_id of a human-created item: its creator stays the human and no worker is set', async () => {
       await repository.create(params({ createdBy: { userId: 'user-1' } }));
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', expectedSessionId: 'session-1' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1' });
 
       expect(adopted).toMatchObject({ sessionId: 'session-2', createdBy: { userId: 'user-1' } });
       expect(adopted!.createdBy).not.toHaveProperty('workerId');
@@ -172,7 +173,7 @@ describe('SqliteTodoRepository', () => {
       await repository.create(params({ scope: 'global', sessionId: 'session-1', createdBy: { workerId: 'worker-1' } }));
       const before = await repository.findById('todo-1');
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', expectedSessionId: 'session-2' });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: 'session-2' });
 
       expect(adopted).toBeNull();
       expect(await repository.findById('todo-1')).toEqual(before);
@@ -182,7 +183,7 @@ describe('SqliteTodoRepository', () => {
       await repository.create(params({ scope: 'global', sessionId: 'session-1', createdBy: { userId: 'user-1' } }));
       const before = await repository.findById('todo-1');
 
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', expectedSessionId: null });
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: null });
 
       expect(adopted).toBeNull();
       expect(await repository.findById('todo-1')).toEqual(before);
@@ -191,14 +192,14 @@ describe('SqliteTodoRepository', () => {
     it('an item with no session is adopted when NULL is expected, and refused when a session is expected', async () => {
       await repository.create(params({ scope: 'global', sessionId: null, createdBy: { userId: 'user-1' } }));
 
-      expect(await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', expectedSessionId: 'session-1' })).toBeNull();
-      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', expectedSessionId: null });
+      expect(await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: 'session-1' })).toBeNull();
+      const adopted = await repository.adopt('todo-1', { sessionId: 'session-3', workerId: 'worker-3', actor: { workerId: 'worker-3' }, expectedSessionId: null });
 
       expect(adopted).toMatchObject({ sessionId: 'session-3', createdBy: { userId: 'user-1' } });
     });
 
     it('returns null for an unknown id and for every non-open status, leaving the row untouched', async () => {
-      expect(await repository.adopt('missing', { sessionId: 'session-2', workerId: 'worker-2', expectedSessionId: 'session-1' })).toBeNull();
+      expect(await repository.adopt('missing', { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1' })).toBeNull();
 
       for (const [id, close] of [
         ['done', () => repository.resolve('done', { text: 'ok', resolvedByUserId: 'user-1' })],
@@ -209,9 +210,508 @@ describe('SqliteTodoRepository', () => {
         await close();
         const before = await repository.findById(id);
 
-        expect(await repository.adopt(id, { sessionId: 'session-2', workerId: 'worker-2', expectedSessionId: 'session-1' })).toBeNull();
+        expect(await repository.adopt(id, { sessionId: 'session-2', workerId: 'worker-2', actor: { workerId: 'worker-2' }, expectedSessionId: 'session-1' })).toBeNull();
         expect(await repository.findById(id)).toEqual(before);
       }
+    });
+  });
+
+  describe('adopt: the move row', () => {
+    const adoptParams = (overrides: Record<string, unknown> = {}) => ({
+      sessionId: 'session-2',
+      workerId: 'worker-2',
+      actor: { workerId: 'worker-2' },
+      expectedSessionId: 'session-1' as string | null,
+      ...overrides,
+    });
+
+    it('writes one move row with the previous session as from and the new one as to, and no statement by default', async () => {
+      await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
+
+      await repository.adopt('todo-1', adoptParams());
+
+      const activities = await repository.listActivities('todo-1');
+      expect(activities).toHaveLength(1);
+      expect(activities[0]).toMatchObject({
+        kind: 'moved',
+        todoId: 'todo-1',
+        actor: { workerId: 'worker-2' },
+        fromSessionId: 'session-1',
+        toSessionId: 'session-2',
+        statement: null,
+        attributedUserId: null,
+      });
+    });
+
+    it('records the statement and the attributed user', async () => {
+      await repository.create(params());
+
+      await repository.adopt('todo-1', adoptParams({ statement: 'take it over, please', statedBy: 'user-9' }));
+
+      expect((await repository.listActivities('todo-1'))[0]).toMatchObject({
+        kind: 'moved',
+        statement: 'take it over, please',
+        attributedUserId: 'user-9',
+      });
+    });
+
+    it('a statement without an attributed user is stored unattributed', async () => {
+      await repository.create(params());
+
+      await repository.adopt('todo-1', adoptParams({ statement: 'take it over' }));
+
+      expect((await repository.listActivities('todo-1'))[0]).toMatchObject({ statement: 'take it over', attributedUserId: null });
+    });
+
+    it('a human actor is recorded as {userId}', async () => {
+      await repository.create(params());
+
+      await repository.adopt('todo-1', adoptParams({ actor: { userId: 'user-3' } }));
+
+      expect((await repository.listActivities('todo-1'))[0]).toMatchObject({ actor: { userId: 'user-3' } });
+    });
+
+    it('from is null for an item that had no session', async () => {
+      await repository.create(params({ scope: 'global', sessionId: null }));
+
+      await repository.adopt('todo-1', adoptParams({ expectedSessionId: null }));
+
+      expect((await repository.listActivities('todo-1'))[0]).toMatchObject({ fromSessionId: null, toSessionId: 'session-2' });
+    });
+
+    it('a refused adopt (stale session, non-open item, unknown id) writes no move row', async () => {
+      await repository.create(params({ id: 'stale' }));
+      await repository.create(params({ id: 'closed' }));
+      await repository.dismiss('closed');
+
+      expect(await repository.adopt('stale', adoptParams({ expectedSessionId: 'session-9' }))).toBeNull();
+      expect(await repository.adopt('closed', adoptParams())).toBeNull();
+      expect(await repository.adopt('missing', adoptParams())).toBeNull();
+
+      expect(await db.selectFrom('todo_moves').selectAll().execute()).toEqual([]);
+    });
+
+    it('a re-adopt into the session the item is already in writes no move row (no session change to record)', async () => {
+      await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
+
+      const again = await repository.adopt('todo-1', adoptParams({ sessionId: 'session-1', expectedSessionId: 'session-1' }));
+
+      expect(again).toMatchObject({ sessionId: 'session-1', createdBy: { workerId: 'worker-2' } });
+      expect(await db.selectFrom('todo_moves').selectAll().execute()).toEqual([]);
+    });
+
+    // Atomicity. Reach (measured): running the update outside any transaction (the call without an
+    // enclosing executor going through `run(this.db)` instead of `.transaction().execute(run)`)
+    // fails this test and no other. The move insert is made to fail by a CHECK
+    // (`todo_moves_attribution_check`: an attributed user needs a statement), after the
+    // todos update has already run.
+    it('a failing move insert rolls the todos update back: the item stays where it was', async () => {
+      await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
+      const before = await repository.findById('todo-1');
+
+      await expect(repository.adopt('todo-1', adoptParams({ statedBy: 'user-9' }))).rejects.toThrow(/todo_moves_attribution_check/);
+
+      expect(await repository.findById('todo-1')).toEqual(before);
+      expect(await db.selectFrom('todo_moves').selectAll().execute()).toEqual([]);
+    });
+
+    it('joins the caller\'s transaction: the update and the move row roll back with it', async () => {
+      await repository.create(params({ createdBy: { workerId: 'worker-1' } }));
+      const before = await repository.findById('todo-1');
+
+      await db
+        .transaction()
+        .execute(async (trx) => {
+          expect(await repository.adopt('todo-1', adoptParams(), trx)).not.toBeNull();
+          throw new Error('abort');
+        })
+        .catch(() => undefined);
+
+      expect(await repository.findById('todo-1')).toEqual(before);
+      expect(await db.selectFrom('todo_moves').selectAll().execute()).toEqual([]);
+    });
+  });
+
+  describe('comments and commentCount', () => {
+    it('addComment returns the comment variant and stores it', async () => {
+      await repository.create(params());
+
+      const comment = await repository.addComment({ todoId: 'todo-1', actor: { userId: 'user-2' }, text: 'Which environment?' });
+
+      expect(comment).toMatchObject({ kind: 'comment', todoId: 'todo-1', actor: { userId: 'user-2' }, text: 'Which environment?' });
+      expect(comment!.id.length).toBeGreaterThan(0);
+      expect(await repository.listActivities('todo-1')).toEqual([comment!]);
+    });
+
+    it('a new item has commentCount 0; each comment adds one, in findById and in list', async () => {
+      await repository.create(params());
+      expect((await repository.findById('todo-1'))!.commentCount).toBe(0);
+
+      await repository.addComment({ todoId: 'todo-1', actor: { userId: 'user-2' }, text: 'one' });
+      await repository.addComment({ todoId: 'todo-1', actor: { workerId: 'worker-1' }, text: 'two' });
+
+      expect((await repository.findById('todo-1'))!.commentCount).toBe(2);
+      expect((await repository.list({}))[0]!.commentCount).toBe(2);
+    });
+
+    // Reach: by structure, not by a filter. The count is a subquery over `todo_comments`
+    // alone and a move lives in another table, so there is no `kind = 'comment'` predicate
+    // whose removal could make this fail; this pin records the contract (moves never
+    // count) rather than guarding a mutable line.
+    it('commentCount ignores moves', async () => {
+      await repository.create(params());
+      await repository.addMove(moveParams());
+      await repository.addMove(moveParams({ toSessionId: 'session-3' }));
+      await repository.addComment({ todoId: 'todo-1', actor: { userId: 'user-2' }, text: 'one' });
+
+      expect((await repository.findById('todo-1'))!.commentCount).toBe(1);
+    });
+
+    // Reach (m9, measured): dropping the correlation (`todo_comments.todo_id = todos.id`) from the
+    // count subquery fails this test and 'every write that returns an item carries its commentCount'.
+    it('list counts each item\'s own comments (the subquery is correlated to the row)', async () => {
+      await repository.create(params({ id: 'a' }));
+      await repository.create(params({ id: 'b' }));
+      await repository.create(params({ id: 'c' }));
+      await repository.addComment({ todoId: 'a', actor: { userId: 'u' }, text: '1' });
+      await repository.addComment({ todoId: 'a', actor: { userId: 'u' }, text: '2' });
+      await repository.addComment({ todoId: 'b', actor: { userId: 'u' }, text: '3' });
+
+      const counts = Object.fromEntries((await repository.list({})).map((t) => [t.id, t.commentCount]));
+      expect(counts).toEqual({ a: 2, b: 1, c: 0 });
+    });
+
+    it('every write that returns an item carries its commentCount (resolve, dismiss, update, adopt, resolveManyOpen)', async () => {
+      for (const id of ['r', 'd', 'u', 'ad', 'many']) {
+        await repository.create(params({ id, createdBy: { workerId: 'worker-1' } }));
+        await repository.addComment({ todoId: id, actor: { userId: 'u' }, text: 'x' });
+      }
+
+      expect((await repository.resolve('r', { text: 'ok', resolvedByUserId: 'u' }))!.commentCount).toBe(1);
+      expect((await repository.dismiss('d'))!.commentCount).toBe(1);
+      expect((await repository.update('u', { title: 'new' }))!.commentCount).toBe(1);
+      expect(
+        (await repository.adopt('ad', { sessionId: 's2', workerId: 'w2', actor: { workerId: 'w2' }, expectedSessionId: 'session-1' }))!.commentCount,
+      ).toBe(1);
+      const many = await repository.resolveManyOpen(['many'], { text: 'ok', resolvedByUserId: 'u', sessionId: 'session-1' });
+      expect(many[0]!.commentCount).toBe(1);
+    });
+
+    // Reach (measured): reverting `addComment` to a plain INSERT fails the three tests below (the
+    // unknown item throws a FOREIGN KEY error instead of returning null; closed items get a row).
+    it('addComment on an unknown item returns null and writes nothing', async () => {
+      expect(await repository.addComment({ todoId: 'missing', actor: { userId: 'u' }, text: 'x' })).toBeNull();
+      expect(await db.selectFrom('todo_comments').selectAll().execute()).toEqual([]);
+    });
+
+    it.each(['dismissed', 'superseded', 'withdrawn'] as const)('addComment on a %s item returns null and writes nothing', async (status) => {
+      await repository.create(params());
+      if (status === 'dismissed') await repository.dismiss('todo-1');
+      if (status === 'superseded') await repository.markSuperseded('todo-1', 'session-1');
+      if (status === 'withdrawn') await repository.withdrawOpenSessionScoped('session-1');
+
+      expect(await repository.addComment({ todoId: 'todo-1', actor: { userId: 'u' }, text: 'x' })).toBeNull();
+      expect(await db.selectFrom('todo_comments').selectAll().execute()).toEqual([]);
+    });
+
+    it('addComment on a done item succeeds (the item stays done)', async () => {
+      await repository.create(params());
+      await repository.resolve('todo-1', { text: 'ok', resolvedByUserId: 'u' });
+
+      const comment = await repository.addComment({ todoId: 'todo-1', actor: { userId: 'u' }, text: 'after' });
+
+      expect(comment).toMatchObject({ kind: 'comment', text: 'after' });
+      expect((await repository.findById('todo-1'))!.status).toBe('done');
+    });
+  });
+
+  function moveParams(overrides: Partial<AddTodoMoveParams> = {}): AddTodoMoveParams {
+    return {
+      todoId: 'todo-1',
+      actor: { workerId: 'worker-2' },
+      fromSessionId: 'session-1',
+      toSessionId: 'session-2',
+      statement: null,
+      attributedUserId: null,
+      ...overrides,
+    };
+  }
+
+  describe('listActivities', () => {
+    const T0 = '2026-10-17T00:00:00.000Z';
+    const T1 = '2026-10-17T01:00:00.000Z';
+    const T2 = '2026-10-17T02:00:00.000Z';
+
+    async function insertCommentRow(id: string, createdAt: string, todoId = 'todo-1'): Promise<void> {
+      await db
+        .insertInto('todo_comments')
+        .values({ id, todo_id: todoId, actor_user_id: 'u', actor_worker_id: null, text: `text ${id}`, created_at: createdAt })
+        .execute();
+    }
+
+    async function insertMoveRow(id: string, createdAt: string, todoId = 'todo-1'): Promise<void> {
+      await db
+        .insertInto('todo_moves')
+        .values({
+          id,
+          todo_id: todoId,
+          actor_user_id: null,
+          actor_worker_id: 'w',
+          from_session_id: 'session-1',
+          to_session_id: 'session-2',
+          statement: `statement ${id}`,
+          attributed_user_id: null,
+          created_at: createdAt,
+        })
+        .execute();
+    }
+
+    // The rows are inserted DIRECTLY: the repository API stamps `new Date()` and the tie needs
+    // identical `created_at`. Natural UNION ALL output is "all comments, then all moves" in
+    // insertion order, so the inversions below are what make each mutation observable:
+    //   case 1 puts the MOVE's id ('a') before the comment's ('b'), so ordering by id alone
+    //     yields [move, comment];
+    //   case 2 inserts the later id ('d') first, so insertion order yields [d, c];
+    //   case 3 inserts the earliest row last.
+    // Reach, each mutation applied alone to the ORDER BY of the batched builder that `listActivities`
+    // delegates to (re-measured after the move to `listActivitiesForTodos`; tests that fail):
+    //   m7a drop .orderBy('kind')       -> this test; 'listActivitiesForTodos > applies the same tie-break ...'
+    //   m7b drop .orderBy('id')         -> this test; 'listActivitiesForTodos > applies the same tie-break ...'
+    //   m7c drop .orderBy('created_at') -> this test; 'listActivities > lists what the write methods stored ...';
+    //                                      'listActivitiesForTodos > gives each item its own thread in order ...'
+    //   drop the leading .orderBy('todo_id') -> NO test fails: rows are grouped through a Map, so the
+    //     leading key only makes the whole result deterministic; per-item order does not depend on it.
+    it('orders by created_at, then kind (comment before moved), then id', async () => {
+      await repository.create(params());
+      await insertMoveRow('a', T1);
+      await insertCommentRow('b', T1);
+      await insertCommentRow('d', T2);
+      await insertCommentRow('c', T2);
+      await insertCommentRow('e', T0);
+
+      const activities = await repository.listActivities('todo-1');
+
+      expect(activities.map((a) => `${a.kind}:${a.id}`)).toEqual(['comment:e', 'comment:b', 'moved:a', 'comment:c', 'comment:d']);
+    });
+
+    // Reach (m8, re-measured against the batched builder): swapping `text` and `statement` in branch B's
+    // column list fails this test, 'lists what the write methods stored ...', and the two adopt tests that
+    // record a statement ('records the statement and the attributed user', 'a statement without an attributed
+    // user is stored unattributed'): the positional UNION pairs B's statement with A's `text` column.
+    it('maps each branch into its variant', async () => {
+      await repository.create(params());
+      await insertCommentRow('c1', T0);
+      await insertMoveRow('m1', T1);
+
+      const [comment, move] = await repository.listActivities('todo-1');
+
+      expect(comment).toEqual({
+        id: 'c1',
+        todoId: 'todo-1',
+        kind: 'comment',
+        actor: { userId: 'u' },
+        text: 'text c1',
+        createdAt: T0,
+      });
+      expect(comment).not.toHaveProperty('toSessionId');
+      expect(move).toEqual({
+        id: 'm1',
+        todoId: 'todo-1',
+        kind: 'moved',
+        actor: { workerId: 'w' },
+        fromSessionId: 'session-1',
+        toSessionId: 'session-2',
+        statement: 'statement m1',
+        attributedUserId: null,
+        createdAt: T1,
+      });
+      expect(move).not.toHaveProperty('text');
+    });
+
+    it('returns only the given item\'s activities, and [] for an item with none or an unknown id', async () => {
+      await repository.create(params({ id: 'todo-1' }));
+      await repository.create(params({ id: 'todo-2' }));
+      await insertCommentRow('c-own', T0, 'todo-1');
+      await insertMoveRow('m-own', T1, 'todo-1');
+      await insertCommentRow('c-other', T0, 'todo-2');
+      await insertMoveRow('m-other', T1, 'todo-2');
+      await repository.create(params({ id: 'todo-3' }));
+
+      expect((await repository.listActivities('todo-1')).map((a) => a.id)).toEqual(['c-own', 'm-own']);
+      expect(await repository.listActivities('todo-3')).toEqual([]);
+      expect(await repository.listActivities('missing')).toEqual([]);
+    });
+
+    it('lists what the write methods stored, in the order written', async () => {
+      await repository.create(params());
+      const first = await repository.addComment({ todoId: 'todo-1', actor: { userId: 'u' }, text: 'first' });
+      await new Promise((r) => setTimeout(r, 5));
+      const second = await repository.addMove(moveParams({ statement: 'go', attributedUserId: 'user-9' }));
+      await new Promise((r) => setTimeout(r, 5));
+      const third = await repository.addComment({ todoId: 'todo-1', actor: { workerId: 'worker-1' }, text: 'third' });
+
+      expect(await repository.listActivities('todo-1')).toEqual([first!, second, third!]);
+      expect(second).toMatchObject({ kind: 'moved', statement: 'go', attributedUserId: 'user-9', toSessionId: 'session-2' });
+    });
+  });
+
+  describe('listActivitiesForTodos', () => {
+    const T = (n: number) => `2026-10-17T0${n}:00:00.000Z`;
+
+    async function commentRow(id: string, todoId: string, createdAt: string): Promise<void> {
+      await db
+        .insertInto('todo_comments')
+        .values({ id, todo_id: todoId, actor_user_id: 'u', actor_worker_id: null, text: `text ${id}`, created_at: createdAt })
+        .execute();
+    }
+    async function moveRow(id: string, todoId: string, createdAt: string): Promise<void> {
+      await db
+        .insertInto('todo_moves')
+        .values({
+          id,
+          todo_id: todoId,
+          actor_user_id: null,
+          actor_worker_id: 'w',
+          from_session_id: 'session-1',
+          to_session_id: 'session-2',
+          statement: null,
+          attributed_user_id: null,
+          created_at: createdAt,
+        })
+        .execute();
+    }
+
+    // Three items with interleaved activities, inserted in a scrambled order: each item must come
+    // back with ONLY its own rows, in (created_at, kind, id) order.
+    // Reach (measured against this builder): dropping `created_at` from the ORDER BY fails this test.
+    it('gives each item its own thread in order, from one statement', async () => {
+      for (const id of ['a', 'b', 'c']) await repository.create(params({ id }));
+      await commentRow('c3', 'c', T(3));
+      await commentRow('a2', 'a', T(2));
+      await moveRow('b1', 'b', T(1));
+      await commentRow('a1', 'a', T(1));
+      await moveRow('a3', 'a', T(3));
+      await commentRow('b2', 'b', T(2));
+      await commentRow('c1', 'c', T(1));
+
+      const byTodo = await repository.listActivitiesForTodos(['c', 'a', 'b']);
+
+      expect([...byTodo.keys()].sort()).toEqual(['a', 'b', 'c']);
+      expect(byTodo.get('a')!.map((x) => x.id)).toEqual(['a1', 'a2', 'a3']);
+      expect(byTodo.get('b')!.map((x) => x.id)).toEqual(['b1', 'b2']);
+      expect(byTodo.get('c')!.map((x) => x.id)).toEqual(['c1', 'c3']);
+      for (const [todoId, thread] of byTodo) expect(thread.every((x) => x.todoId === todoId)).toBe(true);
+    });
+
+    it('applies the same tie-break as listActivities (created_at, then kind, then id) inside each thread', async () => {
+      await repository.create(params({ id: 'a' }));
+      await repository.create(params({ id: 'b' }));
+      await moveRow('m', 'a', T(1));
+      await commentRow('z', 'a', T(1));
+      await commentRow('y', 'a', T(1));
+      await commentRow('q', 'b', T(1));
+
+      const byTodo = await repository.listActivitiesForTodos(['a', 'b']);
+
+      expect(byTodo.get('a')!.map((x) => `${x.kind}:${x.id}`)).toEqual(['comment:y', 'comment:z', 'moved:m']);
+      expect(byTodo.get('a')).toEqual(await repository.listActivities('a'));
+    });
+
+    it('an item with no activity maps to an empty list; an unknown id too; duplicates are read once', async () => {
+      await repository.create(params({ id: 'a' }));
+      await repository.create(params({ id: 'bare' }));
+      await commentRow('a1', 'a', T(1));
+
+      const byTodo = await repository.listActivitiesForTodos(['a', 'bare', 'ghost', 'a']);
+
+      expect([...byTodo.keys()].sort()).toEqual(['a', 'bare', 'ghost']);
+      expect(byTodo.get('a')!.map((x) => x.id)).toEqual(['a1']);
+      expect(byTodo.get('bare')).toEqual([]);
+      expect(byTodo.get('ghost')).toEqual([]);
+    });
+
+    it('reads more ids than one chunk (501) and groups them all', async () => {
+      const ids = Array.from({ length: 501 }, (_, i) => `t${i}`);
+      for (const id of ids) await repository.create(params({ id }));
+      await commentRow('first', 't0', T(1));
+      await commentRow('last', 't500', T(1));
+
+      const byTodo = await repository.listActivitiesForTodos(ids);
+
+      expect(byTodo.size).toBe(501);
+      expect(byTodo.get('t0')!.map((x) => x.id)).toEqual(['first']);
+      expect(byTodo.get('t500')!.map((x) => x.id)).toEqual(['last']);
+    });
+
+    // Boundary: an empty list is an empty Map and issues NO statement at all.
+    it('an empty list returns an empty Map without touching the database', async () => {
+      let statements = 0;
+      const counting = db.withPlugin({
+        transformQuery: (args) => args.node,
+        // Once per EXECUTED statement (transformQuery also runs for nested sub-builders).
+        transformResult: async (args) => {
+          statements += 1;
+          return args.result;
+        },
+      });
+
+      const empty = await new SqliteTodoRepository(counting).listActivitiesForTodos([]);
+
+      expect(empty.size).toBe(0);
+      expect(statements).toBe(0);
+    });
+
+    it('a non-empty list is exactly one statement (not one per item), and listActivities is one too', async () => {
+      for (const id of ['a', 'b', 'c']) await repository.create(params({ id }));
+      let statements = 0;
+      const counting = db.withPlugin({
+        transformQuery: (args) => args.node,
+        // Once per EXECUTED statement (transformQuery also runs for nested sub-builders).
+        transformResult: async (args) => {
+          statements += 1;
+          return args.result;
+        },
+      });
+      const counted = new SqliteTodoRepository(counting);
+
+      await counted.listActivitiesForTodos(['a', 'b', 'c']);
+      expect(statements).toBe(1);
+
+      statements = 0;
+      await counted.listActivities('a');
+      expect(statements).toBe(1);
+    });
+  });
+
+  describe('activities and the item\'s lifecycle', () => {
+    // Reach (m2, measured): removing `ON DELETE CASCADE` from the `todo_comments` clause of
+    // `migrateToV52` fails this test and, in migration-v52.test.ts, 'todo_comments declares it'
+    // and 'deleting a todo removes its rows in BOTH tables ...'.
+    it('delete removes the item\'s comments and moves from BOTH tables (foreign key cascade) and leaves another item\'s', async () => {
+      await repository.create(params({ id: 'todo-1' }));
+      await repository.create(params({ id: 'todo-2' }));
+      await repository.addComment({ todoId: 'todo-1', actor: { userId: 'u' }, text: 'x' });
+      await repository.addMove(moveParams());
+      await repository.addComment({ todoId: 'todo-2', actor: { userId: 'u' }, text: 'y' });
+      await repository.addMove(moveParams({ todoId: 'todo-2' }));
+
+      expect(await repository.delete('todo-1')).toBe(true);
+
+      expect((await db.selectFrom('todo_comments').select('todo_id').execute()).map((r) => r.todo_id)).toEqual(['todo-2']);
+      expect((await db.selectFrom('todo_moves').select('todo_id').execute()).map((r) => r.todo_id)).toEqual(['todo-2']);
+      expect(await repository.listActivities('todo-1')).toEqual([]);
+    });
+
+    it('withdrawing an item (session deletion) keeps its activities', async () => {
+      await repository.create(params());
+      await repository.addComment({ todoId: 'todo-1', actor: { userId: 'u' }, text: 'x' });
+      await repository.addMove(moveParams());
+
+      expect(await repository.withdrawOpenSessionScoped('session-1')).toBe(1);
+
+      expect((await repository.findById('todo-1'))!.status).toBe('withdrawn');
+      expect(await repository.listActivities('todo-1')).toHaveLength(2);
+      expect((await repository.findById('todo-1'))!.commentCount).toBe(1);
     });
   });
 

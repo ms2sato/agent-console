@@ -56,6 +56,11 @@ describe('SESSION_CLAIMING_TOOLS registry', () => {
     expect(claiming.map((b) => b.name)).toContain('resolve_todo');
   });
 
+  it('lists comment_todo: it takes a caller-claimed sessionId and is gated like resolve_todo', () => {
+    expect(SESSION_CLAIMING_TOOLS).toContain('comment_todo');
+    expect(claiming.map((b) => b.name)).toContain('comment_todo');
+  });
+
   it('lists adopt_todo: it takes a caller-claimed sessionId and is gated like resolve_todo', () => {
     expect(SESSION_CLAIMING_TOOLS).toContain('adopt_todo');
     expect(claiming.map((b) => b.name)).toContain('adopt_todo');

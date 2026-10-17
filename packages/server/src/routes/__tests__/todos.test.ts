@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import * as v from 'valibot';
 import type { AppServerMessage, AuthUser, Session, Todo } from '@agent-console/shared';
-import { TodoResponseSchema, TodoSchema, TodosListResponseSchema } from '@agent-console/shared';
+import { TodoDetailResponseSchema, TodoSchema, TodosListResponseSchema } from '@agent-console/shared';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteTodoRepository } from '../../repositories/sqlite-todo-repository.js';
@@ -319,14 +319,34 @@ describe('Todo routes', () => {
   });
 
   describe('GET /api/todos/:id', () => {
-    it('returns the item wrapped as { todo }, strictly parsing with the shared wire schema', async () => {
+    it('returns { todo, activities }, strictly parsing with the shared wire schema (no activities: empty list)', async () => {
       const created = await createTodo({ kind: 'action', title: 'one', body: 'details', sessionId: 'session-1' });
 
       const res = await app.request(`/api/todos/${created.id}`);
 
       expect(res.status).toBe(200);
-      const parsed = v.parse(TodoResponseSchema, await res.json());
-      expect(parsed.todo).toMatchObject({ id: created.id, title: 'one', body: 'details', sessionId: 'session-1' });
+      const parsed = v.parse(TodoDetailResponseSchema, await res.json());
+      expect(parsed.todo).toMatchObject({ id: created.id, title: 'one', body: 'details', sessionId: 'session-1', commentCount: 0 });
+      expect(parsed.activities).toEqual([]);
+    });
+
+    it('lists the item\'s comments and moves in timeline order, and counts only the comments', async () => {
+      const item = await seedAgentItem();
+      const comment = await repository.addComment({ todoId: item.id, actor: { userId: ALICE.id }, text: 'first' });
+      await new Promise((r) => setTimeout(r, 5));
+      const move = await repository.addMove({
+        todoId: item.id,
+        actor: { workerId: 'worker-2' },
+        fromSessionId: 'session-1',
+        toSessionId: 'session-2',
+        statement: 'take it',
+        attributedUserId: BOB.id,
+      });
+
+      const parsed = v.parse(TodoDetailResponseSchema, await (await app.request(`/api/todos/${item.id}`)).json());
+
+      expect(parsed.activities).toEqual([comment!, move]);
+      expect(parsed.todo.commentCount).toBe(1);
     });
 
     it('is 404 "Todo not found" for an unknown id', async () => {
@@ -615,6 +635,230 @@ describe('Todo routes', () => {
     });
   });
 
+  describe('POST /api/todos/:id/comments', () => {
+    const comment = async (id: string, body: unknown, target: Hono<AppBindings> = app): Promise<Response> =>
+      target.request(`/api/todos/${id}/comments`, json('POST', body));
+
+    it('adds a human comment and answers { todo, activities } with the refreshed commentCount', async () => {
+      const item = await seedAgentItem({ kind: 'question' });
+
+      const res = await comment(item.id, { text: '  which environment?  ' });
+
+      expect(res.status).toBe(200);
+      const parsed = v.parse(TodoDetailResponseSchema, await res.json());
+      expect(parsed.todo).toMatchObject({ id: item.id, status: 'open', commentCount: 1 });
+      expect(parsed.activities).toHaveLength(1);
+      expect(parsed.activities[0]).toMatchObject({ kind: 'comment', actor: { userId: ALICE.id }, text: 'which environment?' });
+      expect(await repository.listActivities(item.id)).toEqual(parsed.activities);
+    });
+
+    it('leaves the item\'s status alone, appends later comments after earlier ones, and any member may comment', async () => {
+      const item = await seedAgentItem();
+      await comment(item.id, { text: 'one' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      const res = await comment(item.id, { text: 'two' }, buildApp(repository, BOB));
+
+      const parsed = v.parse(TodoDetailResponseSchema, await res.json());
+      expect(parsed.todo).toMatchObject({ status: 'open', commentCount: 2, resolutionText: null });
+      expect(parsed.activities.map((a) => ('text' in a ? a.text : null))).toEqual(['one', 'two']);
+      expect(parsed.activities[1]).toMatchObject({ actor: { userId: BOB.id } });
+    });
+
+    it('is accepted on a done item (a reply after the answer) and the item stays done', async () => {
+      const item = await seedAgentItem();
+      await repository.resolve(item.id, { text: 'ok', resolvedByUserId: ALICE.id });
+
+      const res = await comment(item.id, { text: 'one more thing' });
+
+      expect(res.status).toBe(200);
+      expect(v.parse(TodoDetailResponseSchema, await res.json()).todo).toMatchObject({ status: 'done', commentCount: 1 });
+    });
+
+    it('broadcasts one trigger-only todos-updated for the item\'s session', async () => {
+      const item = await seedAgentItem();
+      broadcasts.length = 0;
+
+      await comment(item.id, { text: 'hi' });
+
+      expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
+    });
+
+    it('is 404 for an unknown item: nothing written, no broadcast, no delivery', async () => {
+      const res = await comment('missing', { text: 'hi' });
+
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).toContain('Todo not found');
+      expect(broadcasts).toEqual([]);
+      expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+      expect(await db.selectFrom('todo_comments').selectAll().execute()).toEqual([]);
+    });
+
+    it.each(['superseded', 'dismissed', 'withdrawn'] as const)('is 409 for a %s item, naming the status, and writes nothing', async (status) => {
+      const item = await seedAgentItem();
+      if (status === 'superseded') await repository.markSuperseded(item.id, 'session-1');
+      if (status === 'dismissed') await repository.dismiss(item.id);
+      if (status === 'withdrawn') await repository.withdrawOpenSessionScoped('session-1');
+      expect((await repository.findById(item.id))!.status).toBe(status);
+      broadcasts.length = 0;
+
+      const res = await comment(item.id, { text: 'hi' });
+
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain(status);
+      expect(await repository.listActivities(item.id)).toEqual([]);
+      expect(broadcasts).toEqual([]);
+      expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['empty text', { text: '' }],
+      ['whitespace-only text', { text: '   \n ' }],
+      ['4001 characters', { text: 'x'.repeat(4001) }],
+      ['missing text', {}],
+      ['an unknown field', { text: 'hi', kind: 'moved' }],
+    ])('is 400 for %s and writes nothing', async (_name, body) => {
+      const item = await seedAgentItem();
+      broadcasts.length = 0;
+
+      const res = await comment(item.id, body);
+
+      expect(res.status).toBe(400);
+      expect(await repository.listActivities(item.id)).toEqual([]);
+      expect(broadcasts).toEqual([]);
+      expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts exactly 4000 characters', async () => {
+      const item = await seedAgentItem();
+      expect((await comment(item.id, { text: 'x'.repeat(4000) })).status).toBe(200);
+    });
+
+    // Reach (measured): reverting `addComment` to a plain INSERT turns the first into a 500 (the foreign
+    // key fires) and the second into a stored comment on a dismissed item.
+    it('an item deleted between the read and the write is a 404, not a 500', async () => {
+      const item = await seedAgentItem();
+      let deleted = false;
+      const racing = Object.assign(Object.create(repository) as SqliteTodoRepository, {
+        findById: async (id: string, executor?: Parameters<SqliteTodoRepository['findById']>[1]) => {
+          const row = await repository.findById(id, executor);
+          if (!deleted && id === item.id) {
+            deleted = true;
+            await repository.delete(id);
+          }
+          return row;
+        },
+      });
+      broadcasts.length = 0;
+
+      const res = await comment(item.id, { text: 'hi' }, buildApp(racing, ALICE, (m) => broadcasts.push(m)));
+
+      expect(deleted).toBe(true);
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).toContain('Todo not found');
+      expect(broadcasts).toEqual([]);
+      expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+    });
+
+    it('an item closed between the read and the write is a 409 naming its new status, and nothing is stored', async () => {
+      const item = await seedAgentItem();
+      let flipped = false;
+      const racing = Object.assign(Object.create(repository) as SqliteTodoRepository, {
+        findById: async (id: string, executor?: Parameters<SqliteTodoRepository['findById']>[1]) => {
+          const row = await repository.findById(id, executor);
+          if (!flipped && id === item.id) {
+            flipped = true;
+            await repository.dismiss(id);
+          }
+          return row;
+        },
+      });
+      broadcasts.length = 0;
+
+      const res = await comment(item.id, { text: 'hi' }, buildApp(racing, ALICE, (m) => broadcasts.push(m)));
+
+      expect(flipped).toBe(true);
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('dismissed');
+      expect(await repository.listActivities(item.id)).toEqual([]);
+      expect(broadcasts).toEqual([]);
+      expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unauthenticated request (401)', async () => {
+      const item = await seedAgentItem();
+      expect((await comment(item.id, { text: 'hi' }, buildApp(repository, null))).status).toBe(401);
+      expect(await repository.listActivities(item.id)).toEqual([]);
+    });
+
+    // Reach (measured, restored between runs):
+    // - dropping the creating-worker guard from `deliverTodoComment` fails "does not notify for a
+    //   human-created item" here and "does not call the seam for a human-created item" in the
+    //   helper's own test;
+    // - skipping the helper call fails "notifies the creating worker once ...", "notifies for a
+    //   comment on a done item as well", "truncates a 4000-char comment ..." and "keeps the
+    //   response 200 and the comment stored ...".
+    describe('delivery to the creating worker', () => {
+      it('notifies the creating worker once with the author\'s username and the trimmed text', async () => {
+        const item = await seedAgentItem({ kind: 'question', title: 'Which db?' });
+
+        const res = await comment(item.id, { text: '  not that one  ' });
+
+        expect(res.status).toBe(200);
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledTimes(1);
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledWith('session-1', 'worker-1', {
+          kind: 'internal-todo-comment',
+          tag: 'internal:todo-comment',
+          fields: { todoId: item.id, todoKind: 'question', title: 'Which db?', author: 'alice', text: 'not that one' },
+          intent: 'triage',
+        });
+      });
+
+      it('does not notify for a human-created item', async () => {
+        const item = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
+
+        expect((await comment(item.id, { text: 'hi' })).status).toBe(200);
+
+        expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+      });
+
+      it('notifies for a comment on a done item as well', async () => {
+        const item = await seedAgentItem();
+        await repository.resolve(item.id, { text: 'ok', resolvedByUserId: ALICE.id });
+
+        expect((await comment(item.id, { text: 'follow-up' })).status).toBe(200);
+
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('truncates a 4000-char comment to 500 chars plus "..." in the notification only', async () => {
+        const item = await seedAgentItem();
+
+        const parsed = v.parse(TodoDetailResponseSchema, await (await comment(item.id, { text: 'a'.repeat(4000) })).json());
+
+        const fields = deliverWorkerNotificationMock.mock.calls[0][2].fields as { text: string };
+        expect(fields.text).toBe(`${'a'.repeat(500)}...`);
+        expect((parsed.activities[0] as { text: string }).text.length).toBe(4000);
+      });
+
+      it('keeps the response 200 and the comment stored when the seam reports a failure or rejects', async () => {
+        const item = await seedAgentItem();
+        deliverWorkerNotificationMock.mockImplementationOnce(async () => ({ ok: false, error: 'gone', reason: 'not-found' }));
+        deliverWorkerNotificationMock.mockImplementationOnce(async () => {
+          throw new Error('boom');
+        });
+
+        const first = await comment(item.id, { text: 'one' });
+        const second = await comment(item.id, { text: 'two' });
+        await new Promise((r) => setTimeout(r, 0));
+
+        expect([first.status, second.status]).toEqual([200, 200]);
+        expect(deliverWorkerNotificationMock).toHaveBeenCalledTimes(2);
+        expect(await repository.listActivities(item.id)).toHaveLength(2);
+      });
+    });
+  });
+
   describe('POST /api/todos/:id/dismiss', () => {
     it('dismisses an open item, any member may', async () => {
       const todo = await createTodo({ kind: 'action', title: 't', body: '', sessionId: 'session-1' });
@@ -647,6 +891,24 @@ describe('Todo routes', () => {
       expect(res.status).toBe(200);
       expect(await repository.findById(agentItem.id)).toBeNull();
       expect(broadcasts).toEqual([{ type: 'todos-updated', sessionId: 'session-1' }]);
+    });
+
+    it('deletes the item\'s comments and moves with it (through the route)', async () => {
+      const item = await seedAgentItem();
+      await repository.addComment({ todoId: item.id, actor: { userId: ALICE.id }, text: 'x' });
+      await repository.addMove({
+        todoId: item.id,
+        actor: { workerId: 'worker-2' },
+        fromSessionId: 'session-1',
+        toSessionId: 'session-2',
+        statement: null,
+        attributedUserId: null,
+      });
+
+      expect((await app.request(`/api/todos/${item.id}`, { method: 'DELETE' })).status).toBe(200);
+
+      expect(await db.selectFrom('todo_comments').selectAll().execute()).toEqual([]);
+      expect(await db.selectFrom('todo_moves').selectAll().execute()).toEqual([]);
     });
 
     it('404 for an unknown item, with no broadcast', async () => {

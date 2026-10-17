@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, fetchTodo } from '../lib/api';
+import { ApiError, fetchTodoDetail } from '../lib/api';
 import { todoKeys } from '../lib/query-keys';
 import { useAppWsEvent } from './useAppWs';
 
 /**
- * Resolve a single Todo item for its detail view (page or in-session dialog).
+ * Resolve a single Todo item and its activity timeline (`{ todo, activities }`,
+ * the timeline already in the server's order) for its detail view (page or in-session dialog).
  *
  * Realtime refresh: the `todos-updated` frame is trigger-only and names at most
  * a session. This hook invalidates the detail for EVERY frame, whichever
@@ -25,7 +26,7 @@ export function useTodoDetail(id: string) {
 
   return useQuery({
     queryKey: todoKeys.detail(id),
-    queryFn: () => fetchTodo(id),
+    queryFn: () => fetchTodoDetail(id),
     retry: false,
   });
 }

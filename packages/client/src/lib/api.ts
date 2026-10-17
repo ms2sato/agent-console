@@ -31,6 +31,7 @@ import type {
   Artifact,
   Bookmark,
   Todo,
+  TodoDetailResponse,
   TodoStatus,
   TodoScope,
   CreateTodoRequest,
@@ -70,6 +71,7 @@ import {
   BookmarkSchema,
   TodosListResponseSchema,
   TodoResponseSchema,
+  TodoDetailResponseSchema,
   UsersListResponseSchema,
   ListSharedAccountsResponseSchema,
   WorkerResponseSchema,
@@ -1515,12 +1517,22 @@ export async function deleteTodo(id: string): Promise<void> {
   }
 }
 
-export async function fetchTodo(id: string): Promise<Todo> {
+/** One item and its timeline, in the order the server returns it (the client does not sort). */
+export async function fetchTodoDetail(id: string): Promise<TodoDetailResponse> {
   const res = await api.todos[':id'].$get({ param: { id } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch Todo item');
   }
-  return v.parse(TodoResponseSchema, await res.json()).todo;
+  return v.parse(TodoDetailResponseSchema, await res.json());
+}
+
+/** Leaves a reply on an open or done item; the status is unchanged. Returns the refreshed item and timeline. */
+export async function commentTodo(id: string, text: string): Promise<TodoDetailResponse> {
+  const res = await api.todos[':id'].comments.$post({ param: { id }, json: { text } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to comment on Todo item');
+  }
+  return v.parse(TodoDetailResponseSchema, await res.json());
 }
 
 /** The member directory (id and username only) that backs the assignee pickers. */
