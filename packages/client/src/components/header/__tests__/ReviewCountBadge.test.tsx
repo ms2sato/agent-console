@@ -54,6 +54,15 @@ describe('ReviewCountBadge', () => {
     await waitFor(() => expect(screen.getByText('3')).toBeTruthy());
   });
 
+  it('hides the numeric badge from assistive tech and describes it in screen-reader text', async () => {
+    mockFetch.mockImplementation(async () => answerWith([group('s1', ['a', 'b']), group('s2', ['c'])]));
+
+    await renderWithRouter(<ReviewCountBadge />);
+
+    await waitFor(() => expect(screen.getByText('3').getAttribute('aria-hidden')).toBe('true'));
+    expect(screen.getByText('3 pending reviews').className).toContain('sr-only');
+  });
+
   it('refetches and updates on a review-queue-updated frame', async () => {
     mockFetch.mockImplementationOnce(async () => answerWith([group('s1', ['a'])]));
     await renderWithRouter(<ReviewCountBadge />);

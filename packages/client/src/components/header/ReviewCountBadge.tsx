@@ -23,8 +23,14 @@ export function ReviewCountBadge() {
   if (pendingCount === 0) return null;
 
   return (
-    <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs font-medium leading-none">
-      {pendingCount}
-    </span>
+    <>
+      <span
+        aria-hidden="true"
+        className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs font-medium leading-none"
+      >
+        {pendingCount}
+      </span>
+      <span className="sr-only">{pendingCount} pending reviews</span>
+    </>
   );
 }
