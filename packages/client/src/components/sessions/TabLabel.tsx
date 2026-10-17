@@ -99,8 +99,6 @@ export function TabLabel({
         readOnly={pending}
         maxLength={64}
         onChange={(e) => setDraft(e.target.value)}
-        onClick={(e) => e.stopPropagation()}
-        onDoubleClick={(e) => e.stopPropagation()}
         onBlur={() => void commit(false)}
         onKeyDown={(e) => {
           e.stopPropagation();

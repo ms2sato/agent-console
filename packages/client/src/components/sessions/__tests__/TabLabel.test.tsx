@@ -170,6 +170,7 @@ describe('TabLabel', () => {
   });
 
   it('clicking inside the input neither selects the tab nor submits', async () => {
+    // Pins the sibling structure (input is not a child of the tab button), not a click handler.
     const user = userEvent.setup();
     renderLabel();
     await user.dblClick(screen.getByRole('tab', { name: 'Shell 1' }));
