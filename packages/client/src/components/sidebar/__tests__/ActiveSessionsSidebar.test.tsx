@@ -1816,7 +1816,7 @@ describe('ActiveSessionsSidebar view modes (flat / tree)', () => {
     {
       reason: 'hidden',
       text: 'parent hidden',
-      title: 'The parent session is hidden by the current filter.',
+      title: 'the parent session is not shown in this list (hidden by the filter, or it has no active worker)',
       pausedIds: [] as string[],
       knownIds: ['dad'],
     },

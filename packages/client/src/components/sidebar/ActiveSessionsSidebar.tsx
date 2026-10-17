@@ -75,7 +75,7 @@ type ParentState = 'gone' | 'paused' | 'hidden';
 const PARENT_STATE_BADGE: Record<ParentState, { text: string; title: string }> = {
   gone: { text: 'parent gone', title: 'The parent session no longer exists.' },
   paused: { text: 'parent paused', title: 'The parent session is paused.' },
-  hidden: { text: 'parent hidden', title: 'The parent session is hidden by the current filter.' },
+  hidden: { text: 'parent hidden', title: 'the parent session is not shown in this list (hidden by the filter, or it has no active worker)' },
 };
 
 const VIEW_MODE_OPTIONS: ReadonlyArray<{ mode: SessionViewMode; label: string }> = [
@@ -653,7 +653,9 @@ export function ActiveSessionsSidebar({
     () => (isTreeView ? buildSessionTree(sessions) : []),
     [isTreeView, sessions]
   );
-  // Paused wins over hidden: a paused parent is also in the unfiltered list.
+  // Paused wins over hidden: a paused parent is also in the unfiltered list. "Hidden" is deliberately loose: it
+  // covers a parent hidden by the filter AND a parent in the unfiltered list that has no active worker (and so no
+  // activity state); telling them apart would need the activity map.
   const resolveParentState = (parentSessionId: string | undefined): ParentState => {
     if (parentSessionId === undefined) return 'gone';
     if (pausedSessions.some((paused) => paused.id === parentSessionId)) return 'paused';
