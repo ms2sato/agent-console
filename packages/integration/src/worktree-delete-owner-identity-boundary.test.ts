@@ -212,7 +212,7 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
     expect(sessionId).toBeDefined();
 
     const paused = await ctx.sessionManager.pauseSession(sessionId!);
-    expect(paused).toBe(true);
+    expect(paused.paused).toBe(true);
     // Confirm it's really gone from the LIVE map (forces resolveWorktreeOwnerUsername's PAUSED branch).
     expect(ctx.sessionManager.getSession(sessionId!)).toBeUndefined();
 
@@ -242,7 +242,7 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
     expect(sessionId).toBeDefined();
 
     const paused = await ctx.sessionManager.pauseSession(sessionId!);
-    expect(paused).toBe(true);
+    expect(paused.paused).toBe(true);
 
     const capturedIdentities: (string | null)[] = [];
     const fn = async (_branch: string, _cwd: string, requestUsername: string | null) => {

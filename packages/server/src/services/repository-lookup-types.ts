@@ -39,6 +39,10 @@ export interface RepositoryInfo {
   name: string;
   path: string;
   envVars?: string | null;
+  /** Shell command run when a session in this repository is paused. */
+  pauseCommand?: string | null;
+  /** Shell command run when a session in this repository is resumed. */
+  resumeCommand?: string | null;
 }
 
 /**

@@ -3374,5 +3374,163 @@ detached
         expect(result.error).toContain('127');
       });
     });
+
+    describe('timeoutMs', () => {
+      let originalAuthMode: string | undefined;
+
+      beforeEach(() => {
+        originalAuthMode = process.env.AUTH_MODE;
+      });
+
+      afterEach(() => {
+        if (originalAuthMode === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it('kills a slow real command at the deadline and reports a timeout', async () => {
+        delete process.env.AUTH_MODE;
+        // The surrounding describe replaces Bun.spawn with a stub; this case
+        // needs a real shell.
+        (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        const startedAt = Date.now();
+        const result = await service.executeHookCommand(
+          'sleep 5',
+          '/tmp',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+          null,
+          100,
+        );
+        const elapsedMs = Date.now() - startedAt;
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('timed out');
+        expect(elapsedMs).toBeLessThan(1000);
+      });
+
+      it('returns at the deadline even when the pipes never close, and kills the child', async () => {
+        delete process.env.AUTH_MODE;
+        let killed = false;
+        (Bun as { spawn: typeof Bun.spawn }).spawn = (() => ({
+          exited: new Promise<number>(() => {}),
+          stdout: new ReadableStream<Uint8Array>({ start() {} }),
+          stderr: new ReadableStream<Uint8Array>({ start() {} }),
+          kill: () => {
+            killed = true;
+          },
+        })) as unknown as typeof Bun.spawn;
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        const result = await service.executeHookCommand(
+          'hang',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+          null,
+          50,
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Command timed out after 50 ms');
+        expect(killed).toBe(true);
+      });
+
+      it('arms no timer when timeoutMs is absent', async () => {
+        delete process.env.AUTH_MODE;
+        setMockSpawnResult('done');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+        const originalSetTimeout = globalThis.setTimeout;
+        let timersArmed = 0;
+        globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+          timersArmed++;
+          return originalSetTimeout(...args);
+        }) as typeof setTimeout;
+
+        try {
+          const result = await service.executeHookCommand(
+            'echo done',
+            '/test/worktree',
+            { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+          );
+          expect(result.success).toBe(true);
+        } finally {
+          globalThis.setTimeout = originalSetTimeout;
+        }
+
+        expect(timersArmed).toBe(0);
+      });
+
+      it('elevated branch forwards timeoutMs to runAsUser', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        await service.executeHookCommand(
+          'echo hello',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+          1234,
+        );
+
+        expect(runAsUserMock.calls.length).toBe(1);
+        expect(runAsUserMock.calls[0].timeoutMs).toBe(1234);
+      });
+
+      it('elevated branch passes no timeoutMs when the parameter is absent', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        await service.executeHookCommand(
+          'echo hello',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+        );
+
+        expect(runAsUserMock.calls.length).toBe(1);
+        expect('timeoutMs' in runAsUserMock.calls[0]).toBe(false);
+      });
+
+      it('elevated branch reports a timed-out run as a failed result', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => ({
+          stdout: 'partial',
+          stderr: '',
+          exitCode: 137,
+          timedOut: true,
+        });
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'sleep 100',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+          500,
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Command timed out after 500 ms');
+        expect(result.output).toBe('partial');
+      });
+    });
   });
 });

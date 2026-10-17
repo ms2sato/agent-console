@@ -466,6 +466,13 @@ function parseFileWatchIgnorePatterns(): string[] {
 }
 
 /**
+ * Time box for a repository's pause / resume command. The command never blocks
+ * the pause or resume itself, but a hung command must not hold the request open
+ * indefinitely.
+ */
+export const SESSION_HOOK_COMMAND_TIMEOUT_MS = 60_000;
+
+/**
  * Patterns to ignore when watching for file changes.
  * Can be customized via FILE_WATCH_IGNORE_PATTERNS environment variable.
  * Format: comma-separated list of patterns (e.g., ".git,node_modules,.cache")

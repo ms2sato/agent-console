@@ -11,6 +11,7 @@ import type {
   AppServerMessage,
   ExitReason,
   EmbeddedAgentAttachment,
+  HookCommandResult,
 } from '@agent-console/shared';
 import {
   isPtyBackedWorker,
@@ -44,7 +45,7 @@ import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
 import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
 import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../lib/mcp-server-permissions.js';
-import { serverConfig } from '../lib/server-config.js';
+import { serverConfig, SESSION_HOOK_COMMAND_TIMEOUT_MS } from '../lib/server-config.js';
 import { canOperateSession } from '../lib/session-access.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
@@ -89,7 +90,12 @@ import { resolveDisableClaudeAiConnectors } from './resolve-disable-claude-ai-co
 import type { JobQueue } from '../jobs/index.js';
 import { SessionInitializationService } from './session-initialization-service.js';
 import { SessionDeletionService } from './session-deletion-service.js';
-import { SessionPauseResumeService } from './session-pause-resume-service.js';
+import {
+  SessionPauseResumeService,
+  type PauseSessionOutcome,
+  type ResumeSessionOutcome,
+} from './session-pause-resume-service.js';
+import type { WorktreeService } from './worktree-service.js';
 import { SessionConverterService, type SharedAccountLookup } from './session-converter-service.js';
 import { NULL_USERNAME_LOOKUP, type UsernameLookup, UsernameLookupService } from './username-lookup.js';
 import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup-types.js';
@@ -331,6 +337,13 @@ interface SessionManagerOptions {
    */
   repositoryEnvLookup: RepositoryEnvLookup;
   /**
+   * Runs a repository hook command in a worktree. Backs the repository's pause
+   * and resume commands. Optional: callers that never run those commands omit
+   * it, and pause / resume then run no command. Production (createAppContext)
+   * passes `worktreeService.executeHookCommand`.
+   */
+  executeHookCommand?: WorktreeService['executeHookCommand'];
+  /**
    * Optional lookup used to derive `Session.isShared` server-side. Defaults
    * to a stub that always returns false (safe for tests + the AUTH_MODE=none
    * path where shared sessions are never registered).
@@ -385,6 +398,7 @@ export class SessionManager {
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private readonly repositoryLookup: RepositoryLookup;
   private readonly repositoryEnvLookup: RepositoryEnvLookup;
+  private readonly executeHookCommand?: WorktreeService['executeHookCommand'];
   private webSocketCallbacks: WebSocketCallbacks | null = null;
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
@@ -463,6 +477,7 @@ export class SessionManager {
     this.userRepository = options?.userRepository ?? null;
     this.repositoryLookup = options.repositoryLookup;
     this.repositoryEnvLookup = options.repositoryEnvLookup;
+    this.executeHookCommand = options.executeHookCommand;
     const workerOutputFileManager = options.workerOutputFileManager ?? new WorkerOutputFileManager();
     this.workerOutputFileManager = workerOutputFileManager;
     this.interSessionMessageService = options.interSessionMessageService ?? new InterSessionMessageService();
@@ -701,6 +716,7 @@ export class SessionManager {
         this.branchWatcherCallbacks?.startWatching(sessionId, locationPath, currentBranch) ?? Promise.resolve(),
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
       getServerPid,
+      runSessionHookCommand: (kind, session, username) => this.runSessionHookCommand(kind, session, username),
       appendRestoreBoundaryMarker: (worker, sessionId, resolver, restoredAt) =>
         this.workerManager.appendRestoreBoundaryMarker(worker, sessionId, resolver, restoredAt),
     });
@@ -1652,7 +1668,7 @@ export class SessionManager {
    * Pause a session: kill all PTY workers, remove from memory, preserve persistence.
    * Delegates to SessionPauseResumeService.
    */
-  async pauseSession(id: string): Promise<boolean> {
+  async pauseSession(id: string): Promise<PauseSessionOutcome> {
     return this.sessionPauseResumeService.pauseSession(id);
   }
 
@@ -1660,7 +1676,7 @@ export class SessionManager {
    * Resume a paused session: load from DB, create in-memory session, restore workers.
    * Delegates to SessionPauseResumeService.
    */
-  async resumeSession(id: string): Promise<Session | null> {
+  async resumeSession(id: string): Promise<ResumeSessionOutcome | null> {
     // Prime username cache from the persisted row BEFORE the delegate runs,
     // so the public Session returned by resume already carries
     // createdByUsername. The fetch is cheap; the delegate will fetch again
@@ -1985,21 +2001,74 @@ export class SessionManager {
     if (!hasTemplates) return filtered;
 
     // Resolve template variables and apply substitution
+    const vars = await this.resolveTemplateVars(session, repository.name);
+
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(filtered)) {
+      result[key] = substituteVariables(value, vars);
+    }
+    return result;
+  }
+
+  /**
+   * Resolve the template variables ({{WORKTREE_NUM}}, {{BRANCH}}, {{REPO}},
+   * {{WORKTREE_PATH}}) for a worktree session. Shared by repository env vars
+   * and the pause / resume commands.
+   */
+  private async resolveTemplateVars(
+    session: Extract<InternalSession, { type: 'worktree' }>,
+    repositoryName: string,
+  ): Promise<{ worktreeNum: number; branch: string; repo: string; worktreePath: string }> {
     const worktreeNum = await this.repositoryEnvLookup.getWorktreeIndexNumber(session.locationPath);
     const branch = await gitGetCurrentBranch(
       session.locationPath,
       await resolveSpawnUsername(session.createdBy, this.userRepository),
     );
-    const vars = {
+    return {
       worktreeNum,
       branch,
-      repo: repository.name,
+      repo: repositoryName,
       worktreePath: session.locationPath,
     };
+  }
 
-    const result: Record<string, string> = {};
-    for (const [key, value] of Object.entries(filtered)) {
-      result[key] = substituteVariables(value, vars);
+  /**
+   * Run the repository's pause or resume command for a worktree session.
+   * Resolves `undefined` when there is nothing to run. Never throws: a failure
+   * is returned as `{ success: false, error }`.
+   */
+  private async runSessionHookCommand(
+    kind: 'pause' | 'resume',
+    session: InternalSession,
+    username: string,
+  ): Promise<HookCommandResult | undefined> {
+    if (session.type !== 'worktree' || !this.executeHookCommand) return undefined;
+
+    const repository = this.repositoryEnvLookup.getRepositoryInfo(session.repositoryId);
+    if (!repository) return undefined;
+
+    const command = kind === 'pause' ? repository.pauseCommand : repository.resumeCommand;
+    if (!command?.trim()) return undefined;
+
+    let result: HookCommandResult;
+    try {
+      const { worktreeNum, branch, repo } = await this.resolveTemplateVars(session, repository.name);
+      result = await this.executeHookCommand(
+        command,
+        session.locationPath,
+        { worktreeNum, branch, repo },
+        username,
+        SESSION_HOOK_COMMAND_TIMEOUT_MS,
+      );
+    } catch (err) {
+      result = { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+    }
+
+    if (!result.success) {
+      logger.warn(
+        { sessionId: session.id, kind, error: result.error },
+        'Session hook command failed',
+      );
     }
     return result;
   }

@@ -147,6 +147,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     startBranchWatching: async () => {},
     stopBranchWatching: () => {},
     getServerPid: () => 99999,
+    runSessionHookCommand: mock(async () => undefined),
     appendRestoreBoundaryMarker: mock(async () => {}),
     ...overrides,
   };
@@ -164,7 +165,7 @@ describe('SessionPauseResumeService', () => {
 
       const result = await service.pauseSession('non-existent');
 
-      expect(result).toBe(false);
+      expect(result).toEqual({ paused: false });
     });
 
     it('should return false for quick sessions', async () => {
@@ -176,7 +177,8 @@ describe('SessionPauseResumeService', () => {
 
       const result = await service.pauseSession('session-2');
 
-      expect(result).toBe(false);
+      expect(result).toEqual({ paused: false });
+      expect(deps.runSessionHookCommand).not.toHaveBeenCalled();
     });
 
     it('should pause a worktree session successfully', async () => {
@@ -200,7 +202,7 @@ describe('SessionPauseResumeService', () => {
 
       const result = await service.pauseSession('session-1');
 
-      expect(result).toBe(true);
+      expect(result).toEqual({ paused: true });
       // WebSocket notification before killing
       expect(notifySessionPaused).toHaveBeenCalledWith('session-1');
       // Agent worker killed
@@ -254,6 +256,207 @@ describe('SessionPauseResumeService', () => {
     });
   });
 
+  describe('pause and resume commands', () => {
+    function buildResumeDeps(
+      overrides: Partial<SessionPauseResumeDeps> = {},
+      persistedOverrides: Parameters<typeof buildPersistedWorktreeSession>[0] = {},
+    ) {
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        createdBy: 'owner-1',
+        workers: [buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent' })],
+        ...persistedOverrides,
+      });
+      return createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => new Map([['w1', agentWorker]])),
+          activateAgentWorkerPty: mock(async () => {}),
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
+        toPublicSession: mock(() => buildWorktreeSession({ id: 'session-1' })),
+        ...overrides,
+      });
+    }
+
+    it('runs the pause command once, after every worker is down and before the session is saved', async () => {
+      const log: string[] = [];
+      const session = buildInternalWorktreeSession(
+        [buildInternalAgentWorker({ id: 'w1' }), buildInternalEmbeddedAgentWorker({ id: 'w-emb' })],
+        { createdBy: 'owner-1' },
+      );
+      const base = createMockDeps();
+      const runSessionHookCommand = mock(async () => {
+        log.push('hook');
+        return { success: true, output: 'stopped' };
+      });
+      const deps = createMockDeps({
+        getSession: () => session,
+        workerManager: {
+          ...base.workerManager,
+          killWorker: mock(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            log.push('kill-done');
+          }),
+        },
+        deactivateEmbeddedAgentWorker: mock(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          log.push('deactivate-done');
+        }),
+        sessionRepository: {
+          ...base.sessionRepository,
+          save: mock(async () => {
+            log.push('save');
+          }),
+        },
+        resolveSpawnUsername: mock(async () => 'hook-user'),
+        runSessionHookCommand,
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.pauseSession('session-1');
+
+      expect(result).toEqual({ paused: true, pauseCommandResult: { success: true, output: 'stopped' } });
+      expect(runSessionHookCommand).toHaveBeenCalledTimes(1);
+      expect(runSessionHookCommand).toHaveBeenCalledWith('pause', session, 'hook-user');
+      expect(deps.resolveSpawnUsername).toHaveBeenCalledWith('owner-1', deps.userRepository);
+      expect(log.slice(0, 2).sort()).toEqual(['deactivate-done', 'kill-done']);
+      expect(log.slice(2)).toEqual(['hook', 'save']);
+    });
+
+    it('still pauses and returns the result when the pause command fails', async () => {
+      const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+      const deps = createMockDeps({
+        getSession: () => session,
+        runSessionHookCommand: mock(async () => ({ success: false, error: 'exit 3' })),
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.pauseSession('session-1');
+
+      expect(result).toEqual({ paused: true, pauseCommandResult: { success: false, error: 'exit 3' } });
+      expect(deps.sessionRepository.save).toHaveBeenCalledTimes(1);
+      expect(deps.deleteSession).toHaveBeenCalled();
+    });
+
+    it('still pauses with a failed result when the pause command runner throws', async () => {
+      const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+      const deps = createMockDeps({
+        getSession: () => session,
+        runSessionHookCommand: mock(async () => {
+          throw new Error('spawn exploded');
+        }),
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.pauseSession('session-1');
+
+      expect(result).toEqual({ paused: true, pauseCommandResult: { success: false, error: 'spawn exploded' } });
+      expect(deps.sessionRepository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits pauseCommandResult when no command ran', async () => {
+      const session = buildInternalWorktreeSession([]);
+      const deps = createMockDeps({ getSession: () => session });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.pauseSession('session-1');
+
+      expect(result).toEqual({ paused: true });
+      expect('pauseCommandResult' in result).toBe(false);
+    });
+
+    it('runs the resume command before any worker is activated, with the persisted owner', async () => {
+      const log: string[] = [];
+      const base = buildResumeDeps();
+      const runSessionHookCommand = mock(async (..._args: unknown[]) => {
+        log.push('hook');
+        return { success: true, output: 'started' };
+      });
+      const deps = buildResumeDeps({
+        workerManager: {
+          ...base.workerManager,
+          activateAgentWorkerPty: mock(async () => {
+            log.push('activate');
+          }),
+        },
+        setSession: mock(() => {
+          log.push('setSession');
+        }),
+        resolveSpawnUsername: mock(async () => 'hook-user'),
+        runSessionHookCommand,
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.resumeSession('session-1');
+
+      expect(result?.resumeCommandResult).toEqual({ success: true, output: 'started' });
+      expect(runSessionHookCommand).toHaveBeenCalledTimes(1);
+      expect(runSessionHookCommand.mock.calls[0]).toEqual(['resume', expect.anything(), 'hook-user']);
+      expect(deps.resolveSpawnUsername).toHaveBeenCalledWith('owner-1', deps.userRepository);
+      expect(log).toEqual(['hook', 'setSession', 'activate']);
+    });
+
+    it('still resumes when the resume command fails or throws', async () => {
+      for (const runSessionHookCommand of [
+        mock(async () => ({ success: false, error: 'compose down' })),
+        mock(async () => {
+          throw new Error('boom');
+        }),
+      ]) {
+        const deps = buildResumeDeps({ runSessionHookCommand });
+        const service = new SessionPauseResumeService(deps);
+
+        const result = await service.resumeSession('session-1');
+
+        expect(result).not.toBeNull();
+        expect(result!.resumeCommandResult?.success).toBe(false);
+        expect(deps.workerManager.activateAgentWorkerPty).toHaveBeenCalledTimes(1);
+        expect(deps.sessionRepository.save).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('does not run the resume command for a session that is already active', async () => {
+      const deps = createMockDeps({ getSession: () => buildInternalWorktreeSession() });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.resumeSession('session-1');
+
+      expect(deps.runSessionHookCommand).not.toHaveBeenCalled();
+    });
+
+    it('does not run the resume command when the resume is refused', async () => {
+      const deps = buildResumeDeps({ pathExists: mock(async () => false) });
+      const service = new SessionPauseResumeService(deps);
+
+      expect(await service.resumeSession('session-1')).toBeNull();
+      expect(deps.runSessionHookCommand).not.toHaveBeenCalled();
+    });
+
+    it('does not run the resume command for a quick session', async () => {
+      const persisted = buildPersistedQuickSession({ id: 'session-q', serverPid: null });
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+        },
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.resumeSession('session-q');
+
+      expect(deps.runSessionHookCommand).not.toHaveBeenCalled();
+    });
+  });
+
   describe('resumeSession', () => {
     it('should return existing session if already active', async () => {
       const session = buildInternalWorktreeSession();
@@ -267,8 +470,9 @@ describe('SessionPauseResumeService', () => {
 
       const result = await service.resumeSession('session-1');
 
-      expect(result).toBe(mockPublicSession);
+      expect(result).toEqual({ session: mockPublicSession });
       // Should not touch DB
+      expect(deps.runSessionHookCommand).not.toHaveBeenCalled();
       expect(deps.sessionRepository.findById).not.toHaveBeenCalled();
     });
 
@@ -395,7 +599,7 @@ describe('SessionPauseResumeService', () => {
 
       const result = await service.resumeSession('session-1');
 
-      expect(result).toBe(mockPublicSession);
+      expect(result).toEqual({ session: mockPublicSession });
       // Workers restored from persistence
       expect(deps.workerManager.restoreWorkersFromPersistence).toHaveBeenCalledTimes(1);
       // Agent worker PTY activated

@@ -37,7 +37,7 @@ import { composeEmbeddedAgentDeliveryText } from '../session-manager.js';
 import { buildPtyNotificationText, type PtyNotificationParams } from '../../lib/pty-notification.js';
 import type { McpServerPermissionRow } from '../../repositories/mcp-server-permission-repository.js';
 import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
-import { serverConfig } from '../../lib/server-config.js';
+import { serverConfig, SESSION_HOOK_COMMAND_TIMEOUT_MS } from '../../lib/server-config.js';
 import { createTestSessionRepository } from '../../__tests__/utils/test-session-repository.js';
 
 // Test config directory
@@ -6765,7 +6765,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager();
 
       const result = await manager.pauseSession('non-existent');
-      expect(result).toBe(false);
+      expect(result.paused).toBe(false);
     });
 
     it('should return false for quick session (quick sessions cannot be paused)', async () => {
@@ -6778,7 +6778,7 @@ describe('SessionManager', () => {
       });
 
       const result = await manager.pauseSession(session.id);
-      expect(result).toBe(false);
+      expect(result.paused).toBe(false);
 
       // Session should still be in memory
       expect(manager.getSession(session.id)).toBeDefined();
@@ -6794,7 +6794,7 @@ describe('SessionManager', () => {
       });
 
       const result = await manager.pauseSession(session.id);
-      expect(result).toBe(false);
+      expect(result.paused).toBe(false);
 
       // Verify session exists and remains active
       const retrievedSession = manager.getSession(session.id);
@@ -6816,12 +6816,12 @@ describe('SessionManager', () => {
 
       // First pause should succeed
       const firstPauseResult = await manager.pauseSession(session.id);
-      expect(firstPauseResult).toBe(true);
+      expect(firstPauseResult.paused).toBe(true);
       expect(manager.getSession(session.id)).toBeUndefined();
 
       // Second pause should return false (session is not in memory)
       const secondPauseResult = await manager.pauseSession(session.id);
-      expect(secondPauseResult).toBe(false);
+      expect(secondPauseResult.paused).toBe(false);
     });
 
     it('should pause session with git-diff worker', async () => {
@@ -6842,7 +6842,7 @@ describe('SessionManager', () => {
 
       // Pause should succeed
       const result = await manager.pauseSession(session.id);
-      expect(result).toBe(true);
+      expect(result.paused).toBe(true);
 
       // Session should be removed from memory
       expect(manager.getSession(session.id)).toBeUndefined();
@@ -6868,7 +6868,7 @@ describe('SessionManager', () => {
 
       const result = await manager.pauseSession(session.id);
 
-      expect(result).toBe(true);
+      expect(result.paused).toBe(true);
       // Session should be removed from memory
       expect(manager.getSession(session.id)).toBeUndefined();
       // PTY should be killed
@@ -7068,6 +7068,118 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('pause and resume commands', () => {
+    const baseInfo = { name: 'test-repo', path: '/test/repo' };
+    const hookVars = { worktreeNum: 5, branch: 'main', repo: 'test-repo' };
+
+    async function setup(options: {
+      info?: () => import('../repository-lookup-types.js').RepositoryInfo | undefined;
+      executeHookCommand?: ReturnType<typeof mock>;
+    }) {
+      const manager = await getSessionManager({
+        repositoryEnvLookup: makeRepositoryEnvLookup({
+          mapping: () => options.info?.() ?? undefined,
+          getWorktreeIndexNumber: async () => 5,
+        }),
+        ...(options.executeHookCommand ? { executeHookCommand: options.executeHookCommand } : {}),
+      });
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      return { manager, session };
+    }
+
+    it('pause runs the configured command with resolved variables, the spawn user and the time box', async () => {
+      const executeHookCommand = mock(async () => ({ success: true, output: 'stopped\n' }));
+      const { manager, session } = await setup({
+        info: () => ({ ...baseInfo, pauseCommand: 'docker compose stop' }),
+        executeHookCommand,
+      });
+
+      const result = await manager.pauseSession(session.id);
+
+      expect(result).toEqual({ paused: true, pauseCommandResult: { success: true, output: 'stopped\n' } });
+      expect(executeHookCommand).toHaveBeenCalledTimes(1);
+      expect(executeHookCommand).toHaveBeenCalledWith(
+        'docker compose stop',
+        '/test/path',
+        hookVars,
+        os.userInfo().username,
+        SESSION_HOOK_COMMAND_TIMEOUT_MS,
+      );
+    });
+
+    it('resume runs the configured resume command and returns its result with the session', async () => {
+      const executeHookCommand = mock(async (..._args: unknown[]) => ({ success: false, error: 'not started' }));
+      const { manager, session } = await setup({
+        info: () => ({ ...baseInfo, resumeCommand: 'docker compose start' }),
+        executeHookCommand,
+      });
+      await manager.pauseSession(session.id);
+      expect(executeHookCommand).not.toHaveBeenCalled();
+
+      const resumed = await manager.resumeSession(session.id);
+
+      expect(resumed?.session.id).toBe(session.id);
+      expect(resumed?.resumeCommandResult).toEqual({ success: false, error: 'not started' });
+      expect(executeHookCommand).toHaveBeenCalledTimes(1);
+      expect(executeHookCommand.mock.calls[0]).toEqual([
+        'docker compose start',
+        '/test/path',
+        hookVars,
+        os.userInfo().username,
+        SESSION_HOOK_COMMAND_TIMEOUT_MS,
+      ]);
+    });
+
+    it('runs nothing when the command is absent, blank, or the repository is unknown', async () => {
+      for (const info of [
+        () => baseInfo,
+        () => ({ ...baseInfo, pauseCommand: null }),
+        () => ({ ...baseInfo, pauseCommand: '   ' }),
+        () => undefined,
+      ]) {
+        let known = true;
+        const executeHookCommand = mock(async () => ({ success: true }));
+        const { manager, session } = await setup({
+          info: () => (known ? baseInfo : info()),
+          executeHookCommand,
+        });
+        known = false;
+
+        const result = await manager.pauseSession(session.id);
+
+        expect(result).toEqual({ paused: true });
+        expect(executeHookCommand).not.toHaveBeenCalled();
+      }
+    });
+
+    it('pause completes with a failed result when the command runner throws', async () => {
+      const executeHookCommand = mock(async () => {
+        throw new Error('runner down');
+      });
+      const { manager, session } = await setup({
+        info: () => ({ ...baseInfo, pauseCommand: 'x' }),
+        executeHookCommand,
+      });
+
+      const result = await manager.pauseSession(session.id);
+
+      expect(result).toEqual({ paused: true, pauseCommandResult: { success: false, error: 'runner down' } });
+      expect(manager.getSession(session.id)).toBeUndefined();
+    });
+
+    it('runs nothing when no command runner is supplied', async () => {
+      const { manager, session } = await setup({ info: () => ({ ...baseInfo, pauseCommand: 'x' }) });
+
+      expect(await manager.pauseSession(session.id)).toEqual({ paused: true });
+    });
+  });
+
   describe('resumeSession', () => {
     it('should return existing session if already active', async () => {
       const manager = await getSessionManager();
@@ -7086,7 +7198,7 @@ describe('SessionManager', () => {
       const result = await manager.resumeSession(session.id);
 
       expect(result).not.toBeNull();
-      expect(result?.id).toBe(session.id);
+      expect(result?.session.id).toBe(session.id);
       // No new PTY should be created since session is already active
       expect(ptyFactory.instances.length).toBe(ptyCountBefore);
     });
@@ -7124,8 +7236,8 @@ describe('SessionManager', () => {
       const resumed = await manager.resumeSession(sessionId);
 
       expect(resumed).not.toBeNull();
-      expect(resumed?.id).toBe(sessionId);
-      expect(resumed?.type).toBe('worktree');
+      expect(resumed?.session.id).toBe(sessionId);
+      expect(resumed?.session.type).toBe('worktree');
 
       // Session should be back in memory
       expect(manager.getSession(sessionId)).toBeDefined();
@@ -7134,8 +7246,8 @@ describe('SessionManager', () => {
       expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
 
       // Workers should be restored
-      expect(resumed?.workers.length).toBeGreaterThan(0);
-      expect(resumed?.workers.some((w: Worker) => w.id === agentWorkerId)).toBe(true);
+      expect(resumed?.session.workers.length).toBeGreaterThan(0);
+      expect(resumed?.session.workers.some((w: Worker) => w.id === agentWorkerId)).toBe(true);
     });
 
     it('appends the real restore-boundary marker to a revived agent worker\'s output buffer (DI-seam proof for appendRestoreBoundaryMarker wiring)', async () => {
@@ -7829,7 +7941,7 @@ describe('SessionManager', () => {
 
       const resumed = await manager.resumeSession(session.id);
 
-      expect(resumed?.id).toBe(session.id);
+      expect(resumed?.session.id).toBe(session.id);
       expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
       const persisted = await manager.getSessionRepository().findById(session.id);
       expect('templateVars' in persisted!).toBe(false);
@@ -7870,7 +7982,7 @@ describe('SessionManager', () => {
       });
       const sessionId = session.id;
       const paused = await manager.pauseSession(sessionId);
-      expect(paused).toBe(true);
+      expect(paused.paused).toBe(true);
 
       // Simulate server restart
       const manager2 = await simulateServerRestart();

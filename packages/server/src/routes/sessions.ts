@@ -198,12 +198,12 @@ const sessions = new Hono<AppBindings>()
       throw new ValidationError('Quick sessions cannot be paused. Use delete instead.');
     }
 
-    const success = await sessionManager.pauseSession(sessionId);
-    if (!success) {
+    const { paused, pauseCommandResult } = await sessionManager.pauseSession(sessionId);
+    if (!paused) {
       throw new NotFoundError('Session');
     }
 
-    return c.json({ success: true });
+    return c.json({ success: true, ...(pauseCommandResult ? { pauseCommandResult } : {}) });
   })
   // Resume a paused session
   // Loads from DB, creates in-memory session, restores workers
@@ -211,12 +211,15 @@ const sessions = new Hono<AppBindings>()
     const sessionId = c.req.param('id');
     const { sessionManager } = c.get('appContext');
 
-    const session = await sessionManager.resumeSession(sessionId);
-    if (!session) {
+    const resumed = await sessionManager.resumeSession(sessionId);
+    if (!resumed) {
       throw new NotFoundError('Session');
     }
 
-    return c.json({ session });
+    return c.json({
+      session: resumed.session,
+      ...(resumed.resumeCommandResult ? { resumeCommandResult: resumed.resumeCommandResult } : {}),
+    });
   })
   // Update session metadata (title)
   .patch('/:id', vValidator(UpdateSessionRequestSchema), async (c) => {

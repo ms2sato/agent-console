@@ -18,6 +18,8 @@ import { SharedAccountRegistry } from '../../services/shared-account-registry.js
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SessionManager, type RestartAllAgentWorkersResult } from '../../services/session-manager.js';
 import type { RestartAllAgentsResponse } from '@agent-console/shared';
+import * as v from 'valibot';
+import { PauseSessionResponseSchema, SessionResponseSchema } from '@agent-console/shared';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
@@ -187,6 +189,88 @@ describe('Sessions API - Pause/Resume', () => {
         method: 'POST',
       });
       expect(secondRes.status).toBe(404);
+    });
+  });
+
+  // ===========================================================================
+  // Pause / resume command results on the wire
+  // ===========================================================================
+
+  describe('pause and resume command results', () => {
+    async function createWorktreeSession() {
+      return sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+    }
+
+    it('pause returns the command result when a command ran', async () => {
+      const session = await createWorktreeSession();
+      spyOn(sessionManager, 'pauseSession').mockResolvedValue({
+        paused: true,
+        pauseCommandResult: { success: true, output: 'stopped\n' },
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = v.parse(PauseSessionResponseSchema, await res.json());
+      expect(body.pauseCommandResult).toEqual({ success: true, output: 'stopped\n' });
+    });
+
+    it('pause reports a failed command in the body and still answers 200', async () => {
+      const session = await createWorktreeSession();
+      spyOn(sessionManager, 'pauseSession').mockResolvedValue({
+        paused: true,
+        pauseCommandResult: { success: false, error: 'Command exited with code 3' },
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = v.parse(PauseSessionResponseSchema, await res.json());
+      expect(body.pauseCommandResult).toEqual({ success: false, error: 'Command exited with code 3' });
+    });
+
+    it('pause omits the result key when no command ran', async () => {
+      const session = await createWorktreeSession();
+
+      const res = await app.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const raw = await res.json();
+      expect(raw).toEqual({ success: true });
+      expect(Object.keys(v.parse(PauseSessionResponseSchema, raw))).toEqual(['success']);
+    });
+
+    it('resume returns the session with the command result when a command ran', async () => {
+      const session = await createWorktreeSession();
+      spyOn(sessionManager, 'resumeSession').mockResolvedValue({
+        session,
+        resumeCommandResult: { success: true, output: 'back\n' },
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/resume`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = v.parse(SessionResponseSchema, await res.json());
+      expect(body.session.id).toBe(session.id);
+      expect(body.resumeCommandResult).toEqual({ success: true, output: 'back\n' });
+    });
+
+    it('resume omits the result key when no command ran', async () => {
+      const session = await createWorktreeSession();
+      await sessionManager.pauseSession(session.id);
+
+      const res = await app.request(`/api/sessions/${session.id}/resume`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const raw = (await res.json()) as Record<string, unknown>;
+      expect(Object.keys(raw)).toEqual(['session']);
+      v.parse(SessionResponseSchema, raw);
     });
   });
 
