@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 52;
+export const LATEST_SCHEMA_VERSION = 53;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -471,6 +471,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 52) {
     await migrateToV52(database);
+  }
+
+  if (currentVersion < 53) {
+    await migrateToV53(database);
   }
 }
 
@@ -3336,6 +3340,50 @@ export async function migrateToV52(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 52`.execute(database);
 
   logger.info('Migration to v52 completed');
+}
+
+/**
+ * Migration v53: every foreign-key column leads an index.
+ *
+ * SQLite does not index the child side of a foreign key automatically. A parent
+ * DELETE (or UPDATE of the referenced key) with `ON DELETE CASCADE`, `SET NULL`
+ * or `RESTRICT` therefore scans the whole child table to find the referencing
+ * rows. The rule (see the Index rule section of
+ * docs/design/sqlite-migration-design.md): every column with a `REFERENCES`
+ * clause leads some index. This migration adds the eight indexes that were
+ * missing; it is additive only (no table rebuild, no data change) and
+ * `IF NOT EXISTS` makes it idempotent.
+ *
+ * Owner-approved DDL:
+ * ```sql
+ * CREATE INDEX IF NOT EXISTS idx_mcp_server_path_permissions_decided_by ON mcp_server_path_permissions (decided_by);
+ * CREATE INDEX IF NOT EXISTS idx_mcp_server_permissions_decided_by      ON mcp_server_permissions (decided_by);
+ * CREATE INDEX IF NOT EXISTS idx_repositories_shared_account_user_id    ON repositories (shared_account_user_id);
+ * CREATE INDEX IF NOT EXISTS idx_repositories_default_agent_id          ON repositories (default_agent_id);
+ * CREATE INDEX IF NOT EXISTS idx_sessions_created_by                    ON sessions (created_by);
+ * CREATE INDEX IF NOT EXISTS idx_shared_accounts_created_by             ON shared_accounts (created_by);
+ * CREATE INDEX IF NOT EXISTS idx_todos_assignee_user_id                 ON todos (assignee_user_id);
+ * CREATE INDEX IF NOT EXISTS idx_todos_created_user_id                  ON todos (created_user_id);
+ * PRAGMA user_version = 53;
+ * ```
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV53(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v53: Adding indexes on foreign-key columns');
+
+  await sql`CREATE INDEX IF NOT EXISTS idx_mcp_server_path_permissions_decided_by ON mcp_server_path_permissions (decided_by)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_mcp_server_permissions_decided_by ON mcp_server_permissions (decided_by)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_repositories_shared_account_user_id ON repositories (shared_account_user_id)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_repositories_default_agent_id ON repositories (default_agent_id)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_sessions_created_by ON sessions (created_by)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_shared_accounts_created_by ON shared_accounts (created_by)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_todos_assignee_user_id ON todos (assignee_user_id)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_todos_created_user_id ON todos (created_user_id)`.execute(database);
+
+  await sql`PRAGMA user_version = 53`.execute(database);
+
+  logger.info('Migration to v53 completed');
 }
 
 /**
