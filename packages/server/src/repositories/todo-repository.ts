@@ -1,5 +1,15 @@
 import type { Kysely } from 'kysely';
-import type { Todo, TodoCreator, TodoKind, TodoScope, TodoStatus } from '@agent-console/shared';
+import type {
+  Todo,
+  TodoActivity,
+  TodoActivityActor,
+  TodoCommentActivity,
+  TodoCreator,
+  TodoKind,
+  TodoMoveActivity,
+  TodoScope,
+  TodoStatus,
+} from '@agent-console/shared';
 import type { Database } from '../database/schema.js';
 
 /**
@@ -47,6 +57,31 @@ export interface AdoptTodoParams {
    * is never overwritten.
    */
   expectedSessionId: string | null;
+  /** Who moved the item; recorded on the `todo_moves` row written with the update. */
+  actor: TodoActivityActor;
+  /** The human's quoted instruction, when the move was made on one. Omitted: stored NULL. */
+  statement?: string;
+  /** The user whose words `statement` is. Valid only together with `statement` (CHECK `todo_moves_attribution_check`). */
+  statedBy?: string;
+}
+
+/** What {@link TodoRepository.addComment} writes. `text` must be non-empty (CHECK). */
+export interface AddTodoCommentParams {
+  todoId: string;
+  actor: TodoActivityActor;
+  text: string;
+}
+
+/** What {@link TodoRepository.addMove} writes. `statement` must be non-empty when present (CHECK). */
+export interface AddTodoMoveParams {
+  todoId: string;
+  actor: TodoActivityActor;
+  /** The item's session before the move; null when it had none. */
+  fromSessionId: string | null;
+  toSessionId: string;
+  statement: string | null;
+  /** Whose words `statement` is; null when not attributed. Non-null only with a statement. */
+  attributedUserId: string | null;
 }
 
 export interface ResolveTodoParams {
@@ -113,6 +148,10 @@ export interface TodoRepository {
    * `created_worker_id` only when the item is agent-created, so the creator's
    * kind never changes (CHECK `todos_creator_check`). Null when the item does
    * not exist, is not open, or no longer has `params.expectedSessionId` (compare-and-set).
+   *
+   * A successful move also writes its `todo_moves` row (from `expectedSessionId`,
+   * to `params.sessionId`) in the SAME transaction: both happen or neither does.
+   * A refused (null) adopt writes nothing.
    */
   adopt(id: string, params: AdoptTodoParams, executor?: TodoExecutor): Promise<Todo | null>;
 
@@ -136,7 +175,31 @@ export interface TodoRepository {
   /** `open` to `dismissed`. Null when the item does not exist or is not open. */
   dismiss(id: string, executor?: TodoExecutor): Promise<Todo | null>;
 
-  /** Hard delete. True when a row was removed. */
+  /**
+   * Add a comment to an item, in ONE conditional statement: written only while the item exists and
+   * is `open` or `done`. Null when it does not (deleted, or closed since the caller read it): nothing
+   * is written, and the caller re-reads the item to say which.
+   */
+  addComment(params: AddTodoCommentParams, executor?: TodoExecutor): Promise<TodoCommentActivity | null>;
+
+  /** Record a move of an item. The item must exist (foreign key). {@link adopt} writes its own. */
+  addMove(params: AddTodoMoveParams, executor?: TodoExecutor): Promise<TodoMoveActivity>;
+
+  /**
+   * The item's timeline: comments and moves in ONE ordered query (UNION ALL),
+   * ascending by `created_at`, then `kind` ('comment' before 'moved'), then
+   * `id`. Empty for an item with none or an unknown id.
+   */
+  listActivities(todoId: string, executor?: TodoExecutor): Promise<TodoActivity[]>;
+
+  /**
+   * The timelines of several items in ONE ordered query per chunk of 500 ids (same UNION ALL as
+   * {@link listActivities}, leading with `todo_id`). Every requested id is a key, with `[]` when it
+   * has no activity. An empty list returns an empty Map without querying.
+   */
+  listActivitiesForTodos(todoIds: string[], executor?: TodoExecutor): Promise<Map<string, TodoActivity[]>>;
+
+  /** Hard delete; the item's comments and moves go with it (foreign key cascade). True when a row was removed. */
   delete(id: string, executor?: TodoExecutor): Promise<boolean>;
 
   /** `open` to `superseded` for an item of `sessionId`. True when a row changed. */

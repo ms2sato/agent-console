@@ -1409,6 +1409,30 @@ describe('MCP Server Tools', () => {
       expect(names).toContain('list_todos');
     });
 
+    it('advertises comment_todo in tools/list with id, text, sessionId and workerId, beside resolve_todo', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      const listBody = (await listRes.json()) as {
+        result?: { tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }> };
+      };
+      const tools = listBody.result?.tools ?? [];
+
+      expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['comment_todo', 'resolve_todo']));
+      expect(Object.keys(tools.find((t) => t.name === 'comment_todo')?.inputSchema?.properties ?? {}).sort()).toEqual([
+        'id',
+        'sessionId',
+        'text',
+        'workerId',
+      ]);
+    });
+
     it('advertises adopt_todo in tools/list, beside resolve_todo, and list_todos describes its global flag', async () => {
       const listRes = await app.request('/mcp', {
         method: 'POST',
@@ -1428,6 +1452,8 @@ describe('MCP Server Tools', () => {
       expect(Object.keys(tools.find((t) => t.name === 'adopt_todo')?.inputSchema?.properties ?? {}).sort()).toEqual([
         'id',
         'sessionId',
+        'statedBy',
+        'statement',
         'workerId',
       ]);
       expect(Object.keys(tools.find((t) => t.name === 'list_todos')?.inputSchema?.properties ?? {})).toContain('global');

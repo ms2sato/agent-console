@@ -1,5 +1,5 @@
 import { mock } from 'bun:test';
-import type { Todo } from '@agent-console/shared';
+import type { Todo, TodoActivity, TodoCommentActivity, TodoMoveActivity } from '@agent-console/shared';
 
 /** A wire-valid `Todo` with overrides, shared by the to-do list tests. */
 export function makeTodo(overrides: Partial<Todo> = {}): Todo {
@@ -17,8 +17,38 @@ export function makeTodo(overrides: Partial<Todo> = {}): Todo {
     resolvedByUserId: null,
     resolvedByWorkerId: null,
     resolvedAt: null,
+    commentCount: 0,
     createdAt: '2026-10-15T00:00:00.000Z',
     updatedAt: '2026-10-15T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** A wire-valid comment activity with overrides. */
+export function makeTodoComment(overrides: Partial<TodoCommentActivity> = {}): TodoCommentActivity {
+  return {
+    id: 'comment-1',
+    todoId: 'todo-1',
+    kind: 'comment',
+    actor: { userId: 'user-me' },
+    text: 'A reply',
+    createdAt: '2026-10-15T01:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** A wire-valid move activity with overrides (an agent move with no statement by default). */
+export function makeTodoMove(overrides: Partial<TodoMoveActivity> = {}): TodoMoveActivity {
+  return {
+    id: 'move-1',
+    todoId: 'todo-1',
+    kind: 'moved',
+    actor: { workerId: 'worker-1' },
+    fromSessionId: 'session-1',
+    toSessionId: 'session-2',
+    statement: null,
+    attributedUserId: null,
+    createdAt: '2026-10-15T02:00:00.000Z',
     ...overrides,
   };
 }
@@ -58,6 +88,8 @@ export interface DirectoryUserFixture {
 export function createTodoApiMock() {
   const state = {
     todos: [] as Todo[],
+    /** The timeline the detail endpoint returns, keyed by item id; absent means none. */
+    activities: {} as Record<string, TodoActivity[]>,
     users: [{ id: 'user-me', username: 'me' }] as DirectoryUserFixture[],
     refusal: null as { status: number; error: string } | null,
     calls: [] as RecordedCall[],
@@ -83,7 +115,9 @@ export function createTodoApiMock() {
       const detailId = url.pathname.split('/')[3];
       if (detailId !== undefined) {
         const found = state.todos.find((todo) => todo.id === detailId);
-        return found ? jsonResponse({ todo: found }) : jsonResponse({ error: 'Todo not found' }, 404);
+        return found
+          ? jsonResponse({ todo: found, activities: state.activities[found.id] ?? [] })
+          : jsonResponse({ error: 'Todo not found' }, 404);
       }
       return jsonResponse({ todos: state.todos });
     }
@@ -94,6 +128,10 @@ export function createTodoApiMock() {
       return jsonResponse({ success: true });
     }
     const id = url.pathname.split('/')[3];
+    if (method === 'POST' && url.pathname.endsWith('/comments') && id !== undefined) {
+      const commented = state.todos.find((todo) => todo.id === id) ?? makeTodo({ id });
+      return jsonResponse({ todo: commented, activities: state.activities[id] ?? [] });
+    }
     const named = state.todos.find((todo) => todo.id === id);
     return jsonResponse({ todo: named ?? makeTodo({ id: id ?? 'created' }) }, method === 'POST' && !id ? 201 : 200);
   };

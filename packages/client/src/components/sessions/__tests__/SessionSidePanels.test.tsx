@@ -209,7 +209,7 @@ describe('SessionSidePanels', () => {
         return Promise.resolve(jsonResponse({ todos: [{
         id: 'todo-1', kind: 'action', scope: 'session', title: TODO_TITLE, body: '', sessionId: 'session-1',
         createdBy: { workerId: 'worker-1' }, assigneeUserId: null, status: 'open', resolutionText: null,
-        resolvedByUserId: null, resolvedByWorkerId: null, resolvedAt: null, createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:00:00.000Z',
+        resolvedByUserId: null, resolvedByWorkerId: null, resolvedAt: null, commentCount: 0, createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:00:00.000Z',
       }] }));
       }
       return base(input);

@@ -27,6 +27,7 @@ import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.
 import { SqliteArtifactRepository } from '../../repositories/sqlite-artifact-repository.js';
 import { SqliteBookmarkRepository } from '../../repositories/sqlite-bookmark-repository.js';
 import { SqliteTodoRepository } from '../../repositories/sqlite-todo-repository.js';
+import type { TodoRepository } from '../../repositories/todo-repository.js';
 import { WorktreeService } from '../../services/worktree-service.js';
 import { TimerManager } from '../../services/timer-manager.js';
 import { ConditionalWakeupManager } from '../../services/conditional-wakeup-manager.js';
@@ -69,6 +70,7 @@ describe('adopt_todo', () => {
     mcpAuthMode?: McpAuthMode;
     mcpTokenRegistry?: McpTokenRegistry;
     broadcastToApp?: (msg: AppServerMessage) => void;
+    todoRepository?: TodoRepository;
   }): Promise<void> {
     const mcpApp = createMcpApp({
       sessionManager,
@@ -87,7 +89,7 @@ describe('adopt_todo', () => {
       userRepository,
       artifactRepository,
       bookmarkRepository: new SqliteBookmarkRepository(getDatabase()),
-      todoRepository,
+      todoRepository: authOpts?.todoRepository ?? todoRepository,
       broadcastToApp: authOpts?.broadcastToApp ?? (() => {}),
       findOpenPullRequest: async () => null,
       fetchPullRequestUrl: async () => null,
@@ -506,6 +508,10 @@ describe('adopt_todo', () => {
   });
 
   describe('foreign owner', () => {
+    const FOREIGN_OWNER_REFUSAL = (id: string) =>
+      `Cannot adopt ${id}: the item belongs to a session owned by another user. ` +
+      "Pass `statement` (the human's quoted words) to adopt it on a human's instruction";
+
     async function enforceAs(caller: { sessionId: string; workerId: string; userId: string }) {
       const registry = new McpTokenRegistry();
       await mountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
@@ -527,7 +533,7 @@ describe('adopt_todo', () => {
 
       const error = await toolError(await adoptViaTool({ id: 'theirs' }, headers));
 
-      expect(error).toBe('Cannot adopt theirs: the item belongs to a session owned by another user');
+      expect(error).toBe(FOREIGN_OWNER_REFUSAL('theirs'));
       expect(await todoRepository.findById('theirs')).toMatchObject({ sessionId: owner.sessionId, createdBy: { workerId: owner.workerId } });
     });
 
@@ -540,6 +546,72 @@ describe('adopt_todo', () => {
 
       expect(error).toContain('owned by another user');
       expect(await todoRepository.findById('theirs-live')).toMatchObject({ sessionId: owner.sessionId });
+    });
+
+    // Reach (m5, measured): deleting the `statement === undefined` condition of the foreign-owner
+    // branch in `adopt_todo` (so a foreign item is adopted without words) fails "refuses ... without
+    // a statement", the persisted-session refusal test and the live-session one.
+    it('refuses without a statement, and the refusal carries the hint to pass one', async () => {
+      const { owner, caller } = await ownerAndCaller();
+      await seedAgentItem(owner, 'needs-words', 'global');
+      const headers = await enforceAs(caller);
+
+      const error = await toolError(await adoptViaTool({ id: 'needs-words' }, headers));
+
+      expect(error).toContain('owned by another user');
+      expect(error).toContain('Pass `statement`');
+      expect(await todoRepository.findById('needs-words')).toMatchObject({ sessionId: owner.sessionId });
+      expect(await todoRepository.listActivities('needs-words')).toEqual([]);
+    });
+
+    it("with a statement the foreign item is adopted, and the move row carries the words and the attributed user", async () => {
+      const { owner, caller } = await ownerAndCaller();
+      await seedAgentItem(owner, 'instructed', 'global');
+      const headers = await enforceAs(caller);
+
+      const response = await adoptViaTool(
+        { id: 'instructed', statement: '  yes, take it over  ', statedBy: 'foreign-owner' },
+        headers,
+      );
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(await todoRepository.findById('instructed')).toMatchObject({
+        sessionId: caller.sessionId,
+        createdBy: { workerId: caller.workerId },
+      });
+      const activities = await todoRepository.listActivities('instructed');
+      expect(activities).toHaveLength(1);
+      expect(activities[0]).toMatchObject({
+        kind: 'moved',
+        actor: { workerId: caller.workerId },
+        fromSessionId: owner.sessionId,
+        toSessionId: caller.sessionId,
+        statement: 'yes, take it over',
+        attributedUserId: owner.userId,
+      });
+    });
+
+    it('with a statement and no statedBy the move is recorded unattributed', async () => {
+      const { owner, caller } = await ownerAndCaller();
+      await seedAgentItem(owner, 'unattributed', 'global');
+      const headers = await enforceAs(caller);
+
+      const response = await adoptViaTool({ id: 'unattributed', statement: 'go ahead' }, headers);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect((await todoRepository.listActivities('unattributed'))[0]).toMatchObject({ statement: 'go ahead', attributedUserId: null });
+    });
+
+    it('refuses an unknown statedBy and changes nothing', async () => {
+      const { owner, caller } = await ownerAndCaller();
+      await seedAgentItem(owner, 'bad-stater', 'global');
+      const headers = await enforceAs(caller);
+
+      const error = await toolError(await adoptViaTool({ id: 'bad-stater', statement: 'go', statedBy: 'nobody-here' }, headers));
+
+      expect(error).toBe('No user named nobody-here');
+      expect(await todoRepository.findById('bad-stater')).toMatchObject({ sessionId: owner.sessionId });
+      expect(await todoRepository.listActivities('bad-stater')).toEqual([]);
     });
 
     it('control: an item of a persisted session owned by the SAME user is adopted (the check compares owners, it does not refuse paused sessions)', async () => {
@@ -578,6 +650,157 @@ describe('adopt_todo', () => {
 
       expect(error).toContain('can only act as your own session');
       expect(await todoRepository.findById('gate-first')).toMatchObject({ sessionId: owner.sessionId });
+    });
+  });
+
+  describe('an item already in the caller\'s session', () => {
+    // Reach (measured): comparing only the session (not the worker) in the early return makes the
+    // second test below fail; dropping the early return makes the first fail.
+    it('same session AND same worker is a read-only no-op: no write, no broadcast, no activity', async () => {
+      const me = await createOwnedSession(9120, 'same-owner-a');
+      const before = await seedAgentItem(me, 'own', 'session');
+      await tick();
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: broadcast });
+
+      const response = await adoptViaTool({ id: 'own', sessionId: me.sessionId, workerId: me.workerId, statement: 'ignored' });
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(await todoRepository.findById('own')).toEqual(before);
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(await todoRepository.listActivities('own')).toEqual([]);
+    });
+
+    it('same session with a DIFFERENT worker re-targets the delivery worker: the row updates, no activity, no statement needed, one broadcast', async () => {
+      const me = await createOwnedSession(9121, 'same-owner-b');
+      const before = await seedAgentItem(me, 'retarget', 'session');
+      const terminal = await sessionManager.createWorker(me.sessionId, { type: 'terminal', name: 'Shell' });
+      await tick();
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: broadcast });
+
+      const response = await adoptViaTool({ id: 'retarget', sessionId: me.sessionId, workerId: terminal!.id });
+
+      expect(response.result?.isError).toBeUndefined();
+      const stored = (await todoRepository.findById('retarget'))!;
+      expect(stored.createdBy).toEqual({ workerId: terminal!.id });
+      expect(stored.sessionId).toBe(me.sessionId);
+      expect(stored.updatedAt > before.updatedAt).toBe(true);
+      expect(await todoRepository.listActivities('retarget')).toEqual([]);
+      expect(broadcast.mock.calls.map((c) => c[0])).toEqual([{ type: 'todos-updated', sessionId: me.sessionId }]);
+    });
+  });
+
+  describe('the move row (every successful adopt records one)', () => {
+    it('a same-owner adopt writes a move with no statement, from the previous session to the caller\'s', async () => {
+      const a = await createOwnedSession(9101, 'move-owner-a');
+      const b = await createOwnedSession(9102, 'move-owner-b');
+      await seedAgentItem(a, 'plain-move', 'global');
+
+      await adoptViaTool({ id: 'plain-move', sessionId: b.sessionId, workerId: b.workerId });
+
+      const activities = await todoRepository.listActivities('plain-move');
+      expect(activities).toHaveLength(1);
+      expect(activities[0]).toMatchObject({
+        kind: 'moved',
+        todoId: 'plain-move',
+        actor: { workerId: b.workerId },
+        fromSessionId: a.sessionId,
+        toSessionId: b.sessionId,
+        statement: null,
+        attributedUserId: null,
+      });
+    });
+
+    it('a statement given on a same-owner adopt is recorded too; a session-less item moves from null', async () => {
+      const creator = await createOwnedSession(9103, 'move-owner-c');
+      const b = await createOwnedSession(9104, 'move-owner-d');
+      await todoRepository.create({
+        id: 'sessionless',
+        kind: 'action',
+        scope: 'global',
+        title: 'no session',
+        body: 'b',
+        sessionId: null,
+        createdBy: { userId: creator.userId },
+        assigneeUserId: null,
+      });
+
+      await adoptViaTool({ id: 'sessionless', sessionId: b.sessionId, workerId: b.workerId, statement: 'ok to take' });
+
+      expect((await todoRepository.listActivities('sessionless'))[0]).toMatchObject({
+        fromSessionId: null,
+        toSessionId: b.sessionId,
+        statement: 'ok to take',
+        attributedUserId: null,
+      });
+    });
+
+    it('a re-adopt by the same session writes no second move', async () => {
+      const a = await createOwnedSession(9105, 'move-owner-e');
+      const b = await createOwnedSession(9106, 'move-owner-f');
+      await seedAgentItem(a, 'once', 'global');
+      await adoptViaTool({ id: 'once', sessionId: b.sessionId, workerId: b.workerId });
+
+      await adoptViaTool({ id: 'once', sessionId: b.sessionId, workerId: b.workerId, statement: 'again' });
+
+      expect(await todoRepository.listActivities('once')).toHaveLength(1);
+    });
+
+    it('a statedBy without a statement, and a whitespace-only statement, are refused before anything is written', async () => {
+      const a = await createOwnedSession(9107, 'move-owner-g');
+      const b = await createOwnedSession(9108, 'move-owner-h');
+      await seedAgentItem(a, 'strict', 'global');
+
+      const noStatement = await toolError(
+        await adoptViaTool({ id: 'strict', sessionId: b.sessionId, workerId: b.workerId, statedBy: 'move-owner-g' }),
+      );
+      const blank = await toolError(await adoptViaTool({ id: 'strict', sessionId: b.sessionId, workerId: b.workerId, statement: '  ' }));
+
+      expect(noStatement).toBe('statedBy names whose words statement is; pass statement');
+      expect(blank).toBe("statement must be the human's words, quoted; it cannot be empty");
+      expect(await todoRepository.findById('strict')).toMatchObject({ sessionId: a.sessionId });
+      expect(await todoRepository.listActivities('strict')).toEqual([]);
+    });
+
+    it('a refused adopt (unknown id, closed item) writes no move row', async () => {
+      const a = await createOwnedSession(9109, 'move-owner-i');
+      const b = await createOwnedSession(9110, 'move-owner-j');
+      await seedAgentItem(a, 'closed-one', 'global');
+      await todoRepository.dismiss('closed-one');
+
+      await adoptViaTool({ id: 'closed-one', sessionId: b.sessionId, workerId: b.workerId });
+      await adoptViaTool({ id: 'missing', sessionId: b.sessionId, workerId: b.workerId });
+
+      expect(await getDatabase().selectFrom('todo_moves').selectAll().execute()).toEqual([]);
+    });
+
+    // Reach (measured): deleting the `current.status !== 'open'` arm of the compare-and-set failure
+    // branch in `adopt_todo` fails this test (the message becomes "moved while you were adopting it");
+    // without this test that mutation passed the whole file.
+    it('an item closed between the read and the compare-and-set write is refused naming its status, not "moved"', async () => {
+      const a = await createOwnedSession(9111, 'move-owner-k');
+      const b = await createOwnedSession(9112, 'move-owner-l');
+      await seedAgentItem(a, 'raced', 'global');
+      let dismissedOnce = false;
+      const racing = Object.assign(Object.create(todoRepository) as SqliteTodoRepository, {
+        findById: async (id: string, executor?: Parameters<SqliteTodoRepository['findById']>[1]) => {
+          const row = await todoRepository.findById(id, executor);
+          if (!dismissedOnce && id === 'raced') {
+            dismissedOnce = true;
+            await todoRepository.dismiss(id);
+          }
+          return row;
+        },
+      });
+      await mountMcpApp({ mcpAuthMode: 'off', todoRepository: racing });
+
+      const error = await toolError(await adoptViaTool({ id: 'raced', sessionId: b.sessionId, workerId: b.workerId }));
+
+      expect(dismissedOnce).toBe(true);
+      expect(error).toBe('Cannot adopt raced: its status is dismissed, only an open item can be adopted');
+      expect(await todoRepository.findById('raced')).toMatchObject({ status: 'dismissed', sessionId: a.sessionId });
+      expect(await todoRepository.listActivities('raced')).toEqual([]);
     });
   });
 

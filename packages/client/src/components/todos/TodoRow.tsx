@@ -7,6 +7,10 @@ type DirectoryUsers = UsersListResponse['users'];
 
 const BADGE_CLASS = 'shrink-0 px-1.5 py-0.5 rounded-full text-xs font-medium leading-none';
 
+function replyCountLabel(count: number): string {
+  return count === 1 ? '1 reply' : `${count} replies`;
+}
+
 interface TodoRowProps {
   todo: Todo;
   users: DirectoryUsers;
@@ -38,6 +42,11 @@ export function TodoRow({ todo, users, onError, onOpenDetail, showSessionLink = 
           <span className={`${BADGE_CLASS} bg-slate-600/60 text-gray-300`} aria-label={`Scope: ${todo.scope}`}>
             {todo.scope}
           </span>
+          {todo.commentCount > 0 && (
+            <span className={`${BADGE_CLASS} bg-amber-500/20 text-amber-300`} aria-label={replyCountLabel(todo.commentCount)}>
+              {replyCountLabel(todo.commentCount)}
+            </span>
+          )}
           <span className={`${BADGE_CLASS} bg-gray-500/20 text-gray-400`} aria-label={`Status: ${todo.status}`}>
             {todo.status}
           </span>
