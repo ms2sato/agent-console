@@ -40,9 +40,12 @@
  * So the question to ask of a new field is NOT "how do old clients cope with
  * it" — it is answered above, identically for every field. Ask instead whether
  * the field's own semantics are right, and, for an entity that still has a
- * hand-written type beside its schema, whether the two were changed together
- * (an entity whose type is derived from its schema with `v.InferOutput` has
- * one declaration, so there is nothing to keep in step).
+ * hand-written type beside its schema, whether the two were changed together.
+ * Tell the two cases apart by where the type is exported from: a type exported
+ * from its schema module as `v.InferOutput` of that schema (Artifact and
+ * Bookmark are now such types) has ONE declaration, so adding a field needs no
+ * parallel edit; only a type that lives in `types/` beside a schema has a
+ * hand-written twin that must be edited in the same change.
  *
  * @see `packages/client/src/lib/schema-version.ts` — the comparison and the
  *   reload guard.
