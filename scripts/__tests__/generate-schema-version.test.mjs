@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeVersion, collectSchemaFiles } from '../generate-schema-version.mjs';
+import { computeVersion, collectSchemaFiles, copySchemaClosureTo } from '../generate-schema-version.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -63,6 +63,22 @@ afterEach(() => {
     const dir = tempDirs.pop();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe('generate-schema-version.mjs — copySchemaClosureTo', () => {
+  it('copies the closure layout-preserving: the copy hashes like the real tree and crosses into types/', () => {
+    const dest = mkdtempSync(join(tmpdir(), 'schema-version-copy-test-'));
+    tempDirs.push(dest);
+
+    const copy = copySchemaClosureTo(dest);
+
+    expect(copy.schemasDir).toBe(join(dest, 'schemas'));
+    expect(computeVersion(copy.schemasDir)).toBe(computeVersion());
+    const copied = copy.files.map(lastTwoSegments);
+    expect(copied).toContain('schemas/embedded-agent.ts');
+    expect(copied).toContain('types/system-events.ts');
+    expect(copy.files.length).toBe(collectSchemaFiles().length);
+  });
 });
 
 describe('generate-schema-version.mjs — computeVersion end-to-end (temp fixtures)', () => {
@@ -291,64 +307,64 @@ describe('generate-schema-version.mjs — real-tree closure tell (a picklist sou
   // These pin the actual defect the closure was built to catch: a schema
   // file's accepted wire vocabulary sourced from a constant that lives in
   // packages/shared/src/types/, outside the hashed schemas/ directory. The
-  // measurement runs the real generator against the real file tree, via a
-  // temporary, synchronously restored perturbation — same mutate/probe/
-  // restore shape as packages/shared/src/__tests__/schema-version.gen.test.ts's
-  // existing embedded-agent.ts sensitivity tests.
+  // measurement perturbs a layout-preserving temp copy of the real closure
+  // (copySchemaClosureTo), so the real source tree is never written.
+
+  function makeClosureCopy() {
+    const dest = mkdtempSync(join(tmpdir(), 'schema-version-closure-copy-'));
+    tempDirs.push(dest);
+    return { dest, copy: copySchemaClosureTo(dest) };
+  }
 
   it('changes SCHEMA_VERSION when PTY_NOTIFICATION_KINDS (types/system-events.ts) is perturbed', () => {
     // PTY_NOTIFICATION_KINDS backs a runtime `import { PTY_NOTIFICATION_KINDS }`
     // in packages/shared/src/schemas/embedded-agent.ts (a picklist source),
     // so it is inside the closure and must move the version.
-    const targetFile = join(REPO_ROOT, 'packages', 'shared', 'src', 'types', 'system-events.ts');
+    const { dest, copy } = makeClosureCopy();
+    const targetFile = join(dest, 'types', 'system-events.ts');
     const original = readFileSync(targetFile, 'utf8');
-    const baseline = computeVersion();
+    const baseline = computeVersion(copy.schemasDir);
 
-    let mutated;
-    try {
-      const perturbed = original.replace(
-        'export const PTY_NOTIFICATION_KINDS = [',
-        "export const PTY_NOTIFICATION_KINDS = [\n  '__schema_version_closure_probe__',",
-      );
-      // Sanity: the replace actually matched something in the real file.
-      expect(perturbed).not.toBe(original);
-      writeFileSync(targetFile, perturbed);
-      mutated = computeVersion();
-    } finally {
-      writeFileSync(targetFile, original);
-    }
+    const perturbed = original.replace(
+      'export const PTY_NOTIFICATION_KINDS = [',
+      "export const PTY_NOTIFICATION_KINDS = [\n  '__schema_version_closure_probe__',",
+    );
+    // Sanity: the replace actually matched something in the copied file.
+    expect(perturbed).not.toBe(original);
+    writeFileSync(targetFile, perturbed);
+    const mutated = computeVersion(copy.schemasDir);
 
     expect(mutated).not.toBe(baseline);
-    // Restoring the file yields the original version again (no residue).
-    expect(computeVersion()).toBe(baseline);
+    // Restoring the copied file yields the original version again (no residue).
+    writeFileSync(targetFile, original);
+    expect(computeVersion(copy.schemasDir)).toBe(baseline);
   });
 
   it('does NOT change SCHEMA_VERSION when a type-only-reachable file (types/worker.ts) is perturbed', () => {
-    // Negative control, same shape, on the real tree: packages/shared/src/types/worker.ts
-    // is reachable from packages/shared/src/schemas/embedded-agent.ts ONLY via
+    // Negative control, same shape, on a copy of the real tree: types/worker.ts
+    // is reachable from schemas/embedded-agent.ts ONLY via
     // `import type { ExitReason } from '../types/worker.js';` — a whole-declaration
-    // type-only import — so it must stay outside the closure even though it
-    // sits right beside the two files that ARE in it.
-    const targetFile = join(REPO_ROOT, 'packages', 'shared', 'src', 'types', 'worker.ts');
-    const original = readFileSync(targetFile, 'utf8');
-    const baseline = computeVersion();
+    // type-only import — so it stays outside the closure even though it
+    // sits right beside the files that ARE in it. It is therefore not copied
+    // by the helper; the control writes it into the copy's types/ directory
+    // and checks the version does not move.
+    const { dest, copy } = makeClosureCopy();
+    const realWorker = join(REPO_ROOT, 'packages', 'shared', 'src', 'types', 'worker.ts');
+    const targetFile = join(dest, 'types', 'worker.ts');
+    expect(copy.files).not.toContain(targetFile);
+    const original = readFileSync(realWorker, 'utf8');
+    writeFileSync(targetFile, original);
+    const baseline = computeVersion(copy.schemasDir);
 
-    let mutated;
-    try {
-      const perturbed = original.replace(
-        "export type ExitReason = 'managed' | 'unexpected' | 'evicted';",
-        "export type ExitReason = 'managed' | 'unexpected' | 'evicted' | '__schema_version_closure_probe__';",
-      );
-      // Sanity: the replace actually matched something in the real file.
-      expect(perturbed).not.toBe(original);
-      writeFileSync(targetFile, perturbed);
-      mutated = computeVersion();
-    } finally {
-      writeFileSync(targetFile, original);
-    }
+    const perturbed = original.replace(
+      "export type ExitReason = 'managed' | 'unexpected' | 'evicted';",
+      "export type ExitReason = 'managed' | 'unexpected' | 'evicted' | '__schema_version_closure_probe__';",
+    );
+    // Sanity: the replace actually matched something in the real file.
+    expect(perturbed).not.toBe(original);
+    writeFileSync(targetFile, perturbed);
 
-    expect(mutated).toBe(baseline);
-    expect(computeVersion()).toBe(baseline);
+    expect(computeVersion(copy.schemasDir)).toBe(baseline);
   });
 });
 
