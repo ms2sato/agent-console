@@ -90,6 +90,21 @@ function completeWorker(worker: unknown): unknown {
   }
 }
 
+function completeEmbeddedAgent(definition: unknown): unknown {
+  if (!isEntity(definition)) return definition;
+  const sdk = definition.engine === 'claude-sdk';
+  return {
+    name: 'Embedded agent',
+    engine: 'openai-api',
+    provider: sdk ? { model: 'sonnet' } : { baseUrl: 'http://localhost:11434/v1', model: 'model' },
+    isBuiltIn: false,
+    createdBy: 'user-1',
+    createdAt: FIXED_CREATED_AT,
+    updatedAt: FIXED_CREATED_AT,
+    ...definition,
+  };
+}
+
 function completeValidationResult(result: unknown): unknown {
   if (!isEntity(result)) return result;
   return {
@@ -123,7 +138,7 @@ function completeReviewGroup(group: unknown): unknown {
 }
 
 /**
- * Fill the schema-required fields a partial `agents` / `repositories` / `session` / `worker` / `results`
+ * Fill the schema-required fields a partial `agents` / `repositories` / `session` / `worker` / `embeddedAgents` / `embeddedAgent` / `results`
  * (session validation) envelope, or a bare review-queue array of groups, leaves out.
  */
 export function completeWireBody(body: unknown): unknown {
@@ -135,5 +150,7 @@ export function completeWireBody(body: unknown): unknown {
   if (Array.isArray(out.repositories)) out.repositories = out.repositories.map(completeRepository);
   if (isEntity(out.session)) out.session = completeSession(out.session);
   if (isEntity(out.worker)) out.worker = completeWorker(out.worker);
+  if (Array.isArray(out.embeddedAgents)) out.embeddedAgents = out.embeddedAgents.map(completeEmbeddedAgent);
+  if (isEntity(out.embeddedAgent)) out.embeddedAgent = completeEmbeddedAgent(out.embeddedAgent);
   return out;
 }

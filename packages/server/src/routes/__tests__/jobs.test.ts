@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
+import * as v from 'valibot';
+import { JobSchema, JobsResponseSchema, JobStatsSchema } from '@agent-console/shared';
 import type { JobType } from '@agent-console/shared';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
@@ -559,6 +561,46 @@ describe('Jobs API', () => {
       const body = (await res.json()) as { error: string };
       // Should indicate "only stalled can be retried", not "job not found"
       expect(body.error).toContain('stalled');
+    });
+  });
+
+  // ===========================================================================
+  // Wire-schema pin: the served bodies must satisfy the strict client schemas.
+  // Uses a real job type; the picklist rejects the arbitrary strings other tests enqueue.
+  // ===========================================================================
+
+  describe('served bodies parse through the shared wire schemas', () => {
+    it('GET /api/jobs, /api/jobs/stats and /api/jobs/:id parse', async () => {
+      const jobId = await testJobQueue.enqueue(
+        testType('cleanup:session-outputs'),
+        { sessionId: 's1' },
+        { priority: 1, maxAttempts: 3 },
+      );
+
+      const listRes = await app.request('/api/jobs');
+      expect(listRes.status).toBe(200);
+      const list = v.parse(JobsResponseSchema, await listRes.json());
+      expect(list.total).toBe(1);
+      expect(list.jobs[0].id).toBe(jobId);
+
+      const statsRes = await app.request('/api/jobs/stats');
+      expect(statsRes.status).toBe(200);
+      v.parse(JobStatsSchema, await statsRes.json());
+
+      const oneRes = await app.request(`/api/jobs/${jobId}`);
+      expect(oneRes.status).toBe(200);
+      const one = v.parse(JobSchema, await oneRes.json());
+      expect(one.payload).toEqual({ sessionId: 's1' });
+    });
+
+    it('a job whose stored payload is not valid JSON parses with the parse-error marker payload', async () => {
+      const jobId = await testJobQueue.enqueue(testType('cleanup:session-outputs'), { sessionId: 's1' });
+      await getDatabase().updateTable('jobs').set({ payload: '{not json' }).where('id', '=', jobId).execute();
+
+      const res = await app.request(`/api/jobs/${jobId}`);
+      expect(res.status).toBe(200);
+      const one = v.parse(JobSchema, await res.json());
+      expect(one.payload).toEqual({ _parseError: true, raw: '{not json' });
     });
   });
 });

@@ -28,8 +28,10 @@ const successResponse = () =>
   jsonResponse({
     embeddedAgent: {
       id: 'embedded-1',
+      engine: 'openai-api',
       name: 'Ollama qwen3',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      isBuiltIn: false,
       createdBy: 'user-1',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',

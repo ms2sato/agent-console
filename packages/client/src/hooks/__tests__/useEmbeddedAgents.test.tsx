@@ -46,6 +46,8 @@ describe('useEmbeddedAgents', () => {
         {
           id: 'e1',
           name: 'Local GPT',
+          engine: 'openai-api',
+          isBuiltIn: false,
           provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
           createdBy: 'user-1',
           createdAt: '',

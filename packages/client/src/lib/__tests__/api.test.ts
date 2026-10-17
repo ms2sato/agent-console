@@ -38,6 +38,11 @@ import {
   fetchMessageTemplates,
   fetchSkills,
   fetchCurrentUser,
+  fetchEmbeddedAgents,
+  fetchJobs,
+  fetchJobStats,
+  fetchJob,
+  fetchSystemHealth,
   generateRepositoryDescription,
   resumeSession,
   openInVSCode,
@@ -1055,8 +1060,10 @@ describe('API Client', () => {
       const mockEmbeddedAgent = {
         embeddedAgent: {
           id: 'new-embedded-agent',
+          engine: 'openai-api',
           name: 'Ollama qwen3',
           provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+          isBuiltIn: false,
           createdBy: 'user-1',
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-01T00:00:00.000Z',
@@ -1079,6 +1086,19 @@ describe('API Client', () => {
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       });
       expect(result).toEqual(mockEmbeddedAgent);
+    });
+
+    it('rejects a response missing embeddedAgent', async () => {
+      const { createEmbeddedAgent } = await import('../api');
+      mockFetch.mockResolvedValue(createMockResponse({}));
+
+      await expect(
+        createEmbeddedAgent({
+          engine: 'openai-api',
+          name: 'Ollama qwen3',
+          provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        })
+      ).rejects.toThrow();
     });
 
     it('should throw error on failure', async () => {
@@ -1106,8 +1126,10 @@ describe('API Client', () => {
       const mockEmbeddedAgent = {
         embeddedAgent: {
           id: 'embedded-1',
+          engine: 'openai-api',
           name: 'Updated Name',
           provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+          isBuiltIn: false,
           createdBy: 'user-1',
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-02T00:00:00.000Z',
@@ -1122,6 +1144,13 @@ describe('API Client', () => {
       const body = await getLastFetchBody();
       expect(body).toEqual({ name: 'Updated Name' });
       expect(result).toEqual(mockEmbeddedAgent);
+    });
+
+    it('rejects a response missing embeddedAgent', async () => {
+      const { updateEmbeddedAgent } = await import('../api');
+      mockFetch.mockResolvedValue(createMockResponse({}));
+
+      await expect(updateEmbeddedAgent('embedded-1', { name: 'X' })).rejects.toThrow();
     });
 
     it('should throw error on failure', async () => {
@@ -2382,6 +2411,99 @@ describe('API Client', () => {
           mockFetch.mockResolvedValue(createMockResponse(body));
           await expect(updateSessionMetadata('s1', {})).rejects.toThrow();
         }
+      });
+    });
+
+    describe('pass 5: embedded agents, jobs and system health', () => {
+      const definition = {
+        id: 'embedded-1',
+        engine: 'openai-api',
+        name: 'Ollama qwen3',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        isBuiltIn: false,
+        createdBy: 'user-1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      const job = {
+        id: 'job-1',
+        type: 'cleanup:session-outputs',
+        payload: { sessionId: 's1' },
+        status: 'pending',
+        priority: 0,
+        attempts: 0,
+        maxAttempts: 3,
+        nextRetryAt: 1,
+        lastError: null,
+        createdAt: 1,
+        startedAt: null,
+        completedAt: null,
+      };
+      const stats = { pending: 1, processing: 0, completed: 2, stalled: 0 };
+
+      describe('fetchEmbeddedAgents', () => {
+        it('parses the list', async () => {
+          mockFetch.mockResolvedValue(createMockResponse({ embeddedAgents: [definition] }));
+          expect(await fetchEmbeddedAgents()).toEqual({ embeddedAgents: [definition] });
+        });
+
+        it('rejects an unknown field on the envelope', async () => {
+          mockFetch.mockResolvedValue(createMockResponse({ embeddedAgents: [definition], extra: true }));
+          await expect(fetchEmbeddedAgents()).rejects.toThrow();
+        });
+      });
+
+      describe('fetchJobs', () => {
+        it('parses the list with its total', async () => {
+          mockFetch.mockResolvedValue(createMockResponse({ jobs: [job], total: 1 }));
+          expect(await fetchJobs()).toEqual({ jobs: [job], total: 1 });
+        });
+
+        it('rejects a negative total', async () => {
+          mockFetch.mockResolvedValue(createMockResponse({ jobs: [job], total: -1 }));
+          await expect(fetchJobs()).rejects.toThrow();
+        });
+      });
+
+      describe('fetchJobStats', () => {
+        it('parses the bare counts', async () => {
+          mockFetch.mockResolvedValue(createMockResponse(stats));
+          expect(await fetchJobStats()).toEqual(stats);
+        });
+
+        it('rejects an extra key', async () => {
+          mockFetch.mockResolvedValue(createMockResponse({ ...stats, extra: 1 }));
+          await expect(fetchJobStats()).rejects.toThrow();
+        });
+      });
+
+      describe('fetchJob', () => {
+        it('parses one job', async () => {
+          mockFetch.mockResolvedValue(createMockResponse(job));
+          expect(await fetchJob('job-1')).toEqual(job);
+        });
+
+        it('rejects an unknown status', async () => {
+          mockFetch.mockResolvedValue(createMockResponse({ ...job, status: 'expired' }));
+          await expect(fetchJob('job-1')).rejects.toThrow();
+        });
+      });
+
+      describe('fetchSystemHealth', () => {
+        it('parses both appUrl cases', async () => {
+          const withUrl = { webhookSecretConfigured: true, appUrl: 'https://example.com' };
+          mockFetch.mockResolvedValue(createMockResponse(withUrl));
+          expect(await fetchSystemHealth()).toEqual(withUrl);
+
+          const withoutUrl = { webhookSecretConfigured: false, appUrl: null };
+          mockFetch.mockResolvedValue(createMockResponse(withoutUrl));
+          expect(await fetchSystemHealth()).toEqual(withoutUrl);
+        });
+
+        it('rejects a body missing appUrl', async () => {
+          mockFetch.mockResolvedValue(createMockResponse({ webhookSecretConfigured: true }));
+          await expect(fetchSystemHealth()).rejects.toThrow();
+        });
       });
     });
   });
