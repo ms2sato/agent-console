@@ -1001,8 +1001,8 @@ export async function readRepoFileAtRef(
   return git(['show', object], repoPath);
 }
 
-/** Marker printed by the elevated directory probe in `readWorkingTreeFile`. */
-const WORKING_TREE_DIR_MARKER = '__AC_DIR__';
+/** Exit code the elevated directory probe in `readWorkingTreeFile` uses to say "this is a directory". */
+const WORKING_TREE_DIR_EXIT_CODE = 42;
 
 /**
  * Read one file from a working tree, as the session owner when `requestUser`
@@ -1012,7 +1012,9 @@ const WORKING_TREE_DIR_MARKER = '__AC_DIR__';
  * Direct path (`requestUser` null/empty): `stat` + `readFile` in-process.
  * Elevated path: `cat` through the same `_runAsUser` seam `gitExec` uses;
  * `runAsUser` itself bypasses elevation when the user is the server user or
- * AUTH_MODE is not multi-user.
+ * AUTH_MODE is not multi-user. A directory is signalled by the exit code, never
+ * by stdout: stdout carries the file's bytes, so any stdout marker would
+ * misclassify a regular file whose content equals the marker.
  *
  * Accepted limitation: `runAsUser` returns stdout as a UTF-8 string, so on the
  * elevated path invalid byte sequences come back as U+FFFD. NUL bytes survive,
@@ -1030,7 +1032,7 @@ export async function readWorkingTreeFile(
 ): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null> {
   if (requestUser != null && requestUser.length > 0) {
     const escaped = shellEscape(relPath);
-    const command = `test -d ${escaped} && echo ${WORKING_TREE_DIR_MARKER} || cat -- ${escaped}`;
+    const command = `test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}; cat -- ${escaped}`;
     let result: RunAsUserResult;
     try {
       result = await _runAsUser({
@@ -1050,6 +1052,7 @@ export async function readWorkingTreeFile(
         'Timeout'
       );
     }
+    if (result.exitCode === WORKING_TREE_DIR_EXIT_CODE) return { kind: 'directory' };
     if (result.exitCode !== 0) {
       if (/No such file/.test(result.stderr)) return null;
       throw new GitError(
@@ -1058,7 +1061,6 @@ export async function readWorkingTreeFile(
         result.stderr
       );
     }
-    if (result.stdout.trim() === WORKING_TREE_DIR_MARKER) return { kind: 'directory' };
     return { kind: 'file', content: Buffer.from(result.stdout, 'utf-8') };
   }
 

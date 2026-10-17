@@ -1488,12 +1488,25 @@ index abc1234..def5678 100644
         }
       });
 
-      it('maps the directory marker to kind directory', async () => {
-        const { fake } = captureSeam({ stdout: '__AC_DIR__\n' });
+      it('maps exit code 42 with empty stdout to kind directory', async () => {
+        const { fake } = captureSeam({ exitCode: 42, stdout: '' });
         const mod = await getGitModule();
         mod.__setRunAsUserForTesting(fake);
         try {
           expect(await mod.readWorkingTreeFile('/work/tree', 'sub', 'alice')).toEqual({ kind: 'directory' });
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('treats a regular file whose content is exactly __AC_DIR__ as a file', async () => {
+        const { fake } = captureSeam({ exitCode: 0, stdout: '__AC_DIR__\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          const result = await mod.readWorkingTreeFile('/work/tree', 'marker.txt', 'alice');
+          expect(result.kind).toBe('file');
+          expect(result.content.toString('utf-8')).toBe('__AC_DIR__\n');
         } finally {
           mod.__setRunAsUserForTesting(null);
         }
