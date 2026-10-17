@@ -20,6 +20,8 @@ import { EndSessionDialog } from '../sessions/EndSessionDialog';
 import { Spinner } from '../ui/Spinner';
 import { ActivityIndicator } from './ActivityIndicator';
 import type { SessionWithActivity } from '../../hooks/useActiveSessionsWithActivity';
+import type { SessionViewMode } from '../../hooks/useSessionViewMode';
+import { buildSessionTree, type SessionTreeNode } from './session-tree';
 import { groupSessionsByRepository, getGroupAggregateActivityState } from './group-sessions-by-repository';
 import { getPersistedGroupCollapsed, persistGroupCollapsed } from './session-group-collapse-storage';
 import {
@@ -53,7 +55,19 @@ interface ActiveSessionsSidebarProps {
     mode: SessionFilterMode;
     onChange: (mode: SessionFilterMode) => void;
   };
+  /** Session view mode (flat / tree) — when provided, shows the view toggle UI */
+  sessionViewMode?: {
+    mode: SessionViewMode;
+    onChange: (mode: SessionViewMode) => void;
+  };
 }
+
+const TREE_INDENT_PX = 12;
+
+const VIEW_MODE_OPTIONS: ReadonlyArray<{ mode: SessionViewMode; label: string }> = [
+  { mode: 'flat', label: 'Flat' },
+  { mode: 'tree', label: 'Tree' },
+];
 
 /**
  * Format the "Restart All Agents" result into a human-readable status message.
@@ -565,6 +579,7 @@ export function ActiveSessionsSidebar({
   onResumeSession,
   hideResizeHandle,
   sessionFilter,
+  sessionViewMode,
 }: ActiveSessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -616,6 +631,20 @@ export function ActiveSessionsSidebar({
       const next = !current;
       persistGroupCollapsed(groupKey, next);
       return { ...prev, [groupKey]: next };
+    });
+  }, []);
+  const isTreeView = sessionViewMode?.mode === 'tree';
+  const sessionTree = useMemo(
+    () => (isTreeView ? buildSessionTree(sessions) : []),
+    [isTreeView, sessions]
+  );
+  // Ids of tree nodes whose subtree is collapsed. Not persisted.
+  const [collapsedTreeNodes, setCollapsedTreeNodes] = useState<ReadonlySet<string>>(new Set());
+  const toggleTreeNode = useCallback((sessionId: string) => {
+    setCollapsedTreeNodes((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(sessionId)) next.add(sessionId);
+      return next;
     });
   }, []);
   const currentWidthRef = useRef(width);
@@ -775,6 +804,60 @@ export function ActiveSessionsSidebar({
     },
   });
 
+  const renderTreeNodes = (nodes: SessionTreeNode[], depth: number): React.ReactNode =>
+    nodes.map((node) => {
+      const { session, activityState } = node.item;
+      const hasChildren = node.children.length > 0;
+      const expanded = !collapsedTreeNodes.has(session.id);
+      const { primary } = getSessionDisplayInfo(session);
+      return (
+        <div key={session.id}>
+          <div
+            role="listitem"
+            aria-level={depth + 1}
+            data-depth={depth}
+            data-session-id={session.id}
+            className="flex items-stretch"
+            style={{ paddingLeft: depth * TREE_INDENT_PX }}
+          >
+            {hasChildren ? (
+              <button
+                type="button"
+                onClick={() => toggleTreeNode(session.id)}
+                aria-expanded={expanded}
+                aria-label={`${expanded ? 'Collapse' : 'Expand'} children of ${primary}`}
+                className="shrink-0 w-5 flex items-center justify-center text-gray-500 hover:text-gray-300"
+              >
+                <ChevronDownIcon className={`w-3 h-3 transition-transform ${expanded ? '' : '-rotate-90'}`} />
+              </button>
+            ) : (
+              <span className="shrink-0 w-5" aria-hidden="true" />
+            )}
+            <div className="min-w-0 flex-1">
+              <SessionItem
+                sessionWithActivity={{ session, activityState }}
+                collapsed={false}
+                isActive={session.id === currentSessionId}
+                onClick={() => handleSessionClick(session.id)}
+                orchestratorSessionIds={orchestratorSessionIdsFor(session)}
+              />
+              {node.orphan && (
+                <div className="px-3 pb-1.5 -mt-1">
+                  <span
+                    className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-800 text-gray-400"
+                    title="This session was started from a parent session that is not in the active list (it has ended, is paused, or is hidden by the current filter)."
+                  >
+                    parent gone
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+          {hasChildren && expanded && renderTreeNodes(node.children, depth + 1)}
+        </div>
+      );
+    });
+
   return (
     <aside
       ref={sidebarRef}
@@ -833,9 +916,10 @@ export function ActiveSessionsSidebar({
         isLoading={restartMutation.isPending}
       />
 
-      {/* Session filter toggle (shown when sessionFilter is provided) */}
-      {!collapsed && sessionFilter && (
+      {/* Session filter / view-mode toggles (each shown when its prop is provided) */}
+      {!collapsed && (sessionFilter || sessionViewMode) && (
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-slate-700 shrink-0">
+          {sessionFilter && (<>
           <button
             onClick={() => sessionFilter.onChange('all')}
             className={`text-xs px-2 py-0.5 rounded transition-colors ${
@@ -871,6 +955,25 @@ export function ActiveSessionsSidebar({
               Shared
             </button>
           )}
+          </>)}
+          {sessionViewMode && (
+            <div className={`flex items-center gap-1 ${sessionFilter ? 'ml-auto' : ''}`}>
+              {VIEW_MODE_OPTIONS.map(({ mode, label }) => (
+                <button
+                  key={mode}
+                  onClick={() => sessionViewMode.onChange(mode)}
+                  className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                    sessionViewMode.mode === mode
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  }`}
+                  aria-pressed={sessionViewMode.mode === mode}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -905,6 +1008,11 @@ export function ActiveSessionsSidebar({
           !collapsed && (
             <div className="p-3 text-gray-500 text-sm">No active sessions</div>
           )
+        ) : !collapsed && isTreeView ? (
+          // Tree view replaces repository grouping: a child may live in a
+          // different repository than its parent, so grouping would split trees.
+          // The collapsed icon column has no room for indent and stays flat.
+          <div role="list">{renderTreeNodes(sessionTree, 0)}</div>
         ) : collapsed || sessionGroups.length <= 1 ? (
           // R5: collapsed sidebar always renders a flat icon list.
           // R6: a single group (counting the quick group) degrades to a flat

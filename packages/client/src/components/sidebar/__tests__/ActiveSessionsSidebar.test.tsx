@@ -10,6 +10,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../../hooks/useSidebarState';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
+import { useSessionViewMode } from '../../../hooks/useSessionViewMode';
 import { useRepositoryRegistrySync } from '../../../hooks/useRepositoryRegistrySync';
 import { setAuthMode, setCurrentUser, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
 import { repositoryKeys } from '../../../lib/query-keys';
@@ -1669,6 +1670,162 @@ describe('ActiveSessionsSidebar', () => {
       expect(screen.getByText('No active sessions')).toBeTruthy();
       expect(document.querySelectorAll('[aria-controls^="session-group-"]')).toHaveLength(0);
     });
+  });
+});
+
+describe('ActiveSessionsSidebar view modes (flat / tree)', () => {
+  const VIEW_KEY = 'session-view-mode';
+
+  const baseProps = () => ({
+    collapsed: false,
+    onToggle: () => {},
+    sessions: [] as SessionWithActivity[],
+    width: SIDEBAR_DEFAULT_WIDTH,
+    onWidthChange: () => {},
+  });
+
+  // Mirrors how routes/__root.tsx wires the persisted hook into the sidebar.
+  function SidebarWithViewMode(props: { sessions: SessionWithActivity[]; collapsed?: boolean; pausedSessions?: Session[] }) {
+    const { viewMode, setViewMode } = useSessionViewMode();
+    return (
+      <ActiveSessionsSidebar
+        {...baseProps()}
+        {...props}
+        sessionViewMode={{ mode: viewMode, onChange: setViewMode }}
+      />
+    );
+  }
+
+  const named = (id: string, repositoryName: string, extra: Partial<Omit<WorktreeSession, 'type'>> = {}) =>
+    createMockWorktreeSession({ id, repositoryName, ...extra });
+
+  const family = () => [
+    createSessionWithActivity(named('orch', 'orch-repo'), 'idle'),
+    createSessionWithActivity(named('kid-1', 'kid-repo', { parentSessionId: 'orch', worktreeId: 'k1' }), 'active'),
+    createSessionWithActivity(named('kid-2', 'kid-repo', { parentSessionId: 'orch', worktreeId: 'k2' }), 'asking'),
+    createSessionWithActivity(named('lost', 'lost-repo', { parentSessionId: 'gone' }), 'idle'),
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+    resetAuth();
+    repositoriesResponse = { repositories: [] };
+    orchestratorDesignationCalls = [];
+    installGlobalFetchMock();
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetAuth();
+    localStorage.clear();
+    globalThis.fetch = originalGlobalFetch;
+  });
+
+  const rowFor = (id: string) => document.querySelector(`[data-session-id="${id}"]`) as HTMLElement | null;
+
+  it('renders Flat and Tree buttons with aria-pressed, defaulting to Flat', async () => {
+    await renderWithRouter(<SidebarWithViewMode sessions={family()} />);
+
+    expect(screen.getByRole('button', { name: 'Flat' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Tree' }).getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelector('[data-depth]')).toBeNull();
+  });
+
+  it('does not render the view toggle when sessionViewMode is not provided', async () => {
+    await renderWithRouter(<ActiveSessionsSidebar {...baseProps()} sessions={family()} />);
+
+    expect(screen.queryByRole('button', { name: 'Tree' })).toBeNull();
+  });
+
+  it('persists the chosen mode to localStorage and restores it on remount', async () => {
+    const first = await renderWithRouter(<SidebarWithViewMode sessions={family()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Tree' }));
+
+    expect(localStorage.getItem(VIEW_KEY)).toBe('tree');
+    expect(screen.getByRole('button', { name: 'Tree' }).getAttribute('aria-pressed')).toBe('true');
+    first.unmount?.();
+    cleanup();
+
+    await renderWithRouter(<SidebarWithViewMode sessions={family()} />);
+    expect(screen.getByRole('button', { name: 'Tree' }).getAttribute('aria-pressed')).toBe('true');
+    expect(rowFor('kid-1')?.getAttribute('data-depth')).toBe('1');
+  });
+
+  it('renders children indented under their parent in tree view', async () => {
+    localStorage.setItem(VIEW_KEY, 'tree');
+    await renderWithRouter(<SidebarWithViewMode sessions={family()} />);
+
+    expect(rowFor('orch')?.getAttribute('data-depth')).toBe('0');
+    expect(rowFor('orch')?.getAttribute('aria-level')).toBe('1');
+    expect(rowFor('kid-1')?.getAttribute('data-depth')).toBe('1');
+    expect(rowFor('kid-1')?.getAttribute('aria-level')).toBe('2');
+    expect(rowFor('kid-1')?.style.paddingLeft).not.toBe('0px');
+    expect(rowFor('orch')?.style.paddingLeft).toBe('0px');
+    // Children follow the same activity priority as the flat list: asking before active.
+    const order = Array.from(document.querySelectorAll('[data-session-id]')).map((e) => e.getAttribute('data-session-id'));
+    expect(order).toEqual(['orch', 'kid-2', 'kid-1', 'lost']);
+  });
+
+  it('collapses and expands a subtree with the chevron', async () => {
+    localStorage.setItem(VIEW_KEY, 'tree');
+    await renderWithRouter(<SidebarWithViewMode sessions={family()} />);
+
+    const chevron = screen.getByRole('button', { name: 'Collapse children of orch-repo' });
+    expect(chevron.getAttribute('aria-expanded')).toBe('true');
+    // Only nodes with children get a chevron.
+    expect(document.querySelectorAll('button[aria-expanded][aria-label$="children of kid-repo"]')).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /children of/ })).toHaveLength(1);
+
+    fireEvent.click(chevron);
+    expect(rowFor('kid-1')).toBeNull();
+    expect(rowFor('kid-2')).toBeNull();
+    expect(rowFor('orch')).toBeTruthy();
+    const expand = screen.getByRole('button', { name: 'Expand children of orch-repo' });
+    expect(expand.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(expand);
+    expect(rowFor('kid-1')).toBeTruthy();
+    expect(rowFor('kid-2')).toBeTruthy();
+  });
+
+  it('shows an orphan at the root with a "parent gone" badge that has a title', async () => {
+    localStorage.setItem(VIEW_KEY, 'tree');
+    await renderWithRouter(<SidebarWithViewMode sessions={family()} />);
+
+    expect(rowFor('lost')?.getAttribute('data-depth')).toBe('0');
+    const badges = screen.getAllByText('parent gone');
+    expect(badges).toHaveLength(1);
+    expect(badges[0].getAttribute('title')).toContain('parent session');
+  });
+
+  it('keeps the flat ordering and rows unchanged in flat view', async () => {
+    await renderWithRouter(<SidebarWithViewMode sessions={family()} />);
+
+    expect(screen.queryByText('parent gone')).toBeNull();
+    expect(screen.queryAllByRole('button', { name: /children of/ })).toHaveLength(0);
+    const names = screen.getAllByText(/-repo$/).map((e) => e.textContent);
+    expect(names).toEqual(['orch-repo', 'kid-repo', 'kid-repo', 'lost-repo']);
+  });
+
+  it('renders the same flat icon column with no indent when the sidebar is collapsed in tree view', async () => {
+    localStorage.setItem(VIEW_KEY, 'tree');
+    await renderWithRouter(<SidebarWithViewMode sessions={family()} collapsed />);
+
+    expect(document.querySelector('[data-depth]')).toBeNull();
+    expect(document.querySelector('[role="list"]')).toBeNull();
+    expect(screen.queryByText('parent gone')).toBeNull();
+    expect(screen.queryAllByRole('button', { name: /children of/ })).toHaveLength(0);
+  });
+
+  it('leaves the paused list unchanged in tree view', async () => {
+    localStorage.setItem(VIEW_KEY, 'tree');
+    const paused = [createMockWorktreeSession({ id: 'p1', repositoryName: 'paused-repo', parentSessionId: 'orch', pausedAt: new Date().toISOString() })];
+    await renderWithRouter(<SidebarWithViewMode sessions={family()} pausedSessions={paused} />);
+
+    expect(screen.getByText('Paused')).toBeTruthy();
+    fireEvent.click(screen.getByText('Paused'));
+    expect(screen.getByText('paused-repo')).toBeTruthy();
+    expect(rowFor('p1')).toBeNull();
   });
 });
 
