@@ -284,6 +284,8 @@ class TerminalController implements TerminalInstance {
   // Uncorrelated (no requestId), so at most one may be in flight: a second would
   // race the first and let a stale response be mis-applied as a continuation.
   private historyInFlight = false;
+  // Counts paged-history replays running on throwaway terminals, which whenIdleForTest cannot otherwise see.
+  private replaysInFlight = 0;
 
   // Cold-start instrumentation.
   private historyStartMs = 0;
@@ -590,9 +592,18 @@ class TerminalController implements TerminalInstance {
     return this.noticeTimer;
   }
 
+  private async trackReplay<T>(p: Promise<T>): Promise<T> {
+    this.replaysInFlight++;
+    try {
+      return await p;
+    } finally {
+      this.replaysInFlight--;
+    }
+  }
+
   /**
-   * Resolves once the headless parser has drained every write issued so far and
-   * no snapshot frame is pending. Rejects (instead of hanging) after
+   * Resolves once the headless parser has drained every write issued so far, no
+   * paged-history replay is in flight and no snapshot frame is pending. Rejects (instead of hanging) after
    * IDLE_WAIT_MAX_MS or IDLE_WAIT_MAX_ROUNDS.
    */
   whenIdleForTest(): Promise<void> {
@@ -606,6 +617,11 @@ class TerminalController implements TerminalInstance {
       const settle = async (): Promise<void> => {
         for (let round = 0; round < IDLE_WAIT_MAX_ROUNDS; round++) {
           if (this.disposed || cancelled) return;
+          // A finished replay writes nothing to the live terminal but schedules a
+          // frame, so the frame wait after the probe below still applies.
+          while (this.replaysInFlight > 0 && !cancelled && !this.disposed) {
+            await new Promise<void>((done) => setTimeout(done, 4));
+          }
           // A write is queued behind every earlier write, so its callback marks
           // the point where all earlier parsing (and its scheduleNotify) is done.
           await new Promise<void>((done) => this.terminal.write('', done));
@@ -1296,14 +1312,14 @@ class TerminalController implements TerminalInstance {
     try {
       // pagedChunks[1] (if any) is newer than the top chunk and already owns the
       // top chunk's still-volatile tail rows.
-      pair = await replayHistoryPair(
+      pair = await this.trackReplay(replayHistoryPair(
         msg.data,
         topRaw,
         cols,
         rows,
         (d) => this.processOutput(d),
         this.pagedChunks.length > 1 ? 'yield-to-newer' : 'keep',
-      );
+      ));
     } catch {
       return;
     }
@@ -1382,7 +1398,7 @@ class TerminalController implements TerminalInstance {
   ): Promise<void> {
     let joint: Awaited<ReturnType<typeof replayHistoryJoint>>;
     try {
-      joint = await replayHistoryJoint(
+      joint = await this.trackReplay(replayHistoryJoint(
         [msg.data, topRaw, secondRaw],
         cols,
         rows,
@@ -1390,7 +1406,7 @@ class TerminalController implements TerminalInstance {
         // pagedChunks[2] (if any) is newer than the second chunk and already owns
         // its still-volatile tail rows.
         this.pagedChunks.length > 2 ? 'yield-to-newer' : 'keep',
-      );
+      ));
     } catch {
       return;
     }
@@ -1465,7 +1481,9 @@ class TerminalController implements TerminalInstance {
   ): Promise<void> {
     let result: Awaited<ReturnType<typeof replayHistoryChunk>>;
     try {
-      result = await replayHistoryChunk(msg.data, cols, rows, (d) => this.processOutput(d));
+      result = await this.trackReplay(
+        replayHistoryChunk(msg.data, cols, rows, (d) => this.processOutput(d)),
+      );
     } catch {
       return;
     }
