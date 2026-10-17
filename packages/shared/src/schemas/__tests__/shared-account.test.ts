@@ -4,6 +4,7 @@ import {
   RegisterSharedAccountRequestSchema,
   SharedAccountSummarySchema,
   ListSharedAccountsResponseSchema,
+  RegisterSharedAccountResponseSchema,
 } from '../shared-account.js';
 
 describe('RegisterSharedAccountRequestSchema', () => {
@@ -93,5 +94,19 @@ describe('ListSharedAccountsResponseSchema', () => {
       ],
     });
     expect(result.success).toBe(true);
+  });
+});
+
+describe('RegisterSharedAccountResponseSchema', () => {
+  it('accepts { username, userId }', () => {
+    expect(v.safeParse(RegisterSharedAccountResponseSchema, { username: 'bot', userId: 'u1' }).success).toBe(true);
+  });
+
+  it('rejects an extra field and a dropped field', () => {
+    expect(
+      v.safeParse(RegisterSharedAccountResponseSchema, { username: 'bot', userId: 'u1', extra: 1 }).success,
+    ).toBe(false);
+    expect(v.safeParse(RegisterSharedAccountResponseSchema, { username: 'bot' }).success).toBe(false);
+    expect(v.safeParse(RegisterSharedAccountResponseSchema, { userId: 'u1' }).success).toBe(false);
   });
 });

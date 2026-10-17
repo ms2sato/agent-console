@@ -22,6 +22,10 @@ import {
   PullWorktreeRequestSchema,
   FetchGitHubIssueRequestSchema,
   UpdateRepositoryRequestSchema,
+  CloneRepositoryResponseSchema,
+  GenerateRepositoryDescriptionResponseSchema,
+  WorktreeAcceptedResponseSchema,
+  WorktreeDeletionAcceptedResponseSchema,
 } from '../repository';
 import { CLONE_JOB_STATUS, CLONE_ERROR_CODES } from '../repository';
 
@@ -1413,5 +1417,58 @@ describe('CloneJobStatusResponseSchema', () => {
   it('rejects a missing jobId or status', () => {
     expect(v.safeParse(CloneJobStatusResponseSchema, { status: 'pending' }).success).toBe(false);
     expect(v.safeParse(CloneJobStatusResponseSchema, { jobId: 'j' }).success).toBe(false);
+  });
+});
+
+describe('CloneRepositoryResponseSchema', () => {
+  it('accepts { jobId, repositoryId: null }', () => {
+    expect(v.safeParse(CloneRepositoryResponseSchema, { jobId: 'j1', repositoryId: null }).success).toBe(true);
+  });
+
+  it('rejects a populated repositoryId, an extra field and a dropped field', () => {
+    expect(v.safeParse(CloneRepositoryResponseSchema, { jobId: 'j1', repositoryId: 'r1' }).success).toBe(false);
+    expect(v.safeParse(CloneRepositoryResponseSchema, { jobId: 'j1', repositoryId: null, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(CloneRepositoryResponseSchema, { jobId: 'j1' }).success).toBe(false);
+    expect(v.safeParse(CloneRepositoryResponseSchema, { repositoryId: null }).success).toBe(false);
+  });
+});
+
+describe('GenerateRepositoryDescriptionResponseSchema', () => {
+  it('accepts { description }', () => {
+    expect(v.safeParse(GenerateRepositoryDescriptionResponseSchema, { description: 'A repo' }).success).toBe(true);
+  });
+
+  it('rejects an extra field and a dropped field', () => {
+    expect(v.safeParse(GenerateRepositoryDescriptionResponseSchema, { description: 'A repo', extra: 1 }).success).toBe(false);
+    expect(v.safeParse(GenerateRepositoryDescriptionResponseSchema, {}).success).toBe(false);
+  });
+});
+
+describe('WorktreeAcceptedResponseSchema', () => {
+  it('accepts { accepted: true }', () => {
+    expect(v.safeParse(WorktreeAcceptedResponseSchema, { accepted: true }).success).toBe(true);
+  });
+
+  it('rejects accepted: false, an extra field and a dropped field', () => {
+    expect(v.safeParse(WorktreeAcceptedResponseSchema, { accepted: false }).success).toBe(false);
+    expect(v.safeParse(WorktreeAcceptedResponseSchema, { accepted: true, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(WorktreeAcceptedResponseSchema, {}).success).toBe(false);
+  });
+});
+
+describe('WorktreeDeletionAcceptedResponseSchema', () => {
+  it('accepts { accepted: true, jobId }', () => {
+    expect(v.safeParse(WorktreeDeletionAcceptedResponseSchema, { accepted: true, jobId: 'j1' }).success).toBe(true);
+  });
+
+  it('rejects accepted: false, an extra field and a dropped field', () => {
+    expect(v.safeParse(WorktreeDeletionAcceptedResponseSchema, { accepted: false, jobId: 'j1' }).success).toBe(false);
+    expect(v.safeParse(WorktreeDeletionAcceptedResponseSchema, { accepted: true, jobId: 'j1', extra: 1 }).success).toBe(false);
+    expect(v.safeParse(WorktreeDeletionAcceptedResponseSchema, { accepted: true }).success).toBe(false);
+    expect(v.safeParse(WorktreeDeletionAcceptedResponseSchema, { jobId: 'j1' }).success).toBe(false);
+  });
+
+  it('rejects the synchronous delete body, which is a different contract', () => {
+    expect(v.safeParse(WorktreeDeletionAcceptedResponseSchema, { success: true }).success).toBe(false);
   });
 });

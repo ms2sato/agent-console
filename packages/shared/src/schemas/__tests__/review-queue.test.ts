@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import type { ReviewQueueGroup, ReviewQueueItem } from '../../types/git-diff';
-import { ReviewQueueGroupSchema, ReviewQueueItemSchema, ReviewQueueResponseSchema } from '../review-queue';
+import type { ReviewComment, ReviewQueueGroup, ReviewQueueItem } from '../../types/git-diff';
+import {
+  ReviewQueueGroupSchema,
+  ReviewQueueItemSchema,
+  ReviewQueueResponseSchema,
+  ReviewCommentSchema,
+  ReviewStatusResponseSchema,
+} from '../review-queue';
 
 // `ReviewQueueItem` / `ReviewQueueGroup` stay hand-written interfaces the server imports;
 // these pins fix each schema's output to its interface exactly. `Assert<Equals<...>>` fails
@@ -9,6 +15,7 @@ import { ReviewQueueGroupSchema, ReviewQueueItemSchema, ReviewQueueResponseSchem
 type Assert<T extends true> = T;
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 export type _ReviewQueueItemIsExact = Assert<Equals<v.InferOutput<typeof ReviewQueueItemSchema>, ReviewQueueItem>>;
+export type _ReviewCommentIsExact = Assert<Equals<v.InferOutput<typeof ReviewCommentSchema>, ReviewComment>>;
 export type _ReviewQueueGroupIsExact = Assert<Equals<v.InferOutput<typeof ReviewQueueGroupSchema>, ReviewQueueGroup>>;
 
 const item = {
@@ -76,5 +83,32 @@ describe('ReviewQueueItemSchema', () => {
       v.safeParse(ReviewQueueItemSchema, { ...item, summary: { ...item.summary, confidence: 'certain' } }).success,
     ).toBe(false);
     expect(v.safeParse(ReviewQueueItemSchema, { ...item, parentSessionId: null }).success).toBe(false);
+  });
+});
+
+describe('ReviewCommentSchema', () => {
+  const comment: ReviewComment = { id: 'c1', file: 'a.ts', line: 3, body: 'nit', createdAt: '2026-01-01T00:00:00.000Z' };
+
+  it('accepts the real comment shape', () => {
+    expect(v.safeParse(ReviewCommentSchema, comment).success).toBe(true);
+  });
+
+  it('rejects an extra field, a dropped field and a fractional line', () => {
+    expect(v.safeParse(ReviewCommentSchema, { ...comment, extra: 1 }).success).toBe(false);
+    const { body: _dropped, ...rest } = comment;
+    expect(v.safeParse(ReviewCommentSchema, rest).success).toBe(false);
+    expect(v.safeParse(ReviewCommentSchema, { ...comment, line: 1.5 }).success).toBe(false);
+  });
+});
+
+describe('ReviewStatusResponseSchema', () => {
+  it('accepts { workerId, status }', () => {
+    expect(v.safeParse(ReviewStatusResponseSchema, { workerId: 'w1', status: 'completed' }).success).toBe(true);
+  });
+
+  it('rejects an extra field and a dropped field', () => {
+    expect(v.safeParse(ReviewStatusResponseSchema, { workerId: 'w1', status: 'completed', extra: 1 }).success).toBe(false);
+    expect(v.safeParse(ReviewStatusResponseSchema, { workerId: 'w1' }).success).toBe(false);
+    expect(v.safeParse(ReviewStatusResponseSchema, { status: 'completed' }).success).toBe(false);
   });
 });

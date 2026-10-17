@@ -18,3 +18,27 @@ export const SendWorkerMessageRequestSchema = v.strictObject({
 });
 
 export type SendWorkerMessageRequest = v.InferOutput<typeof SendWorkerMessageRequestSchema>;
+
+/**
+ * A delivered worker message as it crosses the wire. Mirrors `WorkerMessage` in
+ * `types/worker-message.ts` (pinned in the schema test), which the server still
+ * imports.
+ */
+export const WorkerMessageSchema = v.strictObject({
+  id: v.string(),
+  sessionId: v.string(),
+  fromWorkerId: v.string(),
+  fromWorkerName: v.string(),
+  toWorkerId: v.string(),
+  toWorkerName: v.string(),
+  content: v.string(),
+  /** ISO 8601 */
+  timestamp: v.string(),
+});
+
+/** Schema for `POST /api/sessions/:sessionId/messages`'s 201 response. */
+export const SendWorkerMessageResponseSchema = v.strictObject({
+  message: WorkerMessageSchema,
+});
+
+export type SendWorkerMessageResponse = v.InferOutput<typeof SendWorkerMessageResponseSchema>;
