@@ -8,6 +8,7 @@ import {
   _setTimings,
   _setSeamCorrectionForTest,
   _inspect,
+  _whenIdle,
 } from '../terminal-store';
 import { generateInkRepaintStream, inkContentLabel } from './fixtures/ink-repaint-stream';
 
@@ -24,8 +25,9 @@ function makeAppBus() {
   return { subscribe, emit };
 }
 
-function flush(ms = 60): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function flush(ms = 1): Promise<void> {
+  await _whenIdle();
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // 30 lines: enough to scroll the 24-row throwaway replay screen so a paired
