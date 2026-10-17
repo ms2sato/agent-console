@@ -8,7 +8,7 @@ import * as v from 'valibot';
  * `.claude/rules/pre-pr-completeness.md` Q10, the #926 lesson).
  */
 export const NotificationItemSchema = v.strictObject({
-  kind: v.picklist(['artifact-created', 'worktree-deletion-finished']),
+  kind: v.picklist(['artifact-created', 'worktree-deletion-finished', 'todo-agent-replied']),
   id: v.pipe(v.string(), v.minLength(1)),
   occurredAt: v.pipe(v.string(), v.isoTimestamp()),
   title: v.pipe(v.string(), v.minLength(1)),

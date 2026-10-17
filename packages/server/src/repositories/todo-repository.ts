@@ -214,6 +214,17 @@ export interface TodoRepository {
    */
   listActivitiesForTodos(todoIds: string[], executor?: TodoExecutor): Promise<Map<string, TodoActivity[]>>;
 
+  /**
+   * The newest agent comments (a worker actor; human comments are excluded) on items `userId` is
+   * assigned to or created, newest first, with the item fields a notice needs. The identity filter
+   * is part of the query, so `limit` bounds the caller's own rows, not a window shared with other
+   * users' comments.
+   */
+  listAgentCommentsFor(
+    params: { userId: string; limit: number },
+    executor?: TodoExecutor,
+  ): Promise<Array<{ comment: TodoCommentActivity; todo: Pick<Todo, 'id' | 'title' | 'kind' | 'status'> }>>;
+
   /** Hard delete; the item's comments and moves go with it (foreign key cascade). True when a row was removed. */
   delete(id: string, executor?: TodoExecutor): Promise<boolean>;
 

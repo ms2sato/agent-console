@@ -97,6 +97,7 @@ describe('API route mounting', () => {
     const notificationService = new NotificationService({
       artifactRepository: { findByUserId: async () => [] },
       jobs: { getJobs: async () => [] },
+      todoRepository: { listAgentCommentsFor: async () => [] },
       cursorRepository: { getCursor: async () => null, advance: async (_userId, lastSeenAt) => lastSeenAt },
     });
     app = await createTestApp({ notificationService });

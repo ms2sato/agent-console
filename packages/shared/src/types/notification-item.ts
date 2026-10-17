@@ -7,7 +7,7 @@
 
 /** A composed notification list item — a pointer + summary over a domain row, never itself persisted (N2). */
 export interface NotificationItem {
-  kind: 'artifact-created' | 'worktree-deletion-finished';
+  kind: 'artifact-created' | 'worktree-deletion-finished' | 'todo-agent-replied';
   /** kind-scoped id (the domain row's own id); (kind, id) is the stable identity. */
   id: string;
   /** ISO 8601 timestamp. */

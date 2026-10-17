@@ -51,6 +51,23 @@ describe('NotificationItemSchema', () => {
     }
   });
 
+  it('accepts a well-formed todo-agent-replied item and rejects an unknown kind', () => {
+    const item: NotificationItem = {
+      kind: 'todo-agent-replied',
+      id: 'comment-1',
+      occurredAt: '2026-10-17T00:00:00.000Z',
+      title: 'Reply on: Which database?',
+      link: '/todos/todo-1',
+    };
+
+    const parsed = v.safeParse(NotificationItemSchema, item);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.output).toEqual(item);
+    }
+    expect(v.safeParse(NotificationItemSchema, { ...item, kind: 'todo-replied' }).success).toBe(false);
+  });
+
   it('rejects a missing required field', () => {
     const result = v.safeParse(NotificationItemSchema, {
       kind: 'artifact-created',

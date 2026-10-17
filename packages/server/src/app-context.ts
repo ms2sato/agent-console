@@ -376,6 +376,7 @@ export async function createAppContext(
   const notificationService = new NotificationServiceClass({
     artifactRepository,
     jobs: jobQueue,
+    todoRepository,
     cursorRepository: notificationCursorRepository,
   });
   const worktreeService = new WorktreeServiceClass({ db });
@@ -885,6 +886,7 @@ export async function createTestContext(
   const notificationService = new NotificationServiceClass({
     artifactRepository,
     jobs: jobQueue,
+    todoRepository,
     cursorRepository: notificationCursorRepository,
   });
   const worktreeService = new WorktreeServiceClass({ db });

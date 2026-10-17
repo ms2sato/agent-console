@@ -98,6 +98,7 @@ describe('Client-Server Boundary: /api/notifications', () => {
     const notificationService = new NotificationService({
       artifactRepository,
       jobs: { getJobs: async () => [] },
+      todoRepository: { listAgentCommentsFor: async () => [] },
       cursorRepository: notificationCursorRepository,
     });
 
@@ -166,6 +167,7 @@ describe('Client-Server Boundary: /api/notifications', () => {
           return filtered;
         },
       },
+      todoRepository: { listAgentCommentsFor: async () => [] },
       cursorRepository: notificationCursorRepository,
     });
     const jobBackedApp = await createTestApp({

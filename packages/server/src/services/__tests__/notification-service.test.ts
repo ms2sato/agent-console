@@ -13,6 +13,7 @@ import { describe, it, expect } from 'bun:test';
 import type { Artifact, NotificationItem, WorktreeDeletePayload } from '@agent-console/shared';
 import { JOB_TYPES, JOB_STATUS } from '@agent-console/shared';
 import type { ArtifactRepository } from '../../repositories/artifact-repository.js';
+import type { TodoRepository } from '../../repositories/todo-repository.js';
 import type { NotificationCursorRepository } from '../../repositories/notification-cursor-repository.js';
 import type { JobQueue, JobRecord, GetJobsOptions } from '../../jobs/job-queue.js';
 import { NotificationService, type NotificationServiceDeps, type FeedIdentity } from '../notification-service.js';
@@ -35,6 +36,36 @@ function makeJobsSource(jobs: JobRecord[]): Pick<JobQueue, 'getJobs'> {
       if (options?.status) filtered = filtered.filter((j) => j.status === options.status);
       return options?.limit !== undefined ? filtered.slice(0, options.limit) : filtered;
     },
+  };
+}
+
+type AgentReply = Awaited<ReturnType<TodoRepository['listAgentCommentsFor']>>[number];
+
+/** A fake that applies the user filter and the limit the way the real query does. */
+function makeTodoRepo(
+  byUser: Record<string, AgentReply[]>,
+  calls: Array<{ userId: string; limit: number }> = [],
+): Pick<TodoRepository, 'listAgentCommentsFor'> {
+  return {
+    listAgentCommentsFor: async (params) => {
+      calls.push(params);
+      return (byUser[params.userId] ?? []).slice(0, params.limit);
+    },
+  };
+}
+
+function makeReply(overrides: { commentId: string; todoId?: string; title?: string; createdAt?: string }): AgentReply {
+  const todoId = overrides.todoId ?? `todo-${overrides.commentId}`;
+  return {
+    comment: {
+      id: overrides.commentId,
+      todoId,
+      kind: 'comment',
+      actor: { workerId: 'worker-1' },
+      text: 'an answer',
+      createdAt: overrides.createdAt ?? '2026-08-18T00:00:00.000Z',
+    },
+    todo: { id: todoId, title: overrides.title ?? `Item ${todoId}`, kind: 'question', status: 'open' },
   };
 }
 
@@ -98,11 +129,14 @@ const IDENTITY: FeedIdentity = { userId: 'user-1', username: 'alice' };
 function buildService(overrides: {
   artifacts?: Record<string, Artifact[]>;
   jobs?: JobRecord[];
+  replies?: Record<string, AgentReply[]>;
+  replyCalls?: Array<{ userId: string; limit: number }>;
   cursor?: Record<string, string | null>;
 } = {}): NotificationService {
   return new NotificationService({
     artifactRepository: makeArtifactRepo(overrides.artifacts ?? {}),
     jobs: makeJobsSource(overrides.jobs ?? []),
+    todoRepository: makeTodoRepo(overrides.replies ?? {}, overrides.replyCalls),
     cursorRepository: makeCursorRepo(overrides.cursor ?? {}),
   });
 }
@@ -125,19 +159,20 @@ type AssertExactKeys<T, K extends string> = [K] extends [keyof T]
   : false;
 
 describe('NotificationServiceDeps shape (N1 containment)', () => {
-  it('has EXACTLY the three read-only members -- no broadcast/WS/event key can sneak in', () => {
+  it('has EXACTLY the four read-only members -- no broadcast/WS/event key can sneak in', () => {
     const deps: NotificationServiceDeps = {
       artifactRepository: makeArtifactRepo({}),
       jobs: makeJobsSource([]),
+      todoRepository: makeTodoRepo({}),
       cursorRepository: makeCursorRepo(),
     };
-    expect(Object.keys(deps).sort()).toEqual(['artifactRepository', 'cursorRepository', 'jobs']);
+    expect(Object.keys(deps).sort()).toEqual(['artifactRepository', 'cursorRepository', 'jobs', 'todoRepository']);
 
     // Compile-time-only: if NotificationServiceDeps gains or loses a key
     // (required or optional), AssertExactKeys resolves to `false` and this
     // cast fails TYPECHECK (TS2352), not just the runtime assertion above.
     expect(
-      true as AssertExactKeys<NotificationServiceDeps, 'artifactRepository' | 'cursorRepository' | 'jobs'>
+      true as AssertExactKeys<NotificationServiceDeps, 'artifactRepository' | 'cursorRepository' | 'jobs' | 'todoRepository'>
     ).toBe(true);
   });
 });
@@ -306,6 +341,66 @@ describe('NotificationService.getFeed', () => {
     const artifactItems = result.items.filter((i) => i.kind === 'artifact-created');
     expect(jobItems).toHaveLength(30);
     expect(artifactItems).toHaveLength(20);
+  });
+
+  describe('todo-agent-replied source', () => {
+    it('maps an agent reply to one item: kind, comment id, comment time, "Reply on:" title and /todos/:id link', async () => {
+      const service = buildService({
+        replies: {
+          'user-1': [makeReply({ commentId: 'c1', todoId: 't1', title: 'Which database?', createdAt: '2026-08-18T03:00:00.000Z' })],
+        },
+      });
+      const result = await service.getFeed(IDENTITY);
+      expect(result.items).toEqual([
+        {
+          kind: 'todo-agent-replied',
+          id: 'c1',
+          occurredAt: '2026-08-18T03:00:00.000Z',
+          title: 'Reply on: Which database?',
+          link: '/todos/t1',
+        },
+      ]);
+    });
+
+    it('asks the repository for THIS user with the per-source limit of 50 (the identity filter lives in the query)', async () => {
+      const replyCalls: Array<{ userId: string; limit: number }> = [];
+      const service = buildService({ replyCalls });
+      await service.getFeed(IDENTITY);
+      expect(replyCalls).toEqual([{ userId: 'user-1', limit: 50 }]);
+    });
+
+    it('a reply only another user has is not in this feed', async () => {
+      const service = buildService({ replies: { 'someone-else': [makeReply({ commentId: 'c1' })] } });
+      expect((await service.getFeed(IDENTITY)).items).toEqual([]);
+    });
+
+    it('a mixed feed merges all three sources newest first, with unreadCount counting items after the cursor', async () => {
+      const service = buildService({
+        artifacts: { 'user-1': [makeArtifact({ id: 'a1', createdAt: '2026-08-18T01:00:00.000Z' })] },
+        jobs: [
+          makeWorktreeDeleteJob({ id: 'job-1', requestUsername: 'alice', completed_at: new Date('2026-08-18T02:00:00.000Z').getTime() }),
+        ],
+        replies: { 'user-1': [makeReply({ commentId: 'c1', createdAt: '2026-08-18T03:00:00.000Z' })] },
+        cursor: { 'user-1': '2026-08-18T01:30:00.000Z' },
+      });
+      const result = await service.getFeed(IDENTITY);
+      expect(result.items.map((i) => `${i.kind}:${i.id}`)).toEqual([
+        'todo-agent-replied:c1',
+        'worktree-deletion-finished:job-1',
+        'artifact-created:a1',
+      ]);
+      expect(result.unreadCount).toBe(2);
+    });
+
+    it('the 50-item cap is applied after the merge: 60 replies give 50 items and unreadCount 50 (per-source fetch bounds the count)', async () => {
+      const replies = Array.from({ length: 60 }, (_, i) =>
+        makeReply({ commentId: `c${String(i).padStart(2, '0')}`, createdAt: new Date(2026, 7, 1, 0, 59 - i).toISOString() }),
+      );
+      const service = buildService({ replies: { 'user-1': replies } });
+      const result = await service.getFeed(IDENTITY);
+      expect(result.items).toHaveLength(50);
+      expect(result.unreadCount).toBe(50);
+    });
   });
 
   describe('R3: identity filtering', () => {

@@ -46,6 +46,7 @@ function buildApp(
   const notificationService = new NotificationService({
     artifactRepository,
     jobs: { getJobs: async () => [] },
+    todoRepository: { listAgentCommentsFor: async () => [] },
     cursorRepository: notificationCursorRepository,
   });
   const partialContext: Partial<AppContext> = {
