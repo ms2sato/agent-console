@@ -4,6 +4,7 @@ import {
   shouldWarnInsecureAuthCookie,
   shouldLogUnconfiguredPublicOrigin,
   shouldCheckEmbeddedAgentBunPath,
+  SESSION_HOOK_COMMAND_TIMEOUT_MS,
 } from '../server-config.js';
 
 describe('server-config', () => {
@@ -636,4 +637,10 @@ describe('WORKER_OUTPUT_MAX_SEGMENTS (NaN-guard contract, not positive-only)', (
     expect(serverConfig.WORKER_OUTPUT_MAX_SEGMENTS).toBe(-5);
   });
 });
+});
+
+describe('SESSION_HOOK_COMMAND_TIMEOUT_MS', () => {
+  it('is the 60 second time box for a pause or resume command', () => {
+    expect(SESSION_HOOK_COMMAND_TIMEOUT_MS).toBe(60_000);
+  });
 });
