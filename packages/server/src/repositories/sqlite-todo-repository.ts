@@ -26,6 +26,9 @@ function affectedRows(result: { numUpdatedRows?: bigint; numDeletedRows?: bigint
   return result.numUpdatedRows ?? result.numDeletedRows ?? 0n;
 }
 
+/** Ids per activity read: each is bound once per UNION branch, well under SQLite's variable limit. */
+const ACTIVITY_ID_CHUNK = 500;
+
 /**
  * The item select every read uses: all `todos` columns plus the derived
  * `comment_count`. It counts `todo_comments` only -- a move lives in its own
@@ -236,20 +239,31 @@ export class SqliteTodoRepository implements TodoRepository {
     return this.findById(id, executor);
   }
 
-  async addComment(params: AddTodoCommentParams, executor?: TodoExecutor): Promise<TodoCommentActivity> {
+  async addComment(params: AddTodoCommentParams, executor?: TodoExecutor): Promise<TodoCommentActivity | null> {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
-    await (executor ?? this.db)
+    // One statement: the row is inserted only while the item exists and is open or done, the way
+    // `adopt` is a compare-and-set. An item deleted or closed since the caller read it inserts
+    // nothing (null), so the foreign key can only fire on a genuine bug.
+    const result = await (executor ?? this.db)
       .insertInto('todo_comments')
-      .values({
-        id,
-        todo_id: params.todoId,
-        actor_user_id: 'userId' in params.actor ? params.actor.userId : null,
-        actor_worker_id: 'workerId' in params.actor ? params.actor.workerId : null,
-        text: params.text,
-        created_at: createdAt,
-      })
-      .execute();
+      .columns(['id', 'todo_id', 'actor_user_id', 'actor_worker_id', 'text', 'created_at'])
+      .expression((eb) =>
+        eb
+          .selectFrom('todos')
+          .select([
+            eb.val(id).as('id'),
+            'todos.id as todo_id',
+            eb.val('userId' in params.actor ? params.actor.userId : null).as('actor_user_id'),
+            eb.val('workerId' in params.actor ? params.actor.workerId : null).as('actor_worker_id'),
+            eb.val(params.text).as('text'),
+            eb.val(createdAt).as('created_at'),
+          ])
+          .where('todos.id', '=', params.todoId)
+          .where('todos.status', 'in', ['open', 'done']),
+      )
+      .executeTakeFirst();
+    if ((result.numInsertedOrUpdatedRows ?? 0n) === 0n) return null;
     return { id, todoId: params.todoId, kind: 'comment', actor: params.actor, text: params.text, createdAt };
   }
 
@@ -284,52 +298,67 @@ export class SqliteTodoRepository implements TodoRepository {
   }
 
   async listActivities(todoId: string, executor?: TodoExecutor): Promise<TodoActivity[]> {
+    return (await this.listActivitiesForTodos([todoId], executor)).get(todoId) ?? [];
+  }
+
+  async listActivitiesForTodos(todoIds: string[], executor?: TodoExecutor): Promise<Map<string, TodoActivity[]>> {
+    const byTodo = new Map<string, TodoActivity[]>();
+    const uniqueIds = [...new Set(todoIds)];
+    if (uniqueIds.length === 0) return byTodo;
+    for (const id of uniqueIds) byTodo.set(id, []);
+
     const handle = executor ?? this.db;
-    // ONE statement: UNION ALL of the two tables, ordered in the database. UNION ALL pairs
-    // columns by POSITION, so both branches list the same names in the same order, padding the
-    // other branch's columns with NULL. The compound ORDER BY names result columns, and every
-    // one of them is selected. The order is total -- `id` is the primary key within a table and
-    // `kind` separates the tables -- so a later page can continue with a keyset predicate on
-    // (created_at, kind, id); no LIMIT or cursor is taken here.
-    const comments = handle
-      .selectFrom('todo_comments')
-      .select([
-        'id',
-        'todo_id',
-        sql<'comment' | 'moved'>`'comment'`.as('kind'),
-        'actor_user_id',
-        'actor_worker_id',
-        sql<string | null>`todo_comments.text`.as('text'),
-        sql<string | null>`NULL`.as('from_session_id'),
-        sql<string | null>`NULL`.as('to_session_id'),
-        sql<string | null>`NULL`.as('statement'),
-        sql<string | null>`NULL`.as('attributed_user_id'),
-        'created_at',
-      ])
-      .where('todo_id', '=', todoId);
-    const moves = handle
-      .selectFrom('todo_moves')
-      .select([
-        'id',
-        'todo_id',
-        sql<'comment' | 'moved'>`'moved'`.as('kind'),
-        'actor_user_id',
-        'actor_worker_id',
-        sql<string | null>`NULL`.as('text'),
-        sql<string | null>`todo_moves.from_session_id`.as('from_session_id'),
-        sql<string | null>`todo_moves.to_session_id`.as('to_session_id'),
-        sql<string | null>`todo_moves.statement`.as('statement'),
-        sql<string | null>`todo_moves.attributed_user_id`.as('attributed_user_id'),
-        'created_at',
-      ])
-      .where('todo_id', '=', todoId);
-    const rows: TodoActivityRow[] = await comments
-      .unionAll(moves)
-      .orderBy('created_at', 'asc')
-      .orderBy('kind', 'asc')
-      .orderBy('id', 'asc')
-      .execute();
-    return rows.map(toTodoActivity);
+    // UNION ALL pairs columns by POSITION, so both branches list the same names in the same
+    // order, padding the other branch's columns with NULL. The compound ORDER BY names result
+    // columns, and every one of them is selected. The order is total -- `id` is the primary key
+    // within a table and `kind` separates the tables -- and leads with `todo_id` so one pass
+    // groups the rows; a later page of ONE item's thread can continue with a keyset predicate on
+    // (created_at, kind, id). No LIMIT or cursor is taken here. Ids are read in chunks to stay
+    // under SQLite's bound-parameter limit (each id is bound once per branch).
+    for (let start = 0; start < uniqueIds.length; start += ACTIVITY_ID_CHUNK) {
+      const chunk = uniqueIds.slice(start, start + ACTIVITY_ID_CHUNK);
+      const comments = handle
+        .selectFrom('todo_comments')
+        .select([
+          'id',
+          'todo_id',
+          sql<'comment' | 'moved'>`'comment'`.as('kind'),
+          'actor_user_id',
+          'actor_worker_id',
+          sql<string | null>`todo_comments.text`.as('text'),
+          sql<string | null>`NULL`.as('from_session_id'),
+          sql<string | null>`NULL`.as('to_session_id'),
+          sql<string | null>`NULL`.as('statement'),
+          sql<string | null>`NULL`.as('attributed_user_id'),
+          'created_at',
+        ])
+        .where('todo_id', 'in', chunk);
+      const moves = handle
+        .selectFrom('todo_moves')
+        .select([
+          'id',
+          'todo_id',
+          sql<'comment' | 'moved'>`'moved'`.as('kind'),
+          'actor_user_id',
+          'actor_worker_id',
+          sql<string | null>`NULL`.as('text'),
+          sql<string | null>`todo_moves.from_session_id`.as('from_session_id'),
+          sql<string | null>`todo_moves.to_session_id`.as('to_session_id'),
+          sql<string | null>`todo_moves.statement`.as('statement'),
+          sql<string | null>`todo_moves.attributed_user_id`.as('attributed_user_id'),
+          'created_at',
+        ])
+        .where('todo_id', 'in', chunk);
+      const rows: TodoActivityRow[] = await comments
+        .unionAll(moves)
+        .orderBy('todo_id', 'asc')
+        .orderBy('created_at', 'asc')
+        .orderBy('kind', 'asc')
+        .orderBy('id', 'asc')
+        .execute();
+      for (const row of rows) byTodo.get(row.todo_id)!.push(toTodoActivity(row));
+    }
+    return byTodo;
   }
 
   async delete(id: string, executor?: TodoExecutor): Promise<boolean> {

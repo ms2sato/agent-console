@@ -69,6 +69,7 @@ describe('comment_todo', () => {
     mcpAuthMode?: McpAuthMode;
     mcpTokenRegistry?: McpTokenRegistry;
     broadcastToApp?: (msg: AppServerMessage) => void;
+    todoRepository?: SqliteTodoRepository;
   }): Promise<void> {
     const mcpApp = createMcpApp({
       sessionManager,
@@ -87,7 +88,7 @@ describe('comment_todo', () => {
       userRepository,
       artifactRepository,
       bookmarkRepository: new SqliteBookmarkRepository(getDatabase()),
-      todoRepository,
+      todoRepository: authOpts?.todoRepository ?? todoRepository,
       broadcastToApp: authOpts?.broadcastToApp ?? (() => {}),
       findOpenPullRequest: async () => null,
       fetchPullRequestUrl: async () => null,
@@ -382,6 +383,60 @@ describe('comment_todo', () => {
       await expectNothingWritten();
     });
 
+    // Reach (measured): reverting `addComment` to a plain INSERT fails both tests (a FOREIGN KEY error
+    // text instead of "Todo not found"; a stored comment on a dismissed item).
+    function racingRepository(onFirstRead: (id: string) => Promise<void>): SqliteTodoRepository {
+      let fired = false;
+      return Object.assign(Object.create(todoRepository) as SqliteTodoRepository, {
+        findById: async (id: string, executor?: Parameters<SqliteTodoRepository['findById']>[1]) => {
+          const row = await todoRepository.findById(id, executor);
+          if (!fired && id === 'raced') {
+            fired = true;
+            await onFirstRead(id);
+          }
+          return row;
+        },
+      });
+    }
+
+    it('an item deleted between the read and the write is refused as not found (not a constraint error), with no broadcast', async () => {
+      const me = await createOwnedSession(9250, 'comment-owner-w');
+      await seedAgentItem(me, 'raced');
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({
+        mcpAuthMode: 'off',
+        broadcastToApp: broadcast,
+        todoRepository: racingRepository(async (id) => {
+          await todoRepository.delete(id);
+        }),
+      });
+
+      const error = await toolError(await commentViaTool({ id: 'raced', text: 'hi', sessionId: me.sessionId, workerId: me.workerId }));
+
+      expect(error).toBe('Todo not found: raced');
+      expect(broadcast).not.toHaveBeenCalled();
+      await expectNothingWritten();
+    });
+
+    it('an item closed between the read and the write is refused naming its new status, and nothing is stored', async () => {
+      const me = await createOwnedSession(9251, 'comment-owner-x');
+      await seedAgentItem(me, 'raced');
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({
+        mcpAuthMode: 'off',
+        broadcastToApp: broadcast,
+        todoRepository: racingRepository(async (id) => {
+          await todoRepository.dismiss(id);
+        }),
+      });
+
+      const error = await toolError(await commentViaTool({ id: 'raced', text: 'hi', sessionId: me.sessionId, workerId: me.workerId }));
+
+      expect(error).toBe('Cannot comment on raced: its status is dismissed, only an open or done item takes a comment');
+      expect(broadcast).not.toHaveBeenCalled();
+      await expectNothingWritten();
+    });
+
     it('an unknown caller session and an unknown caller worker are refused', async () => {
       const me = await createOwnedSession(9217, 'comment-owner-l');
       await seedAgentItem(me, 'q');
@@ -485,6 +540,21 @@ describe('comment_todo', () => {
       expect(byId['threaded']!.activities.map((a) => a.kind)).toEqual(['comment']);
       expect(byId['moved-in']!.commentCount).toBe(0);
       expect(byId['moved-in']!.activities.map((a) => a.kind)).toEqual(['moved']);
+    });
+
+    // Reach (measured): reading per item again (listActivities in a loop) fails this test.
+    it('reads every listed item\'s activities with ONE batched call, not one per item', async () => {
+      const me = await createOwnedSession(9244, 'comment-owner-y');
+      for (const id of ['x1', 'x2', 'x3']) await seedAgentItem(me, id);
+      const batched = spyOn(todoRepository, 'listActivitiesForTodos');
+      const single = spyOn(todoRepository, 'listActivities');
+
+      const response = await listViaTool({ sessionId: me.sessionId, workerId: me.workerId });
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(batched).toHaveBeenCalledTimes(1);
+      expect([...batched.mock.calls[0]![0]].sort()).toEqual(['x1', 'x2', 'x3']);
+      expect(single).not.toHaveBeenCalled();
     });
 
     it("global: true lists other sessions' global items with their activities as well", async () => {

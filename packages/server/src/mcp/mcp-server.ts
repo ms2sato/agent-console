@@ -3107,10 +3107,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
           scope: includeGlobal ? 'global' : scope,
           assigneeUserId: mine ? session.createdBy : undefined,
         });
-        // One timeline read per item: a session's list is short, and each read is one indexed query.
-        const items = await Promise.all(
-          todos.map(async (todo) => ({ ...todo, activities: await todoRepository.listActivities(todo.id) })),
-        );
+        // One batched read for every listed item, however many there are.
+        const activities = await todoRepository.listActivitiesForTodos(todos.map((todo) => todo.id));
+        const items = todos.map((todo) => ({ ...todo, activities: activities.get(todo.id) ?? [] }));
         return textResult({ todos: items });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
@@ -3291,7 +3290,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
-        await todoRepository.addComment({ todoId: id, actor: { workerId }, text });
+        const added = await todoRepository.addComment({ todoId: id, actor: { workerId }, text });
+        if (!added) {
+          // The conditional insert wrote nothing: the item was deleted or closed since the read above.
+          const current = await todoRepository.findById(id);
+          if (!current) {
+            return errorResult(`Todo not found: ${id}`);
+          }
+          return errorResult(
+            `Cannot comment on ${id}: its status is ${current.status}, only an open or done item takes a comment`,
+          );
+        }
         const [updated, activities] = await Promise.all([
           todoRepository.findById(id),
           todoRepository.listActivities(id),
@@ -3360,7 +3369,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult("statement must be the human's words, quoted; it cannot be empty");
         }
         if (statedBy !== undefined && statement === undefined) {
-          return errorResult('statedBy names whose words the statement is, so it needs a statement');
+          return errorResult('statedBy names whose words statement is; pass statement');
         }
 
         const session = sessionManager.getSession(sessionId);
@@ -3401,14 +3410,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (todo.status !== 'open') {
           return errorResult(`Cannot adopt ${id}: its status is ${todo.status}, only an open item can be adopted`);
         }
-        if (todo.sessionId === sessionId) {
+        // Already this session's item. Same worker (or no worker to re-target: a human-created item):
+        // a read-only no-op. A different worker of this session takes over delivery below; that updates
+        // the row but is not a move, so it needs no statement and records no activity.
+        const sameSession = todo.sessionId === sessionId;
+        if (sameSession && (!('workerId' in todo.createdBy) || todo.createdBy.workerId === workerId)) {
           return textResult({ todo });
         }
 
         // The creating session's owner is compared with the caller's token user. When the creating
         // session no longer exists, or the caller has no token identity, the comparison cannot run.
         const callerUserId = getMcpCallerIdentity()?.userId;
-        if (todo.sessionId !== null && callerUserId !== undefined) {
+        if (!sameSession && todo.sessionId !== null && callerUserId !== undefined) {
           const creatingSession =
             sessionManager.getSession(todo.sessionId) ?? (await sessionManager.getPersistedSession(todo.sessionId));
           if (creatingSession?.createdBy !== undefined && creatingSession.createdBy !== callerUserId && statement === undefined) {
@@ -3443,7 +3456,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         logger.info({ todoId: id, fromSessionId: todo.sessionId, sessionId, workerId }, 'Todo adopted via MCP');
-        emitTodosUpdated(broadcastToApp, todo.sessionId);
+        if (!sameSession) {
+          emitTodosUpdated(broadcastToApp, todo.sessionId);
+        }
         emitTodosUpdated(broadcastToApp, sessionId);
 
         return textResult({ todo: adopted });

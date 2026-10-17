@@ -82,8 +82,9 @@ function ActivityRow({ activity, users }: ActivityRowProps) {
           </p>
           {activity.statement !== null && (
             <p className="text-gray-300 whitespace-pre-wrap break-words">
-              &quot;{activity.statement}&quot;
-              {activity.attributedUserId !== null && ` -- ${usernameOf(users, activity.attributedUserId)}`}
+              {activity.attributedUserId === null
+                ? `on a human's instruction: "${activity.statement}"`
+                : `"${activity.statement}" -- ${usernameOf(users, activity.attributedUserId)}`}
             </p>
           )}
         </li>

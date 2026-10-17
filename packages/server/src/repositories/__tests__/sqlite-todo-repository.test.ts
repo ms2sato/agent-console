@@ -339,8 +339,8 @@ describe('SqliteTodoRepository', () => {
       const comment = await repository.addComment({ todoId: 'todo-1', actor: { userId: 'user-2' }, text: 'Which environment?' });
 
       expect(comment).toMatchObject({ kind: 'comment', todoId: 'todo-1', actor: { userId: 'user-2' }, text: 'Which environment?' });
-      expect(comment.id.length).toBeGreaterThan(0);
-      expect(await repository.listActivities('todo-1')).toEqual([comment]);
+      expect(comment!.id.length).toBeGreaterThan(0);
+      expect(await repository.listActivities('todo-1')).toEqual([comment!]);
     });
 
     it('a new item has commentCount 0; each comment adds one, in findById and in list', async () => {
@@ -397,9 +397,31 @@ describe('SqliteTodoRepository', () => {
       expect(many[0]!.commentCount).toBe(1);
     });
 
-    it('addComment on an unknown item is rejected (foreign key) and writes nothing', async () => {
-      await expect(repository.addComment({ todoId: 'missing', actor: { userId: 'u' }, text: 'x' })).rejects.toThrow(/FOREIGN KEY/);
+    // Reach (measured): reverting `addComment` to a plain INSERT fails the three tests below (the
+    // unknown item throws a FOREIGN KEY error instead of returning null; closed items get a row).
+    it('addComment on an unknown item returns null and writes nothing', async () => {
+      expect(await repository.addComment({ todoId: 'missing', actor: { userId: 'u' }, text: 'x' })).toBeNull();
       expect(await db.selectFrom('todo_comments').selectAll().execute()).toEqual([]);
+    });
+
+    it.each(['dismissed', 'superseded', 'withdrawn'] as const)('addComment on a %s item returns null and writes nothing', async (status) => {
+      await repository.create(params());
+      if (status === 'dismissed') await repository.dismiss('todo-1');
+      if (status === 'superseded') await repository.markSuperseded('todo-1', 'session-1');
+      if (status === 'withdrawn') await repository.withdrawOpenSessionScoped('session-1');
+
+      expect(await repository.addComment({ todoId: 'todo-1', actor: { userId: 'u' }, text: 'x' })).toBeNull();
+      expect(await db.selectFrom('todo_comments').selectAll().execute()).toEqual([]);
+    });
+
+    it('addComment on a done item succeeds (the item stays done)', async () => {
+      await repository.create(params());
+      await repository.resolve('todo-1', { text: 'ok', resolvedByUserId: 'u' });
+
+      const comment = await repository.addComment({ todoId: 'todo-1', actor: { userId: 'u' }, text: 'after' });
+
+      expect(comment).toMatchObject({ kind: 'comment', text: 'after' });
+      expect((await repository.findById('todo-1'))!.status).toBe('done');
     });
   });
 
@@ -451,11 +473,14 @@ describe('SqliteTodoRepository', () => {
     //     yields [move, comment];
     //   case 2 inserts the later id ('d') first, so insertion order yields [d, c];
     //   case 3 inserts the earliest row last.
-    // Reach, each mutation applied alone to the query in `listActivities` and run against
-    // this one test (measured, restored between runs):
-    //   m7a drop .orderBy('kind')       -> this test fails
-    //   m7b drop .orderBy('id')         -> this test fails
-    //   m7c drop .orderBy('created_at') -> this test fails
+    // Reach, each mutation applied alone to the ORDER BY of the batched builder that `listActivities`
+    // delegates to (re-measured after the move to `listActivitiesForTodos`; tests that fail):
+    //   m7a drop .orderBy('kind')       -> this test; 'listActivitiesForTodos > applies the same tie-break ...'
+    //   m7b drop .orderBy('id')         -> this test; 'listActivitiesForTodos > applies the same tie-break ...'
+    //   m7c drop .orderBy('created_at') -> this test; 'listActivities > lists what the write methods stored ...';
+    //                                      'listActivitiesForTodos > gives each item its own thread in order ...'
+    //   drop the leading .orderBy('todo_id') -> NO test fails: rows are grouped through a Map, so the
+    //     leading key only makes the whole result deterministic; per-item order does not depend on it.
     it('orders by created_at, then kind (comment before moved), then id', async () => {
       await repository.create(params());
       await insertMoveRow('a', T1);
@@ -469,8 +494,10 @@ describe('SqliteTodoRepository', () => {
       expect(activities.map((a) => `${a.kind}:${a.id}`)).toEqual(['comment:e', 'comment:b', 'moved:a', 'comment:c', 'comment:d']);
     });
 
-    // Reach: m8 (swap `text` and `statement` in branch B's column list) -> this test fails: the
-    // positional UNION pairs B's statement with A's `text` column, so the move reads a NULL statement.
+    // Reach (m8, re-measured against the batched builder): swapping `text` and `statement` in branch B's
+    // column list fails this test, 'lists what the write methods stored ...', and the two adopt tests that
+    // record a statement ('records the statement and the attributed user', 'a statement without an attributed
+    // user is stored unattributed'): the positional UNION pairs B's statement with A's `text` column.
     it('maps each branch into its variant', async () => {
       await repository.create(params());
       await insertCommentRow('c1', T0);
@@ -523,8 +550,136 @@ describe('SqliteTodoRepository', () => {
       await new Promise((r) => setTimeout(r, 5));
       const third = await repository.addComment({ todoId: 'todo-1', actor: { workerId: 'worker-1' }, text: 'third' });
 
-      expect(await repository.listActivities('todo-1')).toEqual([first, second, third]);
+      expect(await repository.listActivities('todo-1')).toEqual([first!, second, third!]);
       expect(second).toMatchObject({ kind: 'moved', statement: 'go', attributedUserId: 'user-9', toSessionId: 'session-2' });
+    });
+  });
+
+  describe('listActivitiesForTodos', () => {
+    const T = (n: number) => `2026-10-17T0${n}:00:00.000Z`;
+
+    async function commentRow(id: string, todoId: string, createdAt: string): Promise<void> {
+      await db
+        .insertInto('todo_comments')
+        .values({ id, todo_id: todoId, actor_user_id: 'u', actor_worker_id: null, text: `text ${id}`, created_at: createdAt })
+        .execute();
+    }
+    async function moveRow(id: string, todoId: string, createdAt: string): Promise<void> {
+      await db
+        .insertInto('todo_moves')
+        .values({
+          id,
+          todo_id: todoId,
+          actor_user_id: null,
+          actor_worker_id: 'w',
+          from_session_id: 'session-1',
+          to_session_id: 'session-2',
+          statement: null,
+          attributed_user_id: null,
+          created_at: createdAt,
+        })
+        .execute();
+    }
+
+    // Three items with interleaved activities, inserted in a scrambled order: each item must come
+    // back with ONLY its own rows, in (created_at, kind, id) order.
+    // Reach (measured against this builder): dropping `created_at` from the ORDER BY fails this test.
+    it('gives each item its own thread in order, from one statement', async () => {
+      for (const id of ['a', 'b', 'c']) await repository.create(params({ id }));
+      await commentRow('c3', 'c', T(3));
+      await commentRow('a2', 'a', T(2));
+      await moveRow('b1', 'b', T(1));
+      await commentRow('a1', 'a', T(1));
+      await moveRow('a3', 'a', T(3));
+      await commentRow('b2', 'b', T(2));
+      await commentRow('c1', 'c', T(1));
+
+      const byTodo = await repository.listActivitiesForTodos(['c', 'a', 'b']);
+
+      expect([...byTodo.keys()].sort()).toEqual(['a', 'b', 'c']);
+      expect(byTodo.get('a')!.map((x) => x.id)).toEqual(['a1', 'a2', 'a3']);
+      expect(byTodo.get('b')!.map((x) => x.id)).toEqual(['b1', 'b2']);
+      expect(byTodo.get('c')!.map((x) => x.id)).toEqual(['c1', 'c3']);
+      for (const [todoId, thread] of byTodo) expect(thread.every((x) => x.todoId === todoId)).toBe(true);
+    });
+
+    it('applies the same tie-break as listActivities (created_at, then kind, then id) inside each thread', async () => {
+      await repository.create(params({ id: 'a' }));
+      await repository.create(params({ id: 'b' }));
+      await moveRow('m', 'a', T(1));
+      await commentRow('z', 'a', T(1));
+      await commentRow('y', 'a', T(1));
+      await commentRow('q', 'b', T(1));
+
+      const byTodo = await repository.listActivitiesForTodos(['a', 'b']);
+
+      expect(byTodo.get('a')!.map((x) => `${x.kind}:${x.id}`)).toEqual(['comment:y', 'comment:z', 'moved:m']);
+      expect(byTodo.get('a')).toEqual(await repository.listActivities('a'));
+    });
+
+    it('an item with no activity maps to an empty list; an unknown id too; duplicates are read once', async () => {
+      await repository.create(params({ id: 'a' }));
+      await repository.create(params({ id: 'bare' }));
+      await commentRow('a1', 'a', T(1));
+
+      const byTodo = await repository.listActivitiesForTodos(['a', 'bare', 'ghost', 'a']);
+
+      expect([...byTodo.keys()].sort()).toEqual(['a', 'bare', 'ghost']);
+      expect(byTodo.get('a')!.map((x) => x.id)).toEqual(['a1']);
+      expect(byTodo.get('bare')).toEqual([]);
+      expect(byTodo.get('ghost')).toEqual([]);
+    });
+
+    it('reads more ids than one chunk (501) and groups them all', async () => {
+      const ids = Array.from({ length: 501 }, (_, i) => `t${i}`);
+      for (const id of ids) await repository.create(params({ id }));
+      await commentRow('first', 't0', T(1));
+      await commentRow('last', 't500', T(1));
+
+      const byTodo = await repository.listActivitiesForTodos(ids);
+
+      expect(byTodo.size).toBe(501);
+      expect(byTodo.get('t0')!.map((x) => x.id)).toEqual(['first']);
+      expect(byTodo.get('t500')!.map((x) => x.id)).toEqual(['last']);
+    });
+
+    // Boundary: an empty list is an empty Map and issues NO statement at all.
+    it('an empty list returns an empty Map without touching the database', async () => {
+      let statements = 0;
+      const counting = db.withPlugin({
+        transformQuery: (args) => args.node,
+        // Once per EXECUTED statement (transformQuery also runs for nested sub-builders).
+        transformResult: async (args) => {
+          statements += 1;
+          return args.result;
+        },
+      });
+
+      const empty = await new SqliteTodoRepository(counting).listActivitiesForTodos([]);
+
+      expect(empty.size).toBe(0);
+      expect(statements).toBe(0);
+    });
+
+    it('a non-empty list is exactly one statement (not one per item), and listActivities is one too', async () => {
+      for (const id of ['a', 'b', 'c']) await repository.create(params({ id }));
+      let statements = 0;
+      const counting = db.withPlugin({
+        transformQuery: (args) => args.node,
+        // Once per EXECUTED statement (transformQuery also runs for nested sub-builders).
+        transformResult: async (args) => {
+          statements += 1;
+          return args.result;
+        },
+      });
+      const counted = new SqliteTodoRepository(counting);
+
+      await counted.listActivitiesForTodos(['a', 'b', 'c']);
+      expect(statements).toBe(1);
+
+      statements = 0;
+      await counted.listActivities('a');
+      expect(statements).toBe(1);
     });
   });
 

@@ -345,7 +345,7 @@ describe('Todo routes', () => {
 
       const parsed = v.parse(TodoDetailResponseSchema, await (await app.request(`/api/todos/${item.id}`)).json());
 
-      expect(parsed.activities).toEqual([comment, move]);
+      expect(parsed.activities).toEqual([comment!, move]);
       expect(parsed.todo.commentCount).toBe(1);
     });
 
@@ -732,6 +732,57 @@ describe('Todo routes', () => {
     it('accepts exactly 4000 characters', async () => {
       const item = await seedAgentItem();
       expect((await comment(item.id, { text: 'x'.repeat(4000) })).status).toBe(200);
+    });
+
+    // Reach (measured): reverting `addComment` to a plain INSERT turns the first into a 500 (the foreign
+    // key fires) and the second into a stored comment on a dismissed item.
+    it('an item deleted between the read and the write is a 404, not a 500', async () => {
+      const item = await seedAgentItem();
+      let deleted = false;
+      const racing = Object.assign(Object.create(repository) as SqliteTodoRepository, {
+        findById: async (id: string, executor?: Parameters<SqliteTodoRepository['findById']>[1]) => {
+          const row = await repository.findById(id, executor);
+          if (!deleted && id === item.id) {
+            deleted = true;
+            await repository.delete(id);
+          }
+          return row;
+        },
+      });
+      broadcasts.length = 0;
+
+      const res = await comment(item.id, { text: 'hi' }, buildApp(racing, ALICE, (m) => broadcasts.push(m)));
+
+      expect(deleted).toBe(true);
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).toContain('Todo not found');
+      expect(broadcasts).toEqual([]);
+      expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
+    });
+
+    it('an item closed between the read and the write is a 409 naming its new status, and nothing is stored', async () => {
+      const item = await seedAgentItem();
+      let flipped = false;
+      const racing = Object.assign(Object.create(repository) as SqliteTodoRepository, {
+        findById: async (id: string, executor?: Parameters<SqliteTodoRepository['findById']>[1]) => {
+          const row = await repository.findById(id, executor);
+          if (!flipped && id === item.id) {
+            flipped = true;
+            await repository.dismiss(id);
+          }
+          return row;
+        },
+      });
+      broadcasts.length = 0;
+
+      const res = await comment(item.id, { text: 'hi' }, buildApp(racing, ALICE, (m) => broadcasts.push(m)));
+
+      expect(flipped).toBe(true);
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('dismissed');
+      expect(await repository.listActivities(item.id)).toEqual([]);
+      expect(broadcasts).toEqual([]);
+      expect(deliverWorkerNotificationMock).not.toHaveBeenCalled();
     });
 
     it('rejects an unauthenticated request (401)', async () => {

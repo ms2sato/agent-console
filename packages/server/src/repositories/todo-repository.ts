@@ -175,8 +175,12 @@ export interface TodoRepository {
   /** `open` to `dismissed`. Null when the item does not exist or is not open. */
   dismiss(id: string, executor?: TodoExecutor): Promise<Todo | null>;
 
-  /** Add a comment to an item. The item must exist (foreign key). */
-  addComment(params: AddTodoCommentParams, executor?: TodoExecutor): Promise<TodoCommentActivity>;
+  /**
+   * Add a comment to an item, in ONE conditional statement: written only while the item exists and
+   * is `open` or `done`. Null when it does not (deleted, or closed since the caller read it): nothing
+   * is written, and the caller re-reads the item to say which.
+   */
+  addComment(params: AddTodoCommentParams, executor?: TodoExecutor): Promise<TodoCommentActivity | null>;
 
   /** Record a move of an item. The item must exist (foreign key). {@link adopt} writes its own. */
   addMove(params: AddTodoMoveParams, executor?: TodoExecutor): Promise<TodoMoveActivity>;
@@ -187,6 +191,13 @@ export interface TodoRepository {
    * `id`. Empty for an item with none or an unknown id.
    */
   listActivities(todoId: string, executor?: TodoExecutor): Promise<TodoActivity[]>;
+
+  /**
+   * The timelines of several items in ONE ordered query per chunk of 500 ids (same UNION ALL as
+   * {@link listActivities}, leading with `todo_id`). Every requested id is a key, with `[]` when it
+   * has no activity. An empty list returns an empty Map without querying.
+   */
+  listActivitiesForTodos(todoIds: string[], executor?: TodoExecutor): Promise<Map<string, TodoActivity[]>>;
 
   /** Hard delete; the item's comments and moves go with it (foreign key cascade). True when a row was removed. */
   delete(id: string, executor?: TodoExecutor): Promise<boolean>;

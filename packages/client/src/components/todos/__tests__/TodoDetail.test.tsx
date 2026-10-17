@@ -383,11 +383,32 @@ describe('TodoDetail', () => {
       expect(row.textContent).toContain(' -- bob');
     });
 
-    it('a move with a statement but no attributed user quotes the words with no attribution', async () => {
+    it('an unattributed statement reads exactly: on a human\'s instruction: "<words>", with no name and no " -- "', async () => {
       await renderDetail({}, { activities: [makeTodoMove({ statement: 'take this one over', attributedUserId: null })] });
 
       const row = within(thread()).getByTestId('todo-activity-move-1');
-      expect(row.textContent).toContain('"take this one over"');
+      expect(within(row).getByText('on a human\'s instruction: "take this one over"')).toBeTruthy();
+      expect(row.textContent).not.toContain(' -- ');
+    });
+
+    it('an attributed statement names the user once', async () => {
+      await renderDetail(
+        {},
+        { users: [ALICE, BOB], activities: [makeTodoMove({ statement: 'take this one over', attributedUserId: BOB.id })] },
+      );
+
+      const row = within(thread()).getByTestId('todo-activity-move-1');
+      expect(within(row).getByText('"take this one over" -- bob')).toBeTruthy();
+      expect(row.textContent).not.toContain('a human');
+      expect(row.textContent?.match(/bob/g)).toHaveLength(1);
+    });
+
+    it('a move with no statement shows no instruction text', async () => {
+      await renderDetail({}, { activities: [makeTodoMove({ statement: null, attributedUserId: null })] });
+
+      const row = within(thread()).getByTestId('todo-activity-move-1');
+      expect(row.textContent).not.toContain('instruction');
+      expect(row.textContent).not.toContain('"');
       expect(row.textContent).not.toContain(' -- ');
     });
 

@@ -218,7 +218,13 @@ const todos = new Hono<AppBindings>()
       throw new ConflictError(`An item that is ${existing.status} cannot take a comment`);
     }
 
-    await todoRepository.addComment({ todoId: id, actor: { userId: authUser.id }, text: body.text });
+    const added = await todoRepository.addComment({ todoId: id, actor: { userId: authUser.id }, text: body.text });
+    if (!added) {
+      // The conditional insert wrote nothing: the item was deleted or closed since the read above.
+      const current = await todoRepository.findById(id);
+      if (!current) throw new NotFoundError('Todo');
+      throw new ConflictError(`An item that is ${current.status} cannot take a comment`);
+    }
     const [todo, activities] = await Promise.all([todoRepository.findById(id), todoRepository.listActivities(id)]);
     if (!todo) {
       // Deleted between the write and the read: the comment went with it.

@@ -653,6 +653,44 @@ describe('adopt_todo', () => {
     });
   });
 
+  describe('an item already in the caller\'s session', () => {
+    // Reach (measured): comparing only the session (not the worker) in the early return makes the
+    // second test below fail; dropping the early return makes the first fail.
+    it('same session AND same worker is a read-only no-op: no write, no broadcast, no activity', async () => {
+      const me = await createOwnedSession(9120, 'same-owner-a');
+      const before = await seedAgentItem(me, 'own', 'session');
+      await tick();
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: broadcast });
+
+      const response = await adoptViaTool({ id: 'own', sessionId: me.sessionId, workerId: me.workerId, statement: 'ignored' });
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(await todoRepository.findById('own')).toEqual(before);
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(await todoRepository.listActivities('own')).toEqual([]);
+    });
+
+    it('same session with a DIFFERENT worker re-targets the delivery worker: the row updates, no activity, no statement needed, one broadcast', async () => {
+      const me = await createOwnedSession(9121, 'same-owner-b');
+      const before = await seedAgentItem(me, 'retarget', 'session');
+      const terminal = await sessionManager.createWorker(me.sessionId, { type: 'terminal', name: 'Shell' });
+      await tick();
+      const broadcast = mock((_msg: AppServerMessage) => {});
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: broadcast });
+
+      const response = await adoptViaTool({ id: 'retarget', sessionId: me.sessionId, workerId: terminal!.id });
+
+      expect(response.result?.isError).toBeUndefined();
+      const stored = (await todoRepository.findById('retarget'))!;
+      expect(stored.createdBy).toEqual({ workerId: terminal!.id });
+      expect(stored.sessionId).toBe(me.sessionId);
+      expect(stored.updatedAt > before.updatedAt).toBe(true);
+      expect(await todoRepository.listActivities('retarget')).toEqual([]);
+      expect(broadcast.mock.calls.map((c) => c[0])).toEqual([{ type: 'todos-updated', sessionId: me.sessionId }]);
+    });
+  });
+
   describe('the move row (every successful adopt records one)', () => {
     it('a same-owner adopt writes a move with no statement, from the previous session to the caller\'s', async () => {
       const a = await createOwnedSession(9101, 'move-owner-a');
@@ -719,7 +757,7 @@ describe('adopt_todo', () => {
       );
       const blank = await toolError(await adoptViaTool({ id: 'strict', sessionId: b.sessionId, workerId: b.workerId, statement: '  ' }));
 
-      expect(noStatement).toBe('statedBy names whose words the statement is, so it needs a statement');
+      expect(noStatement).toBe('statedBy names whose words statement is; pass statement');
       expect(blank).toBe("statement must be the human's words, quoted; it cannot be empty");
       expect(await todoRepository.findById('strict')).toMatchObject({ sessionId: a.sessionId });
       expect(await todoRepository.listActivities('strict')).toEqual([]);
