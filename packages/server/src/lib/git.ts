@@ -1172,6 +1172,8 @@ export async function readWorkingTreeFile(
   const fullPath = path.join(cwd, relPath);
   try {
     if (opts.regularOnly || opts.maxBytes !== undefined) return await readOpenedWorkingTreeFile(fullPath, opts);
+    // stat-then-read by name; the viewer's options go through readOpenedWorkingTreeFile because a fifo swap would park the read.
+    // Not applied here: git never lists a fifo, and O_NONBLOCK would turn a hang into EAGAIN for the diff viewer.
     const stats = await stat(fullPath);
     if (stats.isDirectory()) return { kind: 'directory' };
     return { kind: 'file', content: await readFile(fullPath) };

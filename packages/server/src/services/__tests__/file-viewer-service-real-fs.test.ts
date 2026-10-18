@@ -364,23 +364,68 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
     expect(outcome).toEqual({ kind: 'not-regular' });
   }, 5_000);
 
-  it('the open is the only look at the path: a stat-by-name that says "regular file" cannot send a fifo into a blocking open (TOCTOU)', async () => {
-    if (!fifoMade) return;
-    const fifo = join(worktree, 'pipe');
-    // Simulate the swap deterministically: the by-name stat reports a regular file for the path,
-    // exactly what it would have said just before the file became a fifo.
+  /**
+   * A pass-through spy on the module's `stat`: it calls the real one and returns its real result
+   * (nothing is faked). `pathCalls` counts only calls whose first argument is exactly `fullPath`,
+   * so a runtime where `handle.stat()` also routes through the patched module function cannot
+   * inflate the count: only a stat BY NAME is a by-name look at the path.
+   */
+  function spyOnStatByName(fullPath: string, onFirstByNameCall?: () => Promise<void>) {
     const realStat = fsPromises.stat;
-    const statSpy = spyOn(fsPromises, 'stat').mockImplementation((async (...args: Parameters<typeof realStat>) => {
-      const real = await realStat(...args);
-      return Object.assign(Object.create(Object.getPrototypeOf(real)), real, { isFile: () => true, isFIFO: () => false });
+    let pathCalls = 0;
+    const spy = spyOn(fsPromises, 'stat').mockImplementation((async (...args: Parameters<typeof realStat>) => {
+      const result = await realStat(...args);
+      if (args[0] === fullPath) {
+        pathCalls++;
+        if (pathCalls === 1) await onFirstByNameCall?.();
+      }
+      return result;
     }) as typeof realStat);
+    return { spy, pathCalls: () => pathCalls };
+  }
+
+  it('the options path never stats the path by name (a stat-then-open by name is the race): zero by-name stat calls for a regular file and for a fifo', async () => {
+    const fifoPath = join(worktree, 'pipe');
+    const plainPath = join(worktree, 'plain.txt');
+    const { spy, pathCalls } = spyOnStatByName(plainPath);
+    const fifoSpy = spyOnStatByName(fifoPath);
     try {
-      const outcome = await raceWithTimer(readWorkingTreeFile(worktree, 'pipe', null, opts), fifo);
-      expect(outcome).toEqual({ kind: 'not-regular' });
+      const regular = await readWorkingTreeFile(worktree, 'plain.txt', null, opts);
+      expect(regular).toMatchObject({ kind: 'file', size: 12 });
+      expect(pathCalls()).toBe(0);
+      if (fifoMade) {
+        const fifo = await raceWithTimer(readWorkingTreeFile(worktree, 'pipe', null, opts), fifoPath);
+        expect(fifo).toEqual({ kind: 'not-regular' });
+        expect(fifoSpy.pathCalls()).toBe(0);
+      }
     } finally {
-      statSpy.mockRestore();
+      fifoSpy.spy.mockRestore();
+      spy.mockRestore();
+      unblockFifo(fifoPath);
     }
-  }, 5_000);
+  }, 8_000);
+
+  it('a real swap between a by-name stat and the open cannot park the read: the file is replaced by a fifo inside the first by-name stat', async () => {
+    if (!fifoMade) return;
+    const swapPath = join(worktree, 'swap-me');
+    await writeFile(swapPath, 'was a regular file\n');
+    // Pass-through: the first by-name stat returns the REAL pre-swap result, and only afterwards is the
+    // path replaced by a fifo. Code that stats by name and then opens by name blocks in the open; code
+    // that never looks at the path by name is not affected by the order (it never calls the spy).
+    const { spy } = spyOnStatByName(swapPath, async () => {
+      await rm(swapPath);
+      const made = await sh(`mkfifo ${JSON.stringify(swapPath)}`, worktree);
+      if (made.code !== 0) throw new Error(`mkfifo failed: ${made.err}`);
+    });
+    try {
+      const outcome = await raceWithTimer(readWorkingTreeFile(worktree, 'swap-me', null, opts), swapPath);
+      expect(outcome).not.toBe('blocked');
+    } finally {
+      spy.mockRestore();
+      unblockFifo(swapPath);
+      await rm(swapPath).catch(() => {});
+    }
+  }, 8_000);
 });
 
 describe('direct mode: a missing working directory', () => {
