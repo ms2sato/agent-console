@@ -33,6 +33,7 @@ function ReviewQueuePage() {
     onReviewQueueUpdated: () => {
       queryClient.invalidateQueries({ queryKey: reviewQueueKeys.root() });
     },
+    invalidateOnReconnect: [reviewQueueKeys.root()],
   });
 
   const totalPending = groups?.reduce(

@@ -3,6 +3,8 @@ import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo,
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 import { usePersistentWebSocket } from './usePersistentWebSocket';
 import { logger } from '../lib/logger';
+import { registerReconnectInvalidation } from '../lib/reconnect-invalidation';
+import type { QueryKey } from '@tanstack/react-query';
 
 /**
  * Hook for subscribing to app WebSocket state with a selector.
@@ -20,7 +22,7 @@ export function useAppWsState<T>(selector: (state: AppWebSocketState) => T): T {
   return useSyncExternalStore(subscribeState, () => selector(getState()));
 }
 
-interface UseAppWsEventOptions {
+interface AppWsHandlers {
   /** Called when initial session sync is received */
   onSessionsSync?: (sessions: Session[], activityStates: WorkerActivityInfo[]) => void;
   /** Called when a new session is created */
@@ -105,6 +107,38 @@ interface UseAppWsEventOptions {
 }
 
 /**
+ * Handlers of frames that are trigger-only: a query family kept fresh by the
+ * frame and by nothing else, and the frame is never replayed after a
+ * disconnect. A call site that passes any of these MUST also pass
+ * `invalidateOnReconnect` (a compile error otherwise), so the family is
+ * refetched when the socket comes back (`useReconnectInvalidation`). The
+ * author of a new trigger-only frame adds its handler name here.
+ */
+export const FRAME_DRIVEN_HANDLERS = [
+  'onTodosUpdated',
+  'onArtifactCreated',
+  'onArtifactUpdated',
+  'onArtifactDeleted',
+  'onBookmarkCreated',
+  'onBookmarkDeleted',
+  'onReviewQueueUpdated',
+  'onMemoUpdated',
+] as const satisfies readonly (keyof AppWsHandlers)[];
+
+type FrameDrivenName = (typeof FRAME_DRIVEN_HANDLERS)[number];
+type PayloadHandlers = Omit<AppWsHandlers, FrameDrivenName>;
+
+/** Frame-driven handlers present: the family roots to invalidate on reconnect are mandatory. */
+type WithFrameDriven = Partial<Pick<AppWsHandlers, FrameDrivenName>> & {
+  /** One root key per query family (not a scoped key); registered for the page's lifetime. */
+  invalidateOnReconnect: readonly [QueryKey, ...QueryKey[]];
+};
+
+type WithoutFrameDriven = { [K in FrameDrivenName]?: never } & { invalidateOnReconnect?: never };
+
+type UseAppWsEventOptions = PayloadHandlers & (WithFrameDriven | WithoutFrameDriven);
+
+/**
  * Hook for subscribing to app WebSocket events.
  * Connects to WebSocket and registers event callbacks.
  * Use useAppWsState for reading connection state.
@@ -116,6 +150,15 @@ interface UseAppWsEventOptions {
 export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
   const optionsRef = useRef(options);
   optionsRef.current = options;
+
+  // Register this consumer's family roots for the reconnect invalidation. Never
+  // unregistered on unmount (see lib/reconnect-invalidation.ts).
+  const reconnectKeys = options.invalidateOnReconnect;
+  const reconnectKeysId = JSON.stringify(reconnectKeys ?? []);
+  useEffect(() => {
+    if (reconnectKeys) registerReconnectInvalidation(reconnectKeys);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the serialised keys, the array identity changes every render
+  }, [reconnectKeysId]);
 
   usePersistentWebSocket({
     key: 'app',

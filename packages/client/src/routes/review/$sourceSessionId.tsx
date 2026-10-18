@@ -47,6 +47,7 @@ function ReviewDiffPage() {
     onReviewQueueUpdated: () => {
       queryClient.invalidateQueries({ queryKey: reviewQueueKeys.root() });
     },
+    invalidateOnReconnect: [reviewQueueKeys.root()],
   });
 
   // Find items for this source session

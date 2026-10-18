@@ -8,6 +8,8 @@ import { SessionTerminalRunContext, type SessionTerminalRun } from '../SessionTe
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { completeWireBody } from '../../../test/wire-fixtures';
+import { listReconnectInvalidationKeys, _resetReconnectInvalidation } from '../../../lib/reconnect-invalidation';
+import { sessionKeys } from '../../../lib/query-keys';
 
 // Fetch-level mock (testing.md Anti-Pattern #2: mock at the fetch boundary).
 const originalFetch = globalThis.fetch;
@@ -707,5 +709,18 @@ describe('MemoPanel', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
     expect(screen.getByText('Memo')).toBeTruthy();
+  });
+
+  // A memo frame is payload-carrying and written with setQueryData, but a frame missed during a
+  // reconnect leaves the memo stale all the same, so the panel registers the memo ROOT (one entry
+  // covers every session). Mutation: drop `invalidateOnReconnect` from the panel -> `tsc` error, and
+  // (type bypassed) this test fails.
+  it('registers the memo root for the reconnect invalidation', async () => {
+    _resetReconnectInvalidation();
+    mockFetch.mockResolvedValue(jsonResponse({ content: null }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+
+    expect(listReconnectInvalidationKeys()).toContainEqual(sessionKeys.memoRoot());
   });
 });

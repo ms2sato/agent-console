@@ -339,7 +339,7 @@ describe('useAppWsEvent wire consumption (todos-updated with a null session)', (
 
   it('a todos-updated frame with sessionId null reaches onTodosUpdated as null', () => {
     const onTodosUpdated = mock(() => {});
-    renderHook(() => useAppWsEvent({ onTodosUpdated }));
+    renderHook(() => useAppWsEvent({ onTodosUpdated, invalidateOnReconnect: [['test-family']] }));
     const ws = MockWebSocket.getLastInstance();
 
     act(() => {

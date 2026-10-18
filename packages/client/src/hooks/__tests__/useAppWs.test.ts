@@ -1,7 +1,9 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { SCHEMA_VERSION } from '@agent-console/shared';
-import { useAppWsEvent, useAppWsState } from '../useAppWs';
+import { useAppWsEvent, useAppWsState, FRAME_DRIVEN_HANDLERS } from '../useAppWs';
+import { listReconnectInvalidationKeys, _resetReconnectInvalidation } from '../../lib/reconnect-invalidation';
+import { todoKeys } from '../../lib/query-keys';
 import { _reset as resetWebSocket, connect } from '../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 
@@ -707,7 +709,7 @@ describe('useAppWsEvent', () => {
     // N1.
     it('should call onArtifactCreated for artifact-created message', () => {
       const onArtifactCreated = mock(() => {});
-      renderHook(() => useAppWsEvent({ onArtifactCreated }));
+      renderHook(() => useAppWsEvent({ onArtifactCreated, invalidateOnReconnect: [['test-family']] }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -722,7 +724,7 @@ describe('useAppWsEvent', () => {
 
     it('should call onArtifactDeleted for artifact-deleted message', () => {
       const onArtifactDeleted = mock(() => {});
-      renderHook(() => useAppWsEvent({ onArtifactDeleted }));
+      renderHook(() => useAppWsEvent({ onArtifactDeleted, invalidateOnReconnect: [['test-family']] }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -737,7 +739,7 @@ describe('useAppWsEvent', () => {
 
     it('should call onBookmarkCreated for bookmark-created message', () => {
       const onBookmarkCreated = mock(() => {});
-      renderHook(() => useAppWsEvent({ onBookmarkCreated }));
+      renderHook(() => useAppWsEvent({ onBookmarkCreated, invalidateOnReconnect: [['test-family']] }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -752,7 +754,7 @@ describe('useAppWsEvent', () => {
 
     it('should call onBookmarkDeleted for bookmark-deleted message', () => {
       const onBookmarkDeleted = mock(() => {});
-      renderHook(() => useAppWsEvent({ onBookmarkDeleted }));
+      renderHook(() => useAppWsEvent({ onBookmarkDeleted, invalidateOnReconnect: [['test-family']] }));
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -863,4 +865,80 @@ describe('useAppWsEvent', () => {
   // Note: Stale WebSocket handling tests were removed because the singleton
   // module now manages WebSocket lifecycle. The hook simply subscribes to
   // the singleton and doesn't need to track stale connections.
+});
+
+/**
+ * Frame-driven handlers must declare their reconnect keys. Reach, measured
+ * (each mutation applied alone to hooks/useAppWs.ts, `bunx tsc --noEmit`):
+ *   - delete the `?: never` arm of `WithoutFrameDriven` -> the `@ts-expect-error`
+ *     line below errors ("Unused '@ts-expect-error' directive"), because the call
+ *     then type-checks;
+ *   - remove a name from `FRAME_DRIVEN_HANDLERS` -> NO type error: that direction
+ *     is covered by the runtime registry-completeness test
+ *     (reconnect-registry-completeness.test.tsx), not by the type.
+ */
+describe('useAppWsEvent invalidateOnReconnect', () => {
+  let restoreWebSocket: () => void;
+
+  beforeEach(() => {
+    restoreWebSocket = installMockWebSocket();
+    resetWebSocket();
+    _resetReconnectInvalidation();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    _resetReconnectInvalidation();
+  });
+
+  it('registers the declared family root', () => {
+    renderHook(() => useAppWsEvent({ onTodosUpdated: () => {}, invalidateOnReconnect: [todoKeys.root()] }));
+
+    expect(listReconnectInvalidationKeys()).toEqual([todoKeys.root()]);
+  });
+
+  it('registers nothing for a consumer that only has payload handlers', () => {
+    renderHook(() => useAppWsEvent({ onSessionsSync: () => {} }));
+
+    expect(listReconnectInvalidationKeys()).toEqual([]);
+  });
+
+  it('keeps the registration after the consumer unmounts', () => {
+    const { unmount } = renderHook(() => useAppWsEvent({ onTodosUpdated: () => {}, invalidateOnReconnect: [todoKeys.root()] }));
+
+    unmount();
+
+    expect(listReconnectInvalidationKeys()).toEqual([todoKeys.root()]);
+  });
+
+  it('a frame-driven handler without invalidateOnReconnect is a compile error; payload handlers alone and a bare call are not', () => {
+    // @ts-expect-error a frame-driven handler needs `invalidateOnReconnect`
+    renderHook(() => useAppWsEvent({ onTodosUpdated: () => {} }));
+    renderHook(() => useAppWsEvent({ onSessionsSync: () => {} }));
+    renderHook(() => useAppWsEvent());
+    expect(true).toBe(true);
+  });
+
+  it('every FRAME_DRIVEN_HANDLERS member is a handler the hook delivers (a wired frame, not a typo)', () => {
+    const delivered: string[] = [];
+    const handlers = Object.fromEntries(FRAME_DRIVEN_HANDLERS.map((name) => [name, () => delivered.push(name)]));
+    renderHook(() => useAppWsEvent({ ...handlers, invalidateOnReconnect: [['x']] }));
+    const ws = MockWebSocket.getLastInstance();
+    const frames = [
+      { type: 'todos-updated', sessionId: null },
+      { type: 'artifact-created', sessionId: 's', artifactId: 'a' },
+      { type: 'artifact-updated', sessionId: 's', artifactId: 'a' },
+      { type: 'artifact-deleted', sessionId: 's', artifactId: 'a' },
+      { type: 'bookmark-created', sessionId: 's', bookmarkId: 'b' },
+      { type: 'bookmark-deleted', sessionId: 's', bookmarkId: 'b' },
+      { type: 'review-queue-updated' },
+      { type: 'memo-updated', sessionId: 's', content: 'c' },
+    ];
+    act(() => {
+      ws?.simulateOpen();
+      for (const frame of frames) ws?.simulateMessage(JSON.stringify(frame));
+    });
+
+    expect(delivered.sort()).toEqual([...FRAME_DRIVEN_HANDLERS].sort());
+  });
 });
