@@ -6732,6 +6732,7 @@ describe('SessionManager', () => {
         notifySessionDeleted: mock(() => {}),
         notifySessionPaused,
         broadcastToApp: mock(() => {}),
+        stopFileViewerWatching: mock(() => {}),
       });
 
       // Create worktree session

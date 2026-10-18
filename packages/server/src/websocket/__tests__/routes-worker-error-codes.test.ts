@@ -26,6 +26,8 @@ import type { UserMode, LoginResult, PtySpawnRequest } from '../../services/user
 import type { PtyInstance } from '../../lib/pty-provider.js';
 import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { serverConfig } from '../../lib/server-config.js';
+import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
@@ -217,7 +219,7 @@ describe('Worker WebSocket connection error codes', () => {
     expect(mockWs.closeCalls.length).toBe(1);
   });
 
-  it('refuses a worker WebSocket for a file-viewer worker (REST only): UNSUPPORTED_OPERATION, normal closure so the client does not reconnect', async () => {
+  it('accepts a worker WebSocket for a file-viewer worker: no error or exit frame, no close, no PTY; a client frame is answered with UNSUPPORTED_OPERATION and the socket stays open', async () => {
     expect(capturedWorkerHandlerFactory).not.toBeNull();
 
     const session = await sessionManager.createSession({
@@ -242,20 +244,87 @@ describe('Worker WebSocket connection error codes', () => {
 
     handlers.onOpen({}, mockWs);
 
-    const errorMessage = JSON.parse(mockWs.sentMessages[0]);
-    expect(errorMessage.type).toBe('error');
-    expect(errorMessage.code).toBe('UNSUPPORTED_OPERATION');
-    expect(JSON.parse(mockWs.sentMessages[1]).type).toBe('exit');
-    expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: errorMessage.message }]);
+    expect(mockWs.sentMessages).toEqual([]);
+    expect(mockWs.closeCalls).toEqual([]);
     // Nothing was activated or attached on its behalf.
     expect(ptyFactory.instances.length).toBe(ptyCountBefore);
 
-    // A frame that still arrives afterwards is ignored: no reply, no error.
-    mockWs.sentMessages.length = 0;
     handlers.onMessage({ data: JSON.stringify({ type: 'input', data: 'x' }) }, mockWs);
-    handlers.onMessage({ data: JSON.stringify({ type: 'request-history', fromOffset: 0 }) }, mockWs);
-    await Bun.sleep(50); // the history path answers asynchronously
-    expect(mockWs.sentMessages).toEqual([]);
+    await Bun.sleep(50);
+    expect(mockWs.sentMessages.map((m) => JSON.parse(m))).toEqual([
+      { type: 'error', message: 'The file viewer accepts no client messages', code: 'UNSUPPORTED_OPERATION' },
+    ]);
+    expect(mockWs.closeCalls).toEqual([]);
+
+    handlers.onClose({}, mockWs);
+  });
+
+  it('closes a file-viewer socket opened while the session is pausing with SESSION_PAUSED (the viewer branch sits below the pausing check)', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    let resolveHook!: (result: Awaited<ReturnType<ExecuteHookCommand>>) => void;
+    const held = mock<ExecuteHookCommand>(
+      () =>
+        new Promise((resolve) => {
+          resolveHook = resolve;
+        }),
+    );
+    pauseHook = held;
+
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const viewer = await sessionManager.createWorker(session.id, { type: 'file-viewer' });
+    expect(viewer).not.toBeNull();
+    const pause = sessionManager.pauseSession(session.id);
+    for (let i = 0; i < 400 && held.mock.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(sessionManager.isPausing(session.id)).toBe(true);
+
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? viewer!.id : '') },
+    });
+    const mockWs = createMockWs();
+    handlers.onOpen({}, mockWs);
+    for (let i = 0; i < 400 && mockWs.closeCalls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(JSON.parse(mockWs.sentMessages[0])).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
+    expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
+
+    resolveHook({ success: true });
+    await pause;
+  });
+
+  it('notifySessionPaused sends SESSION_PAUSED and closes with 1000 on an open file-viewer socket', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    const session = await sessionManager.createSession({
+      type: 'quick',
+      locationPath: '/test/path',
+      agentId: 'claude-code',
+    });
+    const viewer = await sessionManager.createWorker(session.id, { type: 'file-viewer' });
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? viewer!.id : '') },
+    });
+    const mockWs = createMockWs();
+    handlers.onOpen({}, mockWs);
+    mockWs.sentMessages.length = 0;
+
+    notifySessionPaused(session.id);
+
+    expect(JSON.parse(mockWs.sentMessages[0])).toMatchObject({ type: 'error', code: 'SESSION_PAUSED' });
+    expect(JSON.parse(mockWs.sentMessages[1])).toMatchObject({ type: 'exit', exitCode: 0 });
+    expect(mockWs.closeCalls.length).toBe(1);
+    expect(mockWs.closeCalls[0].code).toBe(1000);
+    handlers.onClose({}, mockWs);
   });
 
   it('closes a worker socket opened while the session is pausing with SESSION_PAUSED and does not spawn a PTY', async () => {
@@ -508,5 +577,120 @@ describe('WebSocket authentication rejection (C4)', () => {
 
     expect(response.status).toBe(401);
     expect(await response.text()).toBe('Authentication required');
+  });
+});
+
+// =========================================================================
+// File-viewer socket: access is checked BEFORE the upgrade (403)
+// =========================================================================
+
+describe('File-viewer worker WebSocket access guard', () => {
+  const ptyFactory = createMockPtyFactory(30000);
+  let testJobQueue: JobQueue | null = null;
+  let app: InstanceType<typeof Hono>;
+  let sessionManager: SessionManager;
+
+  async function sessionWithViewer(createdBy: string | undefined, locationPath = '/test/path') {
+    const session = await sessionManager.createSession({ type: 'quick', locationPath, agentId: 'claude-code' });
+    // No public setter: a user row would be needed for the foreign key, so set the owner on the in-memory session
+    // (the same private-field access routes/__tests__/workers.test.ts uses to simulate ownership).
+    if (createdBy) sessionManager['sessions'].get(session.id)!.createdBy = createdBy;
+    const viewer = await sessionManager.createWorker(session.id, { type: 'file-viewer' });
+    const agent = session.workers.find((w) => w.type === 'agent')!;
+    return { session, viewer: viewer!, agent };
+  }
+
+  beforeEach(async () => {
+    await closeDatabase();
+    setupMemfs({ [`${TEST_CONFIG_DIR}/.keep`]: '' });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+    ptyFactory.reset();
+    resetProcessMock();
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase());
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+    const embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(getDatabase()));
+    const notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
+    const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
+    sessionManager = await SessionManager.create({
+      sessionRepository: new SqliteSessionRepository(getDatabase()),
+      jobQueue: testJobQueue,
+      agentManager,
+      embeddedAgentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
+      userMode,
+      repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
+    });
+    const repositoryManager = await RepositoryManager.create({
+      repository: new SqliteRepositoryRepository(getDatabase()),
+      jobQueue: testJobQueue,
+    });
+    const appContext = asAppContext({
+      sessionManager,
+      notificationManager,
+      agentManager,
+      embeddedAgentManager,
+      repositoryManager,
+      userMode,
+      sharedAccountRegistry: SharedAccountRegistry.createDisabled(),
+    });
+
+    app = new Hono();
+    // The upgrade step itself: reaching it means the guards let the request through.
+    const upgradeWebSocket = (_factory: WebSocketHandlerFactory) => (c: { text: (body: string) => Response }) => c.text('UPGRADED');
+    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext);
+  });
+
+  afterEach(async () => {
+    if (testJobQueue) {
+      await testJobQueue.stop();
+      testJobQueue = null;
+    }
+    await closeDatabase();
+    cleanupMemfs();
+  });
+
+  const url = (sessionId: string, workerId: string) => `/ws/session/${sessionId}/worker/${workerId}`;
+
+  it('403 before the upgrade for a multi-user caller who may not operate the session; the owner reaches the upgrade', async () => {
+    const other = await sessionWithViewer('someone-else-id');
+    const own = await sessionWithViewer('test-user-id');
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    try {
+      const denied = await app.request(url(other.session.id, other.viewer.id));
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).toBe('Only the session owner can view this session\'s files');
+      const allowed = await app.request(url(own.session.id, own.viewer.id));
+      expect(allowed.status).toBe(200);
+      expect(await allowed.text()).toBe('UPGRADED');
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
+  });
+
+  it('does not apply the viewer check to other worker types (control: the agent worker of the same foreign session still upgrades)', async () => {
+    const other = await sessionWithViewer('someone-else-id');
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    try {
+      const response = await app.request(url(other.session.id, other.agent.id));
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('UPGRADED');
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
+  });
+
+  it('single-user mode never checks ownership', async () => {
+    const other = await sessionWithViewer('someone-else-id');
+    const response = await app.request(url(other.session.id, other.viewer.id));
+    expect(response.status).toBe(200);
   });
 });

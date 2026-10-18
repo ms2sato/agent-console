@@ -198,6 +198,7 @@ describe('SessionPauseResumeService', () => {
           notifySessionPaused,
           notifySessionDeleted: mock(() => {}),
           broadcastToApp: mock(() => {}),
+          stopFileViewerWatching: mock(() => {}),
         }),
         getSessionLifecycleCallbacks: () => ({ onSessionPaused }),
       });
@@ -225,21 +226,52 @@ describe('SessionPauseResumeService', () => {
       expect(onSessionPaused).toHaveBeenCalledTimes(1);
     });
 
-    it('should pause a session with a file-viewer worker without killing, unwatching or deactivating it', async () => {
+    it('should pause a session with a file-viewer worker: stop its watch subscription once, without killing, git-diff unwatching or deactivating it', async () => {
       const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const viewer = buildInternalFileViewerWorker({ id: 'w-fv' });
       const session = buildInternalWorktreeSession([agentWorker, viewer]);
       const deactivateEmbeddedAgentWorker = mock(async () => {});
+      const stopFileViewerWatching = mock((_sessionId: string, _workerId: string) => {});
       mockStopWatching.mockClear();
-      const deps = createMockDeps({ getSession: () => session, deactivateEmbeddedAgentWorker });
+      const deps = createMockDeps({
+        getSession: () => session,
+        deactivateEmbeddedAgentWorker,
+        getWebSocketCallbacks: () => ({
+          notifySessionPaused: mock(() => {}),
+          notifySessionDeleted: mock(() => {}),
+          broadcastToApp: mock(() => {}),
+          stopFileViewerWatching,
+        }),
+      });
       const service = new SessionPauseResumeService(deps);
 
       expect((await service.pauseSession('session-1')).paused).toBe(true);
+
+      expect(stopFileViewerWatching).toHaveBeenCalledTimes(1);
+      expect(stopFileViewerWatching).toHaveBeenCalledWith('session-1', 'w-fv');
 
       expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(1);
       expect(deps.workerManager.killWorker).toHaveBeenCalledWith(agentWorker, 'session-1');
       expect(deactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
       expect(mockStopWatching).not.toHaveBeenCalled();
+    });
+
+    it('should not stop any file-viewer watch for a session without a viewer (the empty case)', async () => {
+      const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' }), buildInternalGitDiffWorker({ id: 'w2' })]);
+      const stopFileViewerWatching = mock((_sessionId: string, _workerId: string) => {});
+      const deps = createMockDeps({
+        getSession: () => session,
+        getWebSocketCallbacks: () => ({
+          notifySessionPaused: mock(() => {}),
+          notifySessionDeleted: mock(() => {}),
+          broadcastToApp: mock(() => {}),
+          stopFileViewerWatching,
+        }),
+      });
+
+      await new SessionPauseResumeService(deps).pauseSession('session-1');
+
+      expect(stopFileViewerWatching).not.toHaveBeenCalled();
     });
 
     it('should kill both agent and terminal workers', async () => {

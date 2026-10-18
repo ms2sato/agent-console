@@ -14,6 +14,9 @@ import { createWorkerMessageHandler } from './worker-handler.js';
 import { handleHistoryRangeRequest } from './history-range-handler.js';
 import { HistoryInFlightLimiter, reportHistoryOverCap } from './history-in-flight-limiter.js';
 import { raceWithTimeout } from '../lib/race-with-timeout.js';
+import { handleFileViewerConnection, handleFileViewerDisconnection, handleFileViewerMessage, initializeFileViewerHandlers } from './file-viewer-handler.js';
+import { subscribeToFileChanges } from '../services/file-watch-service.js';
+import { assertCanOperateSession } from '../lib/session-access.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit, initializeGitDiffHandlers } from './git-diff-handler.js';
 import { getCookie } from 'hono/cookie';
 import type { Context } from 'hono';
@@ -21,7 +24,7 @@ import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
-import { SessionPausingError } from '../lib/errors.js';
+import { ForbiddenError, SessionPausingError } from '../lib/errors.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
@@ -313,6 +316,8 @@ export async function setupWebSocketRoutes(
     annotationService,
   });
 
+  initializeFileViewerHandlers({ subscribe: subscribeToFileChanges });
+
   // Track which initialization steps have been completed
   const completedSteps = new Set<string>();
 
@@ -432,6 +437,8 @@ export async function setupWebSocketRoutes(
     notifySessionDeleted,
     notifySessionPaused,
     broadcastToApp,
+    // Service teardown has no socket: it unsubscribes regardless of which socket is current.
+    stopFileViewerWatching: (sessionId, workerId) => handleFileViewerDisconnection(sessionId, workerId),
   });
   completedSteps.add('setWebSocketCallbacks');
 
@@ -537,6 +544,40 @@ export async function setupWebSocketRoutes(
     return next();
   }
 
+  /**
+   * Pre-upgrade access check for a file-viewer worker's socket. The viewer's
+   * REST routes check that the caller may operate the session; the live
+   * channel discloses file names, so it asks the same question BEFORE the
+   * upgrade (403 here, not a worker error code). Other worker types pass
+   * through untouched.
+   */
+  function fileViewerAccessGuard(c: Context, next: () => Promise<void>): Response | Promise<void> {
+    const session = sessionManager.getSession(c.req.param('sessionId') ?? '');
+    const worker = session?.workers.find((w) => w.id === c.req.param('workerId'));
+    if (!session || worker?.type !== 'file-viewer') {
+      return next();
+    }
+    const authUser = appContext.userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
+    if (!authUser) {
+      return c.text('Authentication required', 401);
+    }
+    try {
+      assertCanOperateSession(
+        session,
+        authUser,
+        appContext.sharedAccountRegistry,
+        serverConfig.AUTH_MODE,
+        'Only the session owner can view this session\'s files',
+      );
+    } catch (err) {
+      if (err instanceof ForbiddenError) {
+        return c.text(err.message, 403);
+      }
+      throw err;
+    }
+    return next();
+  }
+
   // App WebSocket endpoint for real-time state synchronization
   app.get(
     '/ws/app',
@@ -622,6 +663,7 @@ export async function setupWebSocketRoutes(
   app.get(
     '/ws/session/:sessionId/worker/:workerId',
     wsAuthGuard,
+    fileViewerAccessGuard,
     upgradeWebSocket((c) => {
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
@@ -812,6 +854,9 @@ export async function setupWebSocketRoutes(
           handleGitDiffDisconnection(sid, wid).catch((err) => {
             logger.error({ sessionId: sid, workerId: wid, err }, 'Error cleaning up git-diff on WebSocket close/error');
           });
+        } else if (worker?.type === 'file-viewer') {
+          // The viewer's only resource is its watch subscription; it never attached stream-worker callbacks.
+          handleFileViewerDisconnection(sid, wid, ws);
         } else if (effectiveConnectionId) {
           // Detach this connection's callbacks but keep the worker alive (any
           // stream worker -- PTY or embedded-agent). Other connections
@@ -877,15 +922,6 @@ export async function setupWebSocketRoutes(
             return;
           }
 
-          // The file viewer is REST-only in v1 (no live channel): refuse the
-          // connection explicitly rather than letting the PTY restore path
-          // reject it by accident. NORMAL_CLOSURE keeps the client from
-          // reconnecting in a loop (it is in the client's no-reconnect set).
-          if (worker.type === 'file-viewer') {
-            sendErrorAndClose(ws, 'The file viewer does not use a WebSocket connection', 'UNSUPPORTED_OPERATION');
-            return;
-          }
-
           // A pausing session answers every stream-worker open (PTY or
           // embedded-agent) with the same terminal SESSION_PAUSED close, before
           // either branch can start an activation. The manager-level guard and
@@ -893,6 +929,16 @@ export async function setupWebSocketRoutes(
           // second line of defence.
           if (sessionManager.isPausing(sessionId)) {
             sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+            return;
+          }
+
+          // The file viewer's socket is a server-to-client change feed over a
+          // watch on the working directory (docs/design/file-viewer-worker.md,
+          // "Live updates"). It sits below the pausing check on purpose: it
+          // holds a watch subscription, so a pausing session must refuse it
+          // like a stream worker. Access was checked before the upgrade.
+          if (worker.type === 'file-viewer') {
+            handleFileViewerConnection(ws, sessionId, workerId, session.locationPath);
             return;
           }
 
@@ -988,8 +1034,11 @@ export async function setupWebSocketRoutes(
           const worker = session.workers.find(w => w.id === workerId);
           if (!worker) return;
 
-          // The connection was refused in onOpen; ignore anything that still arrives.
-          if (worker.type === 'file-viewer') return;
+          // The viewer's socket carries no client messages: answer, keep the socket open.
+          if (worker.type === 'file-viewer') {
+            handleFileViewerMessage(ws);
+            return;
+          }
 
           // Handle git-diff messages differently
           if (worker.type === 'git-diff') {
