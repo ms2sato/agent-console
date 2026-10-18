@@ -224,7 +224,7 @@ A worker that shows the git diff between a base commit and a target ref for its 
 - **See:** [GitDiffWorkerSchema in app-server-message.ts](../packages/shared/src/schemas/app-server-message.ts)
 
 ### File Viewer Worker
-A worker that shows a read-only file tree of its session's working directory, with the selected file's content syntax-highlighted. Has no PTY and no persisted type-specific field; the tree is a plain directory listing (nothing filtered, dotfiles and `.git` included; symlinks are listed as their own kind) and file content is read as the session owner, over two lazy REST routes. Opt-in and closeable, unlike the auto-created [GitDiffWorker](#gitdiffworker) tab. **In design (Issue #2194); not yet implemented.**
+A worker that shows a read-only file tree of its session's working directory, with the selected file's content syntax-highlighted. Has no PTY and no persisted type-specific field; the tree is a plain directory listing (nothing filtered, dotfiles and `.git` included; symlinks are listed as their own kind) and file content is read as the session owner, over two lazy REST routes plus a server-to-client worker WebSocket for live updates. Opt-in and closeable, unlike the auto-created [GitDiffWorker](#gitdiffworker) tab.
 - **Aliases:** file-viewer worker, `file-viewer`
 - **See:** [File Viewer Worker design](design/file-viewer-worker.md)
 

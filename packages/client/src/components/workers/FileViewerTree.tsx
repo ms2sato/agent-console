@@ -1,6 +1,7 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { FileTreeEntry } from '@agent-console/shared';
-import { fetchFileTree } from '../../lib/api';
+import { ApiError, fetchFileTree } from '../../lib/api';
 import { ChevronDownIcon, ChevronRightIcon, DocumentIcon, FolderIcon } from '../Icons';
 
 /** Query keys of one file viewer worker; everything shares the worker prefix so Refresh can invalidate it as a unit. */
@@ -39,6 +40,8 @@ interface FileViewerTreeProps {
   onOpenFile: (path: string) => void;
   /** A symlink's target kind is unknown: the owner tries to expand it, then to open it. */
   onOpenSymlink: (path: string) => void;
+  /** A non-root directory whose listing answered 404 (deleted): the owner drops it from the open set. */
+  onDirectoryGone: (path: string) => void;
 }
 
 export function FileViewerTree(props: FileViewerTreeProps) {
@@ -55,14 +58,21 @@ interface DirectoryEntriesProps extends FileViewerTreeProps {
 }
 
 function DirectoryEntries(props: DirectoryEntriesProps) {
-  const { sessionId, workerId, path, depth } = props;
+  const { sessionId, workerId, path, depth, onDirectoryGone } = props;
   const { data, error, isPending } = useQuery({
     queryKey: fileViewerKeys.tree(sessionId, workerId, path),
     queryFn: () => fetchFileTree(sessionId, workerId, path),
     ...FILE_VIEWER_QUERY_OPTIONS,
   });
   const indent = { paddingLeft: `${depth * 12 + 8}px` };
+  // The root keeps its alert: there is nothing above it to collapse.
+  const isGone = path !== '' && error instanceof ApiError && error.status === 404;
 
+  useEffect(() => {
+    if (isGone) onDirectoryGone(path);
+  }, [isGone, path, onDirectoryGone]);
+
+  if (isGone) return null;
   if (isPending) {
     return <div className="py-1 text-gray-500 text-xs" style={indent}>Loading...</div>;
   }
