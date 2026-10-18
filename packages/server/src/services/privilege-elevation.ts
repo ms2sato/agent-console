@@ -25,11 +25,24 @@
  * which OUTER env vars the elevated shell inherits via the `--preserve-env`
  * flag; the per-call `opts.env` map is delivered separately via `export`
  * statements inside the inner command.
+ *
+ * `runAsUser` timeout (`timeoutMs`): killing only the spawned wrapper would
+ * leave the user-side tree (the login shell and its children) running and
+ * holding the output pipes, so on timeout the helper first snapshots the
+ * wrapper's descendants from the process table (the ppid graph is readable
+ * across users, signalling is not), sends them SIGTERM (elevated: one
+ * elevated `kill`; direct: from the server process), then kills the wrapper.
+ * Everything after the timer shares one `TIMEOUT_DRAIN_BUDGET_MS` deadline;
+ * at the deadline the snapshot and wrapper get SIGKILL, the pipes are
+ * abandoned and the call returns the output read so far. A descendant that
+ * detaches itself (own `setsid` or a double fork) before the snapshot escapes;
+ * the orphan sweep (`orphan-process-sweeper.ts`) covers those.
  */
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
+import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { CWD_FAILED_EXIT_CODE, CWD_FAILED_SENTINEL, buildCwdGuard, shellEscape } from './elevation-args.js';
 
 const logger = createLogger('service:privilege-elevation');
@@ -63,6 +76,17 @@ const VALID_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * "did we time out?" signal is the separate `timedOut` boolean.
  */
 const TIMEOUT_EXIT_CODE = 137;
+
+/**
+ * After `timeoutMs` fires, `runAsUser` gives the terminated tree this long to
+ * let go of the pipes before it escalates to SIGKILL and returns whatever
+ * output it has read. One shared deadline covers the elevated kill command,
+ * the wrapper's exit and both pipe reads, so a call is bounded by
+ * `timeoutMs + TIMEOUT_DRAIN_BUDGET_MS` (plus the descendant snapshot, itself
+ * bounded at 5 s by `readProcessTable`).
+ * @internal Exported for testing.
+ */
+export const TIMEOUT_DRAIN_BUDGET_MS = 500;
 
 export interface RunAsUserOpts {
   /**
@@ -273,13 +297,117 @@ export function buildSpawnArgs(
 }
 
 /**
- * Run `command` as `opts.username`, elevating via `sudo` when necessary.
+ * Send `signal` to `pids` as `username` through ONE elevated `kill` command.
+ * Module-private on purpose: it is part of `runAsUser`'s timeout path, builds
+ * its argv with {@link buildSpawnArgs} and spawns through the SAME injected
+ * `spawn`, and never goes through `runAsUser` itself (no recursion). The exit
+ * code is not interpreted: a pid the user cannot signal (a root-owned helper
+ * in the snapshot) makes `kill` exit non-zero while the others are still
+ * signalled. Never rejects.
+ */
+async function signalPidsAsUser(
+  pids: number[],
+  signal: 'TERM' | 'KILL',
+  username: string,
+  serverUsername: string,
+  spawn: SpawnFn,
+): Promise<void> {
+  try {
+    const { args } = buildSpawnArgs(
+      username,
+      `kill -s ${signal} -- ${pids.join(' ')}`,
+      [],
+      serverUsername,
+      true,
+      undefined,
+      undefined,
+    );
+    const proc = spawn(args, { stdout: 'ignore', stderr: 'ignore', cwd: SUDO_NEUTRAL_CWD });
+    await proc.exited;
+  } catch (error) {
+    logger.warn({ err: error, username, signal }, 'runAsUser timeout: signalling the user-side tree failed');
+  }
+}
+
+/**
+ * Accumulates a piped stream with a reader so that what was read so far stays
+ * available when the stream never closes (`Response.text()` would not resolve).
+ */
+function drainStream(stream: ReadableStream<Uint8Array>): {
+  done: Promise<void>;
+  text: () => string;
+  cancel: () => Promise<void>;
+} {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  const done = (async () => {
+    try {
+      for (;;) {
+        const { value, done: finished } = await reader.read();
+        if (finished) break;
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+    } catch {
+      // A cancelled or errored stream ends the drain with what was read.
+    }
+  })();
+  return {
+    done,
+    text: () => text,
+    cancel: () => reader.cancel().catch(() => {}),
+  };
+}
+
+/** Resolves true when `work` settles within `ms`, false otherwise. Leaves no timer behind. */
+async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(ms, 0));
+  });
+  try {
+    return await Promise.race([work.then(() => true as const), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Run `command` as `opts.username`, elevating via the elevation wrapper when
+ * necessary.
  *
  * See module-level docs for full semantics.
+ *
+ * Timeout contract (`opts.timeoutMs` > 0): when the deadline passes, the
+ * descendants of the spawned wrapper are snapshotted BEFORE any signal (a
+ * killed shell reparents its children to init), sent SIGTERM (elevated: one
+ * elevated `kill -s TERM -- <pids>`; direct: from the server process), and the
+ * wrapper is killed. The call then waits at most {@link TIMEOUT_DRAIN_BUDGET_MS}
+ * for the wrapper to exit, the kill command to finish and both pipes to close;
+ * at that deadline the snapshot and wrapper get SIGKILL, the pipes are
+ * abandoned and the call returns. The result has `timedOut: true`, exit code
+ * 137, and `stdout` / `stderr` holding whatever was read, which may be PARTIAL.
+ * Worst-case bound: `timeoutMs` + 5 s (the `ps` process-table bound of the
+ * snapshot) + 500 ms (`TIMEOUT_DRAIN_BUDGET_MS`). The drain clock starts AFTER
+ * the snapshot returns so a slow `ps` cannot eat the SIGTERM grace. Limit: a descendant that detaches
+ * itself (own `setsid` or a double fork) before the snapshot escapes; the
+ * orphan sweep covers those. The bound holds in BOTH orders: timer before
+ * the wrapper exits (tree terminated, 500 ms drain), and wrapper exit before
+ * the pipes close (streams abandoned at `timeoutMs`, partial output,
+ * `timedOut: true` / 137; no snapshot, signal or drain budget, because the
+ * children were reparented and cannot be identified, so a background child
+ * that still holds the pipes is left alive). Without `timeoutMs` no timer,
+ * snapshot or kill command exists, and a surviving child holding the pipes
+ * after the wrapper exits makes the call wait: passing a timeout is the
+ * caller's choice.
+ *
+ * `listDescendants` is a test seam for the descendant walk, not a caller option.
  */
 export async function runAsUser(
   opts: RunAsUserOpts,
   spawn: SpawnFn = Bun.spawn,
+  listDescendants: typeof listDescendantPids = listDescendantPids,
 ): Promise<RunAsUserResult> {
   const preserveEnv = opts.preserveEnv ?? [...DEFAULT_PRESERVE_ENV];
   const serverUsername = os.userInfo().username;
@@ -336,12 +464,87 @@ export async function runAsUser(
 
   const proc = spawn(args, spawnOptions);
 
+  // stdout/stderr are guaranteed ReadableStream because we requested 'pipe'
+  // above; Bun's discriminated return type also admits `number` (fd) for the
+  // non-pipe branches, hence the cast. They are read from the start so a
+  // stream that never closes still yields what it produced.
+  const out = drainStream(proc.stdout as ReadableStream<Uint8Array>);
+  const err = drainStream(proc.stderr as ReadableStream<Uint8Array>);
+
   let timedOut = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let finishTimeoutPhase!: () => void;
+  const timeoutPhaseDone = new Promise<void>((resolve) => {
+    finishTimeoutPhase = resolve;
+  });
+
+  const runTimeoutPhase = async (): Promise<void> => {
+    // Snapshot before any signal: a killed shell reparents its children to
+    // init and the walk would no longer reach them.
+    const descendants = await listDescendants(proc.pid);
+    logger.warn(
+      { username: opts.username ?? null, elevated, timeoutMs: opts.timeoutMs, descendantCount: descendants.length },
+      'runAsUser timed out; terminating the process tree',
+    );
+    const deadline = Date.now() + TIMEOUT_DRAIN_BUDGET_MS;
+
+    const signalTree = (signalName: 'TERM' | 'KILL'): Promise<void> => {
+      if (descendants.length === 0) return Promise.resolve();
+      if (elevated) {
+        return signalPidsAsUser(descendants, signalName, opts.username as string, serverUsername, spawn);
+      }
+      signalPids(descendants, signalName === 'TERM' ? 'SIGTERM' : 'SIGKILL');
+      return Promise.resolve();
+    };
+
+    const termDone = signalTree('TERM');
+    proc.kill();
+
+    const settled = await settlesWithin(
+      Promise.all([termDone, proc.exited, out.done, err.done]),
+      deadline - Date.now(),
+    );
+    if (!settled) {
+      // Fire-and-forget: nothing pending may extend the return.
+      void signalTree('KILL');
+      proc.kill('SIGKILL');
+      await Promise.all([out.cancel(), err.cancel()]);
+      await settlesWithin(Promise.all([out.done, err.done]), 25);
+    }
+  };
+
+  // The wrapper may exit before the pipes close (a backgrounded child still
+  // holds them). Track that so the timer, which stays armed until both pipes
+  // settle, knows which phase to run.
+  let wrapperExited = false;
+  let wrapperExitCode: number | null | undefined;
+  void proc.exited.then((code) => {
+    wrapperExited = true;
+    wrapperExitCode = code;
+  });
+
+  // Wrapper already gone, pipes still open: its children were reparented
+  // before the timer fired, so there is no tree to snapshot or signal and no
+  // TERM grace to wait for. Abandon the streams and return what was read.
+  const runExitedFirstPhase = async (): Promise<void> => {
+    logger.warn(
+      { username: opts.username ?? null, elevated, timeoutMs: opts.timeoutMs, wrapperExitCode },
+      `runAsUser: wrapper exited (code ${wrapperExitCode}) but the output pipes stayed open past timeoutMs; ` +
+        'a background child is holding them and cannot be identified',
+    );
+    await Promise.all([out.cancel(), err.cancel()]);
+    await settlesWithin(Promise.all([out.done, err.done]), 25);
+  };
+
   if (typeof opts.timeoutMs === 'number' && opts.timeoutMs > 0) {
     timeoutHandle = setTimeout(() => {
       timedOut = true;
-      proc.kill();
+      (wrapperExited ? runExitedFirstPhase() : runTimeoutPhase())
+        .catch((error) => {
+          logger.warn({ err: error }, 'runAsUser timeout handling failed');
+          proc.kill('SIGKILL');
+        })
+        .finally(finishTimeoutPhase);
     }, opts.timeoutMs);
   }
 
@@ -349,23 +552,25 @@ export async function runAsUser(
   // helper normalizes that to TIMEOUT_EXIT_CODE so the public type stays
   // `number`. `timedOut` is the canonical signal -- consumers should branch
   // on it, not on the exit code, to decide "did we hit the timeout?".
-  const rawExitCode = await proc.exited;
+  const rawExitCode = await Promise.race([proc.exited, timeoutPhaseDone]);
+  if (!timedOut) {
+    // The timer stays armed until both pipes settle, not just until the
+    // wrapper exits: a surviving child can hold them open past `exited`.
+    await Promise.race([Promise.all([out.done, err.done]), timeoutPhaseDone]);
+  }
   if (timeoutHandle !== undefined) {
     clearTimeout(timeoutHandle);
+  }
+  if (timedOut) {
+    await timeoutPhaseDone;
   }
   const exitCode = timedOut
     ? TIMEOUT_EXIT_CODE
     : typeof rawExitCode === 'number'
       ? rawExitCode
       : TIMEOUT_EXIT_CODE;
-
-  // stdout/stderr are guaranteed ReadableStream because we requested 'pipe'
-  // above; Bun's discriminated return type also admits `number` (fd) for the
-  // non-pipe branches, hence the cast.
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
-    new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
-  ]);
+  const stdout = out.text();
+  const stderr = err.text();
 
   logger.info(
     { username: opts.username ?? null, elevated, exitCode, timedOut },

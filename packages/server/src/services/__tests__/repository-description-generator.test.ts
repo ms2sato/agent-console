@@ -89,6 +89,17 @@ describe('repository-description-generator', () => {
 
     // Mock Bun.spawn
     (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+      // The runAsUser timeout path snapshots the process tree through `ps`
+      // (lib/process-tree.ts). Answer it with an empty, already-exited table
+      // so it never waits on the agent command's mocked process.
+      if (args[0] === 'ps') {
+        return {
+          exited: Promise.resolve(0),
+          stdout: new Response('  PID  PPID\n').body,
+          stderr: null,
+          kill: () => {},
+        };
+      }
       spawnCalls.push({ args, options: options || {} });
       return mockSpawnResult;
     }) as typeof Bun.spawn;
