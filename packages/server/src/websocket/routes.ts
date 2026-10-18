@@ -21,6 +21,7 @@ import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
+import { SessionPausingError } from '../lib/errors.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
@@ -885,6 +886,16 @@ export async function setupWebSocketRoutes(
             return;
           }
 
+          // A pausing session answers every stream-worker open (PTY or
+          // embedded-agent) with the same terminal SESSION_PAUSED close, before
+          // either branch can start an activation. The manager-level guard and
+          // the per-branch SessionPausingError catches below remain as the
+          // second line of defence.
+          if (sessionManager.isPausing(sessionId)) {
+            sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+            return;
+          }
+
           // Handle embedded-agent workers differently: activate the loop
           // subprocess (idempotent no-op if already activated -- Phase 2's
           // in-flight guard already makes concurrent opens await the same
@@ -902,6 +913,13 @@ export async function setupWebSocketRoutes(
               try {
                 await sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
               } catch (err) {
+                if (err instanceof SessionPausingError) {
+                  // Same terminal answer a socket open at pause time gets.
+                  if (!connectionClosed) {
+                    sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+                  }
+                  return;
+                }
                 // Only the enumerable, developer-authored reasons (marked by
                 // EmbeddedAgentActivationError) are safe to forward verbatim.
                 // Everything else (provider key loading, spawn, filesystem,
@@ -949,6 +967,10 @@ export async function setupWebSocketRoutes(
 
             await setupStreamWorkerHandlers(ws, result.worker.type, connectionStartTime, result.wasRestored);
           }).catch((err) => {
+            if (err instanceof SessionPausingError) {
+              sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+              return;
+            }
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
             sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);
           });

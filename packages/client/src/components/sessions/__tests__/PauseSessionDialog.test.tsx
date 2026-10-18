@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { PauseSessionDialog, type PauseSessionDialogProps } from '../PauseSessionDialog';
+import { PauseSessionDialog, runPauseSession, type PauseSessionDialogProps } from '../PauseSessionDialog';
 import { SessionStopTasksContext } from '../../../contexts/root-contexts';
 import { useSessionStopTasks, type UseSessionStopTasksReturn } from '../../../hooks/useSessionStopTasks';
 import { renderWithRouter } from '../../../test/renderWithRouter';
@@ -10,10 +10,11 @@ import type { Session, Worker, AgentActivityState } from '@agent-console/shared'
 const originalFetch = globalThis.fetch;
 let resolvePauseSession: (() => void) | null = null;
 let rejectPauseSession: ((err: Error) => void) | null = null;
+let pauseResponseBody: unknown = { success: true };
 const mockFetch = mock(
   () =>
     new Promise<Response>((resolve, reject) => {
-      resolvePauseSession = () => resolve(new Response(null, { status: 204 }));
+      resolvePauseSession = () => resolve(new Response(JSON.stringify(pauseResponseBody), { status: 200, headers: { 'Content-Type': 'application/json' } }));
       rejectPauseSession = (err) => reject(err);
     })
 );
@@ -28,6 +29,7 @@ afterEach(() => {
   mockFetch.mockClear();
   resolvePauseSession = null;
   rejectPauseSession = null;
+  pauseResponseBody = { success: true };
 });
 
 function createMockSession(workers: Worker[]): Session {
@@ -65,6 +67,9 @@ function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn
     markAsFailed: mock(() => {}),
     markAsSucceeded: mock(() => {}),
     markAsPending: mock(() => {}),
+    hookFailure: null,
+    reportHookFailure: mock(() => {}),
+    dismissHookFailure: mock(() => {}),
     ...overrides,
   };
 }
@@ -274,5 +279,80 @@ describe('PauseSessionDialog navigation timing', () => {
       expect(sessionStopTasks.markAsFailed).toHaveBeenCalledWith('session-1', 'Server error');
     });
     expect(router.state.location.pathname).toBe('/sessions/session-1');
+  });
+});
+
+describe('runPauseSession hook failure reporting', () => {
+  const failure = { success: false, error: 'exit code 3', output: 'container busy' };
+
+  async function run(onHookFailure: (r: unknown) => void) {
+    const pending = runPauseSession('session-1', mock(() => {}), onHookFailure);
+    resolvePauseSession?.();
+    return pending;
+  }
+
+  it('calls onHookFailure with the result when pauseCommandResult.success is false, and still resolves true', async () => {
+    pauseResponseBody = { success: true, pauseCommandResult: failure };
+    const onHookFailure = mock((_r: unknown) => {});
+
+    expect(await run(onHookFailure)).toBe(true);
+
+    expect(onHookFailure).toHaveBeenCalledTimes(1);
+    expect(onHookFailure).toHaveBeenCalledWith(failure);
+  });
+
+  it('does not call onHookFailure when pauseCommandResult.success is true', async () => {
+    pauseResponseBody = { success: true, pauseCommandResult: { success: true, output: 'ok' } };
+    const onHookFailure = mock((_r: unknown) => {});
+
+    expect(await run(onHookFailure)).toBe(true);
+
+    expect(onHookFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not call onHookFailure when pauseCommandResult is absent', async () => {
+    pauseResponseBody = { success: true };
+    const onHookFailure = mock((_r: unknown) => {});
+
+    expect(await run(onHookFailure)).toBe(true);
+
+    expect(onHookFailure).not.toHaveBeenCalled();
+  });
+});
+
+describe('PauseSessionDialog hook failure reporting', () => {
+  async function pauseAt(sessionStopTasks: UseSessionStopTasksReturn) {
+    const result = await renderWithRouter(
+      <SessionStopTasksContext.Provider value={sessionStopTasks}>
+        <PauseSessionDialog open={true} onOpenChange={mock(() => {})} sessionId="session-1" sessionTitle="My Session" />
+      </SessionStopTasksContext.Provider>,
+      '/sessions/session-1'
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    resolvePauseSession?.();
+    return result;
+  }
+
+  it('reports the failure to the root context and still navigates to / immediately', async () => {
+    pauseResponseBody = { success: true, pauseCommandResult: { success: false, error: 'exit code 3' } };
+    const sessionStopTasks = createMockSessionStopTasks();
+
+    const { router } = await pauseAt(sessionStopTasks);
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'));
+    expect(sessionStopTasks.reportHookFailure).toHaveBeenCalledWith({
+      kind: 'pause',
+      sessionTitle: 'My Session',
+      result: { success: false, error: 'exit code 3' },
+    });
+  });
+
+  it('reports nothing on a successful pause and navigates to /', async () => {
+    const sessionStopTasks = createMockSessionStopTasks();
+
+    const { router } = await pauseAt(sessionStopTasks);
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'));
+    expect(sessionStopTasks.reportHookFailure).not.toHaveBeenCalled();
   });
 });

@@ -23,7 +23,7 @@ describe('SqliteRepositoryRepository', () => {
       dialect: new BunSqliteDialect({ database: bunDb }),
     });
 
-    // Create tables manually (v10 schema)
+    // Create tables manually (repositories columns as of v54)
     await db.schema
       .createTable('repositories')
       .addColumn('id', 'text', (col) => col.primaryKey())
@@ -33,6 +33,8 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('setup_command', 'text')
       .addColumn('cleanup_command', 'text')
+      .addColumn('pause_command', 'text')
+      .addColumn('resume_command', 'text')
       .addColumn('env_vars', 'text')
       .addColumn('description', 'text')
       .addColumn('default_agent_id', 'text')
@@ -86,6 +88,8 @@ describe('SqliteRepositoryRepository', () => {
       createdAt: overrides.createdAt ?? new Date().toISOString(),
       setupCommand: overrides.setupCommand,
       cleanupCommand: overrides.cleanupCommand,
+      pauseCommand: overrides.pauseCommand,
+      resumeCommand: overrides.resumeCommand,
       description: overrides.description ?? null,
       defaultAgentId: overrides.defaultAgentId ?? null,
       // `save()` never writes this (Issue #1716: designations are managed
@@ -470,6 +474,64 @@ describe('SqliteRepositoryRepository', () => {
       });
 
       expect(updated?.setupCommand).toBe(commandWithTemplate);
+    });
+
+    describe('pauseCommand and resumeCommand', () => {
+      it('should round-trip both commands through save and findById', async () => {
+        await repository.save(
+          createRepository({
+            id: 'repo-hooks-saved',
+            name: 'Repo Hooks Saved',
+            pauseCommand: 'docker compose stop',
+            resumeCommand: 'docker compose start',
+          })
+        );
+
+        const found = await repository.findById('repo-hooks-saved');
+        expect(found?.pauseCommand).toBe('docker compose stop');
+        expect(found?.resumeCommand).toBe('docker compose start');
+      });
+
+      it('should update both commands from null to string independently', async () => {
+        await repository.save(createRepository({ id: 'repo-hooks', name: 'Repo Hooks' }));
+        const before = await repository.findById('repo-hooks');
+        expect(before?.pauseCommand).toBeNull();
+        expect(before?.resumeCommand).toBeNull();
+
+        const pausedOnly = await repository.update('repo-hooks', { pauseCommand: 'stop it' });
+        expect(pausedOnly?.pauseCommand).toBe('stop it');
+        expect(pausedOnly?.resumeCommand).toBeNull();
+
+        const both = await repository.update('repo-hooks', { resumeCommand: 'start it' });
+        expect(both?.pauseCommand).toBe('stop it');
+        expect(both?.resumeCommand).toBe('start it');
+      });
+
+      it('should clear each command to null when given empty string or null', async () => {
+        await repository.save(
+          createRepository({
+            id: 'repo-clear-hooks',
+            name: 'Repo Clear Hooks',
+            pauseCommand: 'stop it',
+            resumeCommand: 'start it',
+          })
+        );
+
+        const emptied = await repository.update('repo-clear-hooks', { pauseCommand: '' });
+        expect(emptied?.pauseCommand).toBeNull();
+        expect(emptied?.resumeCommand).toBe('start it');
+
+        const nulled = await repository.update('repo-clear-hooks', { resumeCommand: null });
+        expect(nulled?.resumeCommand).toBeNull();
+
+        const row = await db
+          .selectFrom('repositories')
+          .where('id', '=', 'repo-clear-hooks')
+          .select(['pause_command', 'resume_command'])
+          .executeTakeFirst();
+        expect(row?.pause_command).toBeNull();
+        expect(row?.resume_command).toBeNull();
+      });
     });
 
     describe('cleanupCommand', () => {

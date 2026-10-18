@@ -114,6 +114,8 @@ describe('app-sync payloads parse against the strict AppServerMessageSchema', ()
       updated_at: '2026-01-01T00:00:00.000Z',
       setup_command: null,
       cleanup_command: null,
+      pause_command: null,
+      resume_command: null,
       env_vars: null,
       description: 'A repo',
       default_agent_id: null,

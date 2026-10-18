@@ -30,6 +30,7 @@ import { classifyRepositoryPath, type RepositoryPathStatus } from '../lib/reposi
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { isErrnoException } from '../lib/type-guards.js';
+import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
 import {
   isMultiUserAuthMode,
@@ -95,6 +96,31 @@ const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
  * branch). Local fs only, short content -- 10s is generous.
  */
 const TEMPLATE_MATERIALIZE_TIMEOUT_MS = 10000;
+
+/**
+ * Grace between the SIGTERM and the SIGKILL sent to a timed-out hook command's
+ * process tree. A well-behaved process exits on SIGTERM; the SIGKILL reaches
+ * the ones that ignore it.
+ */
+const HOOK_KILL_GRACE_MS = 2_000;
+
+/**
+ * Terminates a timed-out hook command: SIGTERM to the shell and every
+ * descendant, then SIGKILL to the same pids after `HOOK_KILL_GRACE_MS`.
+ *
+ * The descendants are snapshotted BEFORE any signal is sent, because killing
+ * the shell first would reparent its children to init and hide them from the
+ * walk. The kill follows the process tree as observed at the deadline, so a
+ * process that re-parents itself or changes process group before the deadline
+ * can escape it. The grace timer is unref'd so it never keeps the server
+ * alive, and the caller does not await it.
+ */
+async function terminateHookProcessTree(rootPid: number): Promise<void> {
+  const pids = [...(await listDescendantPids(rootPid)), rootPid];
+  signalPids(pids, 'SIGTERM');
+  const escalation = setTimeout(() => signalPids(pids, 'SIGKILL'), HOOK_KILL_GRACE_MS);
+  escalation.unref?.();
+}
 
 /**
  * Generate a random alphanumeric suffix
@@ -316,6 +342,10 @@ async function copyTemplateFiles(
  * copy) so the permission hint is attached only where it can be true.
  */
 class WorktreeAddGitError extends GitError {}
+
+function hookTimeoutMessage(timeoutMs: number | undefined): string {
+  return `Command timed out after ${timeoutMs} ms`;
+}
 
 /**
  * Extract user-facing error message from a git or generic error.
@@ -1240,6 +1270,10 @@ export class WorktreeService {
    * @param requestUsername - When set and elevation would engage, the hook
    *   runs as this user via `runAsUser`. Null / undefined / single-user mode
    *   preserves the historical direct-spawn behaviour verbatim.
+   * @param timeoutMs - Optional time box for the command. When set, a command
+   *   still running after this many milliseconds is killed and reported as a
+   *   failed result. When undefined, no timer is armed and the command runs
+   *   unbounded (the setup / cleanup callers).
    * @returns Result with success status, output, and any error message
    */
   async executeHookCommand(
@@ -1247,6 +1281,7 @@ export class WorktreeService {
     worktreePath: string,
     vars: { worktreeNum: number; branch: string; repo: string },
     requestUsername?: string | null,
+    timeoutMs?: number,
   ): Promise<HookCommandResult> {
     // Substitute template variables in the command
     const substitutedCommand = substituteVariables(command, {
@@ -1270,14 +1305,69 @@ export class WorktreeService {
     // requestUsername differs from the server-process user — otherwise the
     // historical direct-spawn path below is preserved verbatim (including
     // the getCleanChildProcessEnv() env filter).
+    // runAsUser enforces its own timeout, but after killing the shell it still
+    // waits for the pipes to close, which a grandchild can hold open; the
+    // deadline race below is what makes the call return on time.
     if (shouldElevateForUser(requestUsername)) {
       try {
-        const result = await this._runAsUser({
+        const elevated = this._runAsUser({
           username: requestUsername!,
           command: substitutedCommand,
           cwd: worktreePath,
           env: hookEnv,
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         });
+        let result: Awaited<typeof elevated>;
+        if (timeoutMs === undefined) {
+          result = await elevated;
+        } else {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let deadlineWon = false;
+          const deadline = new Promise<'timed-out'>((resolve) => {
+            timer = setTimeout(() => {
+              deadlineWon = true;
+              resolve('timed-out');
+            }, timeoutMs);
+          });
+          // runAsUser's cleanup may settle (or reject) after the race is over;
+          // record the eventual exit once so the journal still has it. A run that
+          // settled inside the deadline is not late and logs nothing here.
+          elevated.then(
+            (late) => {
+              if (!deadlineWon) return;
+              logger.warn(
+                { worktreePath, requestUsername, exitCode: late.exitCode, timedOut: late.timedOut },
+                'Elevated hook command finished after its deadline',
+              );
+            },
+            () => {},
+          );
+          try {
+            const outcome = await Promise.race([elevated, deadline]);
+            if (outcome === 'timed-out') {
+              logger.warn(
+                { worktreePath, timeoutMs, requestUsername },
+                'Hook command timed out (elevated)',
+              );
+              return { success: false, error: hookTimeoutMessage(timeoutMs) };
+            }
+            result = outcome;
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+
+        if (result.timedOut) {
+          logger.warn(
+            { worktreePath, timeoutMs, requestUsername },
+            'Hook command timed out (elevated)',
+          );
+          return {
+            success: false,
+            output: result.stdout || undefined,
+            error: hookTimeoutMessage(timeoutMs),
+          };
+        }
 
         if (result.cwdFailed) {
           logger.warn(
@@ -1338,9 +1428,45 @@ export class WorktreeService {
       });
 
       // Collect output
-      const stdout = await new Response(proc.stdout).text();
-      const stderr = await new Response(proc.stderr).text();
-      const exitCode = await proc.exited;
+      const collect = (async () => {
+        const stdout = await new Response(proc.stdout).text();
+        const stderr = await new Response(proc.stderr).text();
+        const exitCode = await proc.exited;
+        return { stdout, stderr, exitCode };
+      })();
+
+      let collected: Awaited<typeof collect>;
+      if (timeoutMs === undefined) {
+        collected = await collect;
+      } else {
+        // Race against the time box instead of awaiting the pipes: a killed
+        // shell can leave a grandchild holding the pipes open, which would
+        // keep the reads (and so this call) pending past the deadline.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<'timed-out'>((resolve) => {
+          timer = setTimeout(() => {
+            // The request returns at the deadline; the tree kill (and its
+            // SIGKILL escalation) proceeds in the background.
+            terminateHookProcessTree(proc.pid).catch((error) => {
+              logger.warn({ worktreePath, err: error }, 'Failed to terminate hook process tree');
+            });
+            resolve('timed-out');
+          }, timeoutMs);
+        });
+        // The abandoned read may settle (or reject) after the race is over.
+        collect.catch(() => {});
+        try {
+          const outcome = await Promise.race([collect, timeout]);
+          if (outcome === 'timed-out') {
+            logger.warn({ worktreePath, timeoutMs }, 'Hook command timed out');
+            return { success: false, error: hookTimeoutMessage(timeoutMs) };
+          }
+          collected = outcome;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      const { stdout, stderr, exitCode } = collected;
 
       if (exitCode === 0) {
         logger.info({ worktreePath, exitCode }, 'Hook command completed successfully');

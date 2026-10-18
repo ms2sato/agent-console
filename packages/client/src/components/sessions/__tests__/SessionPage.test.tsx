@@ -73,6 +73,9 @@ function createMockSession(overrides: Partial<Session> = {}): Session {
 function routeFetch(workers: Worker[] = [], sessionOverrides: Partial<Session> = {}): void {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
     const url = urlToString(input);
+    if (url.includes('/api/sessions/session-1/pause')) {
+      return Promise.resolve(jsonResponse({ success: true }));
+    }
     if (
       url.includes('/api/sessions/session-1') &&
       !url.includes('/memo') &&
@@ -122,6 +125,9 @@ const sessionStopTasksValue: UseSessionStopTasksReturn = {
   markAsFailed: () => {},
   markAsSucceeded: () => {},
   markAsPending: () => {},
+  hookFailure: null,
+  reportHookFailure: () => {},
+  dismissHookFailure: () => {},
 };
 
 // SessionSettings unconditionally mounts DeleteWorktreeDialog (open or not),
@@ -662,6 +668,139 @@ describe('SessionPage stop/pause task banner', () => {
       expect(deletes.length).toBe(1);
     });
     expect(pauseCallCount()).toBe(0);
+  });
+});
+
+describe('SessionPage pause/resume hook failure reporting', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
+  let pauseBody: unknown;
+  let resumeBody: unknown;
+
+  const failure = { success: false, error: 'exit code 3', output: 'out' };
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetch.mockReset();
+    pauseBody = { success: true };
+    resumeBody = { session: createMockSession() };
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    cleanup();
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  /** Route pause/resume POSTs to the configurable bodies, everything else to routeFetch. */
+  function routeWith(sessionOverrides: Partial<Session> = {}) {
+    routeFetch([], sessionOverrides);
+    const base = mockFetch.getMockImplementation()!;
+    mockFetch.mockImplementation((input: RequestInfo | URL) => {
+      const url = urlToString(input);
+      if (url.includes('/api/sessions/session-1/pause')) return Promise.resolve(jsonResponse(pauseBody));
+      if (url.includes('/api/sessions/session-1/resume')) return Promise.resolve(jsonResponse(resumeBody));
+      return base(input);
+    });
+  }
+
+  function stopTasks(overrides: Partial<UseSessionStopTasksReturn>): UseSessionStopTasksReturn {
+    return { ...sessionStopTasksValue, ...overrides };
+  }
+
+  const failedPauseTask: SessionStopTask = {
+    sessionId: 'session-1',
+    action: 'pause',
+    sessionTitle: 'T',
+    status: 'failed',
+    error: 'Pause blew up',
+  };
+
+  async function retryPause(reportHookFailure: UseSessionStopTasksReturn['reportHookFailure']) {
+    routeWith();
+    await renderSessionPage(
+      stopTasks({
+        tasks: [failedPauseTask],
+        getTask: (id: string) => (id === 'session-1' ? failedPauseTask : undefined),
+        reportHookFailure,
+      })
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy());
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  }
+
+  it('Retry of a pause reports a failing pauseCommandResult through the root slot', async () => {
+    pauseBody = { success: true, pauseCommandResult: failure };
+    const reportHookFailure = mock(() => {});
+
+    await retryPause(reportHookFailure);
+
+    await waitFor(() => expect(reportHookFailure).toHaveBeenCalledTimes(1));
+    expect(reportHookFailure).toHaveBeenCalledWith({ kind: 'pause', sessionTitle: 'T', result: failure });
+  });
+
+  it('Retry of a pause reports nothing for a successful result or an absent key', async () => {
+    const reportHookFailure = mock(() => {});
+    pauseBody = { success: true, pauseCommandResult: { success: true } };
+
+    await retryPause(reportHookFailure);
+    await waitFor(() =>
+      expect(mockFetch.mock.calls.some(([i]) => urlToString(i).includes('/session-1/pause'))).toBe(true)
+    );
+    await Promise.resolve();
+
+    expect(reportHookFailure).not.toHaveBeenCalled();
+  });
+
+  async function clickResumeOnPausedPage(reportHookFailure: UseSessionStopTasksReturn['reportHookFailure']) {
+    routeWith({ pausedAt: new Date().toISOString() });
+    await renderSessionPage(stopTasks({ reportHookFailure }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Resume Session' })).toBeTruthy());
+    await userEvent.click(screen.getByRole('button', { name: 'Resume Session' }));
+    await waitFor(() =>
+      expect(mockFetch.mock.calls.some(([i]) => urlToString(i).includes('/session-1/resume'))).toBe(true)
+    );
+  }
+
+  it('the paused-page Resume reports a failing resumeCommandResult through the root slot', async () => {
+    resumeBody = { session: createMockSession(), resumeCommandResult: failure };
+    const reportHookFailure = mock(() => {});
+
+    await clickResumeOnPausedPage(reportHookFailure);
+
+    await waitFor(() => expect(reportHookFailure).toHaveBeenCalledTimes(1));
+    expect(reportHookFailure).toHaveBeenCalledWith({ kind: 'resume', sessionTitle: 'T', result: failure });
+  });
+
+  it('the paused-page Resume reports nothing for a successful result or an absent key', async () => {
+    const reportHookFailure = mock(() => {});
+
+    resumeBody = { session: createMockSession(), resumeCommandResult: { success: true } };
+    await clickResumeOnPausedPage(reportHookFailure);
+    await Promise.resolve();
+    expect(reportHookFailure).not.toHaveBeenCalled();
+
+    cleanup();
+    resumeBody = { session: createMockSession() };
+    await clickResumeOnPausedPage(reportHookFailure);
+    await Promise.resolve();
+    expect(reportHookFailure).not.toHaveBeenCalled();
   });
 });
 

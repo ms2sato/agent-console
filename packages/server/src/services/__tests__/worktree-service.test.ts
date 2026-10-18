@@ -3401,5 +3401,421 @@ detached
         expect(result.error).toBe('working directory not available');
       });
     });
+
+    describe('timeoutMs', () => {
+      let originalAuthMode: string | undefined;
+
+      beforeEach(() => {
+        originalAuthMode = process.env.AUTH_MODE;
+      });
+
+      afterEach(() => {
+        if (originalAuthMode === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it('kills a slow real command at the deadline and reports a timeout', async () => {
+        delete process.env.AUTH_MODE;
+        // The surrounding describe replaces Bun.spawn with a stub; this case
+        // needs a real shell.
+        (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        const startedAt = Date.now();
+        const result = await service.executeHookCommand(
+          'sleep 5',
+          '/tmp',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+          null,
+          100,
+        );
+        const elapsedMs = Date.now() - startedAt;
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('timed out');
+        expect(elapsedMs).toBeLessThan(1000);
+      });
+
+      it('returns at the deadline even when the pipes never close, and signals the child', async () => {
+        delete process.env.AUTH_MODE;
+        // A pid far above any kernel pid_max, so a stray real signal is ESRCH.
+        const fakePid = 2_147_483_000;
+        // The process-table read (`ps`) goes through Bun.spawn too, so it must
+        // reach the real one; only the hook shell is faked.
+        const spawnSpy = spyOn(Bun, 'spawn').mockImplementation(((
+          cmd: string[],
+          options?: Record<string, unknown>,
+        ) => {
+          if (cmd[0] === 'ps') {
+            return originalBunSpawn(cmd, options as Parameters<typeof originalBunSpawn>[1]);
+          }
+          return {
+            pid: fakePid,
+            exited: new Promise<number>(() => {}),
+            stdout: new ReadableStream<Uint8Array>({ start() {} }),
+            stderr: new ReadableStream<Uint8Array>({ start() {} }),
+          } as ReturnType<typeof Bun.spawn>;
+        }) as typeof Bun.spawn);
+        const signalled: Array<[number, string | number | undefined]> = [];
+        const killSpy = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+          signalled.push([pid, signal]);
+          return true;
+        }) as typeof process.kill);
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        try {
+          const result = await service.executeHookCommand(
+            'hang',
+            '/test/worktree',
+            { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+            null,
+            50,
+          );
+
+          expect(result.success).toBe(false);
+          expect(result.error).toBe('Command timed out after 50 ms');
+          // The tree kill runs in the background after the request returned.
+          const deadline = Date.now() + 2000;
+          while (!signalled.some(([pid, sig]) => pid === fakePid && sig === 'SIGTERM') && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(signalled).toContainEqual([fakePid, 'SIGTERM']);
+        } finally {
+          killSpy.mockRestore();
+          spawnSpy.mockRestore();
+        }
+      });
+
+      // Real-spawn coverage of the process-tree kill. The hook shell backgrounds
+      // a `sleep` (a grandchild) whose duration token is unique per run, so
+      // `ps` can tell it from every other sleep on the host. Killing only the
+      // shell (the old `proc.kill()`) leaves that grandchild running, the same
+      // residue process-tree.test.ts reproduces at its 'reproduces the leak'
+      // case.
+      //
+      // Measured polarity (reach recorded as test names that failed):
+      //  - new kill logic replaced by `proc.kill()` only: 'kills a grandchild of
+      //    the hook shell at the deadline', 'kills a grandchild that ignores
+      //    SIGTERM, via the SIGKILL after the grace' and 'returns at the
+      //    deadline even when the pipes never close, and signals the child'
+      //    all fail (the grandchildren survive).
+      //  - only the SIGKILL-after-grace step removed: 'kills a grandchild of
+      //    the hook shell at the deadline' still PASSES (a plain `sleep` dies
+      //    on SIGTERM, so it does not pin the SIGKILL step); only 'kills a
+      //    grandchild that ignores SIGTERM, via the SIGKILL after the grace'
+      //    FAILS, and it is the case that pins it.
+      const psLinesContaining = async (token: string): Promise<string[]> => {
+        const ps = originalBunSpawn(['ps', '-eo', 'pid,args'], { stdout: 'pipe', stderr: 'ignore' });
+        const text = await new Response(ps.stdout).text();
+        await ps.exited;
+        return text.split('\n').filter((line) => line.includes(token));
+      };
+      const killByToken = async (token: string): Promise<void> => {
+        for (const line of await psLinesContaining(token)) {
+          const pid = Number(line.trim().split(/\s+/)[0]);
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // already gone
+          }
+        }
+      };
+      const waitForTokenGone = async (token: string, withinMs: number): Promise<boolean> => {
+        const deadline = Date.now() + withinMs;
+        while (Date.now() < deadline) {
+          if ((await psLinesContaining(token)).length === 0) return true;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return (await psLinesContaining(token)).length === 0;
+      };
+      const waitForTokenVisible = async (token: string): Promise<boolean> => {
+        const deadline = Date.now() + 150;
+        while (Date.now() < deadline) {
+          if ((await psLinesContaining(token)).length > 0) return true;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return (await psLinesContaining(token)).length > 0;
+      };
+      const uniqueSleepToken = (): string =>
+        `30.${Math.floor(Math.random() * 1e9).toString().padStart(9, '0')}`;
+
+      it('kills a grandchild of the hook shell at the deadline', async () => {
+        delete process.env.AUTH_MODE;
+        (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+        const token = uniqueSleepToken();
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        try {
+          const startedAt = Date.now();
+          const call = service.executeHookCommand(
+            `sh -c 'sleep ${token} & sleep ${token}; true # hook-grandchild-${crypto.randomUUID()}'`,
+            '/tmp',
+            { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+            null,
+            200,
+          );
+          // Positive control: the instrument can see the grandchild while it runs.
+          expect(await waitForTokenVisible(token)).toBe(true);
+          const result = await call;
+          const elapsedMs = Date.now() - startedAt;
+
+          expect(result.success).toBe(false);
+          expect(result.error).toBe('Command timed out after 200 ms');
+          expect(elapsedMs).toBeLessThan(1500);
+          expect(await waitForTokenGone(token, 3000)).toBe(true);
+        } finally {
+          await killByToken(token);
+        }
+      }, 15000);
+
+      it('kills a grandchild that ignores SIGTERM, via the SIGKILL after the grace', async () => {
+        delete process.env.AUTH_MODE;
+        (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+        const token = uniqueSleepToken();
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        try {
+          const call = service.executeHookCommand(
+            `sh -c 'trap "" TERM; sleep ${token} # hook-grandchild-${crypto.randomUUID()}'`,
+            '/tmp',
+            { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+            null,
+            200,
+          );
+          expect(await waitForTokenVisible(token)).toBe(true);
+          const result = await call;
+          expect(result.error).toBe('Command timed out after 200 ms');
+
+          // Still alive just after the deadline plus most of the grace: it
+          // ignores SIGTERM. Then gone once the SIGKILL lands (200 ms + 2 s).
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          expect((await psLinesContaining(token)).length).toBeGreaterThan(0);
+          expect(await waitForTokenGone(token, 4000)).toBe(true);
+        } finally {
+          await killByToken(token);
+        }
+      }, 15000);
+
+      it('arms no timer when timeoutMs is absent', async () => {
+        delete process.env.AUTH_MODE;
+        setMockSpawnResult('done');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+        const originalSetTimeout = globalThis.setTimeout;
+        let timersArmed = 0;
+        globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+          timersArmed++;
+          return originalSetTimeout(...args);
+        }) as typeof setTimeout;
+
+        try {
+          const result = await service.executeHookCommand(
+            'echo done',
+            '/test/worktree',
+            { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+          );
+          expect(result.success).toBe(true);
+        } finally {
+          globalThis.setTimeout = originalSetTimeout;
+        }
+
+        expect(timersArmed).toBe(0);
+      });
+
+      it('elevated branch forwards timeoutMs to runAsUser', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        await service.executeHookCommand(
+          'echo hello',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+          1234,
+        );
+
+        expect(runAsUserMock.calls.length).toBe(1);
+        expect(runAsUserMock.calls[0].timeoutMs).toBe(1234);
+      });
+
+      it('elevated branch passes no timeoutMs when the parameter is absent', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        await service.executeHookCommand(
+          'echo hello',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+        );
+
+        expect(runAsUserMock.calls.length).toBe(1);
+        expect('timeoutMs' in runAsUserMock.calls[0]).toBe(false);
+      });
+
+      it('elevated branch reports a timed-out run as a failed result', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => ({
+          stdout: 'partial',
+          stderr: '',
+          exitCode: 137,
+          timedOut: true,
+          cwdFailed: false,
+        });
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'sleep 100',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+          500,
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Command timed out after 500 ms');
+        expect(result.output).toBe('partial');
+      });
+
+      it('elevated branch returns at the deadline even when runAsUser never settles', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        // A grandchild holding a pipe open keeps runAsUser pending past its own
+        // timeout; model that with a promise that never resolves.
+        runAsUserMock.responder.fn = () => new Promise<RunAsUserResult>(() => {});
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const startedAt = Date.now();
+        const result = await service.executeHookCommand(
+          'sleep 300 &',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+          200,
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Command timed out after 200 ms');
+        expect(Date.now() - startedAt).toBeLessThan(1000);
+      }, 3000);
+
+      it('elevated branch maps a cwdFailed result that settles inside the deadline', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => ({
+          stdout: '',
+          stderr: '',
+          exitCode: 1,
+          timedOut: false,
+          cwdFailed: true,
+        });
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'echo hi',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+          5000,
+        );
+
+        expect(result).toEqual({ success: false, error: 'working directory not available' });
+      });
+
+      // The service logger is a child created at import time, so the spy on
+      // `rootLogger.child` must be installed before the fresh module import.
+      async function lateSettleWarnsFor(settleAfterMs: number, timeoutMs: number): Promise<unknown[][]> {
+        process.env.AUTH_MODE = 'multi-user';
+        const warns: unknown[][] = [];
+        const original = rootLogger.child.bind(rootLogger);
+        const childSpy = spyOn(rootLogger, 'child').mockImplementation(((bindings: { service?: string }) => {
+          if (bindings?.service !== 'worktree-service') return original(bindings);
+          return new Proxy({} as Record<string, unknown>, {
+            get: (_t, prop) => {
+              if (prop === 'warn') return (...args: unknown[]) => warns.push(args);
+              return () => {};
+            },
+          });
+        }) as unknown as typeof rootLogger.child);
+        try {
+          runAsUserMock.responder.fn = async () => {
+            await new Promise((resolve) => setTimeout(resolve, settleAfterMs));
+            return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
+          };
+          const WorktreeService = await getWorktreeService();
+          const service = new WorktreeService({
+            worktreeRepository: mockRepo,
+            runAsUserImpl: runAsUserMock.runAsUserImpl,
+          });
+          await service.executeHookCommand(
+            'echo hi',
+            '/test/worktree',
+            { worktreeNum: 1, branch: 'main', repo: 'r' },
+            'alice-multiuser-test',
+            timeoutMs,
+          );
+          // Let a late settle (if any) run its handler.
+          await new Promise((resolve) => setTimeout(resolve, settleAfterMs + 100));
+        } finally {
+          childSpy.mockRestore();
+        }
+        return warns.filter((args) => String(args[1]).includes('finished after its deadline'));
+      }
+
+      it('elevated branch logs no late-settle warn when the command settles inside the deadline', async () => {
+        expect(await lateSettleWarnsFor(10, 2000)).toHaveLength(0);
+      });
+
+      it('elevated branch logs exactly one late-settle warn when the command settles after the deadline', async () => {
+        expect(await lateSettleWarnsFor(300, 100)).toHaveLength(1);
+      });
+
+      it('elevated branch without a time box still waits for runAsUser', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return { stdout: 'late', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
+        };
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'echo late',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+        );
+
+        expect(result).toEqual({ success: true, output: 'late' });
+      });
+    });
   });
 });

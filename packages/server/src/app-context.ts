@@ -482,10 +482,19 @@ export async function createAppContext(
     repositoryEnvLookup: {
       getRepositoryInfo: (id) => {
         const r = repositoryManager.getRepository(id);
-        return r ? { name: r.name, path: r.path, envVars: r.envVars } : undefined;
+        return r
+          ? {
+              name: r.name,
+              path: r.path,
+              envVars: r.envVars,
+              pauseCommand: r.pauseCommand,
+              resumeCommand: r.resumeCommand,
+            }
+          : undefined;
       },
       getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
     },
+    executeHookCommand: (...args) => worktreeService.executeHookCommand(...args),
     sharedAccountLookup: sharedAccountRegistry,
     usernameLookup,
   });
@@ -974,10 +983,19 @@ export async function createTestContext(
     repositoryEnvLookup: {
       getRepositoryInfo: (id) => {
         const r = repositoryManager.getRepository(id);
-        return r ? { name: r.name, path: r.path, envVars: r.envVars } : undefined;
+        return r
+          ? {
+              name: r.name,
+              path: r.path,
+              envVars: r.envVars,
+              pauseCommand: r.pauseCommand,
+              resumeCommand: r.resumeCommand,
+            }
+          : undefined;
       },
       getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
     },
+    executeHookCommand: (...args) => worktreeService.executeHookCommand(...args),
     sharedAccountLookup: sharedAccountRegistry,
     usernameLookup,
   });

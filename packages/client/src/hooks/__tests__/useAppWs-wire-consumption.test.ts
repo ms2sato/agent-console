@@ -445,6 +445,8 @@ describe('useAppWsEvent wire consumption (fully populated derived entities)', ()
       remoteUrl: 'git@example.com:o/r.git',
       setupCommand: null,
       cleanupCommand: 'make clean',
+      pauseCommand: 'docker compose stop',
+      resumeCommand: null,
       envVars: 'A=1',
       description: null,
       defaultAgentId: 'agent-1',

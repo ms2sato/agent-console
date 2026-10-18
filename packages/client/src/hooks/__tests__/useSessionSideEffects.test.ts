@@ -62,6 +62,9 @@ function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn
     markAsFailed: mock(() => {}),
     markAsSucceeded: mock(() => {}),
     markAsPending: mock(() => {}),
+    hookFailure: null,
+    reportHookFailure: mock(() => {}),
+    dismissHookFailure: mock(() => {}),
     ...overrides,
   };
 }

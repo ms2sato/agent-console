@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 53;
+export const LATEST_SCHEMA_VERSION = 54;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -475,6 +475,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 53) {
     await migrateToV53(database);
+  }
+
+  if (currentVersion < 54) {
+    await migrateToV54(database);
   }
 }
 
@@ -3384,6 +3388,45 @@ export async function migrateToV53(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 53`.execute(database);
 
   logger.info('Migration to v53 completed');
+}
+
+/**
+ * Migration v54: Add `pause_command` and `resume_command` to `repositories`
+ * (shell commands run when a session of the repository is paused / resumed).
+ *
+ * Both columns are nullable TEXT with no default: existing rows read `NULL`,
+ * meaning "no hook configured". The two ALTERs are guarded separately so a
+ * run interrupted between them completes on the next start.
+ *
+ * Owner-approved DDL:
+ * ```sql
+ * ALTER TABLE repositories ADD COLUMN pause_command TEXT;
+ * ALTER TABLE repositories ADD COLUMN resume_command TEXT;
+ * PRAGMA user_version = 54;
+ * ```
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV54(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v54: Adding pause_command and resume_command columns to repositories');
+
+  try {
+    await sql`ALTER TABLE repositories ADD COLUMN pause_command TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column pause_command already exists, skipping');
+  }
+
+  try {
+    await sql`ALTER TABLE repositories ADD COLUMN resume_command TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column resume_command already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 54`.execute(database);
+
+  logger.info('Migration to v54 completed');
 }
 
 /**
