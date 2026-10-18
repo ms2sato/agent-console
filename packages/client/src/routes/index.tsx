@@ -27,6 +27,7 @@ import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
 import { GitHubIcon, VSCodeIcon } from '../components/Icons';
 import { Spinner, ButtonSpinner } from '../components/ui/Spinner';
 import { CreatorBadge } from '../components/sessions/CreatorBadge';
+import { HookCommandFailureDialog } from '../components/repositories/HookCommandFailureDialog';
 import { EndSessionDialog } from '../components/sessions/EndSessionDialog';
 import { hasVSCode } from '../lib/capabilities';
 import {
@@ -44,7 +45,7 @@ import { useWorktreeDeletionTasksContext, useSessionStopTasksContext, useSession
 import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
 import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeSessionRequest, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
 import { logger } from '../lib/logger';
-import type { SessionStopTask } from '../hooks/useSessionStopTasks';
+import { reportIfHookFailed, type SessionStopTask } from '../hooks/useSessionStopTasks';
 
 // Timeout (ms) to auto-remove stale pull entries if WebSocket never responds
 const PULL_TIMEOUT_MS = 60_000;
@@ -152,9 +153,11 @@ function useResumeSessionMutation(
 ) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { reportHookFailure } = useSessionStopTasksContext();
   return useMutation({
     mutationFn: (sessionId: string) => resumeSession(sessionId),
-    onSuccess: (session) => {
+    onSuccess: ({ session, resumeCommandResult }) => {
+      reportIfHookFailed(reportHookFailure, 'resume', resumeCommandResult, session.title);
       queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
       onResumed?.();
       navigate({ to: '/sessions/$sessionId', params: { sessionId: session.id } });
@@ -865,8 +868,11 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
         onClose={() => setFallbackInfo(null)}
       />
 
-      <SetupCommandFailureDialog
+      <HookCommandFailureDialog
         result={setupCommandFailure}
+        title="Setup Command Failed"
+        intro="The worktree was created successfully, but the setup command failed to execute."
+        hint="You can run the setup command manually in the terminal, or check the repository settings."
         onClose={() => setSetupCommandFailure(null)}
       />
 
@@ -1292,53 +1298,6 @@ function BranchNameFallbackDialog({ fallbackInfo, onClose }: BranchNameFallbackD
             </div>
             <p className="text-xs text-gray-500">
               You can rename the branch later from the session settings.
-            </p>
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogAction onClick={onClose}>
-            OK
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-}
-
-// =============================================================================
-// Setup Command Failure Dialog
-// =============================================================================
-
-interface SetupCommandFailureDialogProps {
-  result: HookCommandResult | null;
-  onClose: () => void;
-}
-
-function SetupCommandFailureDialog({ result, onClose }: SetupCommandFailureDialogProps) {
-  return (
-    <AlertDialog open={result !== null} onOpenChange={(open) => !open && onClose()}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle className="text-red-400">Setup Command Failed</AlertDialogTitle>
-          <AlertDialogDescription className="space-y-3">
-            <p>
-              The worktree was created successfully, but the setup command failed to execute.
-            </p>
-            <div className="bg-slate-900 rounded p-3 text-sm max-h-60 overflow-auto">
-              {result?.error && (
-                <div className="text-red-400 font-mono whitespace-pre-wrap">
-                  {result.error}
-                </div>
-              )}
-              {result?.output && (
-                <div className="text-gray-400 font-mono whitespace-pre-wrap mt-2 border-t border-slate-700 pt-2">
-                  <span className="text-gray-500 text-xs">Output:</span>
-                  <pre className="mt-1">{result.output}</pre>
-                </div>
-              )}
-            </div>
-            <p className="text-xs text-gray-500">
-              You can run the setup command manually in the terminal, or check the repository settings.
             </p>
           </AlertDialogDescription>
         </AlertDialogHeader>

@@ -52,8 +52,8 @@ async function userIndexNames(db: Kysely<Database>): Promise<string[]> {
 }
 
 describe('migration v53 (foreign-key column indexes)', () => {
-  it('a fresh database lands on schema version 53', async () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(53);
+  it('a fresh database lands on the latest schema version', async () => {
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(53);
     const db = await initializeDatabase(':memory:');
     try {
       expect(await userVersion(db)).toBe(LATEST_SCHEMA_VERSION);

@@ -11,6 +11,8 @@ export interface PersistedRepository {
   createdAt: string;
   setupCommand?: string | null;
   cleanupCommand?: string | null;
+  pauseCommand?: string | null;
+  resumeCommand?: string | null;
   envVars?: string | null;
   description?: string | null;
   defaultAgentId?: string | null;

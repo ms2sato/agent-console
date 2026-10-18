@@ -98,6 +98,8 @@ export type _RepositoryKeys = Assert<
     | 'remoteUrl'
     | 'setupCommand'
     | 'cleanupCommand'
+    | 'pauseCommand'
+    | 'resumeCommand'
     | 'envVars'
     | 'description'
     | 'defaultAgentId'
@@ -1279,6 +1281,18 @@ describe('exported entity schemas (shared with the REST response schemas)', () =
   it('RepositorySchema parses the repository fixture and rejects an unknown field', () => {
     expect(v.safeParse(RepositorySchema, repository).success).toBe(true);
     expect(v.safeParse(RepositorySchema, { ...repository, extra: 1 }).success).toBe(false);
+  });
+
+  it('RepositorySchema accepts pauseCommand and resumeCommand as a string, null or absent', () => {
+    expect(
+      v.safeParse(RepositorySchema, { ...repository, pauseCommand: 'stop', resumeCommand: 'start' }).success,
+    ).toBe(true);
+    expect(
+      v.safeParse(RepositorySchema, { ...repository, pauseCommand: null, resumeCommand: null }).success,
+    ).toBe(true);
+    expect(v.safeParse(RepositorySchema, repository).success).toBe(true);
+    expect(v.safeParse(RepositorySchema, { ...repository, pauseCommand: 1 }).success).toBe(false);
+    expect(v.safeParse(RepositorySchema, { ...repository, resumeCommand: 1 }).success).toBe(false);
   });
 
   it('WorktreeSchema accepts a worktree with and without an index and rejects an unknown field', () => {

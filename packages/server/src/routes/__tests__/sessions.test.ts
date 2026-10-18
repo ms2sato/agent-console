@@ -16,8 +16,10 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SingleUserMode } from '../../services/user-mode.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
-import { SessionManager, type RestartAllAgentWorkersResult } from '../../services/session-manager.js';
+import { SessionManager, type ExecuteHookCommand, type RestartAllAgentWorkersResult } from '../../services/session-manager.js';
 import type { RestartAllAgentsResponse } from '@agent-console/shared';
+import * as v from 'valibot';
+import { PauseSessionResponseSchema, SessionResponseSchema } from '@agent-console/shared';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
@@ -36,6 +38,8 @@ export type _RestartAllAgentsResponseMatchesServerResult = Assert<
   Equals<RestartAllAgentsResponse, RestartAllAgentWorkersResult>
 >;
 
+type HookResult = Awaited<ReturnType<ExecuteHookCommand>>;
+
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -46,6 +50,39 @@ describe('Sessions API - Pause/Resume', () => {
   let app: Hono<AppBindings>;
   let sessionManager: SessionManager;
   let testJobQueue: JobQueue;
+  let agentMgr: AgentManager;
+
+  // Builds a SessionManager on the shared test deps; `extra` carries per-test
+  // options such as an `executeHookCommand` and a repository with a pause command.
+  async function buildSessionManager(
+    extra: Partial<Parameters<typeof SessionManager.create>[0]> = {},
+  ): Promise<SessionManager> {
+    return SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+      pathExists: async () => true,
+      sessionRepository: new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`),
+      jobQueue: testJobQueue,
+      agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
+      ...extra,
+    });
+  }
+
+  function buildApp(manager: SessionManager): Hono<AppBindings> {
+    const hono = new Hono<AppBindings>();
+    hono.use('*', async (c, next) => {
+      c.set('appContext', asAppContext({ sessionManager: manager }));
+      await next();
+    });
+    hono.onError(onApiError);
+    hono.route('/api', api);
+    return hono;
+  }
 
   beforeEach(async () => {
     await closeDatabase();
@@ -70,36 +107,10 @@ describe('Sessions API - Pause/Resume', () => {
     // Reset PTY factory
     ptyFactory.reset();
 
-    // Create AgentManager for dependency injection
-    const db = getDatabase();
-    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+    agentMgr = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
 
-    // Create session repository
-    const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
-
-    // Create SessionManager directly using the factory pattern
-    sessionManager = await SessionManager.create({
-      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
-      pathExists: async () => true,
-      sessionRepository,
-      jobQueue: testJobQueue,
-      agentManager: agentMgr,
-      mcpTokenRegistry: new McpTokenRegistry(),
-      repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),
-      repositoryEnvLookup: {
-        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
-        getWorktreeIndexNumber: async () => 0,
-      },
-    });
-
-    // Create Hono app with error handler
-    app = new Hono<AppBindings>();
-    app.use('*', async (c, next) => {
-      c.set('appContext', asAppContext({ sessionManager }));
-      await next();
-    });
-    app.onError(onApiError);
-    app.route('/api', api);
+    sessionManager = await buildSessionManager();
+    app = buildApp(sessionManager);
   });
 
   afterEach(async () => {
@@ -187,6 +198,153 @@ describe('Sessions API - Pause/Resume', () => {
         method: 'POST',
       });
       expect(secondRes.status).toBe(404);
+    });
+  });
+
+  // ===========================================================================
+  // Pause / resume command results on the wire
+  // ===========================================================================
+
+  describe('pause and resume command results', () => {
+    async function createWorktreeSession() {
+      return sessionManager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+    }
+
+    it('pause returns the command result when a command ran', async () => {
+      const session = await createWorktreeSession();
+      spyOn(sessionManager, 'pauseSession').mockResolvedValue({
+        paused: true,
+        pauseCommandResult: { success: true, output: 'stopped\n' },
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = v.parse(PauseSessionResponseSchema, await res.json());
+      expect(body.pauseCommandResult).toEqual({ success: true, output: 'stopped\n' });
+    });
+
+    it('pause reports a failed command in the body and still answers 200', async () => {
+      const session = await createWorktreeSession();
+      spyOn(sessionManager, 'pauseSession').mockResolvedValue({
+        paused: true,
+        pauseCommandResult: { success: false, error: 'Command exited with code 3' },
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = v.parse(PauseSessionResponseSchema, await res.json());
+      expect(body.pauseCommandResult).toEqual({ success: false, error: 'Command exited with code 3' });
+    });
+
+    it('pause omits the result key when no command ran', async () => {
+      const session = await createWorktreeSession();
+
+      const res = await app.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const raw = await res.json();
+      expect(raw).toEqual({ success: true });
+      expect(Object.keys(v.parse(PauseSessionResponseSchema, raw))).toEqual(['success']);
+    });
+
+    describe('while a pause command is still running', () => {
+      async function startHeldPause() {
+        let resolveHook!: (result: HookResult) => void;
+        const executeHookCommand = mock<ExecuteHookCommand>(
+          () =>
+            new Promise<HookResult>((resolve) => {
+              resolveHook = resolve;
+            }),
+        );
+        const heldManager = await buildSessionManager({
+          repositoryEnvLookup: {
+            getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo', pauseCommand: 'docker compose stop' }),
+            getWorktreeIndexNumber: async () => 0,
+          },
+          executeHookCommand,
+        });
+        const heldApp = buildApp(heldManager);
+        const session = await heldManager.createSession({
+          type: 'worktree',
+          locationPath: '/test/path',
+          repositoryId: 'repo-1',
+          worktreeId: 'feature-branch',
+          agentId: 'claude-code',
+        });
+        const first = heldApp.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+        for (let i = 0; i < 400 && executeHookCommand.mock.calls.length === 0; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(executeHookCommand).toHaveBeenCalledTimes(1);
+        return { heldApp, session, first, executeHookCommand, resolveHook };
+      }
+
+      it('a second POST /:id/pause joins it: both answer 200 with the same result, the command runs once', async () => {
+        const { heldApp, session, first, executeHookCommand, resolveHook } = await startHeldPause();
+
+        const second = heldApp.request(`/api/sessions/${session.id}/pause`, { method: 'POST' });
+        resolveHook({ success: true, output: 'stopped\n' });
+        const [firstRes, secondRes] = await Promise.all([first, second]);
+
+        expect(firstRes.status).toBe(200);
+        expect(secondRes.status).toBe(200);
+        const firstBody = v.parse(PauseSessionResponseSchema, await firstRes.json());
+        const secondBody = v.parse(PauseSessionResponseSchema, await secondRes.json());
+        expect(firstBody.pauseCommandResult).toEqual({ success: true, output: 'stopped\n' });
+        expect(secondBody).toEqual(firstBody);
+        expect(executeHookCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it('POST /:sessionId/workers is refused with 409 session_pausing', async () => {
+        const { heldApp, session, first, resolveHook } = await startHeldPause();
+
+        const res = await heldApp.request(`/api/sessions/${session.id}/workers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'terminal' }),
+        });
+
+        expect(res.status).toBe(409);
+        const body = (await res.json()) as { code?: string };
+        expect(body.code).toBe('session_pausing');
+        resolveHook({ success: true });
+        await first;
+      });
+    });
+
+    it('resume returns the session with the command result when a command ran', async () => {
+      const session = await createWorktreeSession();
+      spyOn(sessionManager, 'resumeSession').mockResolvedValue({
+        session,
+        resumeCommandResult: { success: true, output: 'back\n' },
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/resume`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = v.parse(SessionResponseSchema, await res.json());
+      expect(body.session.id).toBe(session.id);
+      expect(body.resumeCommandResult).toEqual({ success: true, output: 'back\n' });
+    });
+
+    it('resume omits the result key when no command ran', async () => {
+      const session = await createWorktreeSession();
+      await sessionManager.pauseSession(session.id);
+
+      const res = await app.request(`/api/sessions/${session.id}/resume`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const raw = (await res.json()) as Record<string, unknown>;
+      expect(Object.keys(raw)).toEqual(['session']);
+      v.parse(SessionResponseSchema, raw);
     });
   });
 

@@ -491,6 +491,57 @@ describe('Repositories API', () => {
   });
 
   // =========================================================================
+  // PATCH /api/repositories/:id (pauseCommand, resumeCommand)
+  // =========================================================================
+
+  describe('PATCH /api/repositories/:id (pauseCommand, resumeCommand)', () => {
+    beforeEach(async () => {
+      app = await createTestApp({ repositoryManager: repositoryManager as any });
+      repositoryManager.updateRepository.mockClear();
+      repositoryManager.updateRepository.mockImplementation(() =>
+        Promise.resolve({
+          id: 'repo1',
+          name: 'repo1',
+          path: '/repo',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          orchestratorSessionIds: [],
+          clonedSourceRepoPath: null,
+          pauseCommand: 'docker compose stop',
+          resumeCommand: 'docker compose start',
+        } as any),
+      );
+    });
+
+    it('passes both commands through to the repository update and returns them', async () => {
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pauseCommand: ' docker compose stop ', resumeCommand: 'docker compose start' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(repositoryManager.updateRepository).toHaveBeenCalledWith('repo1', {
+        pauseCommand: 'docker compose stop',
+        resumeCommand: 'docker compose start',
+      });
+      const body = (await res.json()) as { repository: Record<string, unknown> };
+      expect(body.repository.pauseCommand).toBe('docker compose stop');
+      expect(body.repository.resumeCommand).toBe('docker compose start');
+    });
+
+    it('passes null through so a command can be cleared', async () => {
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pauseCommand: null }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(repositoryManager.updateRepository).toHaveBeenCalledWith('repo1', { pauseCommand: null });
+    });
+  });
+
+  // =========================================================================
   // POST /api/repositories/:id/generate-description
   // =========================================================================
 

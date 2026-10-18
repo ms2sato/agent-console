@@ -1417,6 +1417,22 @@ describe('mappers', () => {
 
       expect(row.cleanup_command).toBe('docker compose down');
     });
+
+    it('should map pauseCommand and resumeCommand to pause_command and resume_command', () => {
+      const repository = buildPersistedRepository({
+        id: 'repo-hooks',
+        name: 'hooks-project',
+        path: '/home/user/projects/hooks-project',
+        createdAt: '2024-01-15T10:30:00.000Z',
+        pauseCommand: 'docker compose stop',
+        resumeCommand: 'docker compose start',
+      });
+
+      const row = toRepositoryRow(repository);
+
+      expect(row.pause_command).toBe('docker compose stop');
+      expect(row.resume_command).toBe('docker compose start');
+    });
   });
 
   describe('toRepository', () => {
@@ -1429,6 +1445,8 @@ describe('mappers', () => {
         updated_at: '2024-02-20T14:00:00.000Z',
         setup_command: null,
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1460,6 +1478,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1484,6 +1504,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1505,6 +1527,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1529,6 +1553,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1552,6 +1578,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1573,6 +1601,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1595,6 +1625,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         cleanup_command: 'docker compose down',
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1607,6 +1639,30 @@ describe('mappers', () => {
       expect(repository.cleanupCommand).toBe('docker compose down');
     });
 
+    it('should map pause_command and resume_command to pauseCommand and resumeCommand', () => {
+      const row: RepositoryRow = {
+        id: 'repo-hooks',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: null,
+        pause_command: 'docker compose stop',
+        resume_command: 'docker compose start',
+        env_vars: null,
+        description: null,
+        default_agent_id: null,
+        issue_trigger_labels: null,
+        shared_account_user_id: null,
+      };
+
+      const repository = toRepository(row);
+
+      expect(repository.pauseCommand).toBe('docker compose stop');
+      expect(repository.resumeCommand).toBe('docker compose start');
+    });
+
     it('should map setup_command to setupCommand', () => {
       const row: RepositoryRow = {
         id: 'repo-4',
@@ -1616,6 +1672,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: 'npm install',
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: null,
         description: null,
         default_agent_id: null,
@@ -1637,6 +1695,8 @@ describe('mappers', () => {
         updated_at: '2024-12-01T00:00:00.000Z',
         setup_command: null,
         cleanup_command: null,
+        pause_command: null,
+        resume_command: null,
         env_vars: 'FOO=bar\nBAZ=qux',
         description: null,
         default_agent_id: null,

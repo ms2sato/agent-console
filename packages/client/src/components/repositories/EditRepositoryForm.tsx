@@ -35,6 +35,18 @@ const EditRepositoryFormSchema = v.object({
       v.trim()
     )
   ),
+  pauseCommand: v.optional(
+    v.pipe(
+      v.string(),
+      v.trim()
+    )
+  ),
+  resumeCommand: v.optional(
+    v.pipe(
+      v.string(),
+      v.trim()
+    )
+  ),
   envVars: v.optional(
     v.pipe(
       v.string(),
@@ -340,6 +352,8 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
       description: repository.description ?? '',
       setupCommand: repository.setupCommand ?? '',
       cleanupCommand: repository.cleanupCommand ?? '',
+      pauseCommand: repository.pauseCommand ?? '',
+      resumeCommand: repository.resumeCommand ?? '',
       envVars: repository.envVars ?? '',
       issueTriggerLabels: repository.issueTriggerLabels ?? '',
     },
@@ -426,6 +440,8 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
       description: data.description?.trim() ?? '',
       setupCommand: data.setupCommand?.trim() ?? '',
       cleanupCommand: data.cleanupCommand?.trim() ?? '',
+      pauseCommand: data.pauseCommand?.trim() ?? '',
+      resumeCommand: data.resumeCommand?.trim() ?? '',
       envVars: data.envVars?.trim() ?? '',
       issueTriggerLabels: data.issueTriggerLabels?.trim() ?? '',
       defaultAgentId: selectedAgentId || null,
@@ -583,6 +599,28 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
               error={errors.cleanupCommand}
             />
             <HookCommandTemplateHelp description="This command runs automatically before deleting a worktree. Available template variables:" />
+          </FormField>
+
+          <FormField label="Pause Command (optional)" error={errors.pauseCommand}>
+            <Textarea
+              {...register('pauseCommand')}
+              placeholder="docker compose stop"
+              rows={3}
+              className="font-mono text-sm"
+              error={errors.pauseCommand}
+            />
+            <HookCommandTemplateHelp description="This command runs automatically when a session of this repository is paused. Available template variables:" />
+          </FormField>
+
+          <FormField label="Resume Command (optional)" error={errors.resumeCommand}>
+            <Textarea
+              {...register('resumeCommand')}
+              placeholder="docker compose start"
+              rows={3}
+              className="font-mono text-sm"
+              error={errors.resumeCommand}
+            />
+            <HookCommandTemplateHelp description="This command runs automatically when a session of this repository is resumed, before its workers start. Available template variables:" />
           </FormField>
 
           <FormField label="Environment Variables (optional)" error={errors.envVars}>

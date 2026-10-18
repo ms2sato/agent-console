@@ -8,6 +8,8 @@ import type { Database } from '../database/schema.js';
 export interface RepositoryUpdates {
   setupCommand?: string | null;
   cleanupCommand?: string | null;
+  pauseCommand?: string | null;
+  resumeCommand?: string | null;
   envVars?: string | null;
   description?: string | null;
   defaultAgentId?: string | null;

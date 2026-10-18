@@ -95,8 +95,8 @@ describe('unregisterRepository refuses a repository with a paused session, and r
     // usable session rather than just existing as a gate.
     const resumed = await appContext.sessionManager.resumeSession(sessionId);
     expect(resumed).not.toBeNull();
-    expect(resumed!.id).toBe(sessionId);
-    expect(resumed!.type).toBe('worktree');
+    expect(resumed!.session.id).toBe(sessionId);
+    expect(resumed!.session.type).toBe('worktree');
 
     // The session's on-disk location is untouched throughout.
     expect(fs.existsSync(WORKTREE_PATH)).toBe(true);

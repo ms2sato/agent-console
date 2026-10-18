@@ -19,7 +19,8 @@ import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 import { useWorktreeCreationTasks } from '../hooks/useWorktreeCreationTasks';
 import { useWorktreeDeletionTasks } from '../hooks/useWorktreeDeletionTasks';
-import { useSessionStopTasks } from '../hooks/useSessionStopTasks';
+import { useSessionStopTasks, reportIfHookFailed } from '../hooks/useSessionStopTasks';
+import { SessionHookFailureDialog } from '../components/sessions/SessionHookFailureDialog';
 import { useSessionFilter, matchesUserFilter } from '../hooks/useSessionFilter';
 import { useSessionViewMode } from '../hooks/useSessionViewMode';
 import type { Session } from '@agent-console/shared';
@@ -98,6 +99,7 @@ function RootLayout() {
 
   // In-flight Stop/Pause session task management (scoped pending/error UI)
   const sessionStopTasks = useSessionStopTasks();
+  const { reportHookFailure } = sessionStopTasks;
 
   // Wire up cross-cutting side effects (validation, cache cleanup, favicon, WebSocket subscription)
   useSessionSideEffects({
@@ -154,12 +156,13 @@ function RootLayout() {
     try {
       // Only trigger the resume request. The state update will arrive
       // via the WebSocket `session-resumed` event, avoiding double-application.
-      await resumeSession(sessionId);
+      const { session, resumeCommandResult } = await resumeSession(sessionId);
+      reportIfHookFailed(reportHookFailure, 'resume', resumeCommandResult, session.title);
     } catch (error) {
       logger.error('Failed to resume session:', error);
       throw error;
     }
-  }, []);
+  }, [reportHookFailure]);
 
   // Find current session for breadcrumb display
   const currentSession: Session | undefined = currentSessionId
@@ -292,6 +295,10 @@ function RootLayout() {
             </main>
           </div>
         </div>
+        <SessionHookFailureDialog
+          failure={sessionStopTasks.hookFailure}
+          onClose={sessionStopTasks.dismissHookFailure}
+        />
       </SessionStopTasksContext.Provider>
       </WorktreeDeletionTasksContext.Provider>
     </WorktreeCreationTasksContext.Provider>

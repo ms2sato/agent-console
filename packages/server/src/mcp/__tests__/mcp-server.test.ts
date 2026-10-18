@@ -987,6 +987,8 @@ describe('MCP Server Tools', () => {
       description?: string | null;
       setupCommand?: string | null;
       cleanupCommand?: string | null;
+      pauseCommand?: string | null;
+      resumeCommand?: string | null;
       envVars?: string | null;
       defaultAgentId?: string | null;
     }> = []): Promise<void> {
@@ -1118,6 +1120,42 @@ describe('MCP Server Tools', () => {
       expect(stored?.setupCommand).toBe('bun install');
       expect(stored?.cleanupCommand).toBe('bun run cleanup');
       expect(stored?.description).toBe('updated description');
+    });
+
+    it('should persist, echo, and clear pauseCommand and resumeCommand', async () => {
+      await setupRepoManager([{
+        id: 'repo-1',
+        name: 'my-repo',
+        path: TEST_REPO_PATH,
+        setupCommand: 'keep me',
+      }]);
+
+      const setResponse = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        pauseCommand: 'docker compose stop',
+        resumeCommand: 'docker compose start',
+      }, nextId++);
+      const setData = parseToolResult(setResponse) as { repository?: Record<string, unknown> };
+
+      expect(setResponse.result?.isError).toBeUndefined();
+      expect(setData.repository!.pauseCommand).toBe('docker compose stop');
+      expect(setData.repository!.resumeCommand).toBe('docker compose start');
+      expect(repositoryManager.getRepository('repo-1')?.pauseCommand).toBe('docker compose stop');
+      expect(repositoryManager.getRepository('repo-1')?.resumeCommand).toBe('docker compose start');
+      // Untouched siblings keep their value.
+      expect(repositoryManager.getRepository('repo-1')?.setupCommand).toBe('keep me');
+
+      const clearResponse = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        pauseCommand: null,
+        resumeCommand: '',
+      }, nextId++);
+      const clearData = parseToolResult(clearResponse) as { repository?: Record<string, unknown> };
+
+      expect(clearData.repository!.pauseCommand).toBeNull();
+      expect(clearData.repository!.resumeCommand).toBeNull();
+      expect(repositoryManager.getRepository('repo-1')?.pauseCommand ?? null).toBeNull();
+      expect(repositoryManager.getRepository('repo-1')?.resumeCommand ?? null).toBeNull();
     });
 
     it('should persist envVars but not echo it in the response (v1 parity with REST + secret-read gate)', async () => {

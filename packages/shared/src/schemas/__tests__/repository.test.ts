@@ -1217,6 +1217,20 @@ describe('UpdateRepositoryRequestSchema (Issue #1643)', () => {
     }
   });
 
+  it('accepts pauseCommand and resumeCommand, trims them, and allows null', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, {
+      pauseCommand: '  docker compose stop  ',
+      resumeCommand: '  docker compose start  ',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.pauseCommand).toBe('docker compose stop');
+      expect(result.output.resumeCommand).toBe('docker compose start');
+    }
+    expect(v.safeParse(UpdateRepositoryRequestSchema, { pauseCommand: null, resumeCommand: null }).success).toBe(true);
+    expect(v.safeParse(UpdateRepositoryRequestSchema, { pauseCommand: 1 }).success).toBe(false);
+  });
+
   it('accepts an empty object (all fields optional)', () => {
     const result = v.safeParse(UpdateRepositoryRequestSchema, {});
     expect(result.success).toBe(true);

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
+import type { HookCommandResult } from '@agent-console/shared';
 
 export type SessionStopTaskAction = 'stop' | 'pause';
 
@@ -10,6 +11,30 @@ export interface SessionStopTask {
   sessionTitle?: string;
   status: SessionStopTaskStatus;
   error: string | null;
+}
+
+export type SessionHookFailureKind = 'pause' | 'resume';
+
+/** A failed pause/resume repository hook command awaiting acknowledgement. */
+export interface SessionHookFailure {
+  kind: SessionHookFailureKind;
+  sessionTitle?: string;
+  result: HookCommandResult;
+}
+
+/**
+ * Report `result` through `report` only when the hook ran and failed.
+ * An absent result (no hook configured) and a successful one report nothing.
+ */
+export function reportIfHookFailed(
+  report: (failure: SessionHookFailure) => void,
+  kind: SessionHookFailureKind,
+  result: HookCommandResult | undefined,
+  sessionTitle?: string
+): void {
+  if (result?.success === false) {
+    report({ kind, sessionTitle, result });
+  }
 }
 
 export interface UseSessionStopTasksReturn {
@@ -31,6 +56,16 @@ export interface UseSessionStopTasksReturn {
   markAsSucceeded: (sessionId: string) => void;
   /** Reset a task to pending (used when retrying a failed request); clears the error */
   markAsPending: (sessionId: string) => void;
+  /**
+   * The failed pause/resume hook command to show, if any. Lives here (root
+   * level) rather than in a dialog or page because the session page unmounts
+   * when the session pauses, before the pause response carrying the result arrives.
+   */
+  hookFailure: SessionHookFailure | null;
+  /** Record a failed hook command so the root-level dialog shows it */
+  reportHookFailure: (failure: SessionHookFailure) => void;
+  /** Hide the hook failure dialog */
+  dismissHookFailure: () => void;
 }
 
 /**
@@ -111,6 +146,14 @@ export function useSessionStopTasks(): UseSessionStopTasksReturn {
     updateTask(sessionId, { status: 'pending', error: null });
   }, [updateTask]);
 
+  const [hookFailure, setHookFailure] = useState<SessionHookFailure | null>(null);
+  const reportHookFailure = useCallback((failure: SessionHookFailure) => {
+    setHookFailure(failure);
+  }, []);
+  const dismissHookFailure = useCallback(() => {
+    setHookFailure(null);
+  }, []);
+
   return {
     tasks,
     addTask,
@@ -119,5 +162,8 @@ export function useSessionStopTasks(): UseSessionStopTasksReturn {
     markAsFailed,
     markAsSucceeded,
     markAsPending,
+    hookFailure,
+    reportHookFailure,
+    dismissHookFailure,
   };
 }

@@ -9,6 +9,7 @@ import {
   UpdateSessionMemoRequestSchema,
   RestoreInfoMessageSchema,
   SessionResponseSchema,
+  PauseSessionResponseSchema,
   SessionsValidationResponseSchema,
   SessionMemoResponseSchema,
   RestartAllAgentsResponseSchema,
@@ -1104,6 +1105,58 @@ describe('SessionResponseSchema', () => {
     expect(v.safeParse(SessionResponseSchema, { session: { id: 's1' } }).success).toBe(false);
     expect(v.safeParse(SessionResponseSchema, { session: { ...quick, extra: 1 } }).success).toBe(false);
     expect(v.safeParse(SessionResponseSchema, { session: quick, extra: 1 }).success).toBe(false);
+  });
+
+  it('accepts an optional resumeCommandResult (success and failure shapes) and rejects a malformed one', () => {
+    expect(v.safeParse(SessionResponseSchema, { session: quick }).success).toBe(true);
+    expect(
+      v.safeParse(SessionResponseSchema, {
+        session: quick,
+        resumeCommandResult: { success: true, output: 'started' },
+      }).success,
+    ).toBe(true);
+    expect(
+      v.safeParse(SessionResponseSchema, {
+        session: quick,
+        resumeCommandResult: { success: false, error: 'exit 1' },
+      }).success,
+    ).toBe(true);
+    expect(
+      v.safeParse(SessionResponseSchema, { session: quick, resumeCommandResult: { output: 'x' } }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(SessionResponseSchema, {
+        session: quick,
+        resumeCommandResult: { success: true, extra: 1 },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('PauseSessionResponseSchema', () => {
+  it('accepts { success: true } alone and with a success or failure pauseCommandResult', () => {
+    expect(v.safeParse(PauseSessionResponseSchema, { success: true }).success).toBe(true);
+    expect(
+      v.safeParse(PauseSessionResponseSchema, {
+        success: true,
+        pauseCommandResult: { success: true, output: 'x' },
+      }).success,
+    ).toBe(true);
+    expect(
+      v.safeParse(PauseSessionResponseSchema, {
+        success: true,
+        pauseCommandResult: { success: false, error: 'exit 1', output: 'partial' },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects success: false, an extra key, a missing success and a malformed pauseCommandResult', () => {
+    expect(v.safeParse(PauseSessionResponseSchema, { success: false }).success).toBe(false);
+    expect(v.safeParse(PauseSessionResponseSchema, { success: true, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(PauseSessionResponseSchema, {}).success).toBe(false);
+    expect(
+      v.safeParse(PauseSessionResponseSchema, { success: true, pauseCommandResult: { output: 'x' } }).success,
+    ).toBe(false);
   });
 });
 

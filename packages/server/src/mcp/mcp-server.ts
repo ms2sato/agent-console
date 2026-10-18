@@ -193,6 +193,8 @@ interface RepositoryUpdateResult {
   description?: string;
   setupCommand?: string | null;
   cleanupCommand?: string | null;
+  pauseCommand?: string | null;
+  resumeCommand?: string | null;
   defaultAgentId?: string | null;
 }
 
@@ -612,20 +614,24 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   mcpServer.tool(
     'update_repository',
-    'Update a registered repository\'s configuration. Fields that can be updated: setupCommand, cleanupCommand, envVars, description, defaultAgentId. Omit a field to leave it unchanged; pass an empty string or null to clear it. NOTE: envVars is stored plaintext in the database until an encryption story ships — do not persist secrets here.',
+    'Update a registered repository\'s configuration. Fields that can be updated: setupCommand, cleanupCommand, pauseCommand, resumeCommand, envVars, description, defaultAgentId. Omit a field to leave it unchanged; pass an empty string or null to clear it. NOTE: envVars is stored plaintext in the database until an encryption story ships — do not persist secrets here.',
     {
       repositoryId: z.string().min(1).describe('The repository ID to update'),
       setupCommand: z.string().nullish().describe('Shell command to run after creating worktrees. Empty string or null clears the value.'),
       cleanupCommand: z.string().nullish().describe('Shell command to run before deleting worktrees. Empty string or null clears the value.'),
+      pauseCommand: z.string().nullish().describe('Shell command to run after a session in this repository is paused. Its failure never blocks the pause. Empty string or null clears the value.'),
+      resumeCommand: z.string().nullish().describe('Shell command to run before a paused session in this repository is resumed. Its failure never blocks the resume. Empty string or null clears the value.'),
       envVars: z.string().nullish().describe('Environment variables in .env format applied to workers. Stored plaintext; do not persist secrets.'),
       description: z.string().nullish().describe('Brief description of the repository. Empty string or null clears the value.'),
       defaultAgentId: z.string().nullish().describe('Default agent ID for worktree creation. Empty string or null clears the value.'),
     },
-    async ({ repositoryId, setupCommand, cleanupCommand, envVars, description, defaultAgentId }) => {
+    async ({ repositoryId, setupCommand, cleanupCommand, pauseCommand, resumeCommand, envVars, description, defaultAgentId }) => {
       try {
         const updates: RepositoryUpdates = {};
         if (setupCommand !== undefined) updates.setupCommand = setupCommand;
         if (cleanupCommand !== undefined) updates.cleanupCommand = cleanupCommand;
+        if (pauseCommand !== undefined) updates.pauseCommand = pauseCommand;
+        if (resumeCommand !== undefined) updates.resumeCommand = resumeCommand;
         if (envVars !== undefined) updates.envVars = envVars;
         if (description !== undefined) updates.description = description;
         if (defaultAgentId !== undefined) updates.defaultAgentId = defaultAgentId;
@@ -643,6 +649,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
           description: updated.description ?? undefined,
           setupCommand: updated.setupCommand ?? null,
           cleanupCommand: updated.cleanupCommand ?? null,
+          pauseCommand: updated.pauseCommand ?? null,
+          resumeCommand: updated.resumeCommand ?? null,
           defaultAgentId: updated.defaultAgentId ?? null,
         };
         return textResult({ repository: result });

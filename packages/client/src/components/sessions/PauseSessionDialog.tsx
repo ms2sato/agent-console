@@ -10,7 +10,7 @@ import {
 } from '../ui/alert-dialog';
 import { pauseSession } from '../../lib/api';
 import { useSessionStopTasksContext } from '../../routes/__root';
-import type { Session, AgentActivityState } from '@agent-console/shared';
+import type { Session, AgentActivityState, HookCommandResult } from '@agent-console/shared';
 
 export interface PauseSessionDialogProps {
   open: boolean;
@@ -27,13 +27,19 @@ export interface PauseSessionDialogProps {
  * Shared by the confirm dialog and the SessionPage Retry button so both go
  * through one code path. Resolves `true` when the request was accepted by the
  * server and `false` when it failed (the task is then marked failed).
+ * `onHookFailure` is called only when the pause succeeded but the repository's
+ * pause command ran and failed.
  */
 export async function runPauseSession(
   sessionId: string,
-  markAsFailed: (sessionId: string, error: string) => void
+  markAsFailed: (sessionId: string, error: string) => void,
+  onHookFailure?: (result: HookCommandResult) => void
 ): Promise<boolean> {
   try {
-    await pauseSession(sessionId);
+    const { pauseCommandResult } = await pauseSession(sessionId);
+    if (pauseCommandResult?.success === false) {
+      onHookFailure?.(pauseCommandResult);
+    }
     return true;
   } catch (err) {
     markAsFailed(sessionId, err instanceof Error ? err.message : 'Failed to pause session');
@@ -59,7 +65,7 @@ export function PauseSessionDialog({
   workerActivityStates,
 }: PauseSessionDialogProps) {
   const navigate = useNavigate();
-  const { addTask, markAsFailed } = useSessionStopTasksContext();
+  const { addTask, markAsFailed, reportHookFailure } = useSessionStopTasksContext();
 
   // Check if any agent or embedded-agent workers are in 'active' or 'asking' state
   // (embedded-agent workers only ever report 'active'/'idle', never 'asking')
@@ -79,7 +85,9 @@ export function PauseSessionDialog({
 
     // Completion (success state) is resolved via WebSocket (session-paused / sessions-sync
     // / session-deleted) in useSessionSideEffects.
-    const ok = await runPauseSession(sessionId, markAsFailed);
+    const ok = await runPauseSession(sessionId, markAsFailed, (result) =>
+      reportHookFailure({ kind: 'pause', sessionTitle, result })
+    );
     if (ok) {
       await navigate({ to: '/' });
     }

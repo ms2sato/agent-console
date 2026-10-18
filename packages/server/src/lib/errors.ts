@@ -86,3 +86,15 @@ export class SessionOrphanedError extends ApiError {
     this.name = 'SessionOrphanedError';
   }
 }
+
+/**
+ * 409 Conflict - The session is being paused. Between killing its workers and
+ * leaving memory the session still exists with every PTY cleared, so any path
+ * that would re-activate a worker is refused until the pause finishes.
+ */
+export class SessionPausingError extends ApiError {
+  constructor(sessionId: string) {
+    super(`Session ${sessionId} is pausing`, 409, 'session_pausing');
+    this.name = 'SessionPausingError';
+  }
+}

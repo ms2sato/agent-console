@@ -5,6 +5,7 @@ import {
   NotFoundError,
   ConflictError,
   InternalError,
+  SessionPausingError,
 } from '../errors.js';
 
 describe('Error Classes', () => {
@@ -99,6 +100,18 @@ describe('Error Classes', () => {
       expect(new NotFoundError('test')).toBeInstanceOf(Error);
       expect(new ConflictError('test')).toBeInstanceOf(Error);
       expect(new InternalError()).toBeInstanceOf(Error);
+    });
+  });
+
+  describe('SessionPausingError', () => {
+    it('is a 409 ApiError with the session_pausing code naming the session', () => {
+      const error = new SessionPausingError('s-1');
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error.statusCode).toBe(409);
+      expect(error.code).toBe('session_pausing');
+      expect(error.name).toBe('SessionPausingError');
+      expect(error.message).toBe('Session s-1 is pausing');
     });
   });
 });

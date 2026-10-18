@@ -203,6 +203,10 @@ export interface RepositoriesTable {
   setup_command: string | null;
   /** Shell command to run before deleting worktrees (added in v9) */
   cleanup_command: string | null;
+  /** Shell command to run when a session of this repository is paused (added in v54) */
+  pause_command: string | null;
+  /** Shell command to run when a session of this repository is resumed (added in v54) */
+  resume_command: string | null;
   /** Environment variables in .env format to apply to workers (added in v5) */
   env_vars: string | null;
   /** Brief description of the repository (added in v7) */

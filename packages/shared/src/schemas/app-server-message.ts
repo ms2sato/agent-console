@@ -278,6 +278,10 @@ export const RepositorySchema = v.strictObject({
   setupCommand: v.optional(v.nullable(v.string())),
   /** Shell command to run before deleting worktrees */
   cleanupCommand: v.optional(v.nullable(v.string())),
+  /** Shell command to run when a session of this repository is paused */
+  pauseCommand: v.optional(v.nullable(v.string())),
+  /** Shell command to run when a session of this repository is resumed */
+  resumeCommand: v.optional(v.nullable(v.string())),
   /** Environment variables in .env format (applied to workers) */
   envVars: v.optional(v.nullable(v.string())),
   /** Brief description of the repository */
@@ -343,7 +347,7 @@ const InboundEventSummarySchema = v.strictObject({
   metadata: SystemEventMetadataSchema,
 });
 
-const HookCommandResultSchema = v.strictObject({
+export const HookCommandResultSchema = v.strictObject({
   success: v.boolean(),
   output: v.optional(v.string()),
   error: v.optional(v.string()),

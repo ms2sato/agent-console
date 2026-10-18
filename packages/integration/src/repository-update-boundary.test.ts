@@ -225,6 +225,8 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
       repositoryId: 'repo-1',
       setupCommand: 'bun install',
       cleanupCommand: 'bun run cleanup',
+      pauseCommand: 'docker compose stop',
+      resumeCommand: 'docker compose start',
       description: 'updated via MCP',
       envVars: 'FOO=bar',
     }, nextId++);
@@ -238,6 +240,8 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
     expect(data.repository!.id).toBe('repo-1');
     expect(data.repository!.setupCommand).toBe('bun install');
     expect(data.repository!.cleanupCommand).toBe('bun run cleanup');
+    expect(data.repository!.pauseCommand).toBe('docker compose stop');
+    expect(data.repository!.resumeCommand).toBe('docker compose start');
     expect(data.repository!.description).toBe('updated via MCP');
     // envVars must not be echoed back — that would create a read channel
     // for stored plaintext secrets via an arbitrary write call.
@@ -251,6 +255,8 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
     expect(stored).not.toBeNull();
     expect(stored!.setupCommand).toBe('bun install');
     expect(stored!.cleanupCommand).toBe('bun run cleanup');
+    expect(stored!.pauseCommand).toBe('docker compose stop');
+    expect(stored!.resumeCommand).toBe('docker compose start');
     expect(stored!.description).toBe('updated via MCP');
     expect(stored!.envVars).toBe('FOO=bar');
   });

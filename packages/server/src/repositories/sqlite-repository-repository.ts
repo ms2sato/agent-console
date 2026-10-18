@@ -136,6 +136,8 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
     const fieldMap: Array<[keyof RepositoryUpdates, string]> = [
       ['setupCommand', 'setup_command'],
       ['cleanupCommand', 'cleanup_command'],
+      ['pauseCommand', 'pause_command'],
+      ['resumeCommand', 'resume_command'],
       ['envVars', 'env_vars'],
       ['description', 'description'],
       ['defaultAgentId', 'default_agent_id'],

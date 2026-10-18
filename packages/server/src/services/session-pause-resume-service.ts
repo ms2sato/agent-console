@@ -13,6 +13,7 @@ import type {
   RunningSession,
   AgentActivityState,
   WorkerActivityInfo,
+  HookCommandResult,
 } from '@agent-console/shared';
 import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { InternalSession } from './internal-types.js';
@@ -31,6 +32,18 @@ import { hasUndeliveredInitialPrompt } from './embedded-agent-worker-service.js'
 import { resolveStartupIntent } from './startup-intent.js';
 
 const logger = createLogger('session-pause-resume');
+
+/** Result of pausing a session; `pauseCommandResult` is set only when a pause command ran. */
+export interface PauseSessionOutcome {
+  paused: boolean;
+  pauseCommandResult?: HookCommandResult;
+}
+
+/** A resumed session; `resumeCommandResult` is set only when a resume command ran. */
+export interface ResumeSessionOutcome {
+  session: Session;
+  resumeCommandResult?: HookCommandResult;
+}
 
 /**
  * Dependencies injected by SessionManager.
@@ -82,6 +95,18 @@ export interface SessionPauseResumeDeps {
   startBranchWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
   stopBranchWatching: (sessionId: string) => void;
   getServerPid: () => number;
+  /** Whether the session's repository has a non-blank pause or resume command configured. */
+  hasSessionHookCommand: (kind: 'pause' | 'resume', session: InternalSession) => boolean;
+  /**
+   * Run the repository's pause or resume command for a worktree session as
+   * `username`. Resolves `undefined` when there is nothing to run (no command
+   * configured, unknown repository, or a non-worktree session).
+   */
+  runSessionHookCommand: (
+    kind: 'pause' | 'resume',
+    session: InternalSession,
+    username: string,
+  ) => Promise<HookCommandResult | undefined>;
   /**
    * Append the restore-boundary marker to a revived PTY worker's output
    * stream. No-op expectation for non-PTY workers --
@@ -105,19 +130,20 @@ export class SessionPauseResumeService {
    * Only available for worktree sessions. Quick sessions should use deleteSession instead.
    *
    * @param id - Session ID to pause
-   * @returns true if session was paused, false if not found or is a quick session
+   * @returns `paused: true` if the session was paused (with the pause command's
+   *   result when one ran), `paused: false` if not found or is a quick session
    */
-  async pauseSession(id: string): Promise<boolean> {
+  async pauseSession(id: string): Promise<PauseSessionOutcome> {
     const session = this.deps.getSession(id);
     if (!session) {
       logger.warn({ sessionId: id }, 'Cannot pause session: not found in memory');
-      return false;
+      return { paused: false };
     }
 
     // Quick sessions cannot be paused - they should be deleted instead
     if (session.type === 'quick') {
       logger.warn({ sessionId: id }, 'Cannot pause quick session: use delete instead');
-      return false;
+      return { paused: false };
     }
 
     // Stop branch watcher before pausing
@@ -144,6 +170,10 @@ export class SessionPauseResumeService {
     }
     await Promise.all(killPromises);
 
+    // Workers are down: run the repository's pause command. It never blocks the
+    // pause; a failure travels back to the caller in the result.
+    const pauseCommandResult = await this.runHookCommand('pause', session);
+
     // Clean up notification state (throttle timers, debounce timers)
     this.deps.notificationManager?.cleanupSession(id);
 
@@ -167,21 +197,25 @@ export class SessionPauseResumeService {
     const pausedPublicSession = this.deps.persistedToPublicSession(persistedSession) as PausedSession;
     this.deps.getSessionLifecycleCallbacks()?.onSessionPaused?.(pausedPublicSession);
 
-    return true;
+    return pauseCommandResult ? { paused: true, pauseCommandResult } : { paused: true };
   }
 
   /**
    * Resume a paused session: load from DB, create in-memory session, restore workers.
    *
    * @param id - Session ID to resume
-   * @returns The resumed session, or null if not found in database or activation fails
+   * @param runResumeCommand - Whether to run the repository's resume command.
+   *   True for a user-initiated resume; false for the auto-resume at server
+   *   start, where no pause command ran and a restart leaves the containers up.
+   * @returns The resumed session (with the resume command's result when one ran),
+   *   or null if not found in database or activation fails
    */
-  async resumeSession(id: string): Promise<Session | null> {
+  async resumeSession(id: string, runResumeCommand = true): Promise<ResumeSessionOutcome | null> {
     // Check if session is already active in memory
     const existingSession = this.deps.getSession(id);
     if (existingSession) {
       logger.debug({ sessionId: id }, 'Session already active, returning existing');
-      return this.deps.toPublicSession(existingSession);
+      return { session: this.deps.toPublicSession(existingSession) };
     }
 
     // Prevent concurrent resume attempts for the same session
@@ -193,7 +227,7 @@ export class SessionPauseResumeService {
     this.resumingSessionIds.add(id);
 
     try {
-      return await this.resumeSessionInternal(id);
+      return await this.resumeSessionInternal(id, runResumeCommand);
     } finally {
       this.resumingSessionIds.delete(id);
     }
@@ -202,7 +236,7 @@ export class SessionPauseResumeService {
   /**
    * Internal implementation of resumeSession, called after concurrency guard.
    */
-  private async resumeSessionInternal(id: string): Promise<Session | null> {
+  private async resumeSessionInternal(id: string, runResumeCommand: boolean): Promise<ResumeSessionOutcome | null> {
     // Load from database
     const persisted = await this.deps.sessionRepository.findById(id);
     if (!persisted) {
@@ -262,6 +296,18 @@ export class SessionPauseResumeService {
           ...baseSession,
           type: 'quick',
         };
+
+    // Run the repository's resume command before any worker comes up. It never
+    // blocks the resume; a failure travels back to the caller in the result.
+    if (!runResumeCommand && this.deps.hasSessionHookCommand('resume', internalSession)) {
+      logger.info(
+        { sessionId: id, reason: 'server-start' },
+        'Skipping the resume command: auto-resume at server start brings workers back only',
+      );
+    }
+    const resumeCommandResult = runResumeCommand
+      ? await this.runHookCommand('resume', internalSession)
+      : undefined;
 
     // Add to sessions Map
     this.deps.setSession(id, internalSession);
@@ -426,7 +472,29 @@ export class SessionPauseResumeService {
     // After resume, session is always in running state
     this.deps.getSessionLifecycleCallbacks()?.onSessionResumed?.(publicSession as RunningSession, activityStates);
 
-    return publicSession;
+    return resumeCommandResult
+      ? { session: publicSession, resumeCommandResult }
+      : { session: publicSession };
+  }
+
+  /**
+   * Run the pause / resume command as the session's spawn user. Never throws:
+   * a failure (including identity resolution or the runner itself throwing)
+   * becomes a failed result so the pause / resume always completes.
+   */
+  private async runHookCommand(
+    kind: 'pause' | 'resume',
+    session: InternalSession,
+  ): Promise<HookCommandResult | undefined> {
+    // Only worktree sessions belong to a repository, so only they have a command.
+    if (session.type !== 'worktree') return undefined;
+    try {
+      const username = await this.deps.resolveSpawnUsername(session.createdBy, this.deps.userRepository);
+      return await this.deps.runSessionHookCommand(kind, session, username);
+    } catch (err) {
+      logger.warn({ sessionId: session.id, kind, err }, 'Session hook command could not be run');
+      return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+    }
   }
 
   /**
