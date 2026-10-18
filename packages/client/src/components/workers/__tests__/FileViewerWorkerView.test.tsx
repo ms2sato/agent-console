@@ -195,7 +195,8 @@ describe('FileViewerWorkerView (desktop)', () => {
         release();
         await settle();
 
-        expect(screen.queryByRole('button', { name: 'guide.md' })).toBeNull();
+        // Booleans, not elements: a failing poll must not serialise a DOM node.
+        expect(screen.queryByRole('button', { name: 'guide.md' }) !== null).toBe(false);
         expect(screen.getByText('readme title')).toBeTruthy();
       });
 
@@ -215,7 +216,7 @@ describe('FileViewerWorkerView (desktop)', () => {
         await settle();
 
         expect(screen.getByText('readme title')).toBeTruthy();
-        expect(screen.queryByText('linked content')).toBeNull();
+        expect(screen.queryByText('linked content') !== null).toBe(false);
       });
 
       it('still applies the outcome when nothing else happened in between (control)', async () => {
