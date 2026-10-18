@@ -22,6 +22,7 @@ import * as v from 'valibot';
 
 import { createFileViewerHandlers } from '@agent-console/server/src/websocket/file-viewer-handler';
 import { subscribeToFileChanges } from '@agent-console/server/src/services/file-watch-service';
+import { asWSContext } from '@agent-console/server/src/websocket/__tests__/ws-test-helpers';
 import { createFakeWatch } from '@agent-console/server/src/__tests__/utils/fake-file-watch';
 import { FileViewerServerMessageSchema } from '@agent-console/shared';
 
@@ -29,8 +30,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function createWs() {
   const sent: string[] = [];
-  const ws = { send: (data: string) => sent.push(data), close: () => {}, readyState: 1 };
-  return { ws: ws as unknown as Parameters<ReturnType<typeof createFileViewerHandlers>['handleConnection']>[0], sent };
+  const ws = asWSContext({ send: (data: string) => void sent.push(data), close: () => {}, readyState: 1 });
+  return { ws, sent };
 }
 
 // Distinct directory per test: the watcher is keyed by path.

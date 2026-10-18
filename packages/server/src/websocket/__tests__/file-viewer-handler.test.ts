@@ -24,12 +24,12 @@ function createMockWs() {
 function createHarness() {
   const subscribers: FileChangeSubscriber[] = [];
   const unsubscribes: Array<ReturnType<typeof mock>> = [];
-  const subscribe = mock(((_path: string, subscriber: FileChangeSubscriber) => {
+  const subscribe = mock<typeof subscribeToFileChanges>((_path, subscriber) => {
     subscribers.push(subscriber);
     const unsubscribe = mock(() => {});
     unsubscribes.push(unsubscribe);
     return unsubscribe;
-  }) as unknown as typeof subscribeToFileChanges);
+  });
   const handlers = createFileViewerHandlers({ subscribe });
   return { handlers, subscribe, subscribers, unsubscribes };
 }
