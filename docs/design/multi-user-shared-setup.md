@@ -297,7 +297,7 @@ Constructor receives `PtyProvider` (injected at startup). Requires async initial
 
 - `authenticate()` — Calls `resolveToken()` to get JWT, validates it, returns `AuthUser` from token payload. Returns `null` if invalid.
 - `login()` — Validates OS credentials (macOS: `dscl . -authonly`, Linux: PAM), looks up home directory, generates JWT. Returns `LoginResult` or `null`. Home directory lookup is an internal implementation detail (not exposed on the interface).
-- `spawnPty()` — Spawns via `sudo -u <user> -i sh -c 'cd <cwd> && export ...; <command>'` with env vars embedded in the command string. No base environment needed (login shell loads user's profile). **Sudo skip optimization**: when username matches server process user, falls back to direct spawn.
+- `spawnPty()` — Spawns via `sudo -u <user> -i sh -c 'cd <cwd> || { <message on stderr>; exit 125; }; export ...; <command>'` with env vars embedded in the command string; a cwd that cannot be entered fails closed (message on the terminal, exit 125) instead of starting the shell in the user's HOME. No base environment needed (login shell loads user's profile). **Sudo skip optimization**: when username matches server process user, falls back to direct spawn.
 - JWT secret: `crypto.randomBytes(32)`, stored at `${AGENT_CONSOLE_HOME}/jwt-secret` (persists across restarts)
 - Token payload: `{ sub: username, home: homeDir, iat, exp }`, expires 7 days
 

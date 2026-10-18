@@ -1279,6 +1279,14 @@ export class WorktreeService {
           env: hookEnv,
         });
 
+        if (result.cwdFailed) {
+          logger.warn(
+            { worktreePath, requestUsername },
+            'Hook command not run: worktree directory not available (elevated)',
+          );
+          return { success: false, error: 'working directory not available' };
+        }
+
         if (result.exitCode === 0) {
           logger.info(
             { worktreePath, exitCode: result.exitCode, requestUsername },

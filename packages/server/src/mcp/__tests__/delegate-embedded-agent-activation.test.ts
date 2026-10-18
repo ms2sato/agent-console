@@ -173,7 +173,7 @@ const fakeRunAsUserAlwaysSuccess: typeof runAsUser = async () => ({
   stdout: '',
   stderr: '',
   exitCode: 0,
-  timedOut: false,
+  timedOut: false, cwdFailed: false,
 });
 
 describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1)', () => {
@@ -259,7 +259,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
           const fs = await import('fs');
           fs.mkdirSync(wtPath, { recursive: true });
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       },
     });
 

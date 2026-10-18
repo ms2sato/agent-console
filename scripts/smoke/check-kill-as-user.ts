@@ -18,6 +18,16 @@
  *     `killAsUser` call against the first one -- proving the helper signals
  *     exactly the targeted PID (`kill -s <SIG> -- <pid>`), not something
  *     broader like a name-based `pkill`.
+ *   - `runAsUser` cwd fail-closed case: a command that leaves a sentinel file
+ *     when it runs is invoked with a `cwd` that does not exist. Elevated, the
+ *     result must be `cwdFailed === true` / exit 125 and the sentinel must be
+ *     ABSENT (the command never ran in the login shell's HOME); positive
+ *     control: the same command with an existing `cwd` creates the sentinel;
+ *     and a user command that itself exits 125 under an existing `cwd` reads
+ *     `cwdFailed === false` (the exit code alone is not the signal).
+ *     In degenerate same-user mode there is no cd guard (the direct spawn
+ *     rejects on an unusable cwd), so the case asserts the rejection and the
+ *     absent sentinel instead.
  *   - Every subprocess-facing phase is bounded so a stalled sudo/NSS/
  *     login-shell chain on the target host surfaces as a clear timeout
  *     rather than hanging the deploy: the tracked-PID stdout read has a
@@ -77,8 +87,9 @@
 
 import './_env.js';
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
-import { spawnAsUser, killAsUser } from '../../packages/server/src/services/privilege-elevation.js';
+import { spawnAsUser, killAsUser, runAsUser, CWD_FAILED_EXIT_CODE } from '../../packages/server/src/services/privilege-elevation.js';
 
 /**
  * `killAsUser` sets no timer at all when `timeoutMs` is omitted (`runAsUser`
@@ -203,6 +214,66 @@ async function spawnTrackedSleep(username: string, seconds: number): Promise<num
   return pid;
 }
 
+/**
+ * `runAsUser` cwd fail-closed case. The sentinel lives in /tmp so the smoke's
+ * own user can observe it whichever OS user the command ran as.
+ */
+async function checkCwdFailClosed(username: string, degenerate: boolean): Promise<void> {
+  const token = randomUUID();
+  const sentinelFile = `/tmp/agent-console-smoke-cwd-${token}`;
+  const missingCwd = `/tmp/agent-console-smoke-missing-cwd-${token}`;
+  const command = `touch '${sentinelFile}'`;
+  try {
+    console.log(`==> runAsUser with a missing cwd must not run the command (elevated: ${!degenerate})`);
+    let rejected: unknown;
+    let result: Awaited<ReturnType<typeof runAsUser>> | undefined;
+    try {
+      result = await runAsUser({ username, command, cwd: missingCwd, timeoutMs: KILL_AS_USER_TIMEOUT_MS });
+    } catch (err) {
+      rejected = err;
+    }
+    if (result?.timedOut) {
+      throw new ProbeTimeoutError(`runAsUser (missing cwd) timed out after ${KILL_AS_USER_TIMEOUT_MS}ms`);
+    }
+    if (degenerate) {
+      expect(rejected !== undefined, 'same-user: runAsUser rejects on a missing cwd (no cd guard on the direct path)');
+    } else {
+      expect(
+        result?.cwdFailed === true && result.exitCode === CWD_FAILED_EXIT_CODE,
+        'missing cwd: cwdFailed is true and exitCode is CWD_FAILED_EXIT_CODE',
+        `got ${result ? `cwdFailed=${result.cwdFailed} exitCode=${result.exitCode} stderr=${result.stderr}` : `rejection ${String(rejected)}`}`,
+      );
+    }
+    expect(!existsSync(sentinelFile), 'missing cwd: the command did not run (sentinel file absent)');
+
+    console.log('==> positive control: the same command with an existing cwd creates the sentinel');
+    const control = await runAsUser({ username, command, cwd: '/tmp', timeoutMs: KILL_AS_USER_TIMEOUT_MS });
+    if (control.timedOut) {
+      throw new ProbeTimeoutError(`runAsUser (existing cwd) timed out after ${KILL_AS_USER_TIMEOUT_MS}ms`);
+    }
+    expect(
+      control.exitCode === 0 && !control.cwdFailed && existsSync(sentinelFile),
+      'existing cwd: exit 0, cwdFailed false, sentinel file created',
+      `exitCode=${control.exitCode} cwdFailed=${control.cwdFailed} stderr=${control.stderr}`,
+    );
+
+    console.log('==> a user command that itself exits CWD_FAILED_EXIT_CODE under an existing cwd is an ordinary exit');
+    const own125 = await runAsUser({ username, command: `exit ${CWD_FAILED_EXIT_CODE}`, cwd: '/tmp', timeoutMs: KILL_AS_USER_TIMEOUT_MS });
+    if (own125.timedOut) {
+      throw new ProbeTimeoutError(`runAsUser (user exit ${CWD_FAILED_EXIT_CODE}) timed out after ${KILL_AS_USER_TIMEOUT_MS}ms`);
+    }
+    expect(
+      own125.exitCode === CWD_FAILED_EXIT_CODE && !own125.cwdFailed,
+      'user command exit 125 with an existing cwd: exitCode 125 and cwdFailed false (no sentinel on stderr)',
+      `exitCode=${own125.exitCode} cwdFailed=${own125.cwdFailed} stderr=${own125.stderr}`,
+    );
+  } finally {
+    // The sentinel was created by <username>; /tmp is sticky, so remove it as
+    // that same user. Best-effort: absent means nothing to clean.
+    await runAsUser({ username, command: `unlink '${sentinelFile}'`, cwd: '/', timeoutMs: KILL_AS_USER_TIMEOUT_MS }).catch(() => {});
+  }
+}
+
 async function main(): Promise<void> {
   // Ad-hoc invocation inherits cwd from the caller (often /root or an
   // interactive user's home, neither readable by an elevation-target service
@@ -266,6 +337,8 @@ async function main(): Promise<void> {
 
     console.log('==> negative assertion: control pid must still be alive (killAsUser targeted only the intended pid)');
     expect(procAlive(controlPid), 'control pid is still alive after killAsUser on the target pid', `pid=${controlPid}`);
+
+    await checkCwdFailClosed(targetUsername, degenerate);
   } catch (err) {
     if (err instanceof ProbeTimeoutError) {
       timedOut = true;

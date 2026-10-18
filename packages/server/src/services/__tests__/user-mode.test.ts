@@ -789,7 +789,7 @@ describe('assertSpawnCwdExists', () => {
         stdout: '',
         stderr: '',
         exitCode: 0,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
 
       await expect(
@@ -812,7 +812,7 @@ describe('assertSpawnCwdExists', () => {
         stdout: '',
         stderr: '',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
 
       const promise = assertSpawnCwdExists('/home/alice/missing', 'alice', {

@@ -60,7 +60,7 @@ function createRunAsUserMock() {
       const dir = opts.command.slice(MKDIR_PREFIX.length).replace(/^'|'$/g, '');
       try {
         await fsPromises.mkdir(dir);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       } catch (err: unknown) {
         if ((err as { code?: string }).code === 'EEXIST') {
           return {
@@ -68,6 +68,7 @@ function createRunAsUserMock() {
             stderr: `mkdir: cannot create directory '${dir}': File exists`,
             exitCode: 1,
             timedOut: false,
+            cwdFailed: false,
           };
         }
         throw err;
@@ -79,7 +80,7 @@ function createRunAsUserMock() {
       stdout: '',
       stderr: '',
       exitCode: 0,
-      timedOut: false,
+      timedOut: false, cwdFailed: false,
     }),
   };
   const runAsUserImpl: RunAsUserFn = ((opts: RunAsUserOpts, _spawn?: unknown) => {
@@ -511,7 +512,7 @@ describe('repository-clone-service', () => {
 
     it('bare clone whose command exits non-zero fails the job and removes the partial directory', async () => {
       const runAs = createRunAsUserMock();
-      runAs.responder.fn = async () => ({ stdout: '', stderr: 'fatal: fetch failed', exitCode: 1, timedOut: false });
+      runAs.responder.fn = async () => ({ stdout: '', stderr: 'fatal: fetch failed', exitCode: 1, timedOut: false, cwdFailed: false });
       const registrar = createRegistrarMock();
       const service = new RepositoryCloneService({
         sourceReposDir,
@@ -555,7 +556,7 @@ describe('repository-clone-service', () => {
           stdout: '',
           stderr: c.stderr,
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
         const registrar = createRegistrarMock();
         const service = new RepositoryCloneService({
@@ -585,7 +586,7 @@ describe('repository-clone-service', () => {
         stdout: '',
         stderr: 'killed',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
       const registrar = createRegistrarMock();
       const service = new RepositoryCloneService({
@@ -635,14 +636,14 @@ describe('repository-clone-service', () => {
             stdout: '',
             stderr: 'fatal: weird mid-clone failure',
             exitCode: 128,
-            timedOut: false,
+            timedOut: false, cwdFailed: false,
           };
         }
         if (opts.command.startsWith('rm -rf --')) {
           await fsPromises.rm(targetDir, { recursive: true, force: true });
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       const registrar = createRegistrarMock();
       const service = new RepositoryCloneService({
@@ -690,14 +691,14 @@ describe('repository-clone-service', () => {
             stdout: '',
             stderr: 'fatal: weird mid-clone failure',
             exitCode: 128,
-            timedOut: false,
+            timedOut: false, cwdFailed: false,
           };
         }
         if (opts.command.startsWith('rm -rf --')) {
           await fsPromises.rm(targetDir, { recursive: true, force: true });
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       const registrar = createRegistrarMock();
       const service = new RepositoryCloneService({
@@ -746,9 +747,9 @@ describe('repository-clone-service', () => {
         }
         if (opts.command.startsWith('rm -rf --')) {
           await fsPromises.rm(targetDir, { recursive: true, force: true });
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       const registrar = createRegistrarMock();
       const service = new RepositoryCloneService({
@@ -821,6 +822,25 @@ describe('repository-clone-service', () => {
       service.dispose();
     });
 
+    it('cwdFailed on the reservation -> CloneValidationError naming the source repos dir, no clone call follows', async () => {
+      const runAs = createRunAsUserMock();
+      runAs.reservation.fn = async () => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 125,
+        timedOut: false,
+        cwdFailed: true,
+      });
+      const service = build(runAs);
+
+      const error = await service.enqueueClone(request('alice')).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CloneValidationError);
+      expect((error as Error).message).toContain('is not available');
+      expect(runAs.calls).toHaveLength(1);
+      service.dispose();
+    });
+
     it('exit non-zero with "File exists" -> CloneNameConflictError and no clone call follows', async () => {
       const runAs = createRunAsUserMock();
       runAs.reservation.fn = async () => ({
@@ -828,6 +848,7 @@ describe('repository-clone-service', () => {
         stderr: `mkdir: cannot create directory '${targetDir()}': File exists`,
         exitCode: 1,
         timedOut: false,
+        cwdFailed: false,
       });
       const service = build(runAs);
 
@@ -842,7 +863,7 @@ describe('repository-clone-service', () => {
     it('"Permission denied" -> CloneValidationError naming the 2775 contract; only the mkdir ran', async () => {
       const runAs = createRunAsUserMock();
       const stderr = `mkdir: cannot create directory '${targetDir()}': Permission denied`;
-      runAs.reservation.fn = async () => ({ stdout: '', stderr, exitCode: 1, timedOut: false });
+      runAs.reservation.fn = async () => ({ stdout: '', stderr, exitCode: 1, timedOut: false, cwdFailed: false });
       const service = build(runAs);
 
       const error = await service.enqueueClone(request('alice')).catch((e: unknown) => e);
@@ -862,7 +883,7 @@ describe('repository-clone-service', () => {
         stdout: '',
         stderr: 'mkdir: cannot create directory: No space left on device',
         exitCode: 1,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
       const service = build(runAs);
 
@@ -878,7 +899,7 @@ describe('repository-clone-service', () => {
 
     it('reservation timeout -> CloneValidationError, nothing to clean', async () => {
       const runAs = createRunAsUserMock();
-      runAs.reservation.fn = async () => ({ stdout: '', stderr: '', exitCode: 137, timedOut: true });
+      runAs.reservation.fn = async () => ({ stdout: '', stderr: '', exitCode: 137, timedOut: true, cwdFailed: false });
       const service = build(runAs);
 
       await expect(service.enqueueClone(request('alice'))).rejects.toBeInstanceOf(CloneValidationError);
@@ -921,7 +942,7 @@ describe('repository-clone-service', () => {
       const runAs = createRunAsUserMock();
       runAs.responder.fn = async () => {
         await fsPromises.mkdir(targetDir, { recursive: true });
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       const registrar = createRegistrarMock();
       registrar.responder.fn = async () => {
@@ -1008,13 +1029,13 @@ describe('repository-clone-service', () => {
       runAs.responder.fn = async (opts) => {
         if (opts.command.startsWith('rm -rf --')) {
           await fsPromises.rm(targetDir, { recursive: true, force: true });
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
         return {
           stdout: '',
           stderr: 'fatal: not found',
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         };
       };
       const registrar = createRegistrarMock();
@@ -1083,7 +1104,7 @@ describe('repository-clone-service', () => {
         stdout: '',
         stderr: 'fatal: weird new failure',
         exitCode: 128,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
       const registrar = createRegistrarMock();
       const service = new RepositoryCloneService({

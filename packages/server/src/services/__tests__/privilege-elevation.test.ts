@@ -12,6 +12,7 @@ import {
   spawnAsUser,
   buildSpawnArgs,
   buildInnerCommand,
+  CWD_FAILED_EXIT_CODE,
   shellEscape,
   shouldElevateForUser,
   isMultiUserAuthMode,
@@ -19,7 +20,7 @@ import {
   type RunAsUserResult,
   type SpawnFn,
 } from '../privilege-elevation.js';
-import { shellEscape as elevationArgsShellEscape } from '../elevation-args.js';
+import { shellEscape as elevationArgsShellEscape, CWD_FAILED_SENTINEL } from '../elevation-args.js';
 
 interface CapturedSpawn {
   args: string[];
@@ -213,13 +214,13 @@ describe('privilege-elevation', () => {
 
     it('prepends cd when cwd is provided', () => {
       expect(buildInnerCommand('echo hi', '/path/to/dir', undefined)).toBe(
-        "cd '/path/to/dir'; echo hi",
+        "cd '/path/to/dir' || { echo 'agent-console: working directory /path/to/dir is not available' >&2; exit 125; }; echo hi",
       );
     });
 
     it('shell-escapes a cwd that contains a single quote', () => {
       expect(buildInnerCommand('echo hi', "/weird'/dir", undefined)).toBe(
-        "cd '/weird'\\''/dir'; echo hi",
+        "cd '/weird'\\''/dir' || { echo 'agent-console: working directory /weird'\\''/dir is not available' >&2; exit 125; }; echo hi",
       );
     });
 
@@ -235,11 +236,30 @@ describe('privilege-elevation', () => {
       );
     });
 
-    it('combines cd and export with && between them (user-mode.ts pattern)', () => {
-      // `cd X && export ...; <command>` -- fail fast on bad cwd, but allow
-      // the user command to proceed even if `export` would emit a warning.
+    it('guards cd with `|| { echo ... >&2; exit 125; }` so the command never runs when the cwd is unusable', () => {
+      // `cd X || { echo '<sentinel> X ...' >&2; exit 125; }; export ...; <command>`
+      // -- a failed cd stops the shell before the command (and before the
+      // exports); the stderr line is what separates it from a user exit 125.
       expect(buildInnerCommand('echo hi', '/d', { A: '1', B: '2' })).toBe(
-        "cd '/d' && export A='1' B='2'; echo hi",
+        "cd '/d' || { echo 'agent-console: working directory /d is not available' >&2; exit 125; }; export A='1' B='2'; echo hi",
+      );
+    });
+
+    it('uses the exported CWD_FAILED_EXIT_CODE constant (125) in the guard', () => {
+      expect(CWD_FAILED_EXIT_CODE).toBe(125);
+      expect(buildInnerCommand('echo hi', '/d', undefined)).toContain(
+        `exit ${CWD_FAILED_EXIT_CODE}; };`,
+      );
+    });
+
+    it('the guard prints the exported CWD_FAILED_SENTINEL on stderr', () => {
+      const inner = buildInnerCommand('echo hi', '/d', undefined);
+      expect(inner).toContain(`echo '${CWD_FAILED_SENTINEL}/d is not available' >&2`);
+    });
+
+    it('cwd and env together: guard, then ONE export, then the command, joined with `;` (never `&&`)', () => {
+      expect(buildInnerCommand('git status', '/work', { A: '1' })).toBe(
+        "cd '/work' || { echo 'agent-console: working directory /work is not available' >&2; exit 125; }; export A='1'; git status",
       );
     });
 
@@ -356,7 +376,7 @@ describe('privilege-elevation', () => {
         '-i',
         'sh',
         '-c',
-        "cd '/path/to/work'; echo hi",
+        "cd '/path/to/work' || { echo 'agent-console: working directory /path/to/work is not available' >&2; exit 125; }; echo hi",
       ]);
     });
 
@@ -389,7 +409,7 @@ describe('privilege-elevation', () => {
         { GIT_TERMINAL_PROMPT: '0' },
       );
       expect(result.args[result.args.length - 1]).toBe(
-        "cd '/var/agentconsole/work' && export GIT_TERMINAL_PROMPT='0'; git clone https://x",
+        "cd '/var/agentconsole/work' || { echo 'agent-console: working directory /var/agentconsole/work is not available' >&2; exit 125; }; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
       );
     });
 
@@ -447,6 +467,7 @@ describe('privilege-elevation', () => {
         stderr: '',
         exitCode: 0,
         timedOut: false,
+        cwdFailed: false,
       });
     });
 
@@ -512,6 +533,98 @@ describe('privilege-elevation', () => {
       expect(typeof result.exitCode).toBe('number');
       expect(result.stdout).toBe('');
       expect(result.stderr).toBe('');
+    });
+
+    describe('cwdFailed', () => {
+      const elevatedUser = `${serverUsername}-someone-else`;
+
+      const SENTINEL_LINE = `${CWD_FAILED_SENTINEL}/gone is not available\n`;
+
+      it('elevated + cwd + exit 125 + sentinel on stderr: cwdFailed is true and exitCode is passed through', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: CWD_FAILED_EXIT_CODE, stderr: SENTINEL_LINE });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'git status', cwd: '/gone' },
+          fakeSpawn,
+        );
+        expect(result.cwdFailed).toBe(true);
+        expect(result.exitCode).toBe(125);
+        expect(result.timedOut).toBe(false);
+      });
+
+      it('elevated + cwd + exit 125 WITHOUT the sentinel: cwdFailed is false (a user command exiting 125 is an ordinary non-zero exit)', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: CWD_FAILED_EXIT_CODE, stderr: 'bisect: nothing to do\n' });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'git bisect run ./t', cwd: '/there' },
+          fakeSpawn,
+        );
+        expect(result.exitCode).toBe(125);
+        expect(result.cwdFailed).toBe(false);
+      });
+
+      it('elevated + cwd + sentinel on stderr WITHOUT exit 125: cwdFailed is false', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: 1, stderr: SENTINEL_LINE });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'echo x >&2; exit 1', cwd: '/there' },
+          fakeSpawn,
+        );
+        expect(result.cwdFailed).toBe(false);
+      });
+
+      it('elevated + cwd + other non-zero exit: cwdFailed is false', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: 1 });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'git status', cwd: '/there' },
+          fakeSpawn,
+        );
+        expect(result.cwdFailed).toBe(false);
+      });
+
+      it('elevated + cwd + exit 0: cwdFailed is false', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: 0 });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'git status', cwd: '/there' },
+          fakeSpawn,
+        );
+        expect(result.cwdFailed).toBe(false);
+      });
+
+      it('elevated + NO cwd + a command that itself exits 125: cwdFailed is false', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: 125 });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'exit 125' },
+          fakeSpawn,
+        );
+        expect(result.exitCode).toBe(125);
+        expect(result.cwdFailed).toBe(false);
+      });
+
+      it('non-elevated + cwd + exit 125: cwdFailed is false (the direct path has no cd guard; a missing cwd rejects at spawn)', async () => {
+        process.env.AUTH_MODE = 'none';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: 125 });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'exit 125', cwd: '/there' },
+          fakeSpawn,
+        );
+        expect(result.exitCode).toBe(125);
+        expect(result.cwdFailed).toBe(false);
+      });
+
+      it('timeout: cwdFailed is false even with a cwd', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { blockUntilKill: true });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'sleep 9999', cwd: '/there', timeoutMs: 10 },
+          fakeSpawn,
+        );
+        expect(result.timedOut).toBe(true);
+        expect(result.cwdFailed).toBe(false);
+      });
     });
 
     it('honors a custom preserveEnv list (extra entries appear in the elevation invocation)', async () => {
@@ -635,7 +748,7 @@ describe('privilege-elevation', () => {
       // The cwd/env MUST appear inside the inner shell command, not be lost.
       const innerCommand = captured[0].args[captured[0].args.length - 1];
       expect(innerCommand).toBe(
-        "cd '/work/here' && export GIT_TERMINAL_PROMPT='0'; git clone https://x",
+        "cd '/work/here' || { echo 'agent-console: working directory /work/here is not available' >&2; exit 125; }; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
       );
 
       // Outer spawn options: cwd pinned to neutral '/', env NOT forwarded
@@ -864,7 +977,7 @@ describe('privilege-elevation', () => {
       expect(captured[0].options?.detached).toBeUndefined();
       // cd runs first in the login shell, then the exec replaces it with setsid.
       expect(captured[0].args.at(-1)).toBe(
-        `cd '/work'; exec setsid sh -c 'echo '\\''hi'\\'' && sleep 1'`,
+        `cd '/work' || { echo 'agent-console: working directory /work is not available' >&2; exit 125; }; exec setsid sh -c 'echo '\\''hi'\\'' && sleep 1'`,
       );
     });
 
@@ -1035,7 +1148,7 @@ describe('privilege-elevation', () => {
 
       const innerCommand = captured[0].args[captured[0].args.length - 1];
       expect(innerCommand).toBe(
-        "cd '/work/here' && export AGENT_CONSOLE_SESSION_ID='sess-1' AGENT_CONSOLE_WORKER_ID='work-1'; bun loop.ts",
+        "cd '/work/here' || { echo 'agent-console: working directory /work/here is not available' >&2; exit 125; }; export AGENT_CONSOLE_SESSION_ID='sess-1' AGENT_CONSOLE_WORKER_ID='work-1'; bun loop.ts",
       );
       expect(innerCommand).not.toContain('SHOULD_NOT_EXPORT');
       const opts = captured[0].options as { env?: Record<string, string> };
@@ -1060,7 +1173,7 @@ describe('privilege-elevation', () => {
 
       const innerCommand = captured[0].args[captured[0].args.length - 1];
       expect(innerCommand).toBe(
-        "cd '/work/here' && export GIT_TERMINAL_PROMPT='0'; git clone https://x",
+        "cd '/work/here' || { echo 'agent-console: working directory /work/here is not available' >&2; exit 125; }; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
       );
 
       const opts = captured[0].options as {
@@ -1104,7 +1217,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const result = await rmRecursiveAsUser('/some/path', null, {
@@ -1120,7 +1233,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       // Path with a single quote forces non-trivial shellEscape behaviour.
@@ -1139,7 +1252,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await rmRecursiveAsUser('/p', 'alice', {
@@ -1155,7 +1268,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'ERR',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
 
       const result: RunAsUserResult = await rmRecursiveAsUser('/p', 'alice', {
@@ -1166,7 +1279,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'ERR',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
     });
 
@@ -1188,7 +1301,7 @@ describe('privilege-elevation', () => {
   // killAsUser (strict thin wrapper, Issue #1197 Part A)
   // ============================================================
   describe('killProcessGroupAsUser', () => {
-    const ok = async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false });
+    const ok = async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false });
 
     it('elevated path: SIGTERM targets the negative group id after "--", cwd "/"', async () => {
       const captured: RunAsUserOpts[] = [];
@@ -1228,7 +1341,7 @@ describe('privilege-elevation', () => {
     });
 
     it('returns the underlying result unchanged (no semantic layering)', async () => {
-      const impl: typeof runAsUser = async () => ({ stdout: '', stderr: 'no such process', exitCode: 1, timedOut: false });
+      const impl: typeof runAsUser = async () => ({ stdout: '', stderr: 'no such process', exitCode: 1, timedOut: false, cwdFailed: false });
       const result = await killProcessGroupAsUser(5, 'SIGTERM', 'alice', { runAsUserImpl: impl });
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toBe('no such process');
@@ -1237,7 +1350,7 @@ describe('privilege-elevation', () => {
 
   describe('discoverElevatedPgid', () => {
     function withOutput(stdout: string, exitCode = 0, timedOut = false): typeof runAsUser {
-      return async () => ({ stdout, stderr: '', exitCode, timedOut });
+      return async () => ({ stdout, stderr: '', exitCode, timedOut, cwdFailed: false });
     }
 
     it('returns the pgid the probe prints', async () => {
@@ -1248,7 +1361,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const impl: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: 'PGID=7\n', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: 'PGID=7\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       await discoverElevatedPgid(1394, 'alice', { runAsUserImpl: impl, timeoutMs: 321 });
       expect(captured[0].username).toBe('alice');
@@ -1263,7 +1376,7 @@ describe('privilege-elevation', () => {
       let script = '';
       const impl: typeof runAsUser = async (opts) => {
         script = String(opts.stdin);
-        return { stdout: '', stderr: '', exitCode: 1, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 1, timedOut: false, cwdFailed: false };
       };
       await discoverElevatedPgid(55, 'alice', { runAsUserImpl: impl });
       expect(script).toContain('[ "$g" = "$c" ]');
@@ -1291,7 +1404,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const result = await killAsUser(1234, 'SIGTERM', null, {
@@ -1307,7 +1420,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await killAsUser(4321, 'SIGTERM', 'alice', {
@@ -1324,7 +1437,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await killAsUser(4321, 'SIGKILL', 'alice', {
@@ -1368,7 +1481,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await killAsUser(999, 'SIGTERM', 'alice', {
@@ -1384,7 +1497,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'kill: (999) - No such process',
         exitCode: 1,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
 
       const result: RunAsUserResult = await killAsUser(999, 'SIGTERM', 'alice', {
@@ -1395,7 +1508,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'kill: (999) - No such process',
         exitCode: 1,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
     });
 
@@ -1424,7 +1537,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       // The bypass decision is entirely runAsUser's (shouldElevateForUser);
@@ -1450,7 +1563,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       // Path with a single quote forces non-trivial shellEscape behaviour.
@@ -1473,7 +1586,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await writeUserOwnedSecretFile({
@@ -1493,7 +1606,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await writeUserOwnedSecretFile({
@@ -1510,7 +1623,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await writeUserOwnedSecretFile({
@@ -1529,7 +1642,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'ERR',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
 
       const result: RunAsUserResult = await writeUserOwnedSecretFile({
@@ -1543,7 +1656,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'ERR',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
     });
 

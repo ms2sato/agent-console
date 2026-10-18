@@ -25,6 +25,38 @@
  * module, so the argv shape they exercise cannot drift.
  */
 
+/**
+ * Exit code an elevated inner command uses when its `cd <cwd>` fails, so the
+ * caller's command never ran. 125 is the conventional "the wrapper could not
+ * run the command" code (as `xargs` / `timeout` use it), distinct from the
+ * timeout normalisation (137) and the shell's own 126 / 127. It lives in this
+ * module, not in `privilege-elevation.ts` (which re-exports it), to avoid an
+ * import cycle.
+ */
+export const CWD_FAILED_EXIT_CODE = 125;
+
+/**
+ * Stable prefix of the stderr line the cd guard prints before exiting
+ * CWD_FAILED_EXIT_CODE (the full line is this prefix, the cwd, then
+ * ` is not available`). The elevated command is arbitrary and may exit 125 on
+ * its own, so the exit code alone does not prove the cd failed: the runner
+ * requires both the code and this text on stderr. The PTY path cannot read
+ * stderr separately, so there the exit code plus the line the terminal shows
+ * is the contract.
+ */
+export const CWD_FAILED_SENTINEL = 'agent-console: working directory ';
+
+/**
+ * The shell statement that enters `cwd` or stops the shell: on a failed `cd` it
+ * prints the sentinel line to stderr and exits CWD_FAILED_EXIT_CODE, so nothing
+ * after it (exports, the caller's command, a login shell) runs in the wrong
+ * directory. Single writer for the runner wrapper and the PTY inner command.
+ */
+export function buildCwdGuard(cwd: string): string {
+  const message = `${CWD_FAILED_SENTINEL}${cwd} is not available`;
+  return `cd ${shellEscape(cwd)} || { echo ${shellEscape(message)} >&2; exit ${CWD_FAILED_EXIT_CODE}; }`;
+}
+
 const COLOR_ENV: Readonly<Record<string, string>> = Object.freeze({
   TERM: 'xterm-256color',
   COLORTERM: 'truecolor',
@@ -150,17 +182,23 @@ export function buildElevationArgs(input: ElevationArgsInput): ElevationArgs {
     ...(input.agentConsoleVars ?? {}),
   };
   const exports = buildExportString(combined);
-  const cdPart = `cd ${shellEscape(input.cwd)}`;
+  // Fail closed on an unusable cwd: a failed cd must not leave the login shell
+  // (or the agent command) running in the target user's HOME.
+  const cwdGuard = buildCwdGuard(input.cwd);
   // Conditional SSH_AUTH_SOCK fallback for delegated sessions.
   // Placed BEFORE the explicit `export <COMBINED>` so an explicit
   // SSH_AUTH_SOCK in `additionalEnvVars` still wins via the later export.
-  // The `if ... fi` block always exits 0, so the following `&&` chain runs.
+  // The `if ... fi` block always exits 0, so the following statement runs.
   const sshAuthSockSnippet = input.sshAuthSockFallback
-    ? ` && if [ -z "$SSH_AUTH_SOCK" ] && [ -S ${shellEscape(input.sshAuthSockFallback)} ]; then export SSH_AUTH_SOCK=${shellEscape(input.sshAuthSockFallback)}; fi`
+    ? `if [ -z "$SSH_AUTH_SOCK" ] && [ -S ${shellEscape(input.sshAuthSockFallback)} ]; then export SSH_AUTH_SOCK=${shellEscape(input.sshAuthSockFallback)}; fi`
     : '';
-  const innerCommand = exports
-    ? `${cdPart}${sshAuthSockSnippet} && export ${exports}; ${input.command}`
-    : `${cdPart}${sshAuthSockSnippet} && ${input.command}`;
+  const statements = [
+    cwdGuard,
+    sshAuthSockSnippet,
+    exports ? `export ${exports}` : '',
+    input.command,
+  ].filter((statement) => statement !== '');
+  const innerCommand = statements.join('; ');
   return {
     argv: [
       '-u',

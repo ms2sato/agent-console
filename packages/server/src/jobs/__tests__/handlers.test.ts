@@ -61,7 +61,7 @@ function createRmRecursiveAsUserMock() {
       stdout: '',
       stderr: '',
       exitCode: 0,
-      timedOut: false,
+      timedOut: false, cwdFailed: false,
     }),
   };
   const rmRecursiveAsUserImpl = (
@@ -266,7 +266,7 @@ describe('cleanup job handlers', () => {
         stdout: '',
         stderr: "rm: cannot remove '...': Permission denied\n",
         exitCode: 1,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
       await expect(
         runPayload({
@@ -283,7 +283,7 @@ describe('cleanup job handlers', () => {
         stdout: '',
         stderr: '',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
       await expect(
         runPayload({
@@ -405,13 +405,13 @@ describe('cleanup job handlers', () => {
       rmRecursiveAsUserMock.responder.fn = async () => {
         callIndex += 1;
         if (callIndex === 1) {
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
         return {
           stdout: '',
           stderr: "rm: cannot remove source-repos clone: Permission denied\n",
           exitCode: 1,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         };
       };
 

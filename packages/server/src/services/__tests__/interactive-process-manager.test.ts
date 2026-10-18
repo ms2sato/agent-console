@@ -924,11 +924,11 @@ describe('InteractiveProcessManager', () => {
             stdout: notYet ? '' : (opts.discoverStdout ?? 'PGID=555\n'),
             stderr: '',
             exitCode: notYet ? 1 : (opts.discoverExit ?? 0),
-            timedOut: false,
+            timedOut: false, cwdFailed: false,
           };
         }
         events.push(`run:${o.command}`);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       const m = new InteractiveProcessManager(
         () => {},
@@ -1077,7 +1077,7 @@ describe('InteractiveProcessManager', () => {
       const runCalls: RunAsUserOpts[] = [];
       const m = new InteractiveProcessManager(() => {}, () => {}, undefined, undefined, undefined, () => 'http://localhost:1', async (o) => {
         runCalls.push(o);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       });
       const started = await m.runProcess({ ...NO_INLINE, sessionId: 's', workerId: 'w', command: 'sleep 30' });
       m.killProcess(started.id);

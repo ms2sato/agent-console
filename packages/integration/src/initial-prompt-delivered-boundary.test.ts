@@ -56,7 +56,7 @@ const fakeRunAsUserAlwaysSuccess: typeof runAsUser = async () => ({
   stdout: '',
   stderr: '',
   exitCode: 0,
-  timedOut: false,
+  timedOut: false, cwdFailed: false,
 });
 
 describe('Client-Server Boundary: Session.initialPromptDelivered', () => {

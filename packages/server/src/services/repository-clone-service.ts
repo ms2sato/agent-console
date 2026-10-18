@@ -497,6 +497,11 @@ export class RepositoryCloneService {
         `Could not reserve target directory: timed out after ${Math.floor(RESERVE_TIMEOUT_MS / 1000)}s`,
       );
     }
+    if (reservation.cwdFailed) {
+      throw new CloneValidationError(
+        `Could not reserve target directory: working directory ${this.sourceReposDir} is not available`,
+      );
+    }
     if (reservation.exitCode !== 0) {
       const stderr = reservation.stderr.trim();
       if (stderr.includes('File exists')) {

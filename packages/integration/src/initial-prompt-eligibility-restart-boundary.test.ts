@@ -237,7 +237,7 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     // write unconditionally (not gated on auth mode) -- stub it to always
     // succeed so worker creation doesn't hit the real OS.
     const stubRunAsUser = async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
-      stdout: '', stderr: '', exitCode: 0, timedOut: false,
+      stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false,
     });
     // Issue #1886: unlike the other affected fixtures, this test's scenario
     // (the PTY side must NOT yet have delivered the initial prompt at
@@ -297,7 +297,7 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     // write unconditionally (not gated on auth mode) -- stub it to always
     // succeed so worker creation doesn't hit the real OS.
     const stubRunAsUser = async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
-      stdout: '', stderr: '', exitCode: 0, timedOut: false,
+      stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false,
     });
     // This file's locationPath literal isn't seeded on real/mocked fs and this
     // test doesn't exercise the cwd-existence check itself (Issue #1892).

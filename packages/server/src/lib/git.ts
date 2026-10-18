@@ -136,6 +136,13 @@ async function gitExec(
         'Timeout'
       );
     }
+    if (result.cwdFailed) {
+      throw new GitError(
+        `git ${args[0] ?? '<unknown>'} failed: working directory ${cwd} is not available`,
+        result.exitCode,
+        result.stderr
+      );
+    }
     if (result.exitCode !== 0) {
       const stderr = result.stderr;
       throw new GitError(
@@ -1008,12 +1015,10 @@ const WORKING_TREE_DIR_EXIT_CODE = 42;
  * Shell command the elevated path of `readWorkingTreeFile` runs: exit
  * `WORKING_TREE_DIR_EXIT_CODE` for a directory, else `cat` the file.
  *
- * Both paths are ABSOLUTE (`cwd` joined with `relPath`), so the command is
- * cwd-independent by construction. The elevated runner wraps the command as
- * `cd <cwd>; <command>`, and if that `cd` fails (worktree deleted or
- * unreadable) the command still runs, in the target user's HOME. A relative
- * path would then read from the wrong place; an absolute one cannot be
- * redirected, and a missing worktree surfaces as `No such file`.
+ * Both paths are ABSOLUTE (`cwd` joined with `relPath`), so the command does not
+ * depend on the shell's working directory. The elevated runner already stops
+ * before the command when its `cd <cwd>` fails (reported as `cwdFailed`); the
+ * absolute paths keep the command correct on any other route to it.
  * @internal Exported for testing
  */
 export function buildWorkingTreeReadCommand(cwd: string, relPath: string): string {
@@ -1066,6 +1071,13 @@ export async function readWorkingTreeFile(
         `read ${relPath} timed out after ${DEFAULT_GIT_TIMEOUT_MS}ms`,
         result.exitCode,
         'Timeout'
+      );
+    }
+    if (result.cwdFailed) {
+      throw new GitError(
+        `read ${relPath} failed: working directory ${cwd} is not available`,
+        result.exitCode,
+        result.stderr
       );
     }
     if (result.exitCode === WORKING_TREE_DIR_EXIT_CODE) return { kind: 'directory' };
