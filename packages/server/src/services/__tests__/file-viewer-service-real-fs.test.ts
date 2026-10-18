@@ -350,11 +350,6 @@ describe('readWorkingTreeFile direct path with { regularOnly, maxBytes } on real
 });
 
 describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => {
-  // Logged once so a CI failure names the environment (the by-name stat count has differed between machines).
-  console.log(
-    `[fifo tests env] arch=${process.arch} platform=${process.platform} bun=${Bun.version} ` +
-      `O_NONBLOCK=${fsConstants.O_NONBLOCK} (${typeof fsConstants.O_NONBLOCK})`,
-  );
   const opts = { regularOnly: true, maxBytes: 100 } as const;
 
   /** Resolves with the call's result, or 'blocked' after `ms`; unblocks a parked reader so nothing leaks. */
