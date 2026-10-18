@@ -70,6 +70,7 @@ import {
 import { createLogger } from '../lib/logger.js';
 import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { serverConfig } from '../lib/server-config.js';
+import { SessionPausingError } from '../lib/errors.js';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
 import type { WindowObservation } from './embedded-agent-window-observations.js';
@@ -354,6 +355,13 @@ export type ApplyMcpServerPermissionsResult = { ok: true; live: boolean } | { ok
 
 export interface EmbeddedAgentWorkerServiceDeps {
   getSession: (sessionId: string) => InternalSession | undefined;
+  /**
+   * True while the session is being paused. `activate` refuses (rejects with
+   * `SessionPausingError`) so no path -- WebSocket open, restart, notification
+   * delivery -- can revive a subprocess the pause just tore down. Optional:
+   * callers that never pause sessions omit it.
+   */
+  isSessionPausing?: (sessionId: string) => boolean;
   persistSession: (session: InternalSession) => Promise<void>;
   /**
    * Broadcasts the app-wide `session-updated` event whenever this service
@@ -874,6 +882,9 @@ export class EmbeddedAgentWorkerService {
    * callers (so `activate() === activate()` while in flight).
    */
   activate(sessionId: string, workerId: string): Promise<void> {
+    if (this.deps.isSessionPausing?.(sessionId)) {
+      return Promise.reject(new SessionPausingError(sessionId));
+    }
     const inFlight = this.activations.get(workerId);
     if (inFlight) {
       return inFlight;

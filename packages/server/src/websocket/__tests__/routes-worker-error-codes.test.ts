@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import type { AuthUser } from '@agent-console/shared';
@@ -12,7 +12,7 @@ import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SqliteSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
-import { SessionManager } from '../../services/session-manager.js';
+import { SessionManager, type ExecuteHookCommand } from '../../services/session-manager.js';
 import { RepositoryManager } from '../../services/repository-manager.js';
 import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
@@ -71,6 +71,8 @@ describe('Worker WebSocket connection error codes', () => {
   let testJobQueue: JobQueue | null = null;
   let sessionManager: SessionManager;
   let capturedWorkerHandlerFactory: WebSocketHandlerFactory | null = null;
+  // The repository pause command's runner; a test replaces it to hold a pause open.
+  let pauseHook: ExecuteHookCommand;
 
   beforeEach(async () => {
     await closeDatabase();
@@ -82,6 +84,7 @@ describe('Worker WebSocket connection error codes', () => {
 
     ptyFactory.reset();
     capturedWorkerHandlerFactory = null;
+    pauseHook = mock<ExecuteHookCommand>(async () => ({ success: true }));
 
     resetProcessMock();
     await initializeDatabase(':memory:');
@@ -100,9 +103,10 @@ describe('Worker WebSocket connection error codes', () => {
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),
       repositoryEnvLookup: {
-        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo', pauseCommand: 'docker compose stop' }),
         getWorktreeIndexNumber: async () => 0,
       },
+      executeHookCommand: (...args) => pauseHook(...args),
     });
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
@@ -209,6 +213,51 @@ describe('Worker WebSocket connection error codes', () => {
 
     // Verify connection was closed
     expect(mockWs.closeCalls.length).toBe(1);
+  });
+
+  it('closes a worker socket opened while the session is pausing with SESSION_PAUSED and does not spawn a PTY', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    let resolveHook!: (result: Awaited<ReturnType<ExecuteHookCommand>>) => void;
+    const held = mock<ExecuteHookCommand>(
+      () =>
+        new Promise((resolve) => {
+          resolveHook = resolve;
+        }),
+    );
+    pauseHook = held;
+
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const agentWorker = session.workers.find((w) => w.type === 'agent')!;
+    const pause = sessionManager.pauseSession(session.id);
+    for (let i = 0; i < 400 && held.mock.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(sessionManager.isPausing(session.id)).toBe(true);
+    const spawnsBefore = ptyFactory.instances.length;
+
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? agentWorker.id : '') },
+    });
+    const mockWs = createMockWs();
+    handlers.onOpen({}, mockWs);
+    for (let i = 0; i < 400 && mockWs.closeCalls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const errorMessage = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMessage).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
+    expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
+    expect(ptyFactory.instances.length).toBe(spawnsBefore);
+
+    resolveHook({ success: true });
+    await pause;
   });
 
   it('should send SESSION_PAUSED error code when notifySessionPaused is called', async () => {

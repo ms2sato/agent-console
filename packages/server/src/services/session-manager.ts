@@ -46,6 +46,7 @@ import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
 import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../lib/mcp-server-permissions.js';
 import { serverConfig } from '../lib/server-config.js';
+import { SessionPausingError } from '../lib/errors.js';
 import { canOperateSession } from '../lib/session-access.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
@@ -147,6 +148,9 @@ export type { InternalWorker, InternalPtyWorker } from './worker-types.js';
 export type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 
 export type { RestoreWorkerResult } from './worker-lifecycle-manager.js';
+
+/** The injected runner for a repository's pause / resume command. */
+export type ExecuteHookCommand = WorktreeService['executeHookCommand'];
 
 /**
  * One worker's outcome from {@link SessionManager.restartAllAgentWorkers}.
@@ -342,7 +346,7 @@ interface SessionManagerOptions {
    * it, and pause / resume then run no command. Production (createAppContext)
    * passes `worktreeService.executeHookCommand`.
    */
-  executeHookCommand?: WorktreeService['executeHookCommand'];
+  executeHookCommand?: ExecuteHookCommand;
   /**
    * Optional lookup used to derive `Session.isShared` server-side. Defaults
    * to a stub that always returns false (safe for tests + the AUTH_MODE=none
@@ -398,7 +402,14 @@ export class SessionManager {
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
   private readonly repositoryLookup: RepositoryLookup;
   private readonly repositoryEnvLookup: RepositoryEnvLookup;
-  private readonly executeHookCommand?: WorktreeService['executeHookCommand'];
+  private readonly executeHookCommand?: ExecuteHookCommand;
+  /**
+   * Sessions with a pause in flight. The entry exists from before the first
+   * worker is killed until the pause settles (success or failure), so every
+   * path that would re-activate a worker can refuse while the session is still
+   * in memory with its PTYs cleared.
+   */
+  private readonly pausing = new Map<string, Promise<PauseSessionOutcome>>();
   private webSocketCallbacks: WebSocketCallbacks | null = null;
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
@@ -541,6 +552,7 @@ export class SessionManager {
       options.getMcpBaseUrl ?? (() => `http://localhost:${serverConfig.PORT}/mcp`);
     this.embeddedAgentWorkerService = new EmbeddedAgentWorkerService({
       getSession: (id) => this.sessions.get(id),
+      isSessionPausing: (id) => this.isPausing(id),
       persistSession: (session) => this.persistSession(session),
       getPathResolver: (session) => this.getPathResolverForSession(session),
       getEmbeddedAgent: (id) => embeddedAgentManager.getEmbeddedAgent(id),
@@ -1669,7 +1681,45 @@ export class SessionManager {
    * Delegates to SessionPauseResumeService.
    */
   async pauseSession(id: string): Promise<PauseSessionOutcome> {
-    return this.sessionPauseResumeService.pauseSession(id);
+    // A second pause joins the one in flight: same outcome, no second hook run.
+    const inFlight = this.pausing.get(id);
+    if (inFlight) return inFlight;
+
+    // Registered before the service runs (an async function executes
+    // synchronously up to its first await, and the service issues its first
+    // worker kill in that segment), so the guard covers the kill phase too.
+    let resolveOutcome!: (outcome: PauseSessionOutcome) => void;
+    let rejectOutcome!: (reason: unknown) => void;
+    const joinable = new Promise<PauseSessionOutcome>((resolve, reject) => {
+      resolveOutcome = resolve;
+      rejectOutcome = reject;
+    });
+    // The first caller sees the failure through its own promise; this keeps an
+    // unjoined rejection from surfacing as an unhandled one.
+    joinable.catch(() => {});
+    this.pausing.set(id, joinable);
+
+    try {
+      const outcome = await this.sessionPauseResumeService.pauseSession(id);
+      resolveOutcome(outcome);
+      return outcome;
+    } catch (err) {
+      rejectOutcome(err);
+      throw err;
+    } finally {
+      this.pausing.delete(id);
+    }
+  }
+
+  /** True while a pause for the session is in flight (see {@link pausing}). */
+  isPausing(id: string): boolean {
+    return this.pausing.has(id);
+  }
+
+  private assertNotPausing(sessionId: string): void {
+    if (this.isPausing(sessionId)) {
+      throw new SessionPausingError(sessionId);
+    }
   }
 
   /**
@@ -1765,6 +1815,7 @@ export class SessionManager {
     initialPrompt?: string,
     templateVars?: Record<string, string>
   ): Promise<Worker | null> {
+    this.assertNotPausing(sessionId);
     return this.workerLifecycleManager.createWorker(sessionId, request, startupPreference, initialPrompt, templateVars);
   }
 
@@ -1778,6 +1829,7 @@ export class SessionManager {
    * Activates PTY if needed (after server restart).
    */
   async getAvailableWorker(sessionId: string, workerId: string): Promise<InternalPtyWorker | null> {
+    this.assertNotPausing(sessionId);
     return this.workerLifecycleManager.getAvailableWorker(sessionId, workerId);
   }
 
@@ -1865,6 +1917,7 @@ export class SessionManager {
     agentId?: string,
     branch?: string
   ): Promise<Worker | null> {
+    this.assertNotPausing(sessionId);
     return this.workerLifecycleManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
   }
 
@@ -1880,11 +1933,13 @@ export class SessionManager {
     embeddedAgentId: string,
     branch?: string
   ): Promise<Worker | null> {
+    this.assertNotPausing(sessionId);
     return this.workerLifecycleManager.restartAgentWorkerAsEmbedded(sessionId, workerId, embeddedAgentId, branch);
   }
 
   /** Restore a PTY worker, activating its PTY if needed after server restart. */
   async restoreWorker(sessionId: string, workerId: string): Promise<RestoreWorkerResult> {
+    this.assertNotPausing(sessionId);
     return this.workerLifecycleManager.restoreWorker(sessionId, workerId);
   }
 
@@ -2226,7 +2281,22 @@ export class SessionManager {
         continue;
       }
 
+      const pausing = this.isPausing(session.id);
+
       for (const worker of session.workers.values()) {
+        if (pausing && worker.type !== 'git-diff') {
+          // A pausing session is skipped, not restarted: its workers are
+          // already down and a restart would revive them mid-pause.
+          results.push({
+            sessionId: session.id,
+            workerId: worker.id,
+            workerType: worker.type,
+            outcome: 'skipped',
+            error: 'Session is pausing',
+          });
+          continue;
+        }
+
         if (worker.type === 'terminal') {
           results.push({ sessionId: session.id, workerId: worker.id, workerType: 'terminal', outcome: 'skipped' });
           continue;

@@ -18,9 +18,8 @@ import { SingleUserMode } from '../user-mode.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { createTestSessionRepository } from '../../__tests__/utils/test-session-repository.js';
 import { serverConfig } from '../../lib/server-config.js';
-import type { WorktreeService } from '../worktree-service.js';
+import type { ExecuteHookCommand } from '../session-manager.js';
 
-type ExecuteHookCommand = WorktreeService['executeHookCommand'];
 type HookResult = Awaited<ReturnType<ExecuteHookCommand>>;
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -103,12 +102,12 @@ describe('SessionManager auto-resume runs the resume command', () => {
 
   it('runs the repository resume command once, with the time box, before worker activation', async () => {
     persistSessions([worktreeSession()]);
-    const executeHookCommand = mock(async (..._args: unknown[]): Promise<HookResult> => {
+    const executeHookCommand = mock<ExecuteHookCommand>(async (): Promise<HookResult> => {
       callLog.push('hook');
       return { success: true };
     });
 
-    await createSessionManager(executeHookCommand as unknown as ExecuteHookCommand, {
+    await createSessionManager(executeHookCommand, {
       name: 'test-repo',
       path: '/test/repo',
       resumeCommand: RESUME_COMMAND,
@@ -134,7 +133,7 @@ describe('SessionManager auto-resume runs the resume command', () => {
     persistSessions([worktreeSession()]);
     let resolveHook!: (result: HookResult) => void;
     let receivedTimeoutMs: unknown;
-    const executeHookCommand = mock((...args: unknown[]) => {
+    const executeHookCommand = mock<ExecuteHookCommand>((...args) => {
       callLog.push('hook');
       receivedTimeoutMs = args[4];
       return new Promise<HookResult>((resolve) => {
@@ -143,7 +142,7 @@ describe('SessionManager auto-resume runs the resume command', () => {
     });
 
     let settled = false;
-    const managerPromise = createSessionManager(executeHookCommand as unknown as ExecuteHookCommand, {
+    const managerPromise = createSessionManager(executeHookCommand, {
       name: 'test-repo',
       path: '/test/repo',
       resumeCommand: RESUME_COMMAND,
@@ -169,9 +168,9 @@ describe('SessionManager auto-resume runs the resume command', () => {
 
   it('does not call the hook for a worktree session whose repository has no resume command', async () => {
     persistSessions([worktreeSession()]);
-    const executeHookCommand = mock(async (..._args: unknown[]): Promise<HookResult> => ({ success: true }));
+    const executeHookCommand = mock<ExecuteHookCommand>(async (): Promise<HookResult> => ({ success: true }));
 
-    await createSessionManager(executeHookCommand as unknown as ExecuteHookCommand, {
+    await createSessionManager(executeHookCommand, {
       name: 'test-repo',
       path: '/test/repo',
     });
@@ -191,9 +190,9 @@ describe('SessionManager auto-resume runs the resume command', () => {
         serverPid: 55555,
       }),
     ]);
-    const executeHookCommand = mock(async (..._args: unknown[]): Promise<HookResult> => ({ success: true }));
+    const executeHookCommand = mock<ExecuteHookCommand>(async (): Promise<HookResult> => ({ success: true }));
 
-    await createSessionManager(executeHookCommand as unknown as ExecuteHookCommand, {
+    await createSessionManager(executeHookCommand, {
       name: 'test-repo',
       path: '/test/repo',
       resumeCommand: RESUME_COMMAND,
