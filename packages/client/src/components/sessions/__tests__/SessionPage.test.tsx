@@ -763,10 +763,14 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         expect(appSocket).toBeDefined();
 
         // The rename PATCH must succeed, otherwise an error dialog hides the tab bar.
+        // It is HELD until the test releases it, so the input stays shown while
+        // the new name arrives (the measured layout-before-final case).
+        let releasePatch: () => void = () => {};
+        const patchHeld = new Promise<void>((resolve) => { releasePatch = resolve; });
         const routed = mockFetch.getMockImplementation()!;
         mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => (
           init?.method === 'PATCH' && urlToString(input).endsWith(`/workers/${workerId}/name`)
-            ? Promise.resolve(jsonResponse({ worker: { ...WORKERS.find((w) => w.id === workerId)!, name: newName } }))
+            ? patchHeld.then(() => jsonResponse({ worker: { ...WORKERS.find((w) => w.id === workerId)!, name: newName } }))
             : routed(input, init)
         ));
 
@@ -786,6 +790,10 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
               session: createMockSession({ workers: WORKERS.map((w) => (w.id === workerId ? { ...w, name: newName } : w)) }),
             })));
           });
+          // Control: the scroll for the new name ran while the input was still shown.
+          await waitFor(() => expect(calls.some((c) => c.editing)).toBe(true));
+          expect(screen.getByRole('textbox', { name: 'Tab name' })).toBeTruthy();
+          act(() => releasePatch());
           await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
           await waitFor(() => expect(screen.getByRole('tab', { name: newName })).toBeTruthy());
 
