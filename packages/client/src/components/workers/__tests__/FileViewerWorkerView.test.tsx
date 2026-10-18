@@ -13,18 +13,26 @@ import {
   type FileViewerFetchRoutes,
 } from '../../../test/file-viewer-fetch';
 import { waitForAbsent } from '../../../test/waitForAbsent';
+import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
+import { _reset } from '../../../lib/worker-websocket';
 
 const originalFetch = globalThis.fetch;
 const originalMatchMedia = window.matchMedia;
+let restoreWebSocket: () => void;
 
 afterAll(() => {
   globalThis.fetch = originalFetch;
 });
 beforeEach(() => {
   window.matchMedia = originalMatchMedia;
+  // The view opens the viewer's worker WebSocket while mounted.
+  restoreWebSocket = installMockWebSocket();
+  _reset();
 });
 afterEach(() => {
   cleanup();
+  _reset();
+  restoreWebSocket();
   window.matchMedia = originalMatchMedia;
 });
 
@@ -273,6 +281,169 @@ describe('FileViewerWorkerView (desktop)', () => {
       expect(alert.textContent).toContain('Path is a directory');
       expect(alert.textContent).toContain('Also tried as a directory: Forbidden');
     });
+  });
+});
+
+describe('FileViewerWorkerView (live updates)', () => {
+  const liveRoutes = (): FileViewerFetchRoutes => ({
+    tree: {
+      '': [
+        { name: 'sub', kind: 'dir' },
+        { name: 'other', kind: 'dir' },
+      ],
+      sub: [{ name: 'a.ts', kind: 'file' }],
+      other: [{ name: 'x.ts', kind: 'file' }],
+    },
+    content: { 'sub/a.ts': textFile('sub/a.ts', 'old content\n') },
+  });
+
+  function openSocket() {
+    const ws = MockWebSocket.getLastInstance()!;
+    act(() => ws.simulateOpen());
+    return ws;
+  }
+
+  function sendFrame(ws: MockWebSocket, frame: object) {
+    act(() => ws.simulateMessage(JSON.stringify(frame)));
+  }
+
+  const keysOf = (calls: Array<{ route: string; path: string }>) => calls.map((c) => `${c.route}:${c.path}`).sort();
+
+  async function openSubFile(r: FileViewerFetchRoutes) {
+    const stub = installFetch(r);
+    await renderView();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'sub' }));
+    await user.click(await screen.findByRole('button', { name: 'a.ts' }));
+    await screen.findByText('old content');
+    return { ...stub, user, ws: openSocket() };
+  }
+
+  // Reach (measured): this is the pin for "a collapsed directory is NOT
+  // refetched", which rests on refetchType defaulting to 'active'. Passing
+  // refetchType: 'all' on the tree invalidation fails THIS test (tree:other
+  // joins the fetch set) plus, at the hook level, `never asks to refetch
+  // inactive queries` and the 7 table tests that pin the filter object.
+  // Dropping `exact: true` fails no test in this file: React Query matches keys
+  // element-wise, so tree(s, w, 'sub') never prefix-matches another directory.
+  it('refetches the changed open directory and the selected file, and not a collapsed directory', async () => {
+    const r = liveRoutes();
+    const { calls, user, ws } = await openSubFile(r);
+    // `other` was opened then collapsed: cached but inactive, so only a stale mark may touch it.
+    await user.click(screen.getByRole('button', { name: 'other' }));
+    await screen.findByRole('button', { name: 'x.ts' });
+    await user.click(screen.getByRole('button', { name: 'other' }));
+    await waitForAbsent(() => screen.queryByRole('button', { name: 'x.ts' }));
+    calls.length = 0;
+
+    r.tree!.sub = [
+      { name: 'a.ts', kind: 'file' },
+      { name: 'b.ts', kind: 'file' },
+    ];
+    r.content!['sub/a.ts'] = textFile('sub/a.ts', 'new content\n');
+    sendFrame(ws, { type: 'files-changed', paths: ['sub/a.ts', 'other/x.ts'], overflow: false });
+
+    expect(await screen.findByRole('button', { name: 'b.ts' })).toBeTruthy();
+    expect(await screen.findByText('new content')).toBeTruthy();
+    expect(keysOf(calls)).toEqual(['content:sub/a.ts', 'tree:sub']);
+  });
+
+  it('shows "File removed" (not an alert) when the selected file is gone, and shows it again once re-created', async () => {
+    const r = liveRoutes();
+    const { ws } = await openSubFile(r);
+
+    delete r.content!['sub/a.ts'];
+    sendFrame(ws, { type: 'files-changed', paths: ['sub/a.ts'], overflow: false });
+
+    expect(await screen.findByText('File removed')).toBeTruthy();
+    expect(screen.getByText('sub/a.ts')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'a.ts' }).closest('li')!.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('button', { name: 'sub' }).closest('li')!.getAttribute('aria-expanded')).toBe('true');
+
+    r.content!['sub/a.ts'] = textFile('sub/a.ts', 'back again\n');
+    sendFrame(ws, { type: 'files-changed', paths: ['sub/a.ts'], overflow: false });
+
+    expect(await screen.findByText('back again')).toBeTruthy();
+    expect(screen.queryByText('File removed')).toBeNull();
+  });
+
+  it('keeps the alert pane for a non-404 content error', async () => {
+    const r = liveRoutes();
+    const { ws } = await openSubFile(r);
+
+    r.content!['sub/a.ts'] = { failure: { status: 400, error: 'Not a regular file' } };
+    sendFrame(ws, { type: 'files-changed', paths: ['sub/a.ts'], overflow: false });
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Not a regular file');
+    expect(screen.queryByText('File removed')).toBeNull();
+  });
+
+  it('collapses an expanded directory that was deleted, without an alert row', async () => {
+    const r = liveRoutes();
+    const { ws } = await openSubFile(r);
+
+    delete r.tree!.sub;
+    sendFrame(ws, { type: 'files-changed', paths: ['sub/a.ts'], overflow: false });
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'sub' }).closest('li')!.getAttribute('aria-expanded')).toBe('false'),
+    );
+    expect(screen.queryByRole('button', { name: 'a.ts' })).toBeNull();
+    expect(screen.queryByText('Not found')).toBeNull();
+  });
+
+  it('expands a re-created directory with ONE click after it was collapsed by a 404', async () => {
+    const r = liveRoutes();
+    const { user, ws } = await openSubFile(r);
+    const subItem = () => screen.getByRole('button', { name: 'sub' }).closest('li')!;
+
+    delete r.tree!.sub;
+    sendFrame(ws, { type: 'files-changed', paths: ['sub/a.ts'], overflow: false });
+    await waitFor(() => expect(subItem().getAttribute('aria-expanded')).toBe('false'));
+
+    r.tree!.sub = [{ name: 'a.ts', kind: 'file' }];
+    await user.click(screen.getByRole('button', { name: 'sub' }));
+
+    // The cached 404 must not be read as "gone" while the refetch is in flight.
+    expect(await screen.findByRole('button', { name: 'a.ts' })).toBeTruthy();
+    expect(subItem().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('keeps the alert when the root listing itself is gone', async () => {
+    const r = liveRoutes();
+    const { ws } = await openSubFile(r);
+
+    delete r.tree![''];
+    sendFrame(ws, { type: 'files-changed', paths: ['new.ts'], overflow: false });
+
+    expect((await screen.findByRole('alert')).textContent).toBe('Not found');
+  });
+
+  it('says live updates are unavailable and keeps Refresh working', async () => {
+    const r = liveRoutes();
+    const { calls, user, ws } = await openSubFile(r);
+    expect(screen.queryByText(/Live updates unavailable/)).toBeNull();
+
+    sendFrame(ws, { type: 'watch-unavailable', reason: 'permission-denied' });
+
+    expect((await screen.findByText('Live updates unavailable (permission denied)'))).toBeTruthy();
+    const refresh = screen.getByRole('button', { name: /Refresh/ }) as HTMLButtonElement;
+    expect(refresh.disabled).toBe(false);
+    calls.length = 0;
+    r.content!['sub/a.ts'] = textFile('sub/a.ts', 'after refresh\n');
+    await user.click(refresh);
+
+    expect(await screen.findByText('after refresh')).toBeTruthy();
+    expect(keysOf(calls)).toEqual(['content:sub/a.ts', 'tree:', 'tree:sub']);
+  });
+
+  it('names a failed watch differently from a denied one', async () => {
+    const { ws } = await openSubFile(liveRoutes());
+
+    sendFrame(ws, { type: 'watch-unavailable', reason: 'watch-failed' });
+
+    expect(await screen.findByText('Live updates unavailable (watch failed)')).toBeTruthy();
   });
 });
 

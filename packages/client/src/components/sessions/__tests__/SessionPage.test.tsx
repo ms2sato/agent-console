@@ -332,10 +332,9 @@ describe('SessionPage mobile side-panels drawer gate', () => {
       return MockWebSocket.getInstances().map((ws) => ws.url).filter((url) => url.includes('/worker/'));
     }
 
-    it('renders the viewer view and opens no worker WebSocket for it (the app socket does open)', async () => {
-      // Reach (measured): dropping SessionPage's file-viewer view branch (so the
-      // tab falls through to the terminal view) fails this test: the terminal
-      // view opens `/ws/session/session-1/worker/viewer-1`.
+    it('renders the viewer view, which opens its own worker WebSocket for live updates', async () => {
+      // The viewer view subscribes to file changes over the worker WebSocket
+      // while mounted (useFileViewerLiveUpdates), exactly one socket.
       const { matchMedia } = createMockMatchMedia(false);
       window.matchMedia = matchMedia;
       routeFetch([VIEWER_WORKER]);
@@ -343,9 +342,7 @@ describe('SessionPage mobile side-panels drawer gate', () => {
       await renderSessionPage(sessionStopTasksValue, 'viewer-1');
 
       await waitFor(() => expect(screen.getByText('Select a file to view it.')).toBeTruthy());
-      // Positive control: the harness sees WebSocket opens (the app-wide socket).
-      expect(MockWebSocket.getInstances().some((ws) => ws.url.includes('/ws/app'))).toBe(true);
-      expect(workerSocketUrls()).toEqual([]);
+      await waitFor(() => expect(workerSocketUrls().filter((url) => url.includes('/worker/viewer-1'))).toHaveLength(1));
     });
 
     it('control: a terminal tab in the same harness does open its worker WebSocket', async () => {
