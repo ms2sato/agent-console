@@ -49,7 +49,9 @@ function TerminalPage({ sessionId, workerId }: { sessionId: string; workerId: st
 
   const focusInput = () => inputRef.current?.focus();
 
-  // Linkify GitHub refs (#958); null repo -> bare refs stay plain text.
+  // Linkify GitHub refs (#958); null repo -> bare refs stay plain text. `true`: the
+  // labs page targets worktree sessions; a quick session here would get a 400
+  // from the PR-link endpoint (see TerminalAdapter's resolveRepoFullName).
   const repoFullName = useSessionRepoFullName(sessionId, true);
   const transformContext = useMemo<TransformContext>(() => ({ repoFullName }), [repoFullName]);
 
