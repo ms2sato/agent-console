@@ -56,6 +56,11 @@ export const FILE_VIEWER_BINARY_PROBE_BYTES = 8192;
 /** Time box of every elevated command the viewer runs. */
 const FILE_VIEWER_COMMAND_TIMEOUT_MS = 30_000;
 
+// The viewer's command exit codes (and the neighbours they must not collide with) are distinct on
+// purpose: 42 (directory) and 43 (not a regular file) are `readWorkingTreeFile`'s, 44, 46 and 47 are
+// below, 125 is `CWD_FAILED_EXIT_CODE` (the elevated cd guard) and 137 is a timed-out run. Callers
+// tell the outcomes apart by exit code alone, so none may be reused.
+
 /** Exit code of the listing command: the (existing) target is not a directory. */
 const LISTING_NOT_A_DIRECTORY_EXIT_CODE = 44;
 /** Exit code of the realpath command: the working directory itself cannot be resolved. */
@@ -111,22 +116,24 @@ export function buildDirectoryListingCommand(absDir: string): string {
 
 /**
  * Shell command that prints the real path of the working directory and of the
- * target (two lines), as the user the shell runs as. Exits
+ * target (exactly two lines), as the user the shell runs as. Exits
  * `REALPATH_ROOT_UNAVAILABLE_EXIT_CODE` / `REALPATH_TARGET_MISSING_EXIT_CODE`
  * when either cannot be resolved; the explicit `test -d` / `test -e` are what
  * make a missing root or leaf a failure on every `realpath` (GNU's default
  * tolerates a missing last component).
- * Both arguments are ABSOLUTE.
+ * Both arguments are ABSOLUTE. The command holds no shell variable and no `$`
+ * at all: the elevated login shell expands `$` before the inner `sh -c` runs
+ * (`.claude/rules/elevation-helpers.md`), so a variable would arrive empty.
  * @internal Exported for testing
  */
 export function buildRealpathCommand(absRoot: string, absTarget: string): string {
   const root = shellEscape(absRoot);
   const target = shellEscape(absTarget);
   return [
-    `r=$(test -d ${root} && realpath -- ${root}) || exit ${REALPATH_ROOT_UNAVAILABLE_EXIT_CODE}`,
+    `test -d ${root} || exit ${REALPATH_ROOT_UNAVAILABLE_EXIT_CODE}`,
+    `realpath -- ${root} || exit ${REALPATH_ROOT_UNAVAILABLE_EXIT_CODE}`,
     `test -e ${target} || exit ${REALPATH_TARGET_MISSING_EXIT_CODE}`,
-    `printf '%s\\n' "$r"`,
-    `realpath -- ${target}`,
+    `realpath -- ${target} || exit ${REALPATH_TARGET_MISSING_EXIT_CODE}`,
   ].join('; ');
 }
 

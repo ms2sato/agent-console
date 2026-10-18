@@ -69,12 +69,16 @@ describe('buildDirectoryListingCommand', () => {
 });
 
 describe('buildRealpathCommand', () => {
-  it('resolves the root, requires the target to exist, then prints both real paths -- all absolute', () => {
+  it('probes then resolves the root, probes then resolves the target -- all absolute, no variable', () => {
     const root = shellEscape('/home/alice/wt');
     const target = shellEscape("/home/alice/wt/it's");
     expect(buildRealpathCommand('/home/alice/wt', "/home/alice/wt/it's")).toBe(
-      `r=$(test -d ${root} && realpath -- ${root}) || exit 46; test -e ${target} || exit 47; printf '%s\\n' "$r"; realpath -- ${target}`,
+      `test -d ${root} || exit 46; realpath -- ${root} || exit 46; test -e ${target} || exit 47; realpath -- ${target} || exit 47`,
     );
+  });
+
+  it('contains no $ at all (the elevated login shell expands $ before the inner sh runs)', () => {
+    expect(buildRealpathCommand('/a', '/a/b')).not.toContain('$');
   });
 
   it('is single-line', () => {
@@ -398,5 +402,41 @@ describe('mode matrix: no OS user (single-user mode, or the spawn user is the se
     );
     await expect(listDirectory(missing, '', '', { runAsUser })).rejects.toThrow(new NotFoundError('Working directory'));
     expect(calls.length).toBe(0);
+  });
+});
+
+// The elevated login shell re-parses the inner command and expands `$` (and backticks) before the
+// inner `sh` runs, so a command that relies on a shell variable arrives with it empty. This is the
+// unit-level tripwire for that class; the REAL check is the tier-2 smoke
+// (scripts/smoke/check-file-viewer-elevated-read.ts), which sends the commands through an actual
+// elevated login shell. Representative inputs contain no `$` themselves (a path with one is
+// single-quoted by shellEscape and survives the re-parse).
+describe('every command the viewer sends through the elevated runner is free of login-shell expansion', () => {
+  const FORBIDDEN = ['$', '`'];
+
+  function assertClean(command: string) {
+    for (const ch of FORBIDDEN) expect(command).not.toContain(ch);
+  }
+
+  it('the exported builders', () => {
+    assertClean(buildDirectoryListingCommand('/home/alice/wt/sub dir'));
+    assertClean(buildRealpathCommand('/home/alice/wt', "/home/alice/wt/it's"));
+  });
+
+  it('the commands a real list and read actually send (recorded at the runner seam)', async () => {
+    const sent: string[] = [];
+    const runAsUser: FileViewerDeps['runAsUser'] = async (opts) => {
+      sent.push(opts.command);
+      return opts.command.includes('find ')
+        ? result({ stdout: '\0\0\0\0' })
+        : realpathOut(ROOT, `${ROOT}/f`);
+    };
+    await listDirectory(ROOT, '', 'alice', { runAsUser });
+    await readFileContent(ROOT, 'f', 'alice', {
+      runAsUser,
+      readWorkingTreeFile: (async () => ({ kind: 'file', content: Buffer.from('x'), size: 1 })) as FileViewerDeps['readWorkingTreeFile'],
+    });
+    expect(sent.length).toBe(3); // realpath + listing, realpath
+    for (const command of sent) assertClean(command);
   });
 });

@@ -1636,6 +1636,15 @@ index abc1234..def5678 100644
         expect(mod.buildWorkingTreeReadCommand('/work/tree', 'a.txt', {})).toBe(`test -d ${e} && exit 42; cat -- ${e}`);
       });
 
+      it('no variant of the command contains $ or a backtick (the elevated login shell expands them first)', async () => {
+        const mod = await getGitModule();
+        for (const opts of [{}, { regularOnly: true }, { maxBytes: 10 }, { regularOnly: true, maxBytes: 10 }]) {
+          const command = mod.buildWorkingTreeReadCommand('/work/tree', "dir/it's.ts", opts);
+          expect(command).not.toContain('$');
+          expect(command).not.toContain('`');
+        }
+      });
+
       it('regularOnly adds the existing-but-not-regular probe (exit 43) after the directory probe, absolute paths only', async () => {
         const mod = await getGitModule();
         expect(mod.buildWorkingTreeReadCommand('/work/tree', 'a.txt', { regularOnly: true })).toBe(

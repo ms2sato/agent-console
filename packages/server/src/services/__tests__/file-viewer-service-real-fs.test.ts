@@ -399,9 +399,14 @@ describe('commands in a real sh, run from a directory that is NOT the target', (
     expect(out.code).toBe(0);
     expect(out.out).toBe(`${worktree}\n${join(outside, 'secret.txt')}\n`);
 
-    expect((await sh(buildRealpathCommand(worktree, join(worktree, 'nope')), otherCwd)).code).toBe(47);
+    // A failure exits with its own code; the service ignores stdout then (the root line may already be out).
+    const missingLeaf = await sh(buildRealpathCommand(worktree, join(worktree, 'nope')), otherCwd);
+    expect(missingLeaf.code).toBe(47);
+    expect(missingLeaf.out).toBe(`${worktree}\n`);
     expect((await sh(buildRealpathCommand(worktree, join(worktree, 'dangling')), otherCwd)).code).toBe(47);
-    expect((await sh(buildRealpathCommand(join(base, 'gone'), join(base, 'gone', 'x')), otherCwd)).code).toBe(46);
+    const missingRoot = await sh(buildRealpathCommand(join(base, 'gone'), join(base, 'gone', 'x')), otherCwd);
+    expect(missingRoot.code).toBe(46);
+    expect(missingRoot.out).toBe('');
   });
 
   it('a service call that gets an unusable listing fails closed (InternalError), not as an empty directory', async () => {

@@ -23,6 +23,7 @@ import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 import { isMultiUserAuthMode, shouldElevateForUser } from '../services/privilege-elevation.js';
 import { assertCanOperateSession } from '../lib/session-access.js';
 import { serverConfig } from '../lib/server-config.js';
+import { listDirectory, readFileContent } from '../services/file-viewer-service.js';
 import { resolvePermissionDecisions } from '../lib/mcp-server-permissions.js';
 import {
   EmbeddedAgentActivationError,
@@ -714,7 +715,6 @@ const workers = new Hono<AppBindings>()
     // The empty string is the root of the session directory.
     const dir = c.req.query('path') ?? '';
 
-    const { listDirectory } = await import('../services/file-viewer-service.js');
     return c.json(await listDirectory(locationPath, dir, requestUser));
   })
   // Read one file of a file-viewer worker's session directory
@@ -731,7 +731,6 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError('path query parameter is required');
     }
 
-    const { readFileContent } = await import('../services/file-viewer-service.js');
     return c.json(await readFileContent(locationPath, filePath, requestUser));
   });
 
