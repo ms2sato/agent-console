@@ -870,9 +870,13 @@ describe('useAppWsEvent', () => {
 /**
  * Frame-driven handlers must declare their reconnect keys. Reach, measured
  * (each mutation applied alone to hooks/useAppWs.ts, `bunx tsc --noEmit`):
- *   - delete the `?: never` arm of `WithoutFrameDriven` -> the `@ts-expect-error`
- *     line below errors ("Unused '@ts-expect-error' directive"), because the call
- *     then type-checks;
+ *   - delete the `[K in FrameDrivenName]?: never` arm of `WithoutFrameDriven`
+ *     -> 22 errors, none of them the `@ts-expect-error` line below becoming an
+ *     "unused directive": without the arm the union collapses, the frame-driven
+ *     names drop out of the options type, and tsc fails at the dispatcher in
+ *     useAppWs.ts (8), in the wire-consumption fixture's callback-name rows (8)
+ *     and in NotificationBell.test.tsx (6). The pin's reach holds (the mutation is
+ *     caught); only a collapsed union, not an unused directive, is how it shows;
  *   - remove a name from `FRAME_DRIVEN_HANDLERS` -> NO type error: that direction
  *     is covered by the runtime registry-completeness test
  *     (reconnect-registry-completeness.test.tsx), not by the type.
