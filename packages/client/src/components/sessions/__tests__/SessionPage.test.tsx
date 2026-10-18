@@ -653,7 +653,7 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
     });
 
     describe('the selected tab is scrolled into view', () => {
-      type ScrollCall = { el: Element; options: unknown };
+      type ScrollCall = { el: Element; options: unknown; editing: boolean };
       let calls: ScrollCall[];
       let scrollSpy: ReturnType<typeof spyOn>;
 
@@ -661,7 +661,8 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         calls = [];
         // Exactly one installation per test; restored in afterEach.
         scrollSpy = spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element, options?: unknown) {
-          calls.push({ el: this, options });
+          // `editing`: whether a rename input was in the DOM at call time.
+          calls.push({ el: this, options, editing: document.querySelector('input[aria-label="Tab name"]') !== null });
         });
       });
 
@@ -747,9 +748,14 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         expect(calls[0].options).toEqual(NEAREST);
       });
 
-      it('renaming an earlier tab through the real rename control never lets the refocus scroll the bar after the scroll-into-view', async () => {
-        // Browser QA: the refocus after a rename scrolled the bar back to 0
-        // right after the effect scrolled the selected tab into view.
+      // Browser QA: the refocus after a rename scrolled the bar back to 0, and
+      // the scroll-into-view ran while the rename input (narrower than the final
+      // label) was still shown, so the selected tab ended up clipped.
+      it.each([
+        ['the first tab', 'w-agent', 'Claude Code'],
+        ['a middle tab', 'w-embedded', 'An embedded agent with a long name'],
+      ])('renaming %s through the real rename control re-scrolls the selected tab AFTER edit mode ends, and never refocuses with scrolling', async (_label, workerId, currentName) => {
+        const newName = 'My long renamed tab name';
         routeFetch(WORKERS);
         await renderSessionPage(sessionStopTasksValue, 'w-viewer');
         await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
@@ -759,35 +765,43 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         // The rename PATCH must succeed, otherwise an error dialog hides the tab bar.
         const routed = mockFetch.getMockImplementation()!;
         mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => (
-          init?.method === 'PATCH' && urlToString(input).endsWith('/workers/w-agent/name')
-            ? Promise.resolve(jsonResponse({ worker: { ...ONE_PER_KIND.agent, name: 'Renamed agent tab' } }))
+          init?.method === 'PATCH' && urlToString(input).endsWith(`/workers/${workerId}/name`)
+            ? Promise.resolve(jsonResponse({ worker: { ...WORKERS.find((w) => w.id === workerId)!, name: newName } }))
             : routed(input, init)
         ));
 
         const user = userEvent.setup();
-        await user.click(screen.getByRole('button', { name: 'Rename Claude Code' }));
-        await user.keyboard('Renamed agent tab');
+        await user.click(screen.getByRole('button', { name: `Rename ${currentName}` }));
+        await user.keyboard(newName);
 
         const { calls: focusCalls, restore: restoreFocus } = recordFocusCalls();
         try {
           calls.length = 0;
           await user.keyboard('{Enter}');
+          // The new name reaches the bar while the input may still be shown.
           act(() => {
             appSocket!.simulateOpen();
             appSocket!.simulateMessage(JSON.stringify(completeWireBody({
               type: 'session-updated',
-              session: createMockSession({ workers: WORKERS.map((w) => (w.id === 'w-agent' ? { ...w, name: 'Renamed agent tab' } : w)) }),
+              session: createMockSession({ workers: WORKERS.map((w) => (w.id === workerId ? { ...w, name: newName } : w)) }),
             })));
           });
           await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
-          await waitFor(() => expect(screen.getByRole('tab', { name: 'Renamed agent tab' })).toBeTruthy());
+          await waitFor(() => expect(screen.getByRole('tab', { name: newName })).toBeTruthy());
 
-          // Selected tab was scrolled into view after the rename...
-          expect(calls.some((c) => c.el === wrapperOf('File Viewer') && JSON.stringify(c.options) === JSON.stringify(NEAREST))).toBe(true);
-          // ...and every refocus of the renamed tab is non-scrolling.
-          const refocus = focusCalls.filter((c) => c.el === screen.getByRole('tab', { name: 'Renamed agent tab' }));
-          expect(refocus.length).toBeGreaterThan(0);
-          for (const c of refocus) expect(c.options).toEqual({ preventScroll: true });
+          // The LAST scroll-into-view of the selected tab happened after edit mode ended.
+          const viewerWrapper = wrapperOf('File Viewer');
+          const viewerCalls = calls.filter((c) => c.el === viewerWrapper);
+          expect(viewerCalls.length).toBeGreaterThan(0);
+          const last = viewerCalls[viewerCalls.length - 1];
+          expect(last.editing).toBe(false);
+          expect(last.options).toEqual(NEAREST);
+          // And it is the very last scroll call of any element.
+          expect(calls[calls.length - 1]).toBe(last);
+          // Every refocus of the renamed tab is non-scrolling.
+          for (const c of focusCalls.filter((f) => f.el === screen.getByRole('tab', { name: newName }))) {
+            expect(c.options).toEqual({ preventScroll: true });
+          }
         } finally {
           restoreFocus();
         }

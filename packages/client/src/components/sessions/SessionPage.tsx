@@ -228,6 +228,10 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const stopTask = getStopTask(sessionId);
   const messagePanelRef = useRef<MessagePanelHandle>(null);
   const tablistRef = useRef<HTMLDivElement>(null);
+  // Bumped when a tab leaves rename mode: the input and the label have
+  // different widths, so the tab bar's layout is only final after that commit.
+  const [tabEditEndCount, setTabEditEndCount] = useState(0);
+  const handleTabEditEnd = useCallback(() => setTabEditEndCount(n => n + 1), []);
   const navigate = useNavigate();
 
   // Re-runs the failed request through the same function the confirm dialog
@@ -345,13 +349,16 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // tab off-screen). The key is a string, compared by value, so the effect does
   // not re-run on unrelated renders. Scoped to the tablist ref, not a
   // document-wide query; this syncs with a browser layout API.
+  // `tabEditEndCount`: a renamed tab is wider as a label than as the edit input,
+  // and the new name can arrive while the input is still shown, so the scroll
+  // above may have measured the pre-final layout; leaving edit mode re-runs it.
   const tabLabelsKey = tabs.map(t => t.name).join('\0');
   useEffect(() => {
     tablistRef.current
       ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
       ?.closest('[data-worker-tab]')
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [activeTabId, state.type, tabLabelsKey]);
+  }, [activeTabId, state.type, tabLabelsKey, tabEditEndCount]);
 
   const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
@@ -694,6 +701,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           buttonClassName={`py-2 text-sm flex items-center shrink-0 whitespace-nowrap gap-2 pl-4 ${closeable ? 'pr-1' : 'pr-4'}`}
           onSelect={() => handleTabClick(tab.id)}
           onError={(message) => showError('Rename Failed', message)}
+          onEditEnd={handleTabEditEnd}
         >
           {tab.workerType === 'git-diff' ? (
             <DiffIcon className="w-3.5 h-3.5 text-violet-400" />

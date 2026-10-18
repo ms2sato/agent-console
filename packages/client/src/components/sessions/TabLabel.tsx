@@ -13,6 +13,13 @@ interface TabLabelProps {
   children?: ReactNode;
   onSelect: () => void;
   onError: (message: string) => void;
+  /**
+   * Called after the tab has left edit mode (committed or cancelled), once the
+   * DOM already shows the final label. The input and the label have different
+   * widths, so a parent that positions this tab (a scrolling tab bar) can only
+   * measure the settled layout from here.
+   */
+  onEditEnd?: () => void;
 }
 
 /**
@@ -35,6 +42,7 @@ export function TabLabel({
   children,
   onSelect,
   onError,
+  onEditEnd,
 }: TabLabelProps) {
   const [editing, setEditing] = useState(false);
   const [pending, setPending] = useState(false);
@@ -46,7 +54,11 @@ export function TabLabel({
   const inputRef = useRef<HTMLInputElement>(null);
   const tabRef = useRef<HTMLButtonElement>(null);
 
+  const wasEditingRef = useRef(false);
+
   useEffect(() => {
+    const wasEditing = wasEditingRef.current;
+    wasEditingRef.current = editing;
     if (editing) {
       inputRef.current?.focus();
       inputRef.current?.select();
@@ -57,6 +69,7 @@ export function TabLabel({
       // scroll of the selected tab into view.
       tabRef.current?.focus({ preventScroll: true });
     }
+    if (wasEditing && !editing) onEditEnd?.();
   }, [editing]);
 
   const startEdit = () => {

@@ -113,6 +113,28 @@ describe('TabLabel', () => {
     }
   });
 
+  it('calls onEditEnd once after a committed rename and once after Escape, never on mount or while editing', async () => {
+    const onEditEnd = mock(() => {});
+    const user = userEvent.setup();
+    render(
+      <div role="tablist">
+        <TabLabel sessionId="s1" workerId="w1" name="Shell 1" active buttonClassName="tab" onSelect={onSelect} onError={onError} onEditEnd={onEditEnd} />
+      </div>,
+    );
+    expect(onEditEnd).not.toHaveBeenCalled();
+
+    await user.dblClick(screen.getByRole('tab', { name: 'Shell 1' }));
+    expect(onEditEnd).not.toHaveBeenCalled();
+    await user.keyboard('build watch{Enter}');
+    await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
+    expect(onEditEnd).toHaveBeenCalledTimes(1);
+
+    await user.dblClick(screen.getByRole('tab', { name: 'Shell 1' }));
+    await user.keyboard('{Escape}');
+    await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
+    expect(onEditEnd).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the input until the request settles, then shows the old name (no optimistic state)', async () => {
     let release: (r: Response) => void = () => {};
     mockFetch.mockImplementation(() => new Promise<Response>((resolve) => { release = resolve; }));
