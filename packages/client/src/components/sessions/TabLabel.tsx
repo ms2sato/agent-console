@@ -52,7 +52,10 @@ export function TabLabel({
       inputRef.current?.select();
     } else if (refocusTabRef.current) {
       refocusTabRef.current = false;
-      tabRef.current?.focus();
+      // preventScroll: the renamed tab may sit in a horizontally scrolling bar,
+      // and a default focus() would scroll it, undoing SessionPage's own
+      // scroll of the selected tab into view.
+      tabRef.current?.focus({ preventScroll: true });
     }
   }, [editing]);
 

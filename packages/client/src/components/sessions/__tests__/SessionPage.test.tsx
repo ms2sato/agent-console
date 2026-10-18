@@ -13,6 +13,7 @@ import { installMockWebSocket, MockWebSocket } from '../../../test/mock-websocke
 import { _resetTerminals } from '../../terminal/terminal-store';
 import type { Session, Worker } from '@agent-console/shared';
 import { completeWireBody } from '../../../test/wire-fixtures';
+import { recordFocusCalls } from '../../../test/recordFocusCalls';
 import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 
 /**
@@ -744,6 +745,52 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         expect(calls.length).toBe(1);
         expect(calls[0].el).toBe(wrapperOf('File Viewer'));
         expect(calls[0].options).toEqual(NEAREST);
+      });
+
+      it('renaming an earlier tab through the real rename control never lets the refocus scroll the bar after the scroll-into-view', async () => {
+        // Browser QA: the refocus after a rename scrolled the bar back to 0
+        // right after the effect scrolled the selected tab into view.
+        routeFetch(WORKERS);
+        await renderSessionPage(sessionStopTasksValue, 'w-viewer');
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+        const appSocket = MockWebSocket.getInstances().find(ws => ws.url.includes('/ws/app'));
+        expect(appSocket).toBeDefined();
+
+        // The rename PATCH must succeed, otherwise an error dialog hides the tab bar.
+        const routed = mockFetch.getMockImplementation()!;
+        mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => (
+          init?.method === 'PATCH' && urlToString(input).endsWith('/workers/w-agent/name')
+            ? Promise.resolve(jsonResponse({ worker: { ...ONE_PER_KIND.agent, name: 'Renamed agent tab' } }))
+            : routed(input, init)
+        ));
+
+        const user = userEvent.setup();
+        await user.click(screen.getByRole('button', { name: 'Rename Claude Code' }));
+        await user.keyboard('Renamed agent tab');
+
+        const { calls: focusCalls, restore: restoreFocus } = recordFocusCalls();
+        try {
+          calls.length = 0;
+          await user.keyboard('{Enter}');
+          act(() => {
+            appSocket!.simulateOpen();
+            appSocket!.simulateMessage(JSON.stringify(completeWireBody({
+              type: 'session-updated',
+              session: createMockSession({ workers: WORKERS.map((w) => (w.id === 'w-agent' ? { ...w, name: 'Renamed agent tab' } : w)) }),
+            })));
+          });
+          await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
+          await waitFor(() => expect(screen.getByRole('tab', { name: 'Renamed agent tab' })).toBeTruthy());
+
+          // Selected tab was scrolled into view after the rename...
+          expect(calls.some((c) => c.el === wrapperOf('File Viewer') && JSON.stringify(c.options) === JSON.stringify(NEAREST))).toBe(true);
+          // ...and every refocus of the renamed tab is non-scrolling.
+          const refocus = focusCalls.filter((c) => c.el === screen.getByRole('tab', { name: 'Renamed agent tab' }));
+          expect(refocus.length).toBeGreaterThan(0);
+          for (const c of refocus) expect(c.options).toEqual({ preventScroll: true });
+        } finally {
+          restoreFocus();
+        }
       });
 
       it('switching tabs scrolls the newly active tab, and only it, with nearest/nearest', async () => {
