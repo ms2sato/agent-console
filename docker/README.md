@@ -36,6 +36,8 @@ ports, so they can run **side by side**.
 | `deployer-elevation-rules` | The operator's passwordless elevation rule (`deployer ALL=(ALL:ALL) NOPASSWD: ALL`), installed into the tier-3 image at build time so the deploy script's per-step self-elevation contract (#1690) can be verified for real. |
 | `../scripts/verify-multiuser-systemd.sh` | Tier-3 driver: setup `--dry-run`/`--force` as root, deploy as the operator, the #1688 drift arm, the three #1690 helper cases, and `check-embedded-agent-elevation.ts` against the real unit's `MainPID`. Refuses to run unless `AC_TIER3_RUNNER=github-hosted` or `AC_TIER3_HOST_OK=1` is set — never on the dogfood host. |
 
+Both the dev and the verification compose services set `init: true`, so `docker-init` is PID 1 and reaps orphaned descendants; the server process is not an init. A bare `docker run` of the image needs `--init` for the same reason. Production is systemd, which reaps on its own.
+
 ## Dev stack
 
 ### Quick start
