@@ -3675,6 +3675,7 @@ detached
           stderr: '',
           exitCode: 137,
           timedOut: true,
+          cwdFailed: false,
         });
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService({
@@ -3720,11 +3721,37 @@ detached
         expect(Date.now() - startedAt).toBeLessThan(1000);
       }, 3000);
 
+      it('elevated branch maps a cwdFailed result that settles inside the deadline', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => ({
+          stdout: '',
+          stderr: '',
+          exitCode: 1,
+          timedOut: false,
+          cwdFailed: true,
+        });
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'echo hi',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+          5000,
+        );
+
+        expect(result).toEqual({ success: false, error: 'working directory not available' });
+      });
+
       it('elevated branch without a time box still waits for runAsUser', async () => {
         process.env.AUTH_MODE = 'multi-user';
         runAsUserMock.responder.fn = async () => {
           await new Promise((resolve) => setTimeout(resolve, 50));
-          return { stdout: 'late', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: 'late', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         };
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService({
