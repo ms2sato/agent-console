@@ -635,6 +635,58 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
       expect(screen.getByRole('button', { name: 'Add agent worker' })).toBeTruthy();
       expect(within(tablist).queryByRole('button', { name: 'Add agent worker' })).toBeNull();
     });
+
+    describe('the selected tab is scrolled into view', () => {
+      type ScrollCall = { el: Element; options: unknown };
+      let calls: ScrollCall[];
+      let scrollSpy: ReturnType<typeof spyOn>;
+
+      beforeEach(() => {
+        calls = [];
+        // Exactly one installation per test; restored in afterEach.
+        scrollSpy = spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element, options?: unknown) {
+          calls.push({ el: this, options });
+        });
+      });
+
+      afterEach(() => {
+        scrollSpy.mockRestore();
+      });
+
+      const NEAREST = { block: 'nearest', inline: 'nearest' };
+
+      it('on first render, scrolls the non-first active tab into view', async () => {
+        routeFetch(WORKERS);
+        await renderSessionPage(sessionStopTasksValue, 'w-viewer');
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+
+        const viewerTab = screen.getByRole('tab', { name: 'File Viewer' });
+        expect(calls.some((c) => c.el === viewerTab && JSON.stringify(c.options) === JSON.stringify(NEAREST))).toBe(true);
+      });
+
+      it('switching tabs scrolls the newly active tab, and only it, with nearest/nearest', async () => {
+        await renderAllKinds();
+        calls.length = 0;
+
+        act(() => {
+          screen.getByRole('tab', { name: 'A very long worker tab name' }).click();
+        });
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'A very long worker tab name' }).getAttribute('aria-selected')).toBe('true'));
+        const terminalTab = screen.getByRole('tab', { name: 'A very long worker tab name' });
+        expect(calls.length).toBe(1);
+        expect(calls[0].el).toBe(terminalTab);
+        expect(calls[0].options).toEqual(NEAREST);
+
+        calls.length = 0;
+        act(() => {
+          screen.getByRole('tab', { name: 'File Viewer' }).click();
+        });
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+        expect(calls.length).toBe(1);
+        expect(calls[0].el).toBe(screen.getByRole('tab', { name: 'File Viewer' }));
+        expect(calls[0].options).toEqual(NEAREST);
+      });
+    });
   });
 });
 

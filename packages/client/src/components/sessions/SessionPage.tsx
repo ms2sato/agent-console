@@ -227,6 +227,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   } = useSessionStopTasksContext();
   const stopTask = getStopTask(sessionId);
   const messagePanelRef = useRef<MessagePanelHandle>(null);
+  const tablistRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   // Re-runs the failed request through the same function the confirm dialog
@@ -331,6 +332,19 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       document.title = 'Agent Console';
     };
   }, [state.type, sessionTitle, branchName]);
+
+  // Keep the selected tab visible in the horizontally scrolling tab bar (a
+  // selected tab can sit past the right edge on a narrow viewport). `nearest`
+  // on both axes is a no-op when the tab is already visible, so wide layouts
+  // never jump. Also runs on first mount of the bar, so a session opened on a
+  // non-first tab starts with it in view. `state.type` is a dependency because
+  // the bar only mounts once the session is loaded. Scoped to the tablist ref,
+  // not a document-wide query; this syncs with a browser layout API.
+  useEffect(() => {
+    tablistRef.current
+      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeTabId, state.type]);
 
   const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
@@ -798,7 +812,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Tab bar with worker tabs */}
       <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">
         {/* Worker tabs */}
-        <div role="tablist" aria-label="Worker tabs" className="flex items-center overflow-x-auto scrollbar-hide" onKeyDown={handleTabKeyDown}>
+        <div ref={tablistRef} role="tablist" aria-label="Worker tabs" className="flex items-center overflow-x-auto scrollbar-hide" onKeyDown={handleTabKeyDown}>
           {tabButtons}
         </div>
         <AddAgentWorkerMenu
