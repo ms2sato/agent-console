@@ -754,7 +754,8 @@ export class SessionManager {
     // Resume sequentially to avoid resource spikes.
     for (const sessionId of autoResumeSessionIds) {
       try {
-        await this.sessionPauseResumeService.resumeSession(sessionId);
+        // A server restart resumes workers only; the resume command is for a user resume.
+        await this.sessionPauseResumeService.resumeSession(sessionId, false);
         logger.info({ sessionId }, 'Auto-resumed previously active session');
       } catch (error) {
         logger.error({ sessionId, err: error }, 'Failed to auto-resume session');

@@ -202,10 +202,13 @@ export class SessionPauseResumeService {
    * Resume a paused session: load from DB, create in-memory session, restore workers.
    *
    * @param id - Session ID to resume
+   * @param runResumeCommand - Whether to run the repository's resume command.
+   *   True for a user-initiated resume; false for the auto-resume at server
+   *   start, where no pause command ran and a restart leaves the containers up.
    * @returns The resumed session (with the resume command's result when one ran),
    *   or null if not found in database or activation fails
    */
-  async resumeSession(id: string): Promise<ResumeSessionOutcome | null> {
+  async resumeSession(id: string, runResumeCommand = true): Promise<ResumeSessionOutcome | null> {
     // Check if session is already active in memory
     const existingSession = this.deps.getSession(id);
     if (existingSession) {
@@ -222,7 +225,7 @@ export class SessionPauseResumeService {
     this.resumingSessionIds.add(id);
 
     try {
-      return await this.resumeSessionInternal(id);
+      return await this.resumeSessionInternal(id, runResumeCommand);
     } finally {
       this.resumingSessionIds.delete(id);
     }
@@ -231,7 +234,7 @@ export class SessionPauseResumeService {
   /**
    * Internal implementation of resumeSession, called after concurrency guard.
    */
-  private async resumeSessionInternal(id: string): Promise<ResumeSessionOutcome | null> {
+  private async resumeSessionInternal(id: string, runResumeCommand: boolean): Promise<ResumeSessionOutcome | null> {
     // Load from database
     const persisted = await this.deps.sessionRepository.findById(id);
     if (!persisted) {
@@ -294,7 +297,9 @@ export class SessionPauseResumeService {
 
     // Run the repository's resume command before any worker comes up. It never
     // blocks the resume; a failure travels back to the caller in the result.
-    const resumeCommandResult = await this.runHookCommand('resume', internalSession);
+    const resumeCommandResult = runResumeCommand
+      ? await this.runHookCommand('resume', internalSession)
+      : undefined;
 
     // Add to sessions Map
     this.deps.setSession(id, internalSession);

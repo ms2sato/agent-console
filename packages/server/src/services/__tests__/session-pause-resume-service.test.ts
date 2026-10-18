@@ -405,6 +405,20 @@ describe('SessionPauseResumeService', () => {
       expect(log).toEqual(['hook', 'setSession', 'activate']);
     });
 
+    it('does not run the resume command when runResumeCommand is false, and still activates the workers', async () => {
+      const runSessionHookCommand = mock(async () => ({ success: true }));
+      const deps = buildResumeDeps({ runSessionHookCommand });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.resumeSession('session-1', false);
+
+      expect(result).not.toBeNull();
+      expect(result!.resumeCommandResult).toBeUndefined();
+      expect(runSessionHookCommand).not.toHaveBeenCalled();
+      expect(deps.workerManager.activateAgentWorkerPty).toHaveBeenCalledTimes(1);
+      expect(deps.sessionRepository.save).toHaveBeenCalledTimes(1);
+    });
+
     it('still resumes when the resume command fails or throws', async () => {
       for (const runSessionHookCommand of [
         mock(async () => ({ success: false, error: 'compose down' })),
