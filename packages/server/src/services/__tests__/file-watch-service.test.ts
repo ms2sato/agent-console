@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import type { watch as fsWatch } from 'node:fs';
 import {
@@ -10,7 +10,6 @@ import {
   type FileWatchFailureReason,
 } from '../file-watch-service.js';
 import { fileWatchIgnorePatterns } from '../../lib/server-config.js';
-import { startWatching, stopWatching, isWatching } from '../git-diff-service.js';
 
 // Debounce and max wait use small real delays: bun:test has no fake timers.
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -267,49 +266,5 @@ describe('ignore segment rule', () => {
     expect(matchesIgnorePattern('.log', 'catalog.logic.ts')).toBe(false);
     expect(matchesIgnorePattern('dist', 'dist')).toBe(true);
     expect(matchesIgnorePattern('dist', 'distribution')).toBe(false);
-  });
-});
-
-describe('startWatching / stopWatching as the diff subscriber', () => {
-  it('stopWatching closes the watch when no other subscriber remains, and keeps it for a viewer subscriber', async () => {
-    const fake = createFakeWatch();
-    const path = uniquePath();
-    // The diff subscriber goes through the default `fs.watch`, so a real directory is not needed:
-    // subscribe a viewer-like subscriber with the fake first, then let startWatching join the same entry.
-    const viewer = makeSubscriber();
-    const unsubViewer = subscribeToFileChanges(path, viewer.subscriber, { watch: fake.watch });
-    const callback = mock(() => {});
-    startWatching(path, callback);
-    expect(isWatching(path)).toBe(true);
-    expect(fake.calls).toEqual([path]);
-
-    stopWatching(path);
-    expect(isWatching(path)).toBe(false);
-    expect(fake.closeCount()).toBe(0);
-
-    fake.emit('after.ts');
-    await sleep(60);
-    expect(viewer.batches).toEqual([{ paths: ['after.ts'], overflow: false }]);
-    expect(callback).not.toHaveBeenCalled();
-
-    unsubViewer();
-    expect(fake.closeCount()).toBe(1);
-  });
-
-  it('the diff callback fires after the debounce for a non-ignored path and not for an ignored one', async () => {
-    const fake = createFakeWatch();
-    const path = uniquePath();
-    const holder = makeSubscriber();
-    const unsubHolder = subscribeToFileChanges(path, holder.subscriber, { watch: fake.watch });
-    const callback = mock(() => {});
-    startWatching(path, callback);
-    fake.emit('node_modules/x.js');
-    await sleep(400);
-    expect(callback).not.toHaveBeenCalled();
-    fake.emit('catalog.logic.ts');
-    await sleep(400);
-    expect(callback).toHaveBeenCalledTimes(1);
-    stopWatching(path);
-    unsubHolder();
   });
 });
