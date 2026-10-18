@@ -54,10 +54,15 @@ async function renderPanel(props: { isExpanded?: boolean; compact?: boolean; onT
  *     -> 'renders nothing while the list is pending'
  *   - the add form sends the global default instead of the session scope
  *     -> 'adds with the session preset and the session scope ...'
- *   - the session field shown in the sidebar form -> 'the add form hides the session field ...'
+ *   - the session field shown in the sidebar form -> 'opens a dialog with the Title field focused ...'
+ *   - `onCreated` dropped from the dialog's form
+ *     -> only 'New Todo dialog > a successful create closes the dialog, shows the new row and returns focus ...'
+ *   - the New Todo button a plain button outside DialogTrigger (no Radix focus return)
+ *     -> 'New Todo dialog > a successful create closes ...', '... Escape closes the dialog and returns focus ...',
+ *        '... Cancel closes the dialog, returns focus ...' (and nothing else)
  *   - the rows render the body -> 'rows are summaries ...'
  *   - the `tabIndex` dropped from one control type (the Open button, the assignee select, the
- *     add-form controls, resolve/dismiss) -> 'excludes every control of the body from the tab order ...'
+ *     New Todo button, the status select, resolve/dismiss) -> 'excludes every control of the body from the tab order ...'
  *   - the header always shows the count, or the error line / Retry dropped
  *     -> 'a failed list fetch shows ...'
  *   - the panel replaced by the dialog while one is open
@@ -70,18 +75,20 @@ describe('SessionTodosPanel', () => {
     await renderPanel();
 
     expect(screen.queryByLabelText('Collapse Todo')).toBeNull();
-    expect(screen.queryByRole('form', { name: 'Add Todo' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'New Todo' })).toBeNull();
   });
 
-  it('with zero items renders "Todo (0)" and the add form', async () => {
+  it('with zero items renders "Todo (0)", the New Todo button, the status select and the empty line', async () => {
     await renderPanel();
 
     expect(await screen.findByText('Todo (0)')).toBeTruthy();
-    expect(screen.getByRole('form', { name: 'Add Todo' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New Todo' })).toBeTruthy();
+    expect((screen.getByLabelText('Status filter') as HTMLSelectElement).value).toBe('open');
+    expect(screen.getByText('No open items')).toBeTruthy();
     expect(screen.queryByRole('listitem')).toBeNull();
   });
 
-  it('counts only open items in the header while listing every item', async () => {
+  it('counts only open items in the header and lists only open by default', async () => {
     api.state.todos = [
       makeTodo({ id: 'a', title: 'Open one' }),
       makeTodo({ id: 'b', title: 'Done one', status: 'done', resolutionText: 'ok' }),
@@ -92,8 +99,95 @@ describe('SessionTodosPanel', () => {
 
     expect(await screen.findByText('Todo (2)')).toBeTruthy();
     expect(screen.getByText('Open one')).toBeTruthy();
-    expect(screen.getByText('Done one')).toBeTruthy();
     expect(screen.getByText('Open global')).toBeTruthy();
+    expect(screen.queryByText('Done one')).toBeNull();
+  });
+
+  describe('status filter', () => {
+    // Reach measured by test name (each mutation applied alone, re-measured after the final edit):
+    //   - DEFAULT_TODO_STATUS_FILTER -> 'all' (todos/TodoStatusSelect.tsx)
+    //       fails 6 tests, 4 in this file: 'with zero items renders ...', 'counts only open items in the
+    //       header and lists only open by default', 'status filter > defaults to open: ONE row, ...',
+    //       'status filter > an item resolved from the row disappears ...'; plus TodosPage 'list >
+    //       fetches the open items by default' and TodoStatusSelect 'the shared default is the open items'
+    //   - `statusFilter === 'all' ||` dropped from the panel's filter
+    //       fails only 'status filter > switching to done shows the other row, to all shows both, ...'
+    //   - `focusable` dropped from the panel's TodoStatusSelect
+    //       fails only 'excludes every control of the body from the tab order ...'
+    const openAndDone = () => [
+      makeTodo({ id: 'o', title: 'Open item' }),
+      makeTodo({ id: 'd', title: 'Done item', status: 'done', resolutionText: 'ok' }),
+    ];
+
+    it('defaults to open: ONE row, the select reads open', async () => {
+      api.state.todos = openAndDone();
+
+      await renderPanel();
+
+      await screen.findByText('Open item');
+      expect(screen.getAllByRole('listitem')).toHaveLength(1);
+      expect((screen.getByLabelText('Status filter') as HTMLSelectElement).value).toBe('open');
+    });
+
+    it('switching to done shows the other row, to all shows both, without a refetch', async () => {
+      api.state.todos = openAndDone();
+      const { user } = await renderPanel();
+      await screen.findByText('Open item');
+      const fetchesBefore = api.listFetches().length;
+
+      await user.selectOptions(screen.getByLabelText('Status filter'), 'done');
+      expect(screen.getAllByRole('listitem')).toHaveLength(1);
+      expect(screen.getByText('Done item')).toBeTruthy();
+      expect(screen.queryByText('Open item')).toBeNull();
+
+      await user.selectOptions(screen.getByLabelText('Status filter'), 'all');
+      expect(screen.getAllByRole('listitem')).toHaveLength(2);
+      expect(screen.getAllByRole('listitem').map((li) => li.textContent?.includes('Open item') ?? false)).toEqual([true, false]);
+      expect(api.listFetches().length).toBe(fetchesBefore);
+      // The header count stays open-only whatever the filter.
+      expect(screen.getByText('Todo (1)')).toBeTruthy();
+    });
+
+    it('a status with no items keeps the panel, the button and the select and shows the empty line', async () => {
+      api.state.todos = openAndDone();
+      const { user } = await renderPanel();
+      await screen.findByText('Open item');
+
+      await user.selectOptions(screen.getByLabelText('Status filter'), 'withdrawn');
+
+      expect(screen.getByText('No withdrawn items')).toBeTruthy();
+      expect(screen.queryByRole('listitem')).toBeNull();
+      expect(screen.getByText('Todo (1)')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'New Todo' })).toBeTruthy();
+      expect(screen.getByLabelText('Status filter')).toBeTruthy();
+    });
+
+    it('"all" with no items at all says "No items"', async () => {
+      const { user } = await renderPanel();
+      await screen.findByText('Todo (0)');
+
+      await user.selectOptions(screen.getByLabelText('Status filter'), 'all');
+
+      expect(screen.getByText('No items')).toBeTruthy();
+    });
+
+    it('an item resolved from the row disappears from the open list on the refetch and the count drops', async () => {
+      api.state.todos = [makeTodo({ id: 'a', title: 'Soon done' }), makeTodo({ id: 'b', title: 'Stays open' })];
+      const { user } = await renderPanel();
+      await screen.findByText('Todo (2)');
+
+      // The write is recorded by the stand-in; the server state it would produce is set here.
+      api.state.todos = [
+        makeTodo({ id: 'a', title: 'Soon done', status: 'done', resolutionText: 'ok' }),
+        makeTodo({ id: 'b', title: 'Stays open' }),
+      ];
+      await user.click(within(screen.getByTestId('todo-a')).getByRole('button', { name: 'Resolve' }));
+
+      await waitFor(() => expect(screen.getByText('Todo (1)')).toBeTruthy());
+      await waitForAbsent(() => screen.queryByText('Soon done'));
+      expect(screen.getByText('Stays open')).toBeTruthy();
+      expect(api.writes().some((call) => call.path === '/api/todos/a/resolve')).toBe(true);
+    });
   });
 
   it('collapses through the header toggle', async () => {
@@ -124,7 +218,7 @@ describe('SessionTodosPanel', () => {
     expect(await screen.findByText('Todo (0)')).toBeTruthy();
   });
 
-  it('a failed list fetch shows "Todo" without a count, the error line, Retry and the add form; Retry refetches', async () => {
+  it('a failed list fetch shows "Todo" without a count, the error line, Retry and the New Todo button; Retry refetches', async () => {
     let listCalls = 0;
     const original = api.fetchMock.getMockImplementation();
     api.fetchMock.mockImplementation(async (input, init) => {
@@ -140,7 +234,8 @@ describe('SessionTodosPanel', () => {
     expect(await screen.findByText('Failed to load Todo items')).toBeTruthy();
     expect(screen.getByLabelText('Collapse Todo').textContent).toBe('Todo');
     expect(screen.queryByText(/Todo \(/)).toBeNull();
-    expect(screen.getByRole('form', { name: 'Add Todo' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New Todo' })).toBeTruthy();
+    expect(screen.queryByText(/^No .*items?$/)).toBeNull();
     const callsBefore = listCalls;
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
@@ -183,11 +278,8 @@ describe('SessionTodosPanel', () => {
     await waitFor(() => expect(screen.getByLabelText('Assignee for Open one')).toBeTruthy());
 
     const named = [
-      screen.getByLabelText('Kind'),
-      screen.getByLabelText('Title'),
-      screen.getByLabelText('Body'),
-      within(screen.getByRole('form', { name: 'Add Todo', hidden: true })).getByLabelText('Assignee'),
-      screen.getByRole('button', { name: 'Add', hidden: true }),
+      screen.getByRole('button', { name: 'New Todo', hidden: true }),
+      screen.getByLabelText('Status filter'),
       screen.getByLabelText('Open Open one'),
       screen.getByLabelText('Resolution text for Open one'),
       screen.getByRole('button', { name: 'Resolve', hidden: true }),
@@ -216,18 +308,31 @@ describe('SessionTodosPanel', () => {
     expect(retry.getAttribute('tabindex')).toBe('-1');
   });
 
-  describe('add form', () => {
-    it('hides the session field and the scope choice (the session is preset)', async () => {
+  describe('New Todo dialog', () => {
+    it('keeps the add form out of the panel until the button is pressed', async () => {
       await renderPanel();
 
-      await screen.findByRole('form', { name: 'Add Todo' });
+      await screen.findByRole('button', { name: 'New Todo' });
+      expect(screen.queryByLabelText('Title')).toBeNull();
+      expect(screen.queryByRole('form', { name: 'Add Todo' })).toBeNull();
+    });
+
+    it('opens a dialog with the Title field focused, the session field and scope hidden', async () => {
+      const { user } = await renderPanel();
+
+      await user.click(await screen.findByRole('button', { name: 'New Todo' }));
+
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByRole('form', { name: 'Add Todo' })).toBeTruthy();
       expect(screen.queryByLabelText('Session id')).toBeNull();
       expect(screen.queryByLabelText('Scope')).toBeNull();
-      expect(screen.getByLabelText('Kind')).toBeTruthy();
+      expect(within(dialog).getByLabelText('Kind')).toBeTruthy();
+      await waitFor(() => expect(document.activeElement === within(dialog).getByLabelText('Title')).toBe(true));
     });
 
     it('adds with the session preset and the session scope (not the global default)', async () => {
       const { user } = await renderPanel();
+      await user.click(await screen.findByRole('button', { name: 'New Todo' }));
 
       await user.type(await screen.findByLabelText('Title'), 'Check the rollout');
       await user.click(screen.getByRole('button', { name: 'Add' }));
@@ -237,16 +342,75 @@ describe('SessionTodosPanel', () => {
       expect(api.writes()[0]?.body).toMatchObject({ sessionId: 'session-1', scope: 'session', title: 'Check the rollout' });
     });
 
+    it('a successful create closes the dialog, shows the new row and returns focus to the button', async () => {
+      const { user } = await renderPanel();
+      const button = await screen.findByRole('button', { name: 'New Todo' });
+      await user.click(button);
+      await user.type(await screen.findByLabelText('Title'), 'Fresh item');
+      // The server state the create would produce; the refetch after the invalidation reads it.
+      api.state.todos = [makeTodo({ id: 'fresh', title: 'Fresh item' })];
+
+      await user.click(screen.getByRole('button', { name: 'Add' }));
+
+      await waitForAbsent(() => screen.queryByRole('dialog'));
+      expect(await screen.findByText('Fresh item')).toBeTruthy();
+      await waitFor(() => expect(document.activeElement === button).toBe(true));
+    });
+
+    it('Escape closes the dialog and returns focus to the button', async () => {
+      const { user } = await renderPanel();
+      const button = await screen.findByRole('button', { name: 'New Todo' });
+      await user.click(button);
+      await screen.findByRole('dialog');
+
+      await user.keyboard('{Escape}');
+
+      await waitForAbsent(() => screen.queryByRole('dialog'));
+      await waitFor(() => expect(document.activeElement === button).toBe(true));
+      expect(api.writes()).toHaveLength(0);
+    });
+
+    it('Cancel closes the dialog, returns focus to the button and drops the draft', async () => {
+      const { user } = await renderPanel();
+      const button = await screen.findByRole('button', { name: 'New Todo' });
+      await user.click(button);
+      await user.type(await screen.findByLabelText('Title'), 'Abandoned');
+
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      await waitForAbsent(() => screen.queryByRole('dialog'));
+      await waitFor(() => expect(document.activeElement === button).toBe(true));
+      expect(api.writes()).toHaveLength(0);
+
+      await user.click(button);
+      expect((await screen.findByLabelText('Title') as HTMLInputElement).value).toBe('');
+    });
+
+    it('a refused create keeps the dialog open with the typed text and shows the error dialog', async () => {
+      api.state.refusal = { status: 409, error: 'The session is gone' };
+      const { user } = await renderPanel();
+      await user.click(await screen.findByRole('button', { name: 'New Todo' }));
+      await user.type(await screen.findByLabelText('Title'), 'Will be refused');
+
+      await user.click(screen.getByRole('button', { name: 'Add' }));
+
+      expect(await screen.findByText('The session is gone')).toBeTruthy();
+      expect(screen.getByRole('form', { name: 'Add Todo', hidden: true })).toBeTruthy();
+      expect((screen.getByLabelText('Title', { selector: 'input' }) as HTMLInputElement).value).toBe('Will be refused');
+    });
+
     it('offers the assignee select only when the directory has several users', async () => {
       api.state.users = [ME];
-      await renderPanel();
+      const { user } = await renderPanel();
+      await user.click(await screen.findByRole('button', { name: 'New Todo' }));
       await screen.findByLabelText('Title');
       await waitFor(() => expect(api.fetchMock.mock.calls.length).toBeGreaterThan(1));
       expect(screen.queryByLabelText('Assignee')).toBeNull();
       cleanup();
 
       api.state.users = [ME, BOB];
-      await renderPanel();
+      const second = await renderPanel();
+      await second.user.click(await screen.findByRole('button', { name: 'New Todo' }));
       expect(await screen.findByLabelText('Assignee')).toBeTruthy();
     });
   });
@@ -329,9 +493,9 @@ describe('SessionTodosPanel', () => {
 
       await waitForAbsent(() => screen.queryByRole('dialog'));
       await waitForAbsent(() => screen.queryByText('Doomed'));
-      // The row that opened the dialog is gone, so focus lands on the add form's title input.
-      const titleInput = screen.getByLabelText('Title');
-      await waitFor(() => expect(document.activeElement === titleInput).toBe(true));
+      // The row that opened the dialog is gone, so focus lands on the New Todo button.
+      const newTodo = screen.getByRole('button', { name: 'New Todo' });
+      await waitFor(() => expect(document.activeElement === newTodo).toBe(true));
     });
   });
 });

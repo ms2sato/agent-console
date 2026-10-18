@@ -222,7 +222,7 @@ describe('SessionSidePanels', () => {
     expect(screen.getByText(TODO_TITLE)).toBeTruthy();
   });
 
-  it('renders the to-do section with a zero count and the add form when the session list settles empty', async () => {
+  it('renders the to-do section with a zero count and the New Todo button when the session list settles empty', async () => {
     const base = mockFetch.getMockImplementation()!;
     mockFetch.mockImplementation((input: RequestInfo | URL) =>
       urlToString(input).includes('/todos') ? Promise.resolve(jsonResponse({ todos: [] })) : base(input)
@@ -233,7 +233,7 @@ describe('SessionSidePanels', () => {
 
     await waitFor(() => expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy());
     expect(await screen.findByText('Todo (0)')).toBeTruthy();
-    expect(screen.getByRole('form', { name: 'Add Todo' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New Todo' })).toBeTruthy();
   });
 
   it('the rail toggle button flips between the wide and narrow rail classes', async () => {

@@ -6,6 +6,8 @@ import { useSessionTodos } from './hooks/useSessionTodos';
 import { AccordionSectionBody } from './AccordionSectionBody';
 import { AddTodoForm } from '../todos/AddTodoForm';
 import { TodoRow } from '../todos/TodoRow';
+import { DEFAULT_TODO_STATUS_FILTER, TodoStatusSelect, type TodoStatusFilter } from '../todos/TodoStatusSelect';
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../ui/dialog';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { TodoDetailDialog } from './TodoDetailDialog';
 
@@ -18,18 +20,22 @@ interface SessionTodosPanelProps {
 
 /**
  * The Todo items attached to this session, presented alongside `MemoPanel`
- * (`docs/design/human-todo-list.md`, section 4 "UI"): a compact add form that
- * presets this session, then one summary row per item (both scopes). "Open"
- * shows the item's detail in a dialog over the session page. The header count
- * is the number of OPEN items only. The block renders nothing until the first
- * fetch settles, and renders with zero items afterwards so an empty session
- * can still receive one.
+ * (`docs/design/human-todo-list.md`, section 4 "UI"): a New Todo button that
+ * opens a dialog with the add form (session preset), a status filter select
+ * (open by default, not remembered), then one summary row per item of the
+ * chosen status (both scopes). "Open" shows the item's detail in a dialog over
+ * the session page. The header count is the number of OPEN items only,
+ * whatever the filter. The block renders nothing until the first fetch
+ * settles, and renders with zero items afterwards so an empty session can
+ * still receive one.
  */
 export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, compact }: SessionTodosPanelProps) {
   const { todos, openCount, isPending, isError, refetch } = useSessionTodos(sessionId);
   const { data: users = [] } = useQuery({ queryKey: userKeys.list(), queryFn: fetchUsers });
   const { errorDialogProps, showError } = useErrorDialog();
   const [openTodoId, setOpenTodoId] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<TodoStatusFilter>(DEFAULT_TODO_STATUS_FILTER);
   const panelRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
 
@@ -39,7 +45,7 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
   };
 
   // The dialog has no trigger element, so return focus to the control that opened it;
-  // when that row is gone (the item was deleted) fall back to the add form's title input.
+  // when that row is gone (the item was deleted) fall back to the New Todo button.
   const handleDialogCloseAutoFocus = (event: Event) => {
     event.preventDefault();
     const opener = openerRef.current;
@@ -47,8 +53,18 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
     const target =
       opener !== null && opener.isConnected && panelRef.current?.contains(opener)
         ? opener
-        : panelRef.current?.querySelector<HTMLElement>('input[aria-label="Title"]');
+        : panelRef.current?.querySelector<HTMLElement>('button[aria-label="New Todo"]');
     target?.focus();
+  };
+
+  // Radix focuses the first tabbable control (the Kind select); the Title is what the human types first.
+  const handleAddOpenAutoFocus = (event: Event) => {
+    const content = event.currentTarget;
+    const title = content instanceof HTMLElement ? content.querySelector<HTMLElement>('input[aria-label="Title"]') : null;
+    if (title) {
+      event.preventDefault();
+      title.focus();
+    }
   };
 
   if (isPending) {
@@ -56,6 +72,9 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
   }
 
   // A failed fetch has no count to report: showing "(0)" would read as "nothing to do".
+  const visibleTodos = todos.filter((todo) => statusFilter === 'all' || todo.status === statusFilter);
+  const emptyLabel = statusFilter === 'all' ? 'No items' : `No ${statusFilter} items`;
+
   const headerLabel = isError ? 'Todo' : `Todo (${openCount})`;
 
   if (compact) {
@@ -99,9 +118,34 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
               </button>
             </div>
           )}
-          <AddTodoForm users={users} sessionId={sessionId} hideSessionField onError={showError} focusable={isExpanded} />
+          <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-700/50">
+            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+              <DialogTrigger
+                tabIndex={isExpanded ? undefined : -1}
+                aria-label="New Todo"
+                className="btn btn-primary text-sm"
+              >
+                New Todo
+              </DialogTrigger>
+              <DialogContent aria-describedby={undefined} onOpenAutoFocus={handleAddOpenAutoFocus}>
+                <DialogHeader>
+                  <DialogTitle>New Todo</DialogTitle>
+                </DialogHeader>
+                <AddTodoForm
+                  users={users}
+                  sessionId={sessionId}
+                  hideSessionField
+                  onError={showError}
+                  onCreated={() => setAddOpen(false)}
+                />
+                <DialogClose className="btn text-sm mt-2">Cancel</DialogClose>
+              </DialogContent>
+            </Dialog>
+            <TodoStatusSelect value={statusFilter} onChange={setStatusFilter} focusable={isExpanded} />
+          </div>
+          {!isError && visibleTodos.length === 0 && <p className="px-3 py-2 text-xs text-gray-500">{emptyLabel}</p>}
           <ul className="flex flex-col gap-2 list-none p-2 m-0">
-            {todos.map((todo) => (
+            {visibleTodos.map((todo) => (
               <TodoRow
                 key={todo.id}
                 todo={todo}

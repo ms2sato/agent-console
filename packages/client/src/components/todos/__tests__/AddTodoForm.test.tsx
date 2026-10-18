@@ -113,6 +113,34 @@ describe('AddTodoForm', () => {
   });
 });
 
+describe('AddTodoForm onCreated', () => {
+  it('is called once after a successful create, and the fields are cleared', async () => {
+    const onCreated = mock(() => {});
+    await renderWithRouter(<AddTodoForm users={[ME]} knownSessionIds={[]} onError={() => {}} onCreated={onCreated} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Title'), 'Done deal');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe(''));
+  });
+
+  it('is not called when the create is refused', async () => {
+    api.state.refusal = { status: 404, error: 'Session not found' };
+    const onCreated = mock(() => {});
+    const onError = mock((_title: string, _message: string) => {});
+    await renderWithRouter(<AddTodoForm users={[ME]} knownSessionIds={[]} onError={onError} onCreated={onCreated} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Title'), 'Refused');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(onCreated).not.toHaveBeenCalled();
+  });
+});
+
 describe('AddTodoForm with a preset session', () => {
   async function renderPreset(users = [ME]) {
     const onError = mock((_title: string, _message: string) => {});

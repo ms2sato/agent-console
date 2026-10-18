@@ -9,6 +9,8 @@ interface AddTodoFormBaseProps {
   onError: (title: string, message: string) => void;
   /** False while the host is collapsed: every control leaves the tab order (fallback for engines without `inert`). */
   focusable?: boolean;
+  /** Called after a create succeeded, once the fields are cleared and the lists are invalidated. */
+  onCreated?: () => void;
 }
 
 /** The `/todos` page form: a free session field, an explicit scope choice. */
@@ -32,7 +34,7 @@ type AddTodoFormProps = GlobalAddTodoFormProps | SessionAddTodoFormProps;
 const DEFAULT_SCOPE = '';
 const UNASSIGNED_VALUE = '';
 
-export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSessionId, hideSessionField, onError, focusable = true }: AddTodoFormProps) {
+export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSessionId, hideSessionField, onError, focusable = true, onCreated }: AddTodoFormProps) {
   const tabIndex = focusable ? undefined : -1;
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<TodoKind>('action');
@@ -62,6 +64,7 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
       setScope(DEFAULT_SCOPE);
       setAssigneeUserId(UNASSIGNED_VALUE);
       await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+      onCreated?.();
     },
     onError: (err: Error) => onError('Failed to Add Todo', err.message),
   });
