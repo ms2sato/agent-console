@@ -47,6 +47,11 @@
  *     reports that as an assertion failure (exit 1), not an environment
  *     problem. Degenerate same-user mode runs the same assertions on the
  *     direct branch (signals sent from the server process).
+ *     The command goes via `sh -s` with the script on stdin, NOT as `command`:
+ *     the elevated login shell re-parses argv, so `$!` would be expanded early
+ *     (empty) before the inner shell runs. See
+ *     `.claude/rules/elevation-helpers.md` line 204 ("The same login shell also
+ *     expands `$` before the inner `sh -c` runs"). Do not revert it.
  *   - Cleanup verification: `killAsUser` resolves normally on a non-zero
  *     exit code or a timeout (it does not reject), so the best-effort
  *     cleanup pass inspects the result's `timedOut`/`exitCode` explicitly

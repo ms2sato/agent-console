@@ -719,19 +719,20 @@ describe('privilege-elevation', () => {
 
         const withTimer = await runAsUser(
           { username: elevatedUser, command: 'true', timeoutMs: 5000 },
-          makeFakeSpawn(captured, { stdout: 'ok' }),
+          makeFakeSpawn(captured, { stdout: 'ok', stderr: 'warn' }),
           listDescendants,
         );
+        expect(captured).toHaveLength(1);
         const withoutTimer = await runAsUser(
           { username: elevatedUser, command: 'true' },
-          makeFakeSpawn(captured, { stdout: 'ok' }),
+          makeFakeSpawn(captured, { stdout: 'ok', stderr: 'warn' }),
           listDescendants,
         );
 
         expect(walks).toBe(0);
         expect(captured).toHaveLength(2);
-        expect(withTimer).toMatchObject({ stdout: 'ok', timedOut: false, exitCode: 0 });
-        expect(withoutTimer).toMatchObject({ stdout: 'ok', timedOut: false, exitCode: 0 });
+        expect(withTimer).toEqual({ stdout: 'ok', stderr: 'warn', timedOut: false, exitCode: 0, cwdFailed: false });
+        expect(withoutTimer).toEqual({ stdout: 'ok', stderr: 'warn', timedOut: false, exitCode: 0, cwdFailed: false });
       });
     });
 

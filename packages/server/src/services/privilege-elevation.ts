@@ -388,8 +388,9 @@ async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolea
  * at that deadline the snapshot and wrapper get SIGKILL, the pipes are
  * abandoned and the call returns. The result has `timedOut: true`, exit code
  * 137, and `stdout` / `stderr` holding whatever was read, which may be PARTIAL.
- * The call is bounded by `timeoutMs + TIMEOUT_DRAIN_BUDGET_MS` (plus the 5 s
- * process-table bound in the worst case). Limit: a descendant that detaches
+ * Worst-case bound: `timeoutMs` + 5 s (the `ps` process-table bound of the
+ * snapshot) + 500 ms (`TIMEOUT_DRAIN_BUDGET_MS`). The drain clock starts AFTER
+ * the snapshot returns so a slow `ps` cannot eat the SIGTERM grace. Limit: a descendant that detaches
  * itself (own `setsid` or a double fork) before the snapshot escapes; the
  * orphan sweep covers those. Without `timeoutMs` no timer, snapshot or kill
  * command exists.
