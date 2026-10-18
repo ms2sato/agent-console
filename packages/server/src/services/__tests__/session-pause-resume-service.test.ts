@@ -234,7 +234,7 @@ describe('SessionPauseResumeService', () => {
       const deps = createMockDeps({ getSession: () => session, deactivateEmbeddedAgentWorker });
       const service = new SessionPauseResumeService(deps);
 
-      expect(await service.pauseSession('session-1')).toBe(true);
+      expect((await service.pauseSession('session-1')).paused).toBe(true);
 
       expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(1);
       expect(deps.workerManager.killWorker).toHaveBeenCalledWith(agentWorker, 'session-1');

@@ -8358,12 +8358,12 @@ describe('SessionManager', () => {
     it('survives pause and resume as a file-viewer worker, and resume spawns no extra process', async () => {
       const { manager, session, viewer } = await createSessionWithViewer('worktree');
 
-      expect(await manager.pauseSession(session.id)).toBe(true);
+      expect((await manager.pauseSession(session.id)).paused).toBe(true);
       const ptyCountBeforeResume = ptyFactory.instances.length;
       const resumed = await manager.resumeSession(session.id);
 
       expect(resumed).not.toBeNull();
-      expect(resumed!.workers.find((w) => w.id === viewer.id)).toEqual(viewer);
+      expect(resumed!.session.workers.find((w) => w.id === viewer.id)).toEqual(viewer);
       // only the agent PTY is revived; the viewer has nothing to activate
       expect(ptyFactory.instances.length).toBe(ptyCountBeforeResume + 1);
     });
@@ -8376,7 +8376,7 @@ describe('SessionManager', () => {
       const resumed = await manager2.resumeSession(session.id);
 
       expect(resumed).not.toBeNull();
-      expect(resumed!.workers.find((w: Worker) => w.id === viewer.id)).toEqual(viewer);
+      expect(resumed!.session.workers.find((w: Worker) => w.id === viewer.id)).toEqual(viewer);
     });
 
     it('deleteSession with a viewer succeeds and kills the PTY worker', async () => {

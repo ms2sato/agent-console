@@ -2296,7 +2296,7 @@ export class SessionManager {
       const pausing = this.isPausing(session.id);
 
       for (const worker of session.workers.values()) {
-        if (pausing && worker.type !== 'git-diff') {
+        if (pausing && worker.type !== 'git-diff' && worker.type !== 'file-viewer') {
           // A pausing session is skipped, not restarted: its workers are
           // already down and a restart would revive them mid-pause.
           results.push({
