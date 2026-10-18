@@ -4,6 +4,9 @@ import type { Todo } from '@agent-console/shared';
 import { createElement, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useSessionTodos } from '../useSessionTodos';
+import { useReconnectInvalidation } from '../../../../hooks/useReconnectInvalidation';
+import { _resetReconnectInvalidation } from '../../../../lib/reconnect-invalidation';
+import { dropAndReopenAppSocket } from '../../../../test/app-socket-reconnect';
 import { _reset as resetWebSocket } from '../../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../../test/mock-websocket';
 
@@ -203,5 +206,88 @@ describe('useSessionTodos', () => {
 
       await waitFor(() => expect(result.current.todos).toEqual([added]));
     });
+  });
+});
+
+/**
+ * The Todo list after an app-WS reconnect: the headline polarity tests of the
+ * reconnect invalidation. `staleTime: Infinity` means nothing but the mechanism
+ * can cause a refetch (a remount or a focus change would not). Measured on
+ * `main`'s shape (no `invalidateOnReconnect` registration, no root hook): the
+ * list is fetched once and stays at 1 after the reconnect, in both tests.
+ * Mutations (each applied alone, this file re-run):
+ *   - registry entries removed when the consumer unmounts -> the unmounted-consumer
+ *     test stays at 1 fetch;
+ *   - invalidate with `refetchType: 'all'` -> the unmounted-consumer test's
+ *     "not fetched at reconnect time" control fails (2 fetches before the remount).
+ */
+describe('useSessionTodos after an app-WS reconnect (staleTime Infinity)', () => {
+  let restoreWebSocket: () => void;
+
+  function todoListFetches(): number {
+    return (mockFetch.mock.calls as unknown[][]).filter((call) => fetchUrl(call[0]).includes('/api/todos')).length;
+  }
+
+  function sharedClientWrapper() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: Infinity } },
+    });
+    return ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+  }
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockFetch.mockImplementation(async () => jsonResponse({ todos: [makeTodo()] }));
+    restoreWebSocket = installMockWebSocket();
+    resetWebSocket();
+    _resetReconnectInvalidation();
+  });
+
+  afterEach(() => {
+    resetWebSocket();
+    restoreWebSocket();
+  });
+
+  it('a mounted consumer refetches once after the socket drops and reopens: 1 fetch, then 2', async () => {
+    const { result } = renderHook(
+      () => {
+        useReconnectInvalidation();
+        return useSessionTodos('session-1');
+      },
+      { wrapper: sharedClientWrapper() },
+    );
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    act(() => {
+      requireLastWs().simulateOpen();
+    });
+    expect(todoListFetches()).toBe(1);
+
+    dropAndReopenAppSocket();
+
+    await waitFor(() => expect(todoListFetches()).toBe(2));
+  });
+
+  it('an UNMOUNTED consumer is marked stale at the reconnect (no fetch then) and refetches on remount: 1, 1, 2', async () => {
+    const wrapper = sharedClientWrapper();
+    renderHook(() => useReconnectInvalidation(), { wrapper });
+    const first = renderHook(() => useSessionTodos('session-1'), { wrapper });
+    await waitFor(() => expect(first.result.current.isPending).toBe(false));
+    act(() => {
+      requireLastWs().simulateOpen();
+    });
+    first.unmount();
+    expect(todoListFetches()).toBe(1);
+
+    dropAndReopenAppSocket();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    // Control: an unmounted family is not fetched at reconnect time.
+    expect(todoListFetches()).toBe(1);
+
+    const remounted = renderHook(() => useSessionTodos('session-1'), { wrapper });
+    await waitFor(() => expect(remounted.result.current.isPending).toBe(false));
+    expect(todoListFetches()).toBe(2);
   });
 });

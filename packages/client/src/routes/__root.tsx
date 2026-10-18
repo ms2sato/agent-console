@@ -14,6 +14,7 @@ import { useAppWsState } from '../hooks/useAppWs';
 import { useSessionState } from '../hooks/useSessionState';
 import { useSessionSideEffects } from '../hooks/useSessionSideEffects';
 import { useEmbeddedAgentRegistrySync } from '../hooks/useEmbeddedAgentRegistrySync';
+import { useReconnectInvalidation } from '../hooks/useReconnectInvalidation';
 import { useRepositoryRegistrySync } from '../hooks/useRepositoryRegistrySync';
 import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
@@ -119,6 +120,7 @@ function RootLayout() {
   // Keep the embedded-agent registry query cache fresh regardless of route
   // (the picker that consumes it lives on session pages, not the Dashboard).
   useEmbeddedAgentRegistrySync();
+  useReconnectInvalidation();
 
   // Keep the repository registry query cache fresh regardless of route.
   // This is the repository cache's app-wide equivalent: the sidebar that

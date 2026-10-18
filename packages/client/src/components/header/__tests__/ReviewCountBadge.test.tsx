@@ -7,6 +7,8 @@ import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { jsonResponse } from '../../../test/todo-fixtures';
 import { ReviewCountBadge } from '../ReviewCountBadge';
+import { listReconnectInvalidationKeys, _resetReconnectInvalidation } from '../../../lib/reconnect-invalidation';
+import { reviewQueueKeys } from '../../../lib/query-keys';
 
 const originalFetch = globalThis.fetch;
 const mockFetch = mock(async (_input: RequestInfo | URL): Promise<Response> => jsonResponse(completeWireBody([])));
@@ -97,5 +99,17 @@ describe('ReviewCountBadge', () => {
     });
 
     await waitForAbsent(() => screen.queryByText('1'));
+  });
+});
+
+describe('ReviewCountBadge reconnect registration', () => {
+  // Mutation: drop `invalidateOnReconnect` from the badge's useAppWsEvent -> a `tsc` error, and (type
+  // bypassed) this test fails because the review-queue root is not registered.
+  it('registers the review-queue root for the reconnect invalidation', async () => {
+    _resetReconnectInvalidation();
+
+    await renderWithRouter(<ReviewCountBadge />);
+
+    expect(listReconnectInvalidationKeys()).toContainEqual(reviewQueueKeys.root());
   });
 });

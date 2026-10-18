@@ -40,6 +40,7 @@ export function ArtifactsPage() {
     onArtifactDeleted: () => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.list(), exact: true });
     },
+    invalidateOnReconnect: [artifactKeys.root()],
   });
 
   const {
