@@ -19,8 +19,18 @@ describe('getTabDotColor', () => {
     expect(getTabDotColor('git-diff')).toBe('bg-green-500');
   });
 
+  it('returns green for file-viewer workers (defensive default; caller renders an icon instead)', () => {
+    expect(getTabDotColor('file-viewer')).toBe('bg-green-500');
+  });
+
   it('covers every Worker type without falling through to the exhaustive guard', () => {
-    const allTypes: Worker['type'][] = ['agent', 'terminal', 'git-diff', 'embedded-agent'];
+    const allTypes: Worker['type'][] = [
+      'agent',
+      'terminal',
+      'git-diff',
+      'embedded-agent',
+      'file-viewer',
+    ];
     for (const type of allTypes) {
       expect(() => getTabDotColor(type)).not.toThrow();
     }
@@ -44,6 +54,10 @@ describe('isCloseableTabType', () => {
     expect(isCloseableTabType('git-diff')).toBe(false);
   });
 
+  it('file-viewer tabs are closeable (opt-in, unlike the auto-created git-diff tab)', () => {
+    expect(isCloseableTabType('file-viewer')).toBe(true);
+  });
+
   it('non-primary agent tabs (picker-added) are closeable', () => {
     expect(isCloseableTabType('agent', false)).toBe(true);
   });
@@ -59,6 +73,7 @@ describe('getWorkerTypeLabel', () => {
     expect(getWorkerTypeLabel('agent')).toBe('Agent');
     expect(getWorkerTypeLabel('terminal')).toBe('Terminal');
     expect(getWorkerTypeLabel('embedded-agent')).toBe('Embedded Agent');
+    expect(getWorkerTypeLabel('file-viewer')).toBe('File Viewer');
   });
 });
 
@@ -77,5 +92,9 @@ describe('showsActivityBadge', () => {
 
   it('hides the badge for git-diff tabs', () => {
     expect(showsActivityBadge('git-diff')).toBe(false);
+  });
+
+  it('hides the badge for file-viewer tabs', () => {
+    expect(showsActivityBadge('file-viewer')).toBe(false);
   });
 });
