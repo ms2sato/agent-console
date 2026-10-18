@@ -61,6 +61,22 @@ export class SpawnCwdMissingError extends Error {
   }
 }
 
+const SPAWN_CWD_CHECK_TIMEOUT_MS = 5000;
+
+/**
+ * Thrown by `assertSpawnCwdExists` when the elevated `test -d` check itself
+ * timed out. The directory's existence is UNKNOWN in that case (a hung
+ * filesystem, a slow login shell), so it must not be reported as
+ * `SpawnCwdMissingError`, whose "it may have been removed" diagnosis would be
+ * false for a directory that is there.
+ */
+export class SpawnCwdCheckTimeoutError extends Error {
+  constructor(readonly cwd: string, readonly username: string, readonly timeoutMs: number) {
+    super(`checking working directory '${cwd}' as '${username}' timed out after ${timeoutMs} ms; the directory was not confirmed missing`);
+    this.name = 'SpawnCwdCheckTimeoutError';
+  }
+}
+
 /**
  * Verify that `cwd` exists (and is a directory) for `username`, throwing
  * `SpawnCwdMissingError` if not. Must be called before `spawnPty` so a
@@ -81,7 +97,10 @@ export async function assertSpawnCwdExists(
   } = { stat: fs.stat, runAsUser, shouldElevateForUser },
 ): Promise<void> {
   if (deps.shouldElevateForUser(username)) {
-    const result = await deps.runAsUser({ username, command: `test -d ${shellEscape(cwd)}`, timeoutMs: 5000 });
+    const result = await deps.runAsUser({ username, command: `test -d ${shellEscape(cwd)}`, timeoutMs: SPAWN_CWD_CHECK_TIMEOUT_MS });
+    if (result.timedOut) {
+      throw new SpawnCwdCheckTimeoutError(cwd, username, SPAWN_CWD_CHECK_TIMEOUT_MS);
+    }
     if (result.exitCode !== 0) {
       throw new SpawnCwdMissingError(cwd, username);
     }

@@ -21,7 +21,7 @@ import { runAsUser } from '../privilege-elevation.js';
 import type { Kysely } from 'kysely';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
-import { SingleUserMode, MultiUserMode, assertSpawnCwdExists, SpawnCwdMissingError } from '../user-mode.js';
+import { SingleUserMode, MultiUserMode, assertSpawnCwdExists, SpawnCwdMissingError, SpawnCwdCheckTimeoutError } from '../user-mode.js';
 import type { TerminalPtySpawnRequest, AgentPtySpawnRequest } from '../user-mode.js';
 import type { RunAsUserResult } from '../privilege-elevation.js';
 import { getUnsetEnvPrefix } from '../env-filter.js';
@@ -805,14 +805,11 @@ describe('assertSpawnCwdExists', () => {
       const fakeStat: typeof fs.stat = (async () => {
         throw new Error('stat should not be called on the elevated branch');
       }) as typeof fs.stat;
-      // A timed-out runAsUser normalizes to exit code 137 (128 + SIGKILL);
-      // either shape (a clean non-zero exit, or a timeout) must be treated
-      // identically by the caller -- both mean "directory check failed".
       const fakeRunAsUser: typeof runAsUser = async (): Promise<RunAsUserResult> => ({
         stdout: '',
         stderr: '',
-        exitCode: 137,
-        timedOut: true, cwdFailed: false,
+        exitCode: 1,
+        timedOut: false, cwdFailed: false,
       });
 
       const promise = assertSpawnCwdExists('/home/alice/missing', 'alice', {
@@ -831,6 +828,36 @@ describe('assertSpawnCwdExists', () => {
         expect(typedErr.cwd).toBe('/home/alice/missing');
         expect(typedErr.username).toBe('alice');
       }
+    });
+
+    it('rejects with SpawnCwdCheckTimeoutError, not SpawnCwdMissingError, when the elevated check times out', async () => {
+      const fakeStat: typeof fs.stat = (async () => {
+        throw new Error('stat should not be called on the elevated branch');
+      }) as typeof fs.stat;
+      // A timed-out runAsUser normalizes to exit code 137 (128 + SIGKILL).
+      const fakeRunAsUser: typeof runAsUser = async (): Promise<RunAsUserResult> => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 137,
+        timedOut: true, cwdFailed: false,
+      });
+
+      const error = await assertSpawnCwdExists('/home/alice/present', 'alice', {
+        stat: fakeStat,
+        runAsUser: fakeRunAsUser,
+        shouldElevateForUser: shouldElevateForUserTrue,
+      }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(SpawnCwdCheckTimeoutError);
+      expect(error).not.toBeInstanceOf(SpawnCwdMissingError);
+      const typedErr = error as SpawnCwdCheckTimeoutError;
+      expect(typedErr.cwd).toBe('/home/alice/present');
+      expect(typedErr.username).toBe('alice');
+      expect(typedErr.message).toContain('timed out');
+      expect(typedErr.message).not.toContain('does not exist');
     });
 
     it('propagates the ORIGINAL rejection unchanged when runAsUser itself throws', async () => {
