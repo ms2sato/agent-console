@@ -38,8 +38,11 @@
  *   - `runAsUser` timeout tree-kill case (`checkTimeoutKillsTree`): a command
  *     that backgrounds a `sleep 300` grandchild and waits is run with a short
  *     `timeoutMs`. The call must return within 3 s with `timedOut === true` and
- *     the grandchild's pid in stdout, and that grandchild must be gone (ESRCH,
- *     not merely `/proc` presence) within 2 s of the return; a negative
+ *     the grandchild's pid in stdout, and that grandchild must be gone within 2 s
+ *     of the return: ESRCH is the primary signal (EPERM reads as alive), and a
+ *     zombie (`/proc/<pid>/stat` state `Z`: terminated but not reaped, e.g. by
+ *     a container init that does not reap unknown children) also counts as
+ *     gone and is logged distinctly so the evidence shows which case occurred; a negative
  *     control (an unrelated tracked `sleep` of the same user) must survive,
  *     proving the kill hit the snapshot and not the user's other processes.
  *     Before the fix the surviving grandchild held the pipes and the call did
@@ -309,6 +312,38 @@ function isGoneByEsrch(pid: number): boolean {
   }
 }
 
+/**
+ * Process state letter from `/proc/<pid>/stat`, or undefined when unreadable.
+ * `comm` is parenthesised and may itself contain spaces or parentheses, so the
+ * state is the first token after the LAST ')'.
+ */
+function procState(pid: number): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type TerminationOutcome = { gone: true; how: 'esrch' | 'zombie' } | { gone: false; state: string | undefined };
+
+/**
+ * Waits for `pid` to be terminated. ESRCH is the primary signal. A zombie
+ * (state Z) is terminated but still has a process-table entry because its
+ * parent (the container init, for an orphan) has not reaped it; kill(pid, 0)
+ * keeps succeeding or answering EPERM for it, so state Z also counts as gone.
+ */
+async function waitUntilTerminated(pid: number, timeoutMs: number): Promise<TerminationOutcome> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (isGoneByEsrch(pid)) return { gone: true, how: 'esrch' };
+    if (procState(pid) === 'Z') return { gone: true, how: 'zombie' };
+    if (Date.now() >= deadline) return { gone: false, state: procState(pid) };
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 async function waitUntilGoneByEsrch(pid: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -358,9 +393,16 @@ async function checkTimeoutKillsTree(username: string, degenerate: boolean): Pro
           `stdout=${JSON.stringify(guarded.stdout)}`,
         );
       }
-      const gone = await waitUntilGoneByEsrch(grandchild, 2_000);
-      expect(gone, 'timeout: the grandchild is gone (ESRCH) within 2s of the return', `pid=${grandchild}`);
-      if (!gone) {
+      const outcome = await waitUntilTerminated(grandchild, 2_000);
+      if (outcome.gone && outcome.how === 'zombie') {
+        console.log('  NOTE  timeout: grandchild is a zombie (terminated, not reaped by the container init)');
+      }
+      expect(
+        outcome.gone,
+        'timeout: the grandchild is terminated (ESRCH, or zombie) within 2s of the return',
+        `pid=${grandchild} state=${outcome.gone ? outcome.how : (outcome.state ?? 'unreadable')}`,
+      );
+      if (!outcome.gone) {
         // Leave nothing behind: this is the failure being reported.
         await killAsUser(grandchild, 'SIGKILL', username, { timeoutMs: KILL_AS_USER_TIMEOUT_MS }).catch(() => {});
       }
