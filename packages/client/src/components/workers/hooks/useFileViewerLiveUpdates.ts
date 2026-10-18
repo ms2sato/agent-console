@@ -23,6 +23,10 @@ function dirname(path: string): string {
  * each `files-changed` batch into query invalidations. Only mounted (active)
  * queries refetch (the default `refetchType: 'active'`); an inactive key is
  * merely marked stale, so a change inside a collapsed directory costs nothing.
+ *
+ * After a pause and resume the view remounts and this hook does not invalidate
+ * the worker prefix (its first open counts as the first open); the queries'
+ * `refetchOnMount: 'always'` (FILE_VIEWER_QUERY_OPTIONS) re-reads what was missed.
  */
 export function useFileViewerLiveUpdates({ sessionId, workerId, selectedPath }: UseFileViewerLiveUpdatesOptions): {
   watchUnavailable: WatchUnavailableReason | null;
