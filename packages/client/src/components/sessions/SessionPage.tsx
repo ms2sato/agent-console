@@ -751,6 +751,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             onFilesReceived={(files) => messagePanelRef.current?.addFiles(files)}
             hideStatusBar
             stripScrollbackClear={shouldStripScrollback}
+            resolveRepoFullName={session.type === 'worktree'}
           />
         )}
       </ErrorBoundary>
