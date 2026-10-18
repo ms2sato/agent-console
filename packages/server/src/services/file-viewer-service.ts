@@ -27,7 +27,7 @@
  */
 
 import { readdir, realpath } from 'node:fs/promises';
-import { join, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import {
   prismLanguageForPath,
   UNKNOWN_PRISM_LANGUAGE,
@@ -369,9 +369,13 @@ export async function readFileContent(
 ): Promise<FileContentResponse> {
   if (relPath === '' || !isValidFilePath(relPath)) throw new ValidationError('Invalid path');
   const deps = resolveDeps(overrides);
-  await resolveConfinedRealPath(locationPath, relPath, requestUser, 'file', deps);
+  const realTarget = await resolveConfinedRealPath(locationPath, relPath, requestUser, 'file', deps);
 
-  const read = await deps.readWorkingTreeFile(locationPath, relPath, requestUser, {
+  // Read the REAL path the containment call returned, not the lexical join, so
+  // the two calls cannot disagree if a symlink is swapped in between. The
+  // builder joins its cwd and path, so the parent and the base name are passed
+  // separately (the parent is a real directory inside the working directory).
+  const read = await deps.readWorkingTreeFile(dirname(realTarget), basename(realTarget), requestUser, {
     regularOnly: true,
     maxBytes: deps.maxBytes,
   });

@@ -203,6 +203,10 @@ describe('GET .../files/tree', () => {
     });
   });
 
+  it('a missing leaf under a symlinked directory that points outside is 404, never 500', async () => {
+    expect((await getJson(treeUrl(q('link-out-dir/missing')))).status).toBe(404);
+  });
+
   it('a tree request for a file is 400; a missing directory and a dangling symlink are 404', async () => {
     expect((await getJson(treeUrl(q('plain.txt')))).status).toBe(400);
     expect((await getJson(treeUrl(q('nope')))).status).toBe(404);
@@ -262,6 +266,10 @@ describe('GET .../files/content', () => {
     expect(inside.kind).toBe('binary');
     expect('content' in inside).toBe(false);
     expect(inside.size).toBe(9000);
+  });
+
+  it('a missing file under a symlinked directory that points outside is 404, never 500', async () => {
+    expect((await content('link-out-dir/missing.txt')).status).toBe(404);
   });
 
   it('a directory is 400, a missing file is 404', async () => {

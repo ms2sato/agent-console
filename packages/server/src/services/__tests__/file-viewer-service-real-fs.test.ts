@@ -208,6 +208,11 @@ describe.each(MODES)('boundary table: %s', (_label, user) => {
       );
     });
 
+    it('a missing leaf under a symlinked directory that points OUTSIDE is NotFound, never an error (tree and content)', async () => {
+      await expect(listDirectory(worktree, 'link-out-dir/missing', user)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(readFileContent(worktree, 'link-out-dir/missing.txt', user)).rejects.toBeInstanceOf(NotFoundError);
+    });
+
     it('a missing directory and a dangling symlink are NotFound', async () => {
       await expect(listDirectory(worktree, 'nope', user)).rejects.toBeInstanceOf(NotFoundError);
       await expect(listDirectory(worktree, 'dangling', user)).rejects.toBeInstanceOf(NotFoundError);

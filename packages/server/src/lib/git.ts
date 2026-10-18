@@ -1011,7 +1011,11 @@ export async function readRepoFileAtRef(
 /** Exit code the elevated directory probe in `readWorkingTreeFile` uses to say "this is a directory". */
 const WORKING_TREE_DIR_EXIT_CODE = 42;
 
-/** Exit code the `regularOnly` probe uses to say "this exists but is not a regular file" (fifo, socket, device). */
+/**
+ * Exit code the `regularOnly` probe uses to say "this exists but is not a regular file" (fifo, socket, device).
+ * 42 (directory), 43 (this), 125 (`CWD_FAILED_EXIT_CODE`, the elevated cd guard) and 137 (a timed-out run)
+ * are distinct on purpose: the caller tells the outcomes apart by exit code alone, so none may be reused.
+ */
 const WORKING_TREE_NOT_REGULAR_EXIT_CODE = 43;
 
 /** Options of {@link buildWorkingTreeReadCommand} / {@link readWorkingTreeFile}; the default is the diff paths' read. */

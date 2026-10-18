@@ -242,6 +242,8 @@ describe('listDirectory / readFileContent: lexical guard runs before anything el
 
 describe('readFileContent', () => {
   const CAP = 100;
+  // Deliberately unlike any lexical path the tests ask for, so reading the lexical join is visible.
+  const REAL_TARGET = `${ROOT}/real-dir/real-file.ts`;
 
   type ReadArgs = Parameters<FileViewerDeps['readWorkingTreeFile']>;
   type ReadOutcome = Awaited<ReturnType<FileViewerDeps['readWorkingTreeFile']>>;
@@ -250,7 +252,7 @@ describe('readFileContent', () => {
   function harness(read: ReadOutcome | (() => never)) {
     const order: string[] = [];
     const readCalls: ReadArgs[] = [];
-    const runner = fakeRunner([realpathOut(ROOT, `${ROOT}/f`)]);
+    const runner = fakeRunner([realpathOut(ROOT, REAL_TARGET)]);
     const deps: Partial<FileViewerDeps> = {
       maxBytes: CAP,
       runAsUser: async (opts) => {
@@ -268,11 +270,14 @@ describe('readFileContent', () => {
 
   const file = (content: Buffer, size = content.length): ReadOutcome => ({ kind: 'file', content, size });
 
-  it('decides containment first, then reads the lexical path as the owner with regularOnly and the cap', async () => {
+  it('decides containment first, then reads the REAL path the containment call returned (not the lexical join) as the owner with regularOnly and the cap', async () => {
     const { deps, order, readCalls } = harness(file(Buffer.from('hi')));
-    await readFileContent(ROOT, 'src/a.ts', 'alice', deps);
+    const response = await readFileContent(ROOT, 'src/a.ts', 'alice', deps);
     expect(order).toEqual(['realpath', 'read']);
-    expect(readCalls).toEqual([[ROOT, 'src/a.ts', 'alice', { regularOnly: true, maxBytes: CAP }]]);
+    // The builder joins cwd and path, so the real path arrives as its parent + base name.
+    expect(readCalls).toEqual([[`${ROOT}/real-dir`, 'real-file.ts', 'alice', { regularOnly: true, maxBytes: CAP }]]);
+    // ...while the response still echoes the path the client asked for.
+    expect(response.path).toBe('src/a.ts');
   });
 
   it('a target outside the working directory is refused and the read never happens', async () => {
