@@ -304,6 +304,8 @@ The pause command makes the window between the last worker kill and the removal 
 - a worker WebSocket opened in that window is closed with the existing `SESSION_PAUSED` code and the reason `Session is pausing`, which the client already treats as "do not reconnect";
 - a resume request is not affected: the session is still in memory, so it returns the existing session and activates nothing.
 
+A notification addressed to one of the session's embedded workers (a one-shot timer, a conditional wakeup, an inbound event) that fires inside the window fails delivery with `NOT_ACTIVATED`, because activation is refused; one second after the pause completes it fails with `not-found`, because the session has left memory. Both are dropped (an inbound event additionally leaves a failed notification row in the window and none afterwards), so the window changes the form of the loss, not whether it happens: a notification aimed at a paused session's worker is dropped with or without a pause command. Whether such notifications should be deferred until resume or dropped by design is an open question, tracked in [Issue #2204](https://github.com/ms2sato/agent-console/issues/2204).
+
 ### Resume Implementation
 
 ```typescript

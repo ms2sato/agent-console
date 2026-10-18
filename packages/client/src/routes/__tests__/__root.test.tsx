@@ -104,6 +104,11 @@ function HookFailureTrigger({ kind }: { kind: 'pause' | 'resume' }) {
   );
 }
 
+// resetAuth() in this describe's hooks is load-bearing: the auth state is module-global
+// and RootLayout redirects an unauthenticated user to /login in multi-user mode, so a test
+// file that ran earlier in the same process and left multi-user mode set (CI runs the whole
+// client package in one process) would send this harness to a route it does not define and
+// render "Not Found" instead of the child route.
 describe('RootLayout hook failure dialog', () => {
   const originalFetch = globalThis.fetch;
   let restoreWebSocket: () => void;
