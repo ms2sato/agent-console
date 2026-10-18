@@ -89,9 +89,13 @@ describe('FileViewerContent', () => {
   });
 
   describe('highlighting threshold', () => {
+    it('exports the threshold the specification names (256 KiB)', () => {
+      expect(FILE_VIEWER_HIGHLIGHT_MAX_BYTES).toBe(262144);
+    });
+
     it('highlights a file of exactly the threshold length (keyword in its own colored span, no notice)', () => {
-      const content = typescriptOfLength(FILE_VIEWER_HIGHLIGHT_MAX_BYTES);
-      expect(content.length).toBe(262144);
+      // Literal on purpose: the boundary is the specified 256 KiB, not whatever the constant holds.
+      const content = typescriptOfLength(262144);
       const { container, queryByText } = render(
         <FileViewerContent file={textFile('a.ts', content, { language: 'typescript' })} />
       );
@@ -103,8 +107,7 @@ describe('FileViewerContent', () => {
     });
 
     it('renders one character over the threshold as plain text with the one-line notice', () => {
-      const content = typescriptOfLength(FILE_VIEWER_HIGHLIGHT_MAX_BYTES + 1);
-      expect(content.length).toBe(262145);
+      const content = typescriptOfLength(262145);
       const { container, getByText } = render(
         <FileViewerContent file={textFile('a.ts', content, { language: 'typescript' })} />
       );
@@ -155,8 +158,8 @@ describe('FileViewerContent', () => {
     }
 
     it('shows the highlight-off notice only for the plain file', () => {
-      expect(plain.content?.length).toBeGreaterThan(FILE_VIEWER_HIGHLIGHT_MAX_BYTES);
-      expect(highlighted.content?.length).toBeLessThanOrEqual(FILE_VIEWER_HIGHLIGHT_MAX_BYTES);
+      expect(plain.content?.length).toBeGreaterThan(262144);
+      expect(highlighted.content?.length).toBeLessThanOrEqual(262144);
       const a = render(<FileViewerContent file={plain} />);
       expect(a.queryByText(/highlighting off/)).not.toBeNull();
       cleanup();
