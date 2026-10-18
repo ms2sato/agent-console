@@ -3,6 +3,7 @@ import type { WSContext } from 'hono/ws';
 import type { GitDiffData, GitDiffServerMessage } from '@agent-console/shared';
 import { createGitDiffHandlers, type GitDiffHandlerDependencies } from '../git-diff-handler.js';
 import { AnnotationService } from '../../services/annotation-service.js';
+import { startWatching as realStartWatching, stopWatching as realStopWatching } from '../../services/git-diff-service.js';
 import { asWSContext } from './ws-test-helpers.js';
 
 
@@ -123,6 +124,33 @@ describe('GitDiffHandler', () => {
       );
 
       expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'specific-commit', null, 'working-dir');
+    });
+
+    it('keeps the diff connection up when the underlying watch fails: diff-data is still sent, no diff-error, no close', async () => {
+      // The REAL startWatching over a path `fs.watch` cannot open (it does not exist). Before the shared
+      // watcher, startWatching rethrew, handleConnection rejected, and routes.ts answered
+      // `diff-error: Connection failed` and closed the socket: an unwatchable worktree had no diff worker.
+      const unwatchable = '/definitely/not/a/real/dir-' + Date.now();
+      const closeCalls: unknown[] = [];
+      (mockWs as unknown as { close: (...args: unknown[]) => void }).close = (...args) => {
+        closeCalls.push(args);
+      };
+      const realHandlers = createGitDiffHandlers({
+        getDiffData: mockGetDiffData,
+        resolveRef: mockResolveRef,
+        resolveBaseSpec: mockResolveBaseSpec,
+        startWatching: realStartWatching,
+        stopWatching: realStopWatching,
+        getFileLines: mock(() => Promise.resolve([])),
+        annotationService: new AnnotationService(),
+      });
+
+      await realHandlers.handleConnection(mockWs, 'session-1', 'worker-unwatchable', unwatchable, 'base-commit', null);
+
+      const messages: GitDiffServerMessage[] = sentMessages.map((m) => JSON.parse(m));
+      expect(messages.map((m) => m.type)).toEqual(['diff-data']);
+      expect(closeCalls).toEqual([]);
+      await realHandlers.handleDisconnection('session-1', 'worker-unwatchable');
     });
 
     it('should start file watching on connection', async () => {
