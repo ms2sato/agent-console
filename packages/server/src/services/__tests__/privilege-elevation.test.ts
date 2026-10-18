@@ -20,7 +20,7 @@ import {
   type RunAsUserResult,
   type SpawnFn,
 } from '../privilege-elevation.js';
-import { shellEscape as elevationArgsShellEscape } from '../elevation-args.js';
+import { shellEscape as elevationArgsShellEscape, CWD_FAILED_SENTINEL } from '../elevation-args.js';
 
 interface CapturedSpawn {
   args: string[];
@@ -214,13 +214,13 @@ describe('privilege-elevation', () => {
 
     it('prepends cd when cwd is provided', () => {
       expect(buildInnerCommand('echo hi', '/path/to/dir', undefined)).toBe(
-        "cd '/path/to/dir' || exit 125; echo hi",
+        "cd '/path/to/dir' || { echo 'agent-console: working directory /path/to/dir is not available' >&2; exit 125; }; echo hi",
       );
     });
 
     it('shell-escapes a cwd that contains a single quote', () => {
       expect(buildInnerCommand('echo hi', "/weird'/dir", undefined)).toBe(
-        "cd '/weird'\\''/dir' || exit 125; echo hi",
+        "cd '/weird'\\''/dir' || { echo 'agent-console: working directory /weird'\\''/dir is not available' >&2; exit 125; }; echo hi",
       );
     });
 
@@ -236,18 +236,30 @@ describe('privilege-elevation', () => {
       );
     });
 
-    it('guards cd with `|| exit 125` so the command never runs when the cwd is unusable', () => {
-      // `cd X || exit 125; export ...; <command>` -- a failed cd stops the
-      // shell before the command (and before the exports).
+    it('guards cd with `|| { echo ... >&2; exit 125; }` so the command never runs when the cwd is unusable', () => {
+      // `cd X || { echo '<sentinel> X ...' >&2; exit 125; }; export ...; <command>`
+      // -- a failed cd stops the shell before the command (and before the
+      // exports); the stderr line is what separates it from a user exit 125.
       expect(buildInnerCommand('echo hi', '/d', { A: '1', B: '2' })).toBe(
-        "cd '/d' || exit 125; export A='1' B='2'; echo hi",
+        "cd '/d' || { echo 'agent-console: working directory /d is not available' >&2; exit 125; }; export A='1' B='2'; echo hi",
       );
     });
 
     it('uses the exported CWD_FAILED_EXIT_CODE constant (125) in the guard', () => {
       expect(CWD_FAILED_EXIT_CODE).toBe(125);
       expect(buildInnerCommand('echo hi', '/d', undefined)).toContain(
-        `|| exit ${CWD_FAILED_EXIT_CODE};`,
+        `exit ${CWD_FAILED_EXIT_CODE}; };`,
+      );
+    });
+
+    it('the guard prints the exported CWD_FAILED_SENTINEL on stderr', () => {
+      const inner = buildInnerCommand('echo hi', '/d', undefined);
+      expect(inner).toContain(`echo '${CWD_FAILED_SENTINEL}/d is not available' >&2`);
+    });
+
+    it('cwd and env together: guard, then ONE export, then the command, joined with `;` (never `&&`)', () => {
+      expect(buildInnerCommand('git status', '/work', { A: '1' })).toBe(
+        "cd '/work' || { echo 'agent-console: working directory /work is not available' >&2; exit 125; }; export A='1'; git status",
       );
     });
 
@@ -364,7 +376,7 @@ describe('privilege-elevation', () => {
         '-i',
         'sh',
         '-c',
-        "cd '/path/to/work' || exit 125; echo hi",
+        "cd '/path/to/work' || { echo 'agent-console: working directory /path/to/work is not available' >&2; exit 125; }; echo hi",
       ]);
     });
 
@@ -397,7 +409,7 @@ describe('privilege-elevation', () => {
         { GIT_TERMINAL_PROMPT: '0' },
       );
       expect(result.args[result.args.length - 1]).toBe(
-        "cd '/var/agentconsole/work' || exit 125; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
+        "cd '/var/agentconsole/work' || { echo 'agent-console: working directory /var/agentconsole/work is not available' >&2; exit 125; }; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
       );
     });
 
@@ -526,9 +538,11 @@ describe('privilege-elevation', () => {
     describe('cwdFailed', () => {
       const elevatedUser = `${serverUsername}-someone-else`;
 
-      it('elevated + cwd + exit 125: cwdFailed is true and exitCode is passed through', async () => {
+      const SENTINEL_LINE = `${CWD_FAILED_SENTINEL}/gone is not available\n`;
+
+      it('elevated + cwd + exit 125 + sentinel on stderr: cwdFailed is true and exitCode is passed through', async () => {
         process.env.AUTH_MODE = 'multi-user';
-        const fakeSpawn = makeFakeSpawn([], { exitCode: CWD_FAILED_EXIT_CODE });
+        const fakeSpawn = makeFakeSpawn([], { exitCode: CWD_FAILED_EXIT_CODE, stderr: SENTINEL_LINE });
         const result = await runAsUser(
           { username: elevatedUser, command: 'git status', cwd: '/gone' },
           fakeSpawn,
@@ -536,6 +550,27 @@ describe('privilege-elevation', () => {
         expect(result.cwdFailed).toBe(true);
         expect(result.exitCode).toBe(125);
         expect(result.timedOut).toBe(false);
+      });
+
+      it('elevated + cwd + exit 125 WITHOUT the sentinel: cwdFailed is false (a user command exiting 125 is an ordinary non-zero exit)', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: CWD_FAILED_EXIT_CODE, stderr: 'bisect: nothing to do\n' });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'git bisect run ./t', cwd: '/there' },
+          fakeSpawn,
+        );
+        expect(result.exitCode).toBe(125);
+        expect(result.cwdFailed).toBe(false);
+      });
+
+      it('elevated + cwd + sentinel on stderr WITHOUT exit 125: cwdFailed is false', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const fakeSpawn = makeFakeSpawn([], { exitCode: 1, stderr: SENTINEL_LINE });
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'echo x >&2; exit 1', cwd: '/there' },
+          fakeSpawn,
+        );
+        expect(result.cwdFailed).toBe(false);
       });
 
       it('elevated + cwd + other non-zero exit: cwdFailed is false', async () => {
@@ -713,7 +748,7 @@ describe('privilege-elevation', () => {
       // The cwd/env MUST appear inside the inner shell command, not be lost.
       const innerCommand = captured[0].args[captured[0].args.length - 1];
       expect(innerCommand).toBe(
-        "cd '/work/here' || exit 125; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
+        "cd '/work/here' || { echo 'agent-console: working directory /work/here is not available' >&2; exit 125; }; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
       );
 
       // Outer spawn options: cwd pinned to neutral '/', env NOT forwarded
@@ -942,7 +977,7 @@ describe('privilege-elevation', () => {
       expect(captured[0].options?.detached).toBeUndefined();
       // cd runs first in the login shell, then the exec replaces it with setsid.
       expect(captured[0].args.at(-1)).toBe(
-        `cd '/work' || exit 125; exec setsid sh -c 'echo '\\''hi'\\'' && sleep 1'`,
+        `cd '/work' || { echo 'agent-console: working directory /work is not available' >&2; exit 125; }; exec setsid sh -c 'echo '\\''hi'\\'' && sleep 1'`,
       );
     });
 
@@ -1113,7 +1148,7 @@ describe('privilege-elevation', () => {
 
       const innerCommand = captured[0].args[captured[0].args.length - 1];
       expect(innerCommand).toBe(
-        "cd '/work/here' || exit 125; export AGENT_CONSOLE_SESSION_ID='sess-1' AGENT_CONSOLE_WORKER_ID='work-1'; bun loop.ts",
+        "cd '/work/here' || { echo 'agent-console: working directory /work/here is not available' >&2; exit 125; }; export AGENT_CONSOLE_SESSION_ID='sess-1' AGENT_CONSOLE_WORKER_ID='work-1'; bun loop.ts",
       );
       expect(innerCommand).not.toContain('SHOULD_NOT_EXPORT');
       const opts = captured[0].options as { env?: Record<string, string> };
@@ -1138,7 +1173,7 @@ describe('privilege-elevation', () => {
 
       const innerCommand = captured[0].args[captured[0].args.length - 1];
       expect(innerCommand).toBe(
-        "cd '/work/here' || exit 125; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
+        "cd '/work/here' || { echo 'agent-console: working directory /work/here is not available' >&2; exit 125; }; export GIT_TERMINAL_PROMPT='0'; git clone https://x",
       );
 
       const opts = captured[0].options as {

@@ -30,7 +30,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
-import { CWD_FAILED_EXIT_CODE, shellEscape } from './elevation-args.js';
+import { CWD_FAILED_EXIT_CODE, CWD_FAILED_SENTINEL, buildCwdGuard, shellEscape } from './elevation-args.js';
 
 const logger = createLogger('service:privilege-elevation');
 
@@ -103,12 +103,13 @@ export interface RunAsUserResult {
   timedOut: boolean;
   /**
    * True only when a `cwd` was given, the command ran elevated, and the inner
-   * shell exited with CWD_FAILED_EXIT_CODE -- the `cd <cwd>` failed and the
-   * command never ran. `false` for a timeout, for the non-elevated path (which
-   * has no cd guard: Bun rejects the spawn when the cwd is unusable), and when
-   * no cwd was given (a command's own exit 125 is just an exit code).
-   * A caller's own command exiting 125 while a cwd is given is
-   * indistinguishable from this and also reads `true`.
+   * shell's `cd <cwd>` failed: exit CWD_FAILED_EXIT_CODE AND the guard's
+   * CWD_FAILED_SENTINEL line on stderr (see `deriveCwdFailed`). The command
+   * never ran. `false` for a timeout, for the non-elevated path (which has no
+   * cd guard: Bun rejects the spawn when the cwd is unusable), when no cwd was
+   * given, and when the command itself exited 125 without the sentinel -- that
+   * is an ordinary non-zero exit. (The PTY path cannot read stderr separately;
+   * there exit 125 plus the visible line is the contract.)
    */
   cwdFailed: boolean;
 }
@@ -127,8 +128,30 @@ export type SpawnFn = (
 export { shellEscape, CWD_FAILED_EXIT_CODE };
 
 /**
- * Build the `cd <cwd> || exit 125; export K=v ...; <command>` inner shell
- * string used when elevation is in play. Returns `command` unchanged when there is
+ * Decide whether an outcome is the cd guard's failure rather than the caller's
+ * own command: elevated, a cwd was given, no timeout, exit CWD_FAILED_EXIT_CODE
+ * AND the sentinel on stderr. Neither half alone is enough.
+ * @internal Exported for testing
+ */
+export function deriveCwdFailed(outcome: {
+  elevated: boolean;
+  cwd: string | undefined;
+  timedOut: boolean;
+  exitCode: number;
+  stderr: string;
+}): boolean {
+  return (
+    outcome.elevated &&
+    outcome.cwd !== undefined &&
+    !outcome.timedOut &&
+    outcome.exitCode === CWD_FAILED_EXIT_CODE &&
+    outcome.stderr.includes(CWD_FAILED_SENTINEL)
+  );
+}
+
+/**
+ * Build the `cd <cwd> || { echo ... >&2; exit 125; }; export K=v ...; <command>`
+ * inner shell string used when elevation is in play. Returns `command` unchanged when there is
  * nothing to prepend. Keys that do not match POSIX env-var naming are
  * silently dropped (with a warn log) to prevent shell injection via crafted
  * key names.
@@ -152,9 +175,9 @@ export function buildInnerCommand(
 
   const statements: string[] = [];
   if (cwd !== undefined) {
-    // `|| exit` (not `&&`/`;`): when the cd fails the caller's command must
+    // `||` guard (not `&&`/`;`): when the cd fails the caller's command must
     // not run in the login shell's HOME.
-    statements.push(`cd ${shellEscape(cwd)} || exit ${CWD_FAILED_EXIT_CODE}`);
+    statements.push(buildCwdGuard(cwd));
   }
   if (exportPairs.length > 0) {
     // `export K1=v1 K2=v2` in one statement.
@@ -349,8 +372,7 @@ export async function runAsUser(
     'runAsUser completed',
   );
 
-  const cwdFailed =
-    elevated && opts.cwd !== undefined && !timedOut && exitCode === CWD_FAILED_EXIT_CODE;
+  const cwdFailed = deriveCwdFailed({ elevated, cwd: opts.cwd, timedOut, exitCode, stderr });
 
   return { stdout, stderr, exitCode, timedOut, cwdFailed };
 }

@@ -22,7 +22,9 @@
  *     when it runs is invoked with a `cwd` that does not exist. Elevated, the
  *     result must be `cwdFailed === true` / exit 125 and the sentinel must be
  *     ABSENT (the command never ran in the login shell's HOME); positive
- *     control: the same command with an existing `cwd` creates the sentinel.
+ *     control: the same command with an existing `cwd` creates the sentinel;
+ *     and a user command that itself exits 125 under an existing `cwd` reads
+ *     `cwdFailed === false` (the exit code alone is not the signal).
  *     In degenerate same-user mode there is no cd guard (the direct spawn
  *     rejects on an unusable cwd), so the case asserts the rejection and the
  *     absent sentinel instead.
@@ -253,6 +255,17 @@ async function checkCwdFailClosed(username: string, degenerate: boolean): Promis
       control.exitCode === 0 && !control.cwdFailed && existsSync(sentinelFile),
       'existing cwd: exit 0, cwdFailed false, sentinel file created',
       `exitCode=${control.exitCode} cwdFailed=${control.cwdFailed} stderr=${control.stderr}`,
+    );
+
+    console.log('==> a user command that itself exits CWD_FAILED_EXIT_CODE under an existing cwd is an ordinary exit');
+    const own125 = await runAsUser({ username, command: `exit ${CWD_FAILED_EXIT_CODE}`, cwd: '/tmp', timeoutMs: KILL_AS_USER_TIMEOUT_MS });
+    if (own125.timedOut) {
+      throw new ProbeTimeoutError(`runAsUser (user exit ${CWD_FAILED_EXIT_CODE}) timed out after ${KILL_AS_USER_TIMEOUT_MS}ms`);
+    }
+    expect(
+      own125.exitCode === CWD_FAILED_EXIT_CODE && !own125.cwdFailed,
+      'user command exit 125 with an existing cwd: exitCode 125 and cwdFailed false (no sentinel on stderr)',
+      `exitCode=${own125.exitCode} cwdFailed=${own125.cwdFailed} stderr=${own125.stderr}`,
     );
   } finally {
     // The sentinel was created by <username>; /tmp is sticky, so remove it as

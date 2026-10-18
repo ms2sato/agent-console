@@ -60,6 +60,15 @@ function buildPtyInner(command: string, cwd: string): Promise<string> {
   );
 }
 
+/** The real `deriveCwdFailed(...)` applied to a real shell run's outcome. */
+function deriveFailed(run: { code: number; err: string }, cwd: string): Promise<boolean> {
+  return evalInChild<boolean>(
+    `import { deriveCwdFailed } from ${JSON.stringify(PRIVILEGE_ELEVATION_TS)};`,
+    'deriveCwdFailed({ elevated: true, cwd: process.argv[3], timedOut: false, exitCode: Number(process.argv[1]), stderr: process.argv[2] })',
+    [String(run.code), run.err, cwd],
+  );
+}
+
 const TOUCH_SENTINEL = () => `touch ${JSON.stringify(sentinel)}; echo ran`;
 
 describe('cwd guard in a real shell', () => {
@@ -91,6 +100,20 @@ describe('cwd guard in a real shell', () => {
       expect(r.code).toBe(125);
       expect(r.out).toBe('');
       expect(existsSync(sentinel)).toBe(false);
+    });
+
+    it('cwd missing: the real stderr and exit code derive cwdFailed true (positive control for the next case)', async () => {
+      const inner = await buildInner(TOUCH_SENTINEL(), missingCwd);
+      const r = await runShell(['sh', '-c', inner], workDir);
+      expect(await deriveFailed(r, missingCwd)).toBe(true);
+    });
+
+    it('cwd exists and the user command itself exits 125: exit 125 but cwdFailed is false', async () => {
+      const inner = await buildInner('echo nope >&2; exit 125', existingCwd);
+      const r = await runShell(['sh', '-c', inner], workDir);
+      expect(r.code).toBe(125);
+      expect(r.err).not.toContain('agent-console: working directory');
+      expect(await deriveFailed(r, existingCwd)).toBe(false);
     });
 
     it('positive control: cwd exists, the command runs in it and the exit code is the command\'s', async () => {

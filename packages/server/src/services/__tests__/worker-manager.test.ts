@@ -1200,6 +1200,81 @@ describe('WorkerManager', () => {
       expect(history.data).toContain('[internal:agent-spawn-failed]');
     });
 
+    describe('same notification in both modes', () => {
+      const originalAuthMode = process.env.AUTH_MODE;
+      afterEach(() => {
+        if (originalAuthMode === undefined) delete process.env.AUTH_MODE;
+        else process.env.AUTH_MODE = originalAuthMode;
+      });
+
+      const DIAGNOSIS_TEXT =
+        "working directory '/test/project' does not exist -- the session's directory was removed after creation";
+      const noopAssertSpawnCwd: typeof assertSpawnCwdExists = async () => {};
+      const ELEVATED_USER = 'alice-not-the-server-user';
+
+      function notificationText(buffer: string): string {
+        const start = buffer.indexOf('[internal:agent-spawn-failed]');
+        expect(start).toBeGreaterThanOrEqual(0);
+        return buffer.slice(start);
+      }
+
+      function newAgent(wm: WorkerManager, id: string) {
+        return wm.initializeAgentWorker({
+          id,
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+      }
+
+      it('single-user (refused before spawning): the notification carries the shared diagnosis sentence', async () => {
+        delete process.env.AUTH_MODE;
+        const { wm } = buildManagerWithCwdCheck(rejectingAssertSpawnCwdFn, fakeSuccessRunAsUser);
+        const worker = newAgent(wm, 'parity-single');
+        await expect(
+          wm.activateAgentWorkerPty(worker, { ...defaultAgentActivationParams, sessionId: 'parity-single-s', username: 'testuser' }),
+        ).rejects.toBeInstanceOf(SpawnCwdMissingError);
+        expect(notificationText(worker.outputBuffer)).toContain(DIAGNOSIS_TEXT);
+      });
+
+      it('elevated (exit 125 after the pre-spawn check passed): the notification carries the same diagnosis sentence', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        // The login shell dies at the cd guard, before it can print the sentinel.
+        ptyFactory.setAutoEmitSentinel(false);
+        const { wm } = buildManagerWithCwdCheck(noopAssertSpawnCwd, fakeSuccessRunAsUser);
+        const worker = newAgent(wm, 'parity-elevated');
+        await wm.activateAgentWorkerPty(worker, { ...defaultAgentActivationParams, sessionId: 'parity-elevated-s', username: ELEVATED_USER });
+        await ptyFactory.instances[ptyFactory.instances.length - 1].simulateExit(125);
+
+        const text = notificationText(worker.outputBuffer);
+        expect(text).toContain(DIAGNOSIS_TEXT);
+        expect(text).toContain('exitCode=125');
+        expect(text).toContain(`username=${ELEVATED_USER}`);
+      });
+
+      it('elevated exit 125 after the login shell reached the sentinel is the agent exiting, not a missing directory', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const { wm } = buildManagerWithCwdCheck(noopAssertSpawnCwd, fakeSuccessRunAsUser);
+        const worker = newAgent(wm, 'parity-elevated-late');
+        await wm.activateAgentWorkerPty(worker, { ...defaultAgentActivationParams, sessionId: 'parity-elevated-late-s', username: ELEVATED_USER });
+        // Default mock behaviour: the sentinel is emitted on spawn, so the shell was alive.
+        await ptyFactory.instances[ptyFactory.instances.length - 1].simulateExit(125);
+
+        expect(worker.outputBuffer).not.toContain('internal:agent-spawn-failed');
+      });
+
+      it('single-user exit 125 is an ordinary exit (no diagnosis)', async () => {
+        delete process.env.AUTH_MODE;
+        ptyFactory.setAutoEmitSentinel(false);
+        const { wm } = buildManagerWithCwdCheck(noopAssertSpawnCwd, fakeSuccessRunAsUser);
+        const worker = newAgent(wm, 'parity-single-125');
+        await wm.activateAgentWorkerPty(worker, { ...defaultAgentActivationParams, sessionId: 'parity-single-125-s', username: 'testuser' });
+        await ptyFactory.instances[ptyFactory.instances.length - 1].simulateExit(125);
+
+        expect(worker.outputBuffer).not.toContain('internal:agent-spawn-failed');
+      });
+    });
+
     it('terminal activation: rejects with a typed error naming the missing directory, with no diagnostic writer (no try/catch on this path)', async () => {
       delete process.env.AUTH_MODE;
       const { wm } = buildManagerWithCwdCheck(rejectingAssertSpawnCwdFn);

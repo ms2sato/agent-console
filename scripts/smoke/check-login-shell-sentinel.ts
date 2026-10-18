@@ -72,7 +72,7 @@ import {
   buildDirectSentinelShellCommand,
   buildElevatedSentinelCommand,
 } from '../../packages/server/src/services/sentinel-spawn-command.js';
-import { buildElevationArgs } from '../../packages/server/src/services/elevation-args.js';
+import { buildElevationArgs, CWD_FAILED_SENTINEL } from '../../packages/server/src/services/elevation-args.js';
 import { expandTemplate } from '../../packages/server/src/lib/template.js';
 
 // Extracted into main() (Issue #1479), order-preserving verbatim move: this
@@ -400,8 +400,8 @@ async function main(): Promise<void> {
     expect(cwdExited, 'missing-cwd PTY exited on its own', 'still running after the timeout');
     expect(cwdExitCode === 125, 'missing-cwd PTY exit code is 125', `got ${cwdExitCode}`);
     expect(
-      cwdOutput.includes(`working directory ${missingCwd} is not available`),
-      'missing-cwd PTY printed the "working directory ... is not available" line',
+      cwdOutput.includes(`${CWD_FAILED_SENTINEL}${missingCwd} is not available`),
+      'missing-cwd PTY printed the CWD_FAILED_SENTINEL line (the text the runner keys on)',
       `captured: ${cwdOutput.slice(0, 300)}`,
     );
     expect(

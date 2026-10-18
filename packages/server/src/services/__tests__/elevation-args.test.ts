@@ -3,6 +3,7 @@ import {
   buildElevationArgs,
   buildExportString,
   CWD_FAILED_EXIT_CODE,
+  CWD_FAILED_SENTINEL,
   shellEscape,
 } from '../elevation-args.js';
 
@@ -342,5 +343,27 @@ describe('buildElevationArgs cwd guard (fail closed on an unusable cwd)', () => 
     });
     expect(innerCommand).toContain("cd '/home/alice/it'\\''s' || {");
     expect(innerCommand).toContain("working directory /home/alice/it'\\''s is not available");
+  });
+
+  it('prints the exported CWD_FAILED_SENTINEL followed by the cwd (the stable prefix the runner keys on)', () => {
+    const { innerCommand } = buildElevationArgs({
+      username: 'alice',
+      cwd: '/home/alice',
+      additionalEnvVars: {},
+      command: 'env',
+    });
+    expect(innerCommand).toContain(`echo '${CWD_FAILED_SENTINEL}/home/alice is not available' >&2`);
+  });
+
+  it('cwd and env together: guard, exports, command in that order with `;` between', () => {
+    const { innerCommand } = buildElevationArgs({
+      username: 'alice',
+      cwd: '/home/alice',
+      additionalEnvVars: { FOO: 'bar' },
+      command: 'run',
+    });
+    expect(innerCommand).toMatch(
+      /^cd '\/home\/alice' \|\| \{ echo 'agent-console: working directory \/home\/alice is not available' >&2; exit 125; \}; export [^;]*FOO='bar'[^;]*; run$/,
+    );
   });
 });

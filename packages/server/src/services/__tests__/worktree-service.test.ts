@@ -3373,6 +3373,33 @@ detached
         expect(result.success).toBe(false);
         expect(result.error).toContain('127');
       });
+
+      it('multi-user mode reports an unusable worktree directory as "working directory not available"', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => ({
+          stdout: '',
+          stderr: "agent-console: working directory /wt is not available\n",
+          exitCode: 125,
+          timedOut: false,
+          cwdFailed: true,
+        });
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'cmd',
+          '/wt',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('working directory not available');
+      });
     });
   });
 });
