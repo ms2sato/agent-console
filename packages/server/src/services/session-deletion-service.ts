@@ -53,7 +53,10 @@ export interface SessionDeletionDeps {
   /** Return the (scope, slug) pair for a persisted session, or null if orphaned. */
   getPersistedSessionScope: (persisted: PersistedSession) => { scope: 'quick' | 'repository'; slug: string | null } | null;
   getSessionLifecycleCallbacks: () => SessionLifecycleCallbacks | undefined;
-  getWebSocketCallbacks: () => { notifySessionDeleted: (sessionId: string) => void } | null;
+  getWebSocketCallbacks: () => {
+    notifySessionDeleted: (sessionId: string) => void;
+    stopFileViewerWatching: (sessionId: string, workerId: string) => void;
+  } | null;
   getTimerCleanupCallback: () => ((sessionId: string) => void) | undefined;
   getConditionalWakeupCleanupCallback: () => ((sessionId: string) => void) | undefined;
   getProcessCleanupCallback: () => ((sessionId: string) => void) | undefined;
@@ -86,7 +89,8 @@ export class SessionDeletionService {
       if (worker.type === 'git-diff') {
         this.deps.stopWatching(session.locationPath);
       } else if (worker.type === 'file-viewer') {
-        // No process, watcher or output stream: nothing to tear down.
+        // Close the viewer's watch subscription (idempotent).
+        this.deps.getWebSocketCallbacks()?.stopFileViewerWatching(id, worker.id);
       } else if (worker.type === 'embedded-agent') {
         killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));
       } else {
@@ -172,7 +176,8 @@ export class SessionDeletionService {
         // Stop file watcher for git-diff workers
         this.deps.stopWatching(session.locationPath);
       } else if (worker.type === 'file-viewer') {
-        // No process, watcher or output stream: nothing to tear down.
+        // Close the viewer's watch subscription (idempotent).
+        this.deps.getWebSocketCallbacks()?.stopFileViewerWatching(id, worker.id);
       } else if (worker.type === 'embedded-agent') {
         // Tear down the loop subprocess (killWorker no-ops on non-PTY workers).
         killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));

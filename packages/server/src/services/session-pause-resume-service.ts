@@ -161,7 +161,9 @@ export class SessionPauseResumeService {
         // Stop file watcher for git-diff workers
         this.deps.stopWatching(session.locationPath);
       } else if (worker.type === 'file-viewer') {
-        // No process, watcher or output stream: nothing to tear down.
+        // Close the viewer's watch subscription now (idempotent): the socket close
+        // issued by notifySessionPaused reaches the connection cleanup asynchronously.
+        this.deps.getWebSocketCallbacks()?.stopFileViewerWatching(id, worker.id);
       } else if (worker.type === 'embedded-agent') {
         // Tear down the loop subprocess (killWorker no-ops on non-PTY workers).
         killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));

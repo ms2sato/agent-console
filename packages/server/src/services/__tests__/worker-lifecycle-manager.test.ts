@@ -134,6 +134,7 @@ describe('WorkerLifecycleManager', () => {
       embeddedAgentManager: embeddedAgentManagerStub,
       deactivateEmbeddedAgentWorker: mockDeactivateEmbeddedAgentWorker,
       activateEmbeddedAgentWorker: mockActivateEmbeddedAgentWorker,
+      getWebSocketCallbacks: () => null,
       notificationManager: null,
       pathExists: mockPathExists,
       getSession: (id: string) => sessions.get(id),
@@ -1320,7 +1321,11 @@ describe('WorkerLifecycleManager', () => {
       expect(session.workers.size).toBe(0);
     });
 
-    it('should delete a file-viewer worker with no teardown at all (no watcher, no PTY, no embedded-agent deactivation)', async () => {
+    it('should delete a file-viewer worker by stopping only its watch subscription (no git-diff unwatch, no PTY, no embedded-agent deactivation)', async () => {
+      const stopFileViewerWatching = mock((_sessionId: string, _workerId: string) => {});
+      lifecycleManager = new WorkerLifecycleManager(
+        createDeps({ getWebSocketCallbacks: () => ({ stopFileViewerWatching }) }),
+      );
       const session = createTestSession();
       sessions.set(session.id, session);
       const worker = await lifecycleManager.createWorker(session.id, { type: 'file-viewer' });
@@ -1331,6 +1336,8 @@ describe('WorkerLifecycleManager', () => {
         const result = await lifecycleManager.deleteWorker(session.id, worker!.id);
 
         expect(result).toBe(true);
+        expect(stopFileViewerWatching).toHaveBeenCalledTimes(1);
+        expect(stopFileViewerWatching).toHaveBeenCalledWith(session.id, worker!.id);
         expect(session.workers.size).toBe(0);
         expect(stopWatchingSpy).not.toHaveBeenCalled();
         // The embedded-agent branch is the old `else`: a file-viewer worker must not reach it.
