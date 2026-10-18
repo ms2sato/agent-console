@@ -49,6 +49,21 @@ function urlToString(input: RequestInfo | URL): string {
 const MEMO_CONTENT = 'Hello Memo';
 
 function createMockSession(overrides: Partial<Session> = {}): Session {
+  if (overrides.type === 'quick') {
+    // A quick session carries none of the worktree fields; the strict wire
+    // schema rejects a worktree-shaped body with `type: 'quick'`.
+    return {
+      id: 'session-1',
+      type: 'quick',
+      locationPath: '/tmp/x',
+      title: 'T',
+      status: 'active',
+      activationState: 'running',
+      createdAt: new Date().toISOString(),
+      workers: [],
+      ...overrides,
+    } as Session;
+  }
   return {
     id: 'session-1',
     type: 'worktree',
@@ -717,6 +732,68 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         expect(calls[0].options).toEqual(NEAREST);
       });
     });
+  });
+});
+
+// The PR-link endpoint only serves worktree sessions (it answers 400 for a quick
+// one), and the terminal adapter's repo-name lookup used to ask for it anyway.
+describe('SessionPage PR-link request by session type', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+  let originalMatchMedia: typeof window.matchMedia;
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetch.mockReset();
+    originalLocation = window.location;
+    originalMatchMedia = window.matchMedia;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    const { matchMedia } = createMockMatchMedia(false);
+    window.matchMedia = matchMedia;
+    consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    cleanup();
+    _resetTerminals();
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', { value: originalLocation, writable: true });
+    window.matchMedia = originalMatchMedia;
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  function prLinkRequests(): string[] {
+    return mockFetch.mock.calls.map((call) => urlToString(call[0])).filter((url) => url.includes('/pr-link'));
+  }
+
+  it('a worktree session with a terminal worker requests the PR link', async () => {
+    routeFetch([AGENT_WORKER]);
+
+    await renderSessionPage();
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(1));
+
+    await waitFor(() => expect(prLinkRequests().length).toBeGreaterThan(0));
+  });
+
+  it('a quick session with a terminal worker makes no PR-link request', async () => {
+    routeFetch([AGENT_WORKER], { type: 'quick' });
+
+    await renderSessionPage();
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(1));
+    // Positive control: the session page and its worker tab rendered and fetched
+    // the session, so a zero below is not "nothing happened".
+    expect(mockFetch.mock.calls.some((call) => urlToString(call[0]).includes('/api/sessions/session-1'))).toBe(true);
+
+    expect(prLinkRequests()).toHaveLength(0);
   });
 });
 
