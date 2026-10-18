@@ -1182,7 +1182,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const result = await rmRecursiveAsUser('/some/path', null, {
@@ -1198,7 +1198,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       // Path with a single quote forces non-trivial shellEscape behaviour.
@@ -1217,7 +1217,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await rmRecursiveAsUser('/p', 'alice', {
@@ -1233,7 +1233,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'ERR',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
 
       const result: RunAsUserResult = await rmRecursiveAsUser('/p', 'alice', {
@@ -1244,7 +1244,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'ERR',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
     });
 
@@ -1266,7 +1266,7 @@ describe('privilege-elevation', () => {
   // killAsUser (strict thin wrapper, Issue #1197 Part A)
   // ============================================================
   describe('killProcessGroupAsUser', () => {
-    const ok = async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false });
+    const ok = async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false });
 
     it('elevated path: SIGTERM targets the negative group id after "--", cwd "/"', async () => {
       const captured: RunAsUserOpts[] = [];
@@ -1306,7 +1306,7 @@ describe('privilege-elevation', () => {
     });
 
     it('returns the underlying result unchanged (no semantic layering)', async () => {
-      const impl: typeof runAsUser = async () => ({ stdout: '', stderr: 'no such process', exitCode: 1, timedOut: false });
+      const impl: typeof runAsUser = async () => ({ stdout: '', stderr: 'no such process', exitCode: 1, timedOut: false, cwdFailed: false });
       const result = await killProcessGroupAsUser(5, 'SIGTERM', 'alice', { runAsUserImpl: impl });
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toBe('no such process');
@@ -1315,7 +1315,7 @@ describe('privilege-elevation', () => {
 
   describe('discoverElevatedPgid', () => {
     function withOutput(stdout: string, exitCode = 0, timedOut = false): typeof runAsUser {
-      return async () => ({ stdout, stderr: '', exitCode, timedOut });
+      return async () => ({ stdout, stderr: '', exitCode, timedOut, cwdFailed: false });
     }
 
     it('returns the pgid the probe prints', async () => {
@@ -1326,7 +1326,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const impl: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: 'PGID=7\n', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: 'PGID=7\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       await discoverElevatedPgid(1394, 'alice', { runAsUserImpl: impl, timeoutMs: 321 });
       expect(captured[0].username).toBe('alice');
@@ -1341,7 +1341,7 @@ describe('privilege-elevation', () => {
       let script = '';
       const impl: typeof runAsUser = async (opts) => {
         script = String(opts.stdin);
-        return { stdout: '', stderr: '', exitCode: 1, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 1, timedOut: false, cwdFailed: false };
       };
       await discoverElevatedPgid(55, 'alice', { runAsUserImpl: impl });
       expect(script).toContain('[ "$g" = "$c" ]');
@@ -1369,7 +1369,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const result = await killAsUser(1234, 'SIGTERM', null, {
@@ -1385,7 +1385,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await killAsUser(4321, 'SIGTERM', 'alice', {
@@ -1402,7 +1402,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await killAsUser(4321, 'SIGKILL', 'alice', {
@@ -1446,7 +1446,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await killAsUser(999, 'SIGTERM', 'alice', {
@@ -1462,7 +1462,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'kill: (999) - No such process',
         exitCode: 1,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
 
       const result: RunAsUserResult = await killAsUser(999, 'SIGTERM', 'alice', {
@@ -1473,7 +1473,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'kill: (999) - No such process',
         exitCode: 1,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
     });
 
@@ -1502,7 +1502,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       // The bypass decision is entirely runAsUser's (shouldElevateForUser);
@@ -1528,7 +1528,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       // Path with a single quote forces non-trivial shellEscape behaviour.
@@ -1551,7 +1551,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await writeUserOwnedSecretFile({
@@ -1571,7 +1571,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await writeUserOwnedSecretFile({
@@ -1588,7 +1588,7 @@ describe('privilege-elevation', () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       await writeUserOwnedSecretFile({
@@ -1607,7 +1607,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'ERR',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
 
       const result: RunAsUserResult = await writeUserOwnedSecretFile({
@@ -1621,7 +1621,7 @@ describe('privilege-elevation', () => {
         stdout: 'OUT',
         stderr: 'ERR',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
     });
 

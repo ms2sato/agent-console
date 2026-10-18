@@ -30,7 +30,7 @@ import {
 const ELEVATED_TEST_USERNAME = `not-${os.userInfo().username}`;
 
 function okResult(overrides: Partial<RunAsUserResult> = {}): RunAsUserResult {
-  return { stdout: '', stderr: '', exitCode: 0, timedOut: false, ...overrides };
+  return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false, ...overrides };
 }
 
 // The real `sweepOrphanProcesses` spawns a real elevated-shell subprocess

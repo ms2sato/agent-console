@@ -32,7 +32,7 @@ function createRunAsUserMock() {
       stdout: '',
       stderr: '',
       exitCode: 0,
-      timedOut: false,
+      timedOut: false, cwdFailed: false,
     }),
   };
   const runAsUserImpl = (opts: RunAsUserOpts) => {
@@ -404,6 +404,7 @@ describe('RepositoryManager', () => {
             stderr: '',
             exitCode: 0,
             timedOut: false,
+            cwdFailed: false,
           });
         }
         // Apply / git config probe / anything else: success.
@@ -411,7 +412,7 @@ describe('RepositoryManager', () => {
           stdout: '',
           stderr: '',
           exitCode: 0,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
       }
 
@@ -515,6 +516,7 @@ describe('RepositoryManager', () => {
               stderr: '',
               exitCode: 0,
               timedOut: false,
+              cwdFailed: false,
             };
           }
           if (opts.command.includes('--get core.sharedRepository')) {
@@ -522,12 +524,12 @@ describe('RepositoryManager', () => {
               stdout: 'group\n',
               stderr: '',
               exitCode: 0,
-              timedOut: false,
+              timedOut: false, cwdFailed: false,
             };
           }
           if (opts.command.includes('safe.directory')) {
             // Server-side safe.directory bootstrap (Issue #853); permitted.
-            return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+            return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
           }
           throw new Error(
             `apply should not run when already configured; got command: ${opts.command}`,
@@ -569,10 +571,11 @@ describe('RepositoryManager', () => {
               stderr: '',
               exitCode: 0,
               timedOut: false,
+              cwdFailed: false,
             };
           }
           if (opts.command.includes('--get core.sharedRepository')) {
-            return { stdout: '', stderr: '', exitCode: 1, timedOut: false };
+            return { stdout: '', stderr: '', exitCode: 1, timedOut: false, cwdFailed: false };
           }
           // Apply: simulate EPERM from chgrp.
           return {
@@ -580,6 +583,7 @@ describe('RepositoryManager', () => {
             stderr: `chgrp: changing group of '${TEST_REPO_DIR}/.git': Operation not permitted`,
             exitCode: 1,
             timedOut: false,
+            cwdFailed: false,
           };
         };
 
@@ -696,13 +700,14 @@ describe('RepositoryManager', () => {
             stderr: '',
             exitCode: 0,
             timedOut: false,
+            cwdFailed: false,
           });
         }
         return Promise.resolve({
           stdout: '',
           stderr: '',
           exitCode: 0,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
       }
 
@@ -779,6 +784,7 @@ describe('RepositoryManager', () => {
               stderr: '',
               exitCode: 0,
               timedOut: false,
+              cwdFailed: false,
             };
           }
           if (opts.command.includes('safe.directory')) {
@@ -786,11 +792,11 @@ describe('RepositoryManager', () => {
               stdout: '',
               stderr: 'error: could not lock config file /home/agentconsole/.gitconfig: Permission denied',
               exitCode: 255,
-              timedOut: false,
+              timedOut: false, cwdFailed: false,
             };
           }
           // chgrp apply etc.: success
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         };
 
         const manager = await getRepositoryManager();

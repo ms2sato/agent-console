@@ -26,7 +26,7 @@ function createRunAsUserMock() {
       stdout: '',
       stderr: '',
       exitCode: 0,
-      timedOut: false,
+      timedOut: false, cwdFailed: false,
     }),
   };
   const runAsUserImpl = (opts: RunAsUserOpts) => {
@@ -794,7 +794,7 @@ detached
           bootstrapped = true;
           events.push('bootstrap');
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       mockGit.git.mockImplementation(() => {
@@ -994,7 +994,7 @@ detached
         stdout: '',
         stderr: 'fatal: branch already exists',
         exitCode: 128,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
 
       const WorktreeService = await getWorktreeService();
@@ -1022,7 +1022,7 @@ detached
           stdout: '',
           stderr: PERMISSION_STDERR,
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
         const WorktreeService = await getWorktreeService();
         const service = new WorktreeService({
@@ -1205,10 +1205,10 @@ detached
               stdout: '',
               stderr: 'unable to write config',
               exitCode: 1,
-              timedOut: false,
+              timedOut: false, cwdFailed: false,
             };
           }
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         };
 
         const WorktreeService = await getWorktreeService();
@@ -1987,13 +1987,13 @@ detached
       runAsUserMock.responder.fn = async () => {
         callIdx += 1;
         if (callIdx === 1) {
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
         return {
           stdout: '',
           stderr: 'fatal: worktree has uncommitted changes',
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         };
       };
 
@@ -2035,13 +2035,13 @@ detached
       runAsUserMock.responder.fn = async () => {
         callIdx += 1;
         if (callIdx === 1) {
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
         return {
           stdout: '',
           stderr: 'fatal: not a git repository (or any of the parent directories): .git',
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         };
       };
 
@@ -2091,10 +2091,10 @@ detached
             stdout: '',
             stderr: "fatal: '/worktrees/feature' is not a working tree",
             exitCode: 128,
-            timedOut: false,
+            timedOut: false, cwdFailed: false,
           };
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const WorktreeService = await getWorktreeService();
@@ -2206,10 +2206,10 @@ detached
             stdout: '',
             stderr: "fatal: '/worktrees/feature' is not a working tree",
             exitCode: 128,
-            timedOut: false,
+            timedOut: false, cwdFailed: false,
           };
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const WorktreeService = await getWorktreeService();
@@ -2424,7 +2424,7 @@ detached
           stdout: '',
           stderr: "rm: cannot remove '/worktrees/elevated-orphan/locked': Permission denied",
           exitCode: 1,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
 
         const WorktreeService = await getWorktreeService();
@@ -3263,7 +3263,7 @@ detached
           stdout: 'hook output',
           stderr: '',
           exitCode: 0,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
 
         const WorktreeService = await getWorktreeService();
@@ -3327,7 +3327,7 @@ detached
           stdout: 'partial',
           stderr: 'permission denied',
           exitCode: 1,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
 
         const WorktreeService = await getWorktreeService();
@@ -3354,7 +3354,7 @@ detached
           stdout: '',
           stderr: '',
           exitCode: 127,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
 
         const WorktreeService = await getWorktreeService();

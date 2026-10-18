@@ -25,6 +25,15 @@
  * module, so the argv shape they exercise cannot drift.
  */
 
+/**
+ * Exit code an elevated inner command uses when its `cd <cwd>` fails, so the
+ * caller's command never ran. 125 is the conventional "the wrapper could not
+ * run the command" code (as `xargs` / `timeout` use it), distinct from the
+ * timeout normalisation (137) and the shell's own 126 / 127. `privilege-elevation.ts`
+ * re-exports it; it lives here because this module cannot import that one.
+ */
+export const CWD_FAILED_EXIT_CODE = 125;
+
 const COLOR_ENV: Readonly<Record<string, string>> = Object.freeze({
   TERM: 'xterm-256color',
   COLORTERM: 'truecolor',
@@ -150,17 +159,25 @@ export function buildElevationArgs(input: ElevationArgsInput): ElevationArgs {
     ...(input.agentConsoleVars ?? {}),
   };
   const exports = buildExportString(combined);
-  const cdPart = `cd ${shellEscape(input.cwd)}`;
+  // Fail closed on an unusable cwd: a failed cd must not leave the login shell
+  // (or the agent command) running in the target user's HOME, so the guard
+  // prints a line the terminal shows and exits CWD_FAILED_EXIT_CODE before
+  // anything else runs.
+  const cwdGuard = `cd ${shellEscape(input.cwd)} || { echo ${shellEscape(`agent-console: working directory ${input.cwd} is not available`)} >&2; exit ${CWD_FAILED_EXIT_CODE}; }`;
   // Conditional SSH_AUTH_SOCK fallback for delegated sessions.
   // Placed BEFORE the explicit `export <COMBINED>` so an explicit
   // SSH_AUTH_SOCK in `additionalEnvVars` still wins via the later export.
-  // The `if ... fi` block always exits 0, so the following `&&` chain runs.
+  // The `if ... fi` block always exits 0, so the following statement runs.
   const sshAuthSockSnippet = input.sshAuthSockFallback
-    ? ` && if [ -z "$SSH_AUTH_SOCK" ] && [ -S ${shellEscape(input.sshAuthSockFallback)} ]; then export SSH_AUTH_SOCK=${shellEscape(input.sshAuthSockFallback)}; fi`
+    ? `if [ -z "$SSH_AUTH_SOCK" ] && [ -S ${shellEscape(input.sshAuthSockFallback)} ]; then export SSH_AUTH_SOCK=${shellEscape(input.sshAuthSockFallback)}; fi`
     : '';
-  const innerCommand = exports
-    ? `${cdPart}${sshAuthSockSnippet} && export ${exports}; ${input.command}`
-    : `${cdPart}${sshAuthSockSnippet} && ${input.command}`;
+  const statements = [
+    cwdGuard,
+    sshAuthSockSnippet,
+    exports ? `export ${exports}` : '',
+    input.command,
+  ].filter((statement) => statement !== '');
+  const innerCommand = statements.join('; ');
   return {
     argv: [
       '-u',

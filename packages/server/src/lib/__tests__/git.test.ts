@@ -209,7 +209,7 @@ describe('git remote operations', () => {
       const runAsUserCalls: Array<Record<string, unknown>> = [];
       const fakeRunAsUser = async (opts: Record<string, unknown>) => {
         runAsUserCalls.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -274,7 +274,7 @@ describe('git remote operations', () => {
       const runAsUserCalls: Array<Record<string, unknown>> = [];
       const fakeRunAsUser = async (opts: Record<string, unknown>) => {
         runAsUserCalls.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -587,7 +587,7 @@ index abc1234..def5678 100644
       const runAsUserCalls: Array<Record<string, unknown>> = [];
       const fakeRunAsUser = async (opts: Record<string, unknown>) => {
         runAsUserCalls.push(opts);
-        return { stdout: 'abc1234\n', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: 'abc1234\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -787,13 +787,13 @@ index abc1234..def5678 100644
             (c) => String(c.command ?? '').includes("'rev-parse' 'HEAD'"),
           ).length;
           const stdout = revParseCallsSoFar === 1 ? 'abc1234' : 'def5678';
-          return { stdout, stderr: '', exitCode: 0, timedOut: false };
+          return { stdout, stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
         if (command.includes("'rev-list' '--count'")) {
-          return { stdout: '3', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '3', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
         // git pull --ff-only
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -1015,7 +1015,7 @@ index abc1234..def5678 100644
       const runAsUserCalls: Array<Record<string, unknown>> = [];
       const fakeRunAsUser = async (opts: Record<string, unknown>) => {
         runAsUserCalls.push(opts);
-        return { stdout: 'mainbranch\n', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: 'mainbranch\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -1042,7 +1042,7 @@ index abc1234..def5678 100644
         stdout: '',
         stderr: 'fatal: bad revision\n',
         exitCode: 128,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
 
       const mod = await getGitModule();
@@ -1121,7 +1121,7 @@ index abc1234..def5678 100644
         stdout: '',
         stderr: '',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
 
       const mod = await getGitModule();
@@ -1193,7 +1193,7 @@ index abc1234..def5678 100644
         stdout: ' M file.ts\n?? new.ts\n',
         stderr: '',
         exitCode: 0,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
 
       const mod = await getGitModule();
@@ -1359,7 +1359,7 @@ index abc1234..def5678 100644
         const runAsUserCalls: Array<Record<string, unknown>> = [];
         const fakeRunAsUser = async (opts: Record<string, unknown>) => {
           runAsUserCalls.push(opts);
-          return { stdout: 'feature-branch\n', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: 'feature-branch\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         };
 
         const mod = await getGitModule();
@@ -1384,7 +1384,7 @@ index abc1234..def5678 100644
           stdout: '',
           stderr: 'fatal: not a git repository\n',
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
 
         const mod = await getGitModule();
@@ -1408,7 +1408,7 @@ index abc1234..def5678 100644
           stdout: '',
           stderr: 'fatal: detected dubious ownership\n',
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
 
         const warnSpy = spyOn(rootLogger, 'warn');
@@ -1457,7 +1457,7 @@ index abc1234..def5678 100644
         const runAsUserCalls: Array<Record<string, unknown>> = [];
         const fakeRunAsUser = async (opts: Record<string, unknown>) => {
           runAsUserCalls.push(opts);
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         };
 
         const mod = await getGitModule();

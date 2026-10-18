@@ -1147,7 +1147,7 @@ describe('WorkerManager', () => {
       stdout: '',
       stderr: '',
       exitCode: 0,
-      timedOut: false,
+      timedOut: false, cwdFailed: false,
     });
 
     it('agent activation: rejects with SpawnCwdMissingError, writes the diagnostic to the worker output stream AND file, and still runs prompt-file cleanup via the existing catch block', async () => {
@@ -2799,11 +2799,11 @@ describe('WorkerManager', () => {
             stdout: '',
             stderr: '',
             exitCode: opts.writeExitCode ?? 0,
-            timedOut: opts.writeTimedOut ?? false,
+            timedOut: opts.writeTimedOut ?? false, cwdFailed: false,
           };
         }
         rmCalls.push(callOpts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       return { fake, writeCalls, rmCalls };
     }
@@ -3259,11 +3259,11 @@ describe('WorkerManager', () => {
             stdout: '',
             stderr: '',
             exitCode: opts.writeExitCode ?? 0,
-            timedOut: opts.writeTimedOut ?? false,
+            timedOut: opts.writeTimedOut ?? false, cwdFailed: false,
           };
         }
         rmCalls.push(callOpts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       return { fake, writeCalls, rmCalls };
     }
@@ -3311,11 +3311,11 @@ describe('WorkerManager', () => {
             stdout: '',
             stderr: '',
             exitCode: callOpts.command.includes(opts.failSuffix) ? 1 : 0,
-            timedOut: false,
+            timedOut: false, cwdFailed: false,
           };
         }
         rmCalls.push(callOpts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       return { fake, writeCalls, rmCalls };
     }

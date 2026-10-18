@@ -133,6 +133,8 @@ Passing the current process user as `<target-user>` exercises the entire pipelin
 
 PRs touching `spawnAsUser` / `killAsUser` in `packages/server/src/services/privilege-elevation.ts` must run `bun scripts/smoke/check-kill-as-user.ts <target-user>` locally before pushing (Issue #1197 Part A). It drives the real production helpers against a real long-lived `sleep` process spawned as `<target-user>`, asserts a real elevated `SIGTERM` via `killAsUser` actually terminates the targeted PID, and asserts a negative case: a second, unrelated `sleep` process survives the call, proving the helper signals exactly the targeted PID rather than something broader like a name-based `pkill`.
 
+The same smoke also carries the `runAsUser` cwd fail-closed case, so PRs touching `buildInnerCommand` or `runAsUser`'s `cwdFailed` derivation must run it too: a command that touches a sentinel file in `/tmp` is run with a `cwd` that does not exist, and the case asserts `cwdFailed === true` / exit 125 with the sentinel ABSENT (the command never ran in the login shell's HOME); its positive control runs the same command with an existing `cwd` and asserts exit 0, `cwdFailed === false` and the sentinel PRESENT. In degenerate same-user mode there is no cd guard (the direct spawn rejects on an unusable cwd), so the case asserts the rejection and the absent sentinel instead; only a run against a real second user exercises the elevated arm.
+
 Requires elevation privilege for `<target-user>`; passing the current process user as `<target-user>` runs in a degraded mode that skips the real `sudo` boundary.
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
@@ -158,6 +160,8 @@ Requires elevation privilege for `<target-user>`; passing the current process us
 ## Additional Verification: Login-Shell Sentinel Protocol Smoke
 
 PRs touching the login-shell sentinel PTY protocol -- `buildDirectSentinelShellCommand` / `buildElevatedSentinelCommand` (`packages/server/src/services/sentinel-spawn-command.ts`), `bunPtyProvider`, or `getUnsetEnvPrefix` in `packages/server/src/services/env-filter.ts` -- must run `bun scripts/smoke/check-login-shell-sentinel.ts` (direct mode) and, when elevation is available, `bun scripts/smoke/check-login-shell-sentinel.ts --elevated <target-user>` locally before pushing. It spawns a REAL PTY running a real login shell via the same production `bunPtyProvider` and command builders that `MultiUserMode` / `SingleUserMode` use, waits for the sentinel line, injects a probe command, and asserts the observable end state.
+
+`--elevated` mode additionally covers the PTY cwd fail-closed guard in `buildElevationArgs` (`packages/server/src/services/elevation-args.ts`), so PRs touching that guard must run it: a second PTY with a `cwd` that does not exist must print `agent-console: working directory <cwd> is not available`, exit 125, and never run the command (a sentinel file the command would touch stays absent, and its output marker never appears).
 
 Direct mode requires only a login shell resolvable via `$SHELL` for the current user; `--elevated` mode requires elevation privilege for `<target-user>`.
 

@@ -10,7 +10,7 @@ import {
 } from '../orphan-process-sweeper.js';
 
 function okResult(overrides: Partial<RunAsUserResult> = {}): RunAsUserResult {
-  return { stdout: '', stderr: '', exitCode: 0, timedOut: false, ...overrides };
+  return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false, ...overrides };
 }
 
 // ============================================================
@@ -187,7 +187,7 @@ describe('sweepOrphanProcesses (unit, injected runAsUserImpl fake)', () => {
 
   it('does not throw on a timed-out result -- returns the raw result unchanged', async () => {
     const fake: typeof runAsUser = async () =>
-      okResult({ timedOut: true, exitCode: 137, stdout: '' });
+      okResult({ timedOut: true, cwdFailed: false, exitCode: 137, stdout: '' });
 
     let thrown: unknown;
     let result: Awaited<ReturnType<typeof sweepOrphanProcesses>> | undefined;

@@ -33,7 +33,7 @@ type SweepFn = typeof sweepOrphanProcesses;
 function createSweepStub(killedCount = 0): ReturnType<typeof mock<SweepFn>> {
   return mock<SweepFn>(async () => ({
     killedCount,
-    raw: { stdout: `SWEPT=${killedCount}\n`, stderr: '', exitCode: 0, timedOut: false },
+    raw: { stdout: `SWEPT=${killedCount}\n`, stderr: '', exitCode: 0, timedOut: false, cwdFailed: false },
   }));
 }
 
@@ -187,7 +187,7 @@ describe('SessionDeletionService', () => {
         const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
         const sweep = mock<SweepFn>(async (sessionId, username) => {
           order.push(`sweep:${sessionId}:${username}`);
-          return { killedCount: 0, raw: { stdout: 'SWEPT=0\n', stderr: '', exitCode: 0, timedOut: false } };
+          return { killedCount: 0, raw: { stdout: 'SWEPT=0\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false } };
         });
         const deps = createMockDeps({
           getSession: (id) => (id === 'session-1' ? session : undefined),
@@ -225,7 +225,7 @@ describe('SessionDeletionService', () => {
           getSession: (id) => (id === 'session-1' ? session : undefined),
           sweepOrphanProcessesImpl: mock<SweepFn>(async () => ({
             killedCount: 0,
-            raw: { stdout: '', stderr: 'boom', exitCode: 1, timedOut: true },
+            raw: { stdout: '', stderr: 'boom', exitCode: 1, timedOut: true, cwdFailed: false },
           })),
         });
 

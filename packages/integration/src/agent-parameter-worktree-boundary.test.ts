@@ -148,7 +148,7 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
         const fs = await import('fs');
         fs.mkdirSync(wtPath, { recursive: true });
       }
-      return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
     };
 
     broadcasts.length = 0;
