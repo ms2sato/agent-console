@@ -144,7 +144,7 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
         {pane}
         {drawerOpen && (
           <div className="absolute inset-0 z-20 flex">
-            <div role="dialog" aria-label="File tree" className="w-72 max-w-[85%] bg-slate-800 border-r border-gray-700">
+            <div role="dialog" aria-modal="true" aria-label="File tree" className="w-72 max-w-[85%] bg-slate-800 border-r border-gray-700">
               {tree}
             </div>
             <button

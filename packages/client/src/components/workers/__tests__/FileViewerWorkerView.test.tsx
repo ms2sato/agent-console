@@ -241,6 +241,10 @@ describe('FileViewerWorkerView (mobile)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Toggle file tree' }));
     const drawer = await screen.findByRole('dialog', { name: 'File tree' });
+    // Parity with the session side-panels drawer: a modal dialog with a label.
+    expect(drawer.getAttribute('role')).toBe('dialog');
+    expect(drawer.getAttribute('aria-modal')).toBe('true');
+    expect(drawer.getAttribute('aria-label')).toBe('File tree');
     expect(within(drawer).getByRole('tree')).toBeTruthy();
 
     await user.click(await within(drawer).findByRole('button', { name: 'README.md' }));
