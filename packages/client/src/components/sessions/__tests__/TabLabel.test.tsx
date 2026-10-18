@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { TabLabel } from '../TabLabel';
 import { waitForAbsent } from '../../../test/waitForAbsent';
 import { completeWireBody } from '../../../test/wire-fixtures';
+import { recordFocusCalls } from '../../../test/recordFocusCalls';
 
 // Reach (mutation -> the case that fails): dropping the Escape branch fails
 // "Escape restores"; dropping the catch fails "a failed rename"; dropping the
@@ -91,6 +92,47 @@ describe('TabLabel', () => {
     expect(renameBodies()).toEqual([{ name: 'build watch' }]);
     expect(renameCalls()[0][0].toString()).toContain('/api/sessions/s1/workers/w1/name');
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('refocuses the tab button after a rename WITHOUT scrolling it (preventScroll), so the bar keeps its scroll position', async () => {
+    const user = userEvent.setup();
+    renderLabel();
+    const tab = screen.getByRole('tab', { name: 'Shell 1' });
+    await user.dblClick(tab);
+    await user.keyboard('build watch');
+
+    const { calls: focusCalls, restore: restoreFocus } = recordFocusCalls();
+    try {
+      await user.keyboard('{Enter}');
+      await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
+      const refocus = focusCalls.filter((c) => c.el === screen.getByRole('tab', { name: 'Shell 1' }));
+      expect(refocus.length).toBe(1);
+      expect(refocus[0].options).toEqual({ preventScroll: true });
+    } finally {
+      restoreFocus();
+    }
+  });
+
+  it('calls onEditEnd once after a committed rename and once after Escape, never on mount or while editing', async () => {
+    const onEditEnd = mock(() => {});
+    const user = userEvent.setup();
+    render(
+      <div role="tablist">
+        <TabLabel sessionId="s1" workerId="w1" name="Shell 1" active buttonClassName="tab" onSelect={onSelect} onError={onError} onEditEnd={onEditEnd} />
+      </div>,
+    );
+    expect(onEditEnd).not.toHaveBeenCalled();
+
+    await user.dblClick(screen.getByRole('tab', { name: 'Shell 1' }));
+    expect(onEditEnd).not.toHaveBeenCalled();
+    await user.keyboard('build watch{Enter}');
+    await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
+    expect(onEditEnd).toHaveBeenCalledTimes(1);
+
+    await user.dblClick(screen.getByRole('tab', { name: 'Shell 1' }));
+    await user.keyboard('{Escape}');
+    await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
+    expect(onEditEnd).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the input until the request settles, then shows the old name (no optimistic state)', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { screen, cleanup, waitFor, act } from '@testing-library/react';
+import { screen, cleanup, waitFor, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { waitForAbsent } from '../../../test/waitForAbsent';
@@ -13,6 +13,7 @@ import { installMockWebSocket, MockWebSocket } from '../../../test/mock-websocke
 import { _resetTerminals } from '../../terminal/terminal-store';
 import type { Session, Worker } from '@agent-console/shared';
 import { completeWireBody } from '../../../test/wire-fixtures';
+import { recordFocusCalls } from '../../../test/recordFocusCalls';
 import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 
 /**
@@ -602,6 +603,240 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
 
     const closeButtons = screen.queryAllByRole('button', { name: 'Close tab' });
     expect(closeButtons.length).toBe(1);
+  });
+
+  describe('tab labels stay on one line and the bar scrolls (Issue #2216)', () => {
+    // happy-dom has no layout, so these pin the classes that produce the
+    // behaviour: a tab that may shrink or wrap is squeezed to "Vi" / wrapped
+    // at 390 px instead of letting the bar scroll. Desktop is unchanged
+    // because the bar only overflows when the tabs do not fit.
+    // Keyed by Worker['type'] so a new worker kind is a compile error here,
+    // i.e. the pin covers every tab kind.
+    const ONE_PER_KIND = {
+      agent: createMockWorker({ id: 'w-agent', type: 'agent', name: 'Claude Code', agentId: 'claude-code', activated: true }),
+      'embedded-agent': createMockWorker({ id: 'w-embedded', type: 'embedded-agent', name: 'An embedded agent with a long name', embeddedAgentId: 'e-1', activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false }),
+      terminal: createMockWorker({ id: 'w-term', type: 'terminal', name: 'A very long worker tab name', activated: true }),
+      'git-diff': createMockWorker({ id: 'w-diff', type: 'git-diff', name: 'Diff', baseCommit: 'abc123' }),
+      'file-viewer': createMockWorker({ id: 'w-viewer', type: 'file-viewer', name: 'File Viewer' }),
+    } satisfies Record<Worker['type'], Worker>;
+    const WORKERS = Object.values(ONE_PER_KIND);
+
+    async function renderAllKinds() {
+      routeFetch(WORKERS);
+      await renderSessionPage();
+      await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(WORKERS.length));
+    }
+
+    it('every tab kind: the tab container and the tab activator are no-shrink and no-wrap', async () => {
+      await renderAllKinds();
+
+      for (const worker of WORKERS) {
+        const tab = screen.getByRole('tab', { name: worker.name });
+        const classes = tab.className.split(/\s+/);
+        expect(classes).toContain('shrink-0');
+        expect(classes).toContain('whitespace-nowrap');
+        const containerClasses = tab.parentElement!.className.split(/\s+/);
+        expect(containerClasses).toContain('shrink-0');
+        expect(containerClasses).toContain('whitespace-nowrap');
+      }
+    });
+
+    it('the tab bar scrolls horizontally and holds every tab, while the add button sits outside it', async () => {
+      await renderAllKinds();
+
+      const tablist = screen.getByRole('tablist', { name: 'Worker tabs' });
+      expect(tablist.className.split(/\s+/)).toContain('overflow-x-auto');
+      expect(within(tablist).getAllByRole('tab').length).toBe(WORKERS.length);
+      // Positive control: the add button exists, and is not one of the scrolled tabs.
+      expect(screen.getByRole('button', { name: 'Add agent worker' })).toBeTruthy();
+      expect(within(tablist).queryByRole('button', { name: 'Add agent worker' })).toBeNull();
+    });
+
+    describe('the selected tab is scrolled into view', () => {
+      type ScrollCall = { el: Element; options: unknown; editing: boolean };
+      let calls: ScrollCall[];
+      let scrollSpy: ReturnType<typeof spyOn>;
+
+      beforeEach(() => {
+        calls = [];
+        // Exactly one installation per test; restored in afterEach.
+        scrollSpy = spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element, options?: unknown) {
+          // `editing`: whether a rename input was in the DOM at call time.
+          calls.push({ el: this, options, editing: document.querySelector('input[aria-label="Tab name"]') !== null });
+        });
+      });
+
+      afterEach(() => {
+        scrollSpy.mockRestore();
+      });
+
+      const NEAREST = { block: 'nearest', inline: 'nearest' };
+
+      /** The tab's container (label + rename pencil + close), which must be what is scrolled. */
+      function wrapperOf(name: string): Element {
+        const tab = screen.getByRole('tab', { name });
+        const wrapper = tab.parentElement!;
+        // The wrapper holds the selected tab and its sibling controls.
+        expect(wrapper.contains(tab)).toBe(true);
+        expect(wrapper.querySelector('[aria-label^="Rename "]')).not.toBeNull();
+        return wrapper;
+      }
+
+      it('on first render, scrolls the non-first active tab into view', async () => {
+        routeFetch(WORKERS);
+        await renderSessionPage(sessionStopTasksValue, 'w-viewer');
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+
+        const viewerWrapper = wrapperOf('File Viewer');
+        expect(calls.some((c) => c.el === viewerWrapper && JSON.stringify(c.options) === JSON.stringify(NEAREST))).toBe(true);
+      });
+
+      it('a tab bar that remounts after a pause/resume (same active tab id) scrolls the selected tab again', async () => {
+        // Pins the `state.type` dependency. On the initial load the dependency
+        // is redundant (activeTabId is set in a later render than the one that
+        // mounts the tablist, so the activeTabId dep fires anyway). Its real
+        // job is this case: paused unmounts the tablist, resume mounts a fresh
+        // one scrolled to 0 with the SAME activeTabId.
+        routeFetch(WORKERS);
+        await renderSessionPage(sessionStopTasksValue, 'w-viewer');
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+        const appSocket = MockWebSocket.getInstances().find(ws => ws.url.includes('/ws/app'));
+        expect(appSocket).toBeDefined();
+        const send = (frame: unknown) => act(() => {
+          appSocket!.simulateOpen();
+          appSocket!.simulateMessage(JSON.stringify(completeWireBody(frame)));
+        });
+
+        send({ type: 'session-paused', session: createMockSession({ workers: WORKERS, activationState: 'hibernated', pausedAt: new Date().toISOString() }) });
+        await waitForAbsent(() => screen.queryByRole('tablist'));
+
+        calls.length = 0;
+        send({ type: 'session-resumed', session: createMockSession({ workers: WORKERS }), activityStates: [] });
+        await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
+
+        expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true');
+        expect(calls.length).toBe(1);
+        expect(calls[0].el).toBe(wrapperOf('File Viewer'));
+        expect(calls[0].options).toEqual(NEAREST);
+      });
+
+      it('renaming an earlier tab while a later tab is selected scrolls the selected tab again, and an unrelated re-render does not', async () => {
+        routeFetch(WORKERS);
+        await renderSessionPage(sessionStopTasksValue, 'w-viewer');
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+        const appSocket = MockWebSocket.getInstances().find(ws => ws.url.includes('/ws/app'));
+        expect(appSocket).toBeDefined();
+        const send = (frame: unknown) => act(() => {
+          appSocket!.simulateOpen();
+          appSocket!.simulateMessage(JSON.stringify(completeWireBody(frame)));
+        });
+
+        // A session-updated frame with identical names re-renders without a label change.
+        calls.length = 0;
+        send({ type: 'session-updated', session: createMockSession({ workers: WORKERS }) });
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' })).toBeTruthy());
+        expect(calls.length).toBe(0);
+
+        // Renaming an earlier tab (the rename reaches the tab via this broadcast).
+        const renamed = WORKERS.map((w) => (w.id === 'w-agent' ? { ...w, name: 'Renamed agent tab' } : w));
+        send({ type: 'session-updated', session: createMockSession({ workers: renamed }) });
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'Renamed agent tab' })).toBeTruthy());
+
+        expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true');
+        expect(calls.length).toBe(1);
+        expect(calls[0].el).toBe(wrapperOf('File Viewer'));
+        expect(calls[0].options).toEqual(NEAREST);
+      });
+
+      // Browser QA: the refocus after a rename scrolled the bar back to 0, and
+      // the scroll-into-view ran while the rename input (narrower than the final
+      // label) was still shown, so the selected tab ended up clipped.
+      it.each([
+        ['the first tab', 'w-agent', 'Claude Code'],
+        ['a middle tab', 'w-embedded', 'An embedded agent with a long name'],
+      ])('renaming %s through the real rename control re-scrolls the selected tab AFTER edit mode ends, and never refocuses with scrolling', async (_label, workerId, currentName) => {
+        const newName = 'My long renamed tab name';
+        routeFetch(WORKERS);
+        await renderSessionPage(sessionStopTasksValue, 'w-viewer');
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+        const appSocket = MockWebSocket.getInstances().find(ws => ws.url.includes('/ws/app'));
+        expect(appSocket).toBeDefined();
+
+        // The rename PATCH must succeed, otherwise an error dialog hides the tab bar.
+        // It is HELD until the test releases it, so the input stays shown while
+        // the new name arrives (the measured layout-before-final case).
+        let releasePatch: () => void = () => {};
+        const patchHeld = new Promise<void>((resolve) => { releasePatch = resolve; });
+        const routed = mockFetch.getMockImplementation()!;
+        mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => (
+          init?.method === 'PATCH' && urlToString(input).endsWith(`/workers/${workerId}/name`)
+            ? patchHeld.then(() => jsonResponse({ worker: { ...WORKERS.find((w) => w.id === workerId)!, name: newName } }))
+            : routed(input, init)
+        ));
+
+        const user = userEvent.setup();
+        await user.click(screen.getByRole('button', { name: `Rename ${currentName}` }));
+        await user.keyboard(newName);
+
+        const { calls: focusCalls, restore: restoreFocus } = recordFocusCalls();
+        try {
+          calls.length = 0;
+          await user.keyboard('{Enter}');
+          // The new name reaches the bar while the input may still be shown.
+          act(() => {
+            appSocket!.simulateOpen();
+            appSocket!.simulateMessage(JSON.stringify(completeWireBody({
+              type: 'session-updated',
+              session: createMockSession({ workers: WORKERS.map((w) => (w.id === workerId ? { ...w, name: newName } : w)) }),
+            })));
+          });
+          // Control: the scroll for the new name ran while the input was still shown.
+          await waitFor(() => expect(calls.some((c) => c.editing)).toBe(true));
+          expect(screen.getByRole('textbox', { name: 'Tab name' })).toBeTruthy();
+          act(() => releasePatch());
+          await waitForAbsent(() => screen.queryByRole('textbox', { name: 'Tab name' }));
+          await waitFor(() => expect(screen.getByRole('tab', { name: newName })).toBeTruthy());
+
+          // The LAST scroll-into-view of the selected tab happened after edit mode ended.
+          const viewerWrapper = wrapperOf('File Viewer');
+          const viewerCalls = calls.filter((c) => c.el === viewerWrapper);
+          expect(viewerCalls.length).toBeGreaterThan(0);
+          const last = viewerCalls[viewerCalls.length - 1];
+          expect(last.editing).toBe(false);
+          expect(last.options).toEqual(NEAREST);
+          // And it is the very last scroll call of any element.
+          expect(calls[calls.length - 1]).toBe(last);
+          // Every refocus of the renamed tab is non-scrolling.
+          for (const c of focusCalls.filter((f) => f.el === screen.getByRole('tab', { name: newName }))) {
+            expect(c.options).toEqual({ preventScroll: true });
+          }
+        } finally {
+          restoreFocus();
+        }
+      });
+
+      it('switching tabs scrolls the newly active tab, and only it, with nearest/nearest', async () => {
+        await renderAllKinds();
+        calls.length = 0;
+
+        act(() => {
+          screen.getByRole('tab', { name: 'A very long worker tab name' }).click();
+        });
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'A very long worker tab name' }).getAttribute('aria-selected')).toBe('true'));
+        expect(calls.length).toBe(1);
+        expect(calls[0].el).toBe(wrapperOf('A very long worker tab name'));
+        expect(calls[0].options).toEqual(NEAREST);
+
+        calls.length = 0;
+        act(() => {
+          screen.getByRole('tab', { name: 'File Viewer' }).click();
+        });
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+        expect(calls.length).toBe(1);
+        expect(calls[0].el).toBe(wrapperOf('File Viewer'));
+        expect(calls[0].options).toEqual(NEAREST);
+      });
+    });
   });
 });
 
