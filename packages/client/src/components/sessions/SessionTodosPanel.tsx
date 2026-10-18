@@ -19,7 +19,7 @@ interface SessionTodosPanelProps {
 /**
  * The Todo items attached to this session, presented alongside `MemoPanel`
  * (`docs/design/human-todo-list.md`, section 4 "UI"): a compact add form that
- * presets this session, then one summary row per item (both scopes). "Open"
+ * presets this session, then one summary row per item (both scopes). Its title
  * shows the item's detail in a dialog over the session page. The header count
  * is the number of OPEN items only. The block renders nothing until the first
  * fetch settles, and renders with zero items afterwards so an empty session

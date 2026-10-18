@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
@@ -11,7 +11,13 @@ import {
   getDiffData,
   getFileDiff,
   getFileLines,
+  startWatching,
+  stopWatching,
+  isWatching,
+  triggerRefresh,
 } from '../git-diff-service.js';
+import { subscribeToFileChanges } from '../file-watch-service.js';
+import { createFakeWatch, type FakeWatch } from '../../__tests__/utils/fake-file-watch.js';
 
 describe('GitDiffService', () => {
   beforeEach(() => {
@@ -645,7 +651,99 @@ describe('GitDiffService', () => {
     });
   });
 
-  // Note: File Watching tests require real file system and are tested separately.
-  // Run in isolation: bun test src/services/__tests__/git-diff-service.test.ts
-  // These tests verify the chokidar integration works correctly.
+  // The diff worker is one subscriber of the shared watcher (file-watch-service.ts). A second
+  // subscriber (the file viewer) joins the same entry through a fake `watch`, so these tests need no
+  // real directory; the real `fs.watch` is measured in file-watch-service-real-fs.test.ts.
+  describe('startWatching / stopWatching (the diff worker as a subscriber)', () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    let counter = 0;
+
+    function joinAsViewer(path: string, fake: FakeWatch) {
+      const batches: Array<{ paths: string[]; overflow: boolean }> = [];
+      const unsubscribe = subscribeToFileChanges(
+        path,
+        { ignore: () => false, debounceMs: 20, maxWaitMs: null, maxPaths: 200, onChange: (b) => batches.push(b), onError: () => {} },
+        { watch: fake.watch },
+      );
+      return { batches, unsubscribe };
+    }
+
+    it('stopWatching removes only the diff subscription: a viewer on the same path survives and still receives events', async () => {
+      const path = `/virtual/diff-${counter++}`;
+      const fake = createFakeWatch();
+      const viewer = joinAsViewer(path, fake);
+      const callback = mock(() => {});
+      startWatching(path, callback);
+      expect(isWatching(path)).toBe(true);
+
+      stopWatching(path);
+      expect(isWatching(path)).toBe(false);
+      expect(fake.closeCount()).toBe(0);
+
+      fake.emit('after.ts');
+      await sleep(60);
+      expect(viewer.batches).toEqual([{ paths: ['after.ts'], overflow: false }]);
+      expect(callback).not.toHaveBeenCalled();
+
+      viewer.unsubscribe();
+      expect(fake.closeCount()).toBe(1);
+    });
+
+    it('fires after the 300 ms debounce for a non-ignored path, never for an ignored segment, and keeps catalog.logic.ts (the substring over-match)', async () => {
+      const path = `/virtual/diff-${counter++}`;
+      const fake = createFakeWatch();
+      const viewer = joinAsViewer(path, fake);
+      const callback = mock(() => {});
+      startWatching(path, callback);
+
+      fake.emit('node_modules/x.js');
+      await sleep(400);
+      expect(callback).not.toHaveBeenCalled();
+
+      fake.emit('catalog.logic.ts');
+      await sleep(150);
+      expect(callback).not.toHaveBeenCalled(); // still inside the debounce
+      await sleep(250);
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      stopWatching(path);
+      viewer.unsubscribe();
+    });
+
+    it('a second startWatching for the same path replaces the first diff callback', async () => {
+      const path = `/virtual/diff-${counter++}`;
+      const fake = createFakeWatch();
+      const viewer = joinAsViewer(path, fake);
+      const first = mock(() => {});
+      const second = mock(() => {});
+      startWatching(path, first);
+      startWatching(path, second);
+
+      fake.emit('a.ts');
+      await sleep(450);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
+
+      stopWatching(path);
+      viewer.unsubscribe();
+    });
+
+    it('triggerRefresh calls the current callback after a short delay, and nothing after stopWatching', async () => {
+      const path = `/virtual/diff-${counter++}`;
+      const fake = createFakeWatch();
+      const viewer = joinAsViewer(path, fake);
+      const callback = mock(() => {});
+      startWatching(path, callback);
+
+      triggerRefresh(path);
+      await sleep(200);
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      triggerRefresh(path);
+      stopWatching(path);
+      await sleep(200);
+      expect(callback).toHaveBeenCalledTimes(1);
+      viewer.unsubscribe();
+    });
+  });
 });

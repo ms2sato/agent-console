@@ -26,15 +26,24 @@ interface TodoRowProps {
 
 /**
  * The summary row, used by every list of Todo items: title, badges, who
- * created / holds it, and the resolve / dismiss / assign controls. The body,
- * resolution history, editing and deleting live in the detail view.
+ * created / holds it, and the resolve / dismiss / assign controls. The title is
+ * the control that opens the detail view; the body, resolution history, editing
+ * and deleting live there.
  */
 export function TodoRow({ todo, users, onError, onOpenDetail, showSessionLink = true, focusable = true }: TodoRowProps) {
   const tabIndex = focusable ? undefined : -1;
   return (
     <li className="card" data-testid={`todo-${todo.id}`}>
       <div className="flex items-start justify-between gap-2 flex-wrap">
-        <span className="min-w-0 break-words text-sm font-medium text-gray-100">{todo.title}</span>
+        <button
+          type="button"
+          tabIndex={tabIndex}
+          aria-label={`Open ${todo.title}`}
+          onClick={() => onOpenDetail(todo.id)}
+          className="min-w-0 break-words text-left text-sm font-medium text-gray-100 hover:text-white hover:underline focus-visible:underline cursor-pointer"
+        >
+          {todo.title}
+        </button>
         <div className="flex items-center gap-1.5">
           <span className={`${BADGE_CLASS} bg-blue-500/20 text-blue-300`} aria-label={`Kind: ${todo.kind}`}>
             {todo.kind}
@@ -66,15 +75,6 @@ export function TodoRow({ todo, users, onError, onOpenDetail, showSessionLink = 
             Open session
           </Link>
         )}
-        <button
-          type="button"
-          tabIndex={tabIndex}
-          aria-label={`Open ${todo.title}`}
-          onClick={() => onOpenDetail(todo.id)}
-          className="text-slate-400 hover:text-white underline"
-        >
-          Open
-        </button>
       </div>
 
       <TodoActions todo={todo} users={users} onError={onError} focusable={focusable} />

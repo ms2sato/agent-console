@@ -61,6 +61,7 @@ import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
 
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
+import type { WebSocketCallbacks } from './session-manager.js';
 
 const logger = createLogger('worker-lifecycle-manager');
 
@@ -124,6 +125,8 @@ export interface WorkerLifecycleDeps {
    * doc comment).
    */
   activateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
+  /** The WebSocket-side teardown hook; deleting a file-viewer worker stops its watch subscription through it. */
+  getWebSocketCallbacks: () => Pick<WebSocketCallbacks, 'stopFileViewerWatching'> | null;
   notificationManager: NotificationManager | null;
   pathExists: (path: string) => Promise<boolean>;
   getSession: (sessionId: string) => InternalSession | undefined;
@@ -571,7 +574,8 @@ export class WorkerLifecycleManager {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
     } else if (worker.type === 'file-viewer') {
-      // file-viewer worker: no process, watcher or output stream to tear down.
+      // file-viewer worker: no process or output stream; close its watch subscription (idempotent).
+      this.deps.getWebSocketCallbacks()?.stopFileViewerWatching(sessionId, workerId);
     } else {
       // embedded-agent worker: gracefully tear down the loop subprocess (and
       // revoke its MCP token) BEFORE cleaning the output stream. Cleanup must

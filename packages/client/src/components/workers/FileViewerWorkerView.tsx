@@ -1,15 +1,21 @@
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchFileContent, fetchFileTree } from '../../lib/api';
+import { ApiError, fetchFileContent, fetchFileTree } from '../../lib/api';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { RefreshIcon } from '../Icons';
 import { FileViewerContent } from './FileViewerContent';
+import { useFileViewerLiveUpdates, type WatchUnavailableReason } from './hooks/useFileViewerLiveUpdates';
 import { FILE_VIEWER_QUERY_OPTIONS, FileViewerTree, fileViewerKeys } from './FileViewerTree';
 
 interface FileViewerWorkerViewProps {
   sessionId: string;
   workerId: string;
 }
+
+const WATCH_UNAVAILABLE_LABEL = {
+  'permission-denied': 'permission denied',
+  'watch-failed': 'watch failed',
+} as const satisfies Record<WatchUnavailableReason, string>;
 
 /** A symlink that could not be expanded as a directory, kept so its error shows beside the open attempt's. */
 interface SymlinkTreeFailure {
@@ -34,6 +40,8 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
   // applies its outcome only if no later action has happened since it started.
   const selectionRequestRef = useRef(0);
 
+  const { watchUnavailable } = useFileViewerLiveUpdates({ sessionId, workerId, selectedPath });
+
   const isFetching = useIsFetching({ queryKey: fileViewerKeys.worker(sessionId, workerId) }) > 0;
   const content = useQuery({
     queryKey: fileViewerKeys.content(sessionId, workerId, selectedPath ?? ''),
@@ -49,6 +57,15 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
       return next;
     });
   }
+
+  const dropDirectory = useCallback((path: string) => {
+    setExpanded((prev) => {
+      if (!prev.has(path)) return prev;
+      const next = new Set(prev);
+      next.delete(path);
+      return next;
+    });
+  }, []);
 
   function openFile(path: string) {
     selectionRequestRef.current++;
@@ -99,6 +116,11 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
           Refresh
         </button>
       </div>
+      {watchUnavailable !== null && (
+        <p role="status" className="px-3 py-1 text-xs text-yellow-400 bg-slate-800 border-b border-gray-700 shrink-0">
+          Live updates unavailable ({WATCH_UNAVAILABLE_LABEL[watchUnavailable]})
+        </p>
+      )}
       <div className="flex-1 min-h-0 overflow-auto py-1">
         <FileViewerTree
           sessionId={sessionId}
@@ -108,6 +130,7 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
           onToggleDir={toggleDir}
           onOpenFile={openFile}
           onOpenSymlink={(path) => void openSymlink(path)}
+          onDirectoryGone={dropDirectory}
         />
       </div>
     </div>
@@ -119,6 +142,15 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
     }
     if (content.isPending) {
       return <Placeholder>Loading...</Placeholder>;
+    }
+    if (content.error instanceof ApiError && content.error.status === 404) {
+      // The file was deleted or renamed away: not a failure. The selection is kept so a re-created file shows again.
+      return (
+        <div className="flex-1 p-4 text-sm text-gray-400 break-words">
+          <p className="font-mono text-gray-300 break-all">{selectedPath}</p>
+          <p className="mt-1">File removed</p>
+        </div>
+      );
     }
     if (content.error) {
       const treeMessage = symlinkFailure?.path === selectedPath ? symlinkFailure.message : null;
