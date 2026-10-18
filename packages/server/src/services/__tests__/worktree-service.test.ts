@@ -3419,17 +3419,20 @@ detached
         const fakePid = 2_147_483_000;
         // The process-table read (`ps`) goes through Bun.spawn too, so it must
         // reach the real one; only the hook shell is faked.
-        (Bun as { spawn: typeof Bun.spawn }).spawn = ((cmd: string[], ...rest: unknown[]) => {
+        const spawnSpy = spyOn(Bun, 'spawn').mockImplementation(((
+          cmd: string[],
+          options?: Record<string, unknown>,
+        ) => {
           if (cmd[0] === 'ps') {
-            return (originalBunSpawn as (...args: unknown[]) => unknown)(cmd, ...rest);
+            return originalBunSpawn(cmd, options as Parameters<typeof originalBunSpawn>[1]);
           }
           return {
             pid: fakePid,
             exited: new Promise<number>(() => {}),
             stdout: new ReadableStream<Uint8Array>({ start() {} }),
             stderr: new ReadableStream<Uint8Array>({ start() {} }),
-          };
-        }) as unknown as typeof Bun.spawn;
+          } as ReturnType<typeof Bun.spawn>;
+        }) as typeof Bun.spawn);
         const signalled: Array<[number, string | number | undefined]> = [];
         const killSpy = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
           signalled.push([pid, signal]);
@@ -3457,6 +3460,7 @@ detached
           expect(signalled).toContainEqual([fakePid, 'SIGTERM']);
         } finally {
           killSpy.mockRestore();
+          spawnSpy.mockRestore();
         }
       });
 
@@ -3662,6 +3666,53 @@ detached
         expect(result.success).toBe(false);
         expect(result.error).toBe('Command timed out after 500 ms');
         expect(result.output).toBe('partial');
+      });
+
+      it('elevated branch returns at the deadline even when runAsUser never settles', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        // A grandchild holding a pipe open keeps runAsUser pending past its own
+        // timeout; model that with a promise that never resolves.
+        runAsUserMock.responder.fn = () => new Promise<RunAsUserResult>(() => {});
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const startedAt = Date.now();
+        const result = await service.executeHookCommand(
+          'sleep 300 &',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+          200,
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Command timed out after 200 ms');
+        expect(Date.now() - startedAt).toBeLessThan(1000);
+      }, 3000);
+
+      it('elevated branch without a time box still waits for runAsUser', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return { stdout: 'late', stderr: '', exitCode: 0, timedOut: false };
+        };
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'echo late',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+        );
+
+        expect(result).toEqual({ success: true, output: 'late' });
       });
     });
   });

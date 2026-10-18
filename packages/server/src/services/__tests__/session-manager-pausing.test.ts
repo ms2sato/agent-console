@@ -69,7 +69,7 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     delete process.env.AGENT_CONSOLE_HOME;
   });
 
-  async function setup() {
+  async function setup(hookOverride?: ExecuteHookCommand) {
     let resolveHook!: (result: HookResult) => void;
     let rejectHook!: (reason: unknown) => void;
     const executeHookCommand = mock<ExecuteHookCommand>(
@@ -94,7 +94,7 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
         mapping: () => ({ name: 'test-repo', path: '/test/repo', pauseCommand: 'docker compose stop' }),
         getWorktreeIndexNumber: async () => 5,
       }),
-      executeHookCommand,
+      executeHookCommand: hookOverride ?? executeHookCommand,
     });
     return {
       manager,
@@ -307,4 +307,37 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
       saveSpy.mockRestore();
     }
   });
+
+  // The guard property behind the time box: when the elevated helper never
+  // settles (a grandchild holds its pipes open), the pause still completes
+  // within the deadline and the session stops being "pausing".
+  it('a pause whose elevated command never settles completes within the time box and clears the guard', async () => {
+    const originalAuthMode = process.env.AUTH_MODE;
+    process.env.AUTH_MODE = 'multi-user';
+    try {
+      const { WorktreeService } = await import('../worktree-service.js');
+      const worktreeService = new WorktreeService({
+        worktreeRepository: { records: [] } as never,
+        runAsUserImpl: () => new Promise(() => {}),
+      });
+      const boundedHook = mock<ExecuteHookCommand>((command, worktreePath, vars) =>
+        worktreeService.executeHookCommand(command, worktreePath, vars, 'alice-multiuser-test', 200),
+      );
+      const { manager } = await setup(boundedHook);
+      const session = await createSession(manager);
+
+      const startedAt = Date.now();
+      const outcome = await manager.pauseSession(session.id);
+
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+      expect(outcome).toEqual({
+        paused: true,
+        pauseCommandResult: { success: false, error: 'Command timed out after 200 ms' },
+      });
+      expect(manager.isPausing(session.id)).toBe(false);
+    } finally {
+      if (originalAuthMode === undefined) delete process.env.AUTH_MODE;
+      else process.env.AUTH_MODE = originalAuthMode;
+    }
+  }, 5000);
 });

@@ -1305,16 +1305,51 @@ export class WorktreeService {
     // requestUsername differs from the server-process user — otherwise the
     // historical direct-spawn path below is preserved verbatim (including
     // the getCleanChildProcessEnv() env filter).
-    // The time box on this branch is enforced by runAsUser's own timeout.
+    // runAsUser enforces its own timeout, but after killing the shell it still
+    // waits for the pipes to close, which a grandchild can hold open; the
+    // deadline race below is what makes the call return on time.
     if (shouldElevateForUser(requestUsername)) {
       try {
-        const result = await this._runAsUser({
+        const elevated = this._runAsUser({
           username: requestUsername!,
           command: substitutedCommand,
           cwd: worktreePath,
           env: hookEnv,
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         });
+        let result: Awaited<typeof elevated>;
+        if (timeoutMs === undefined) {
+          result = await elevated;
+        } else {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const deadline = new Promise<'timed-out'>((resolve) => {
+            timer = setTimeout(() => resolve('timed-out'), timeoutMs);
+          });
+          // runAsUser's cleanup may settle (or reject) after the race is over;
+          // record the eventual exit once so the journal still has it.
+          elevated.then(
+            (late) => {
+              logger.warn(
+                { worktreePath, requestUsername, exitCode: late.exitCode, timedOut: late.timedOut },
+                'Elevated hook command finished after its deadline',
+              );
+            },
+            () => {},
+          );
+          try {
+            const outcome = await Promise.race([elevated, deadline]);
+            if (outcome === 'timed-out') {
+              logger.warn(
+                { worktreePath, timeoutMs, requestUsername },
+                'Hook command timed out (elevated)',
+              );
+              return { success: false, error: hookTimeoutMessage(timeoutMs) };
+            }
+            result = outcome;
+          } finally {
+            clearTimeout(timer);
+          }
+        }
 
         if (result.timedOut) {
           logger.warn(
