@@ -371,10 +371,13 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
 
   // At most ONE live spy on `stat`, tracked here so a failing test cannot leave it installed for the next one.
   let statSpy: Mock<typeof REAL_STAT> | undefined;
-  afterEach(() => {
+  /** Restores the spy and proves the module's `stat` is the real one again (a leak would poison later tests). */
+  function removeStatSpy(): void {
     statSpy?.mockRestore();
     statSpy = undefined;
-  });
+    expect(fsPromises.stat === REAL_STAT, 'fs/promises stat is the real function after the spy is restored').toBe(true);
+  }
+  afterEach(removeStatSpy);
 
   /**
    * Installs the single pass-through spy on the module's `stat`: it calls the real one and returns its
@@ -384,7 +387,8 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
    * after the real stat of the first by-name call for `swapOn.path`, before its result is returned.
    */
   function installStatSpy(swapOn?: { path: string; run: () => Promise<void> }): Map<string, number> {
-    statSpy?.mockRestore();
+    // A foreign leak (a spy left by something else) must fail here with a named reason, not as a recursion.
+    expect(fsPromises.stat === REAL_STAT, 'fs/promises stat is the real function before this spy is installed').toBe(true);
     const byName = new Map<string, number>();
     statSpy = spyOn(fsPromises, 'stat').mockImplementation((async (...args: Parameters<typeof REAL_STAT>) => {
       const result = await REAL_STAT(...args);
@@ -412,8 +416,7 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
         expect(byName.get(fifoPath) ?? 0).toBe(0);
       }
     } finally {
-      statSpy?.mockRestore();
-      statSpy = undefined;
+      removeStatSpy();
       unblockFifo(fifoPath);
     }
   }, 8_000);
@@ -437,8 +440,7 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
       const outcome = await raceWithTimer(readWorkingTreeFile(worktree, 'swap-me', null, opts), swapPath);
       expect(outcome).not.toBe('blocked');
     } finally {
-      statSpy?.mockRestore();
-      statSpy = undefined;
+      removeStatSpy();
       unblockFifo(swapPath);
       await rm(swapPath).catch(() => {});
     }
