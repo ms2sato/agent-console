@@ -65,13 +65,14 @@ export type FileContentResponse = v.InferOutput<typeof FileContentResponseSchema
 
 /**
  * A changed path as the live-updates watcher reports it: relative to the
- * session location, `/`-separated, no leading slash, and no `..` segment. The
+ * session location, `/`-separated, non-empty, no leading slash, and no `..` segment. The
  * predicate is restated here (the server's `isValidFilePath` is not importable
  * from shared) so a producer that leaks an absolute or escaping path fails at
  * the parse boundary.
  */
 const ChangedPathSchema = v.pipe(
   v.string(),
+  v.minLength(1),
   v.check((p) => !p.startsWith('/') && !p.split('/').includes('..'), 'a changed path must be relative and contain no `..` segment'),
 );
 
