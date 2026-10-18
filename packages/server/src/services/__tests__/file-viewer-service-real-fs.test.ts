@@ -350,6 +350,11 @@ describe('readWorkingTreeFile direct path with { regularOnly, maxBytes } on real
 });
 
 describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => {
+  // Logged once so a CI failure names the environment (the by-name stat count has differed between machines).
+  console.log(
+    `[fifo tests env] arch=${process.arch} platform=${process.platform} bun=${Bun.version} ` +
+      `O_NONBLOCK=${fsConstants.O_NONBLOCK} (${typeof fsConstants.O_NONBLOCK})`,
+  );
   const opts = { regularOnly: true, maxBytes: 100 } as const;
 
   /** Resolves with the call's result, or 'blocked' after `ms`; unblocks a parked reader so nothing leaks. */
@@ -371,6 +376,7 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
 
   // At most ONE live spy on `stat`, tracked here so a failing test cannot leave it installed for the next one.
   let statSpy: Mock<typeof REAL_STAT> | undefined;
+  let swapFiredStack: string | undefined;
   /** Restores the spy and proves the module's `stat` is the real one again (a leak would poison later tests). */
   function removeStatSpy(): void {
     statSpy?.mockRestore();
@@ -386,16 +392,29 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
    * cannot inflate a count: only a stat BY NAME is a by-name look at the path. `swapOn.run` runs
    * after the real stat of the first by-name call for `swapOn.path`, before its result is returned.
    */
-  function installStatSpy(swapOn?: { path: string; run: () => Promise<void> }): Map<string, number> {
+  /** What one by-name call looked like: its argument types and the stack of the caller, for CI evidence. */
+  interface ByNameCall {
+    args: string;
+    stack: string;
+  }
+  const describeCalls = (calls: ByNameCall[] | undefined): string =>
+    (calls ?? []).map((c, i) => `#${i + 1} args=${c.args}\n${c.stack}`).join('\n---\n');
+
+  function installStatSpy(swapOn?: { path: string; run: () => Promise<void> }): Map<string, ByNameCall[]> {
     // A foreign leak (a spy left by something else) must fail here with a named reason, not as a recursion.
     expect(fsPromises.stat === REAL_STAT, 'fs/promises stat is the real function before this spy is installed').toBe(true);
-    const byName = new Map<string, number>();
+    const byName = new Map<string, ByNameCall[]>();
     statSpy = spyOn(fsPromises, 'stat').mockImplementation((async (...args: Parameters<typeof REAL_STAT>) => {
+      const stack = new Error('by-name stat caller').stack ?? '';
       const result = await REAL_STAT(...args);
       if (typeof args[0] === 'string') {
-        const count = (byName.get(args[0]) ?? 0) + 1;
-        byName.set(args[0], count);
-        if (swapOn && args[0] === swapOn.path && count === 1) await swapOn.run();
+        const calls = byName.get(args[0]) ?? [];
+        calls.push({ args: args.map((a) => typeof a).join(','), stack });
+        byName.set(args[0], calls);
+        if (swapOn && args[0] === swapOn.path && calls.length === 1) {
+          swapFiredStack = stack;
+          await swapOn.run();
+        }
       }
       return result;
     }) as typeof REAL_STAT);
@@ -409,11 +428,12 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
     try {
       const regular = await readWorkingTreeFile(worktree, 'plain.txt', null, opts);
       expect(regular).toMatchObject({ kind: 'file', size: 12 });
-      expect(byName.get(plainPath) ?? 0).toBe(0);
+      // Same condition as before (zero by-name calls); the message names every caller if it fails.
+      expect(byName.get(plainPath)?.length ?? 0, `by-name stat callers for the regular file:\n${describeCalls(byName.get(plainPath))}`).toBe(0);
       if (fifoMade) {
         const fifo = await raceWithTimer(readWorkingTreeFile(worktree, 'pipe', null, opts), fifoPath);
         expect(fifo).toEqual({ kind: 'not-regular' });
-        expect(byName.get(fifoPath) ?? 0).toBe(0);
+        expect(byName.get(fifoPath)?.length ?? 0, `by-name stat callers for the fifo:\n${describeCalls(byName.get(fifoPath))}`).toBe(0);
       }
     } finally {
       removeStatSpy();
@@ -428,7 +448,8 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
     // Pass-through: the first by-name stat returns the REAL pre-swap result, and only afterwards is the
     // path replaced by a fifo. Code that stats by name and then opens by name blocks in the open; code
     // that never looks at the path by name is not affected by the order (it never calls the spy).
-    installStatSpy({
+    swapFiredStack = undefined;
+    const swapCalls = installStatSpy({
       path: swapPath,
       run: async () => {
         await rm(swapPath);
@@ -438,7 +459,10 @@ describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => 
     });
     try {
       const outcome = await raceWithTimer(readWorkingTreeFile(worktree, 'swap-me', null, opts), swapPath);
-      expect(outcome).not.toBe('blocked');
+      expect(
+        outcome,
+        `swap fired: ${swapFiredStack !== undefined}; stack of the by-name stat that triggered it:\n${swapFiredStack ?? '(none: stat was never called by name)'}\nall by-name calls:\n${describeCalls(swapCalls.get(swapPath))}`,
+      ).not.toBe('blocked');
     } finally {
       removeStatSpy();
       unblockFifo(swapPath);
