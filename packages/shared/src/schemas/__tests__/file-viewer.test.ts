@@ -119,9 +119,11 @@ describe('FileViewerServerMessageSchema', () => {
     expect(ok(FileViewerServerMessageSchema, { type: 'watch-unavailable', reason })).toBe(true);
   });
 
-  it('rejects an empty path, an absolute path and a `..` segment, in any element', () => {
+  it('rejects an empty path, a backslash or drive-letter path, an absolute path and a `..` segment, in any element', () => {
     expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['/abs'] })).toBe(false);
     expect(ok(FileViewerServerMessageSchema, { ...changed, paths: [''] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['C:\\repo\\file'] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['a\\..\\b'] })).toBe(false);
     expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['ok.ts', '/abs'] })).toBe(false);
     expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['../up.ts'] })).toBe(false);
     expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['a/../b.ts'] })).toBe(false);
