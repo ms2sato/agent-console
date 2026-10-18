@@ -135,6 +135,8 @@ export interface WebSocketCallbacks {
   notifySessionPaused: (sessionId: string) => void;
   /** Broadcast a message to all connected app clients */
   broadcastToApp: (msg: AppServerMessage) => void;
+  /** Stop a file-viewer worker's watch subscription (idempotent) */
+  stopFileViewerWatching: (sessionId: string, workerId: string) => void;
 }
 
 const logger = createLogger('session-manager');
@@ -610,6 +612,7 @@ export class SessionManager {
         this.embeddedAgentWorkerService.deactivate(sessionId, workerId),
       activateEmbeddedAgentWorker: (sessionId, workerId) =>
         this.embeddedAgentWorkerService.activate(sessionId, workerId),
+      getWebSocketCallbacks: () => this.webSocketCallbacks,
       notificationManager: this.notificationManager,
       pathExists: this.pathExists,
       getSession: (id) => this.sessions.get(id),
