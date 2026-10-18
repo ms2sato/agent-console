@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as os from 'node:os';
 import type { FileSink } from 'bun';
 import type { FakeFileSink } from '../../__tests__/utils/fake-spawn-as-user.js';
@@ -13,6 +13,7 @@ import {
   buildSpawnArgs,
   buildInnerCommand,
   CWD_FAILED_EXIT_CODE,
+  TIMEOUT_DRAIN_BUDGET_MS,
   shellEscape,
   shouldElevateForUser,
   isMultiUserAuthMode,
@@ -43,7 +44,8 @@ interface FakeProc {
   exited: Promise<number | null>;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
-  kill: () => void;
+  pid: number;
+  kill: (signal?: NodeJS.Signals | number) => void;
 }
 
 /**
@@ -74,8 +76,20 @@ function makeFakeSpawn(
     stdout?: string;
     stderr?: string;
     exitCode?: number;
-    /** When set, `proc.exited` only resolves once `kill()` is called. */
+    /**
+     * When set, the FIRST spawn's `proc.exited` only resolves once `kill()` is
+     * called. Later spawns (the elevated kill commands) are unaffected.
+     */
     blockUntilKill?: boolean;
+    /**
+     * Enqueue `partial` on stdout and never close the stream: models a
+     * surviving grandchild that keeps the pipe's write end open.
+     */
+    stdoutNeverCloses?: { partial: string };
+    /** Spawns after the first (kill commands) never report an exit. */
+    hangKillCommands?: boolean;
+    /** Observes every `kill()` call as `(spawnIndex, signal)`. */
+    onKill?: (spawnIndex: number, signal?: NodeJS.Signals | number) => void;
   } = {},
 ): SpawnFn {
   const stdoutText = opts.stdout ?? '';
@@ -83,20 +97,28 @@ function makeFakeSpawn(
   const exitCode = opts.exitCode ?? 0;
 
   const fakeFn: FakeSpawnFn = (args, options) => {
+    const spawnIndex = captured.length;
     captured.push({ args, options });
+    const isMainSpawn = spawnIndex === 0;
+    const blocksUntilKill = isMainSpawn && opts.blockUntilKill === true;
 
     let resolveExited!: (value: number | null) => void;
     const exited = new Promise<number | null>((resolve) => {
       resolveExited = resolve;
     });
-    if (!opts.blockUntilKill) {
+    if (!blocksUntilKill && !(opts.hangKillCommands && !isMainSpawn)) {
       resolveExited(exitCode);
     }
 
     const fake: FakeProc = {
       exited,
+      pid: 7000 + spawnIndex,
       stdout: new ReadableStream({
         start(controller) {
+          if (isMainSpawn && opts.stdoutNeverCloses) {
+            controller.enqueue(new TextEncoder().encode(opts.stdoutNeverCloses.partial));
+            return;
+          }
           controller.enqueue(new TextEncoder().encode(stdoutText));
           controller.close();
         },
@@ -107,8 +129,9 @@ function makeFakeSpawn(
           controller.close();
         },
       }),
-      kill: () => {
-        if (opts.blockUntilKill) {
+      kill: (signal) => {
+        opts.onKill?.(spawnIndex, signal);
+        if (blocksUntilKill) {
           // Bun semantics: signal-killed -> exitCode resolves to `null`.
           // The helper under test is the layer that normalizes this to a
           // numeric timeout exit code; the fake faithfully emits the null.
@@ -533,6 +556,183 @@ describe('privilege-elevation', () => {
       expect(typeof result.exitCode).toBe('number');
       expect(result.stdout).toBe('');
       expect(result.stderr).toBe('');
+    });
+
+    describe('timeout tears down the user-side process tree', () => {
+      // Fake pids only: the descendant walk is injected and the direct branch
+      // signals through a mocked `process.kill`, so no test here can signal a
+      // real process. Proxy note: the fake spawn substitutes the OS; the real
+      // process tree is covered by privilege-elevation-timeout-real-process.test.ts
+      // and the tier-2 smoke (scripts/smoke/check-kill-as-user.ts).
+      const elevatedUser = `${serverUsername}-someone-else`;
+      const DESCENDANTS = [4242, 4243];
+      const listTwo = async (): Promise<number[]> => DESCENDANTS;
+      // The argv of the one elevated kill command, built by the same pure
+      // builder the production code uses (no preserve-env, no cwd, no env).
+      const killArgv = (signalName: 'TERM' | 'KILL'): string[] =>
+        buildSpawnArgs(elevatedUser, `kill -s ${signalName} -- 4242 4243`, [], serverUsername, true, undefined, undefined)
+          .args;
+      let killSpy: ReturnType<typeof spyOn<typeof process, 'kill'>> | undefined;
+
+      afterEach(() => {
+        killSpy?.mockRestore();
+        killSpy = undefined;
+      });
+
+      it('elevated timeout: snapshots descendants before killing the wrapper and signals them as the user in one kill command', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const order: string[] = [];
+        const captured: CapturedSpawn[] = [];
+        const fakeSpawn = makeFakeSpawn(captured, {
+          blockUntilKill: true,
+          onKill: (index) => {
+            if (index === 0) order.push('wrapper.kill');
+          },
+        });
+        const listDescendants = async (rootPid: number): Promise<number[]> => {
+          order.push('listDescendants');
+          expect(rootPid).toBe(7000);
+          return DESCENDANTS;
+        };
+
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'sleep 9999', timeoutMs: 10 },
+          fakeSpawn,
+          listDescendants,
+        );
+
+        expect(order).toEqual(['listDescendants', 'wrapper.kill']);
+        expect(captured).toHaveLength(2);
+        expect(captured[1].args).toEqual(killArgv('TERM'));
+        expect(captured[1].args.at(-1)).toBe('kill -s TERM -- 4242 4243');
+        expect(result.timedOut).toBe(true);
+        expect(result.exitCode).toBe(137);
+      });
+
+      it('direct timeout: signals descendants from the server process', async () => {
+        process.env.AUTH_MODE = 'none';
+        const order: string[] = [];
+        killSpy = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+          order.push(`${pid}:${String(signal)}`);
+          return true;
+        }) as typeof process.kill);
+        const captured: CapturedSpawn[] = [];
+        const fakeSpawn = makeFakeSpawn(captured, {
+          blockUntilKill: true,
+          onKill: (index) => {
+            if (index === 0) order.push('wrapper.kill');
+          },
+        });
+
+        const result = await runAsUser({ username: null, command: 'sleep 9999', timeoutMs: 10 }, fakeSpawn, listTwo);
+
+        expect(order).toEqual(['4242:SIGTERM', '4243:SIGTERM', 'wrapper.kill']);
+        expect(captured).toHaveLength(1);
+        expect(result.timedOut).toBe(true);
+      });
+
+      it('timeout with no descendants spawns no kill command', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const captured: CapturedSpawn[] = [];
+        const fakeSpawn = makeFakeSpawn(captured, { blockUntilKill: true });
+
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'sleep 9999', timeoutMs: 10 },
+          fakeSpawn,
+          async () => [],
+        );
+
+        expect(captured).toHaveLength(1);
+        expect(result.timedOut).toBe(true);
+      });
+
+      it('timeout with a pipe that never closes returns within the drain budget with the partial output', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const captured: CapturedSpawn[] = [];
+        const fakeSpawn = makeFakeSpawn(captured, { blockUntilKill: true, stdoutNeverCloses: { partial: 'partial' } });
+
+        const started = Date.now();
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'sleep 9999', timeoutMs: 10 },
+          fakeSpawn,
+          listTwo,
+        );
+        const elapsed = Date.now() - started;
+
+        expect(elapsed).toBeLessThan(TIMEOUT_DRAIN_BUDGET_MS * 3);
+        expect(result.stdout).toBe('partial');
+        expect(result.timedOut).toBe(true);
+        expect(result.exitCode).toBe(137);
+        expect(captured.slice(1).map((c) => c.args)).toEqual([killArgv('TERM'), killArgv('KILL')]);
+      }, 3000);
+
+      it('timeout with a pipe that never closes returns within the drain budget with the partial output (direct)', async () => {
+        process.env.AUTH_MODE = 'none';
+        const signals: string[] = [];
+        killSpy = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+          signals.push(`${pid}:${String(signal)}`);
+          return true;
+        }) as typeof process.kill);
+        const wrapperSignals: Array<NodeJS.Signals | number | undefined> = [];
+        const fakeSpawn = makeFakeSpawn([], {
+          blockUntilKill: true,
+          stdoutNeverCloses: { partial: 'partial' },
+          onKill: (_index, signal) => wrapperSignals.push(signal),
+        });
+
+        const started = Date.now();
+        const result = await runAsUser({ username: null, command: 'sleep 9999', timeoutMs: 10 }, fakeSpawn, listTwo);
+        const elapsed = Date.now() - started;
+
+        expect(elapsed).toBeLessThan(TIMEOUT_DRAIN_BUDGET_MS * 3);
+        expect(result.stdout).toBe('partial');
+        expect(signals).toEqual(['4242:SIGTERM', '4243:SIGTERM', '4242:SIGKILL', '4243:SIGKILL']);
+        expect(wrapperSignals).toEqual([undefined, 'SIGKILL']);
+      }, 3000);
+
+      it('timeout whose kill command itself never exits still returns within the budget', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const captured: CapturedSpawn[] = [];
+        const fakeSpawn = makeFakeSpawn(captured, { blockUntilKill: true, hangKillCommands: true });
+
+        const started = Date.now();
+        const result = await runAsUser(
+          { username: elevatedUser, command: 'sleep 9999', timeoutMs: 10 },
+          fakeSpawn,
+          listTwo,
+        );
+        const elapsed = Date.now() - started;
+
+        expect(elapsed).toBeLessThan(TIMEOUT_DRAIN_BUDGET_MS * 3);
+        expect(result.timedOut).toBe(true);
+        expect(captured[1].args).toEqual(killArgv('TERM'));
+      }, 3000);
+
+      it('no timeout: the descendant walk is never consulted', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        let walks = 0;
+        const listDescendants = async (): Promise<number[]> => {
+          walks++;
+          return DESCENDANTS;
+        };
+        const captured: CapturedSpawn[] = [];
+
+        const withTimer = await runAsUser(
+          { username: elevatedUser, command: 'true', timeoutMs: 5000 },
+          makeFakeSpawn(captured, { stdout: 'ok' }),
+          listDescendants,
+        );
+        const withoutTimer = await runAsUser(
+          { username: elevatedUser, command: 'true' },
+          makeFakeSpawn(captured, { stdout: 'ok' }),
+          listDescendants,
+        );
+
+        expect(walks).toBe(0);
+        expect(captured).toHaveLength(2);
+        expect(withTimer).toMatchObject({ stdout: 'ok', timedOut: false, exitCode: 0 });
+        expect(withoutTimer).toMatchObject({ stdout: 'ok', timedOut: false, exitCode: 0 });
+      });
     });
 
     describe('cwdFailed', () => {
