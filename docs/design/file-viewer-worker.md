@@ -1,6 +1,6 @@
 # File Viewer Worker
 
-Status: design (Issue #2194). The implementation AC follows after this document merges. Every statement about existing code below was checked against `main` at 3168977f and names a file and a symbol, not a line number.
+Status: design (Issue #2194), redirected by the owner on 2026-10-18 to a plain directory listing that filters nothing (see the last paragraph of Background). The implementation AC follows after this document merges. Every statement about existing code below was checked against `main` at 3168977f and names a file and a symbol, not a line number.
 
 ## Background
 
@@ -10,16 +10,18 @@ The owner asked for a general-purpose, read-only file view as a new worker type:
 
 A later version (explicitly out of scope here) lets the user attach comments to file content, send them to the session's main AI agent, and show the agent's reply in the viewer. This is the same idea as the git diff worker's review annotations ([diff-review-annotations.md](diff-review-annotations.md)). v1 builds none of it but must not make it hard; see [Later: comments to the main agent](#later-comments-to-the-main-agent).
 
+Redirect, 2026-10-18: the first draft built the tree from `git ls-files` and so hid `.git` and ignored files. The owner redirected to a simple tree that filters nothing, because files such as dot-env configuration must be reachable (and are expected to become editable, see [Later: editing dot-env-class files](#later-editing-dot-env-class-files)). The tree is now a plain directory listing and works the same for git and non-git directories.
+
 ## Goals
 
 - Browse the tree of a session's working directory and read any text file in it, with syntax highlighting.
 - Work in multi-user mode, where the working directory may be mode 0700 and owned by the session owner, not the server user.
-- Never show `.git` or ignored files (`.gitignore` is honoured) in v1.
+- Show every entry of the working directory, including dotfiles and `.git`; nothing is filtered (owner direction, 2026-10-18: files such as dot-env configuration must be reachable).
 - Stay bounded: a file larger than 1 MiB is truncated, a binary file shows no content.
 - Be usable on a phone.
 - Add no new dependency and no database migration.
 
-Non-goals for v1: editing, search, live updates (question 1 below), non-git directories (question 2), showing ignored files (question 3), comments.
+Non-goals for v1: editing and any other write access (see [Later: editing dot-env-class files](#later-editing-dot-env-class-files)), search, live updates (answered: Refresh only, see [question 1](#1-live-updates)), comments.
 
 ## Design Decisions
 
@@ -38,7 +40,7 @@ A new worker type `file-viewer`, non-PTY and server-process, like `git-diff` (`I
 
 ### Transport: REST, lazy, no WebSocket in v1
 
-Two read-only routes under the existing worker routes in `packages/server/src/routes/workers.ts`, next to the `/diff` and `/diff/file` routes. No WebSocket endpoint is added in v1 (live updates are open question 1).
+Two read-only routes under the existing worker routes in `packages/server/src/routes/workers.ts`, next to the `/diff` and `/diff/file` routes. No WebSocket endpoint is added in v1 (live updates: Refresh only, question 1, follow-up #2205).
 
 ```
 GET /api/sessions/:sessionId/workers/:workerId/files/tree?path=<dir>
@@ -54,21 +56,25 @@ Access: `assertCanOperateSession` from `packages/server/src/lib/session-access.t
 Two layers, both required:
 
 1. **Lexical guard.** `isValidFilePath` in `packages/server/src/services/git-diff-service.ts` rejects absolute paths, any path containing `..` (as a substring, so a file named `a..b` is also rejected -- accepted, rare), and any path containing a NUL byte. It is a module-private function today (`getFileLines`, `getFileDiff` and the other callers are in the same file), so the implementation exports it (or hoists it to `lib/`) rather than copying it. The tree route accepts the empty string as the root; the content route requires a non-empty path.
-2. **Containment after symlink resolution.** The lexical guard does not stop a symlink inside the worktree that points outside it. The file viewer applies the embedded-agent confinement rule ([embedded-agent-worker.md](embedded-agent-worker.md), "Follow symlinks via `realpath`"): resolve the target with `realpath`, walking up to the nearest existing ancestor if the leaf does not exist, and accept it only if it equals `realpath(session.locationPath)` or is prefixed by it plus `path.sep`. The embedded agent's helper `resolveConfinedPath` (`packages/embedded-agent/src/tools/path-confinement.ts`) is in another package and runs in the agent subprocess; the implementation either reuses its logic through `packages/shared` or states why a server-side copy is required (a duplication check applies, per the workflow rule). In multi-user mode the `realpath` itself must run as the session owner, because the server user cannot traverse a 0700 directory; it is part of the same elevated runner call as the read (see [Content read](#content-read-as-the-session-owner)).
+2. **Containment after symlink resolution.** This layer is now the only thing that keeps a symlink from leading outside the working directory, because the listing follows nothing and filters nothing; it is load-bearing, not belt-and-braces. The lexical guard does not stop a symlink inside the worktree that points outside it. Symlink rules: the tree route lists a symlink as `kind: 'symlink'` without resolving it; expanding one (tree route with its path) or opening one (content route) resolves `realpath` and refuses a target outside `locationPath` with the 400 / 403 cell of the boundary table; a symlink inside the worktree that points inside it works like its target. The file viewer applies the embedded-agent confinement rule ([embedded-agent-worker.md](embedded-agent-worker.md), "Follow symlinks via `realpath`"): resolve the target with `realpath`, walking up to the nearest existing ancestor if the leaf does not exist, and accept it only if it equals `realpath(session.locationPath)` or is prefixed by it plus `path.sep`. The embedded agent's helper `resolveConfinedPath` (`packages/embedded-agent/src/tools/path-confinement.ts`) is in another package and runs in the agent subprocess; the implementation either reuses its logic through `packages/shared` or states why a server-side copy is required (a duplication check applies, per the workflow rule). In multi-user mode the `realpath` itself must run as the session owner, because the server user cannot traverse a 0700 directory; it is part of the same elevated runner call as the read (see [Content read](#content-read-as-the-session-owner)).
 
-### Tree source: git, as the session owner
+### Tree source: a directory listing, as the session owner
 
-The tree is built from git, not from a directory walk:
+The tree is a plain listing of one directory level, with no filter of any kind: dotfiles and `.git` are listed, nothing is hidden by name, by `.gitignore`, or by size. It works identically for a git worktree, a plain directory and a quick session's directory (no git is involved). Expanding `.git/objects` is harmless because the content route still applies the 1 MiB cap and binary detection.
+
+**Direct path (single-user mode, also macOS and any case where elevation is bypassed).** `readdir(join(locationPath, dir), { withFileTypes: true })`, the same call `buildDefinitionMemoryCleanupTargets` in `packages/server/src/lib/session-data-path.ts` already uses. `isDirectory()` maps to `dir`, `isSymbolicLink()` to `symlink`, anything else to `file`. Entries are sorted directories first, then by name with a byte comparison (plain `<` on the name strings, not `localeCompare`), so the order does not depend on the host locale.
+
+**Elevated path (multi-user mode).** The server user cannot list a 0700 directory owned by the session owner, so the listing runs through `runAsUser` in `packages/server/src/services/privilege-elevation.ts` with `cwd = locationPath`:
 
 ```
-git ls-files --cached --others --exclude-standard -z -- <dir>/
+find <escaped dir> -mindepth 1 -maxdepth 1 -printf '%y\t%f\0'
 ```
 
-run through the existing `gitSafe(args, cwd, requestUser)` in `packages/server/src/lib/git.ts` with `cwd = session.locationPath`. This honours `.gitignore` and never lists `.git`, by construction, with no new ignore library.
+`dir` is wrapped in `shellEscape` like every path in `runAsUser` commands. `%y` is `d`, `f` or `l`; `l` is a symlink and is reported as such, not followed, because `-maxdepth 1` is used without `-L`. The `\0` separator makes any file name (spaces, newlines) safe to parse; other `%y` letters (sockets, devices) are mapped to `file`. Sorting is the same as the direct path, done by the server. Identity is `resolveSpawnUsername(session.createdBy, userRepository)`, as for the content read.
 
-Identity: the session's effective spawn user, resolved with `resolveSpawnUsername(session.createdBy, userRepository)` from `packages/server/src/services/resolve-spawn-username.ts`. That is what both the `/diff` routes and the git-diff WebSocket connection (`handleGitDiffConnection` in `packages/server/src/websocket/git-diff-handler.ts`, called from `websocket/routes.ts`) pass as `requestUser`: the OS user that owns the worktree, **not the authenticated viewer**, which matters for shared sessions. (`resolveRequestUsername`, the sibling that returns `null` instead of falling back to the server user, is the MCP-tool variant; the REST and WebSocket git-diff paths use `resolveSpawnUsername`, and the file viewer follows them. The two behave the same downstream: the elevated runner bypasses elevation when the username equals the server user.)
+**Known coupling, stated so nobody "fixes" it by accident.** `-printf` is a GNU `find` feature. This branch is taken only when elevation is real (multi-user mode with a spawn user other than the server user), and the elevated runner itself has Linux-specific parts (the `setsid sh -c` wrapper in `runAsUser`). However, `docs/multi-user-setup-guide.md` lists macOS as a supported multi-user host (prerequisites: "Linux ... or macOS"), where `find` is the BSD one and has no `-printf`. This design does not resolve that: the implementation AC must either require GNU `find` on the elevated branch (and say so in the setup guide) or replace `-printf` with portable `-type d` / `-type l` / `-type f` passes using `-print0`. Until the owner or the Architect decides, treat it as an open implementation point, not a licence to filter or to fall back to a walk in the server process.
 
-**One level per request.** `git ls-files` returns a flat recursive list. `--directory` does not help for a lazy level: it collapses only wholly-untracked directories into a trailing-slash entry and still lists every tracked file individually. The server therefore reduces the output itself: for the requested directory it groups paths by their first segment after the prefix, emits each segment that has a further `/` as `kind: 'dir'`, and the rest as `kind: 'file'` (an untracked directory collapsed by `--directory` becomes a `dir` entry for free, so `--directory` is still passed to avoid enumerating huge untracked trees such as an unignored build output). Cost is one git invocation per expand, proportional to the files under that directory; accepted for v1. Sorting is done on the client (directories first, then name).
+One level per request; entries carry no `size` in v1 (the content response already carries the total size, and a later query parameter can add sizes without breaking the wire).
 
 **Tree entry:**
 
@@ -76,7 +82,7 @@ Identity: the session's effective spawn user, resolved with `resolveSpawnUsernam
 // packages/shared/src/types/file-viewer.ts
 interface FileTreeEntry {
   name: string;               // single path segment
-  kind: 'dir' | 'file';
+  kind: 'dir' | 'file' | 'symlink';   // a symlink carries no target
 }
 
 interface FileTreeResponse {
@@ -85,9 +91,7 @@ interface FileTreeResponse {
 }
 ```
 
-Entries carry no `size` in v1: the content response already carries the total size, and a later query parameter can add sizes to the listing without breaking the wire.
-
-A directory that is not inside a git repository yields an empty git result; see open question 2 for how that is presented.
+**Symlinks are listed as their own kind and never followed by the listing.** Following happens only when the user expands or opens one: expanding sends the symlink's path to the tree route, opening sends it to the content route, and both resolve `realpath` and refuse a target outside `locationPath` (see [Path safety](#path-safety)). A symlink inside the worktree that points inside the worktree behaves like its target. The UI shows a symlink with its own icon and treats a click as "try to expand or open", so a broken or escaping link yields the route's error, not a silent no-op.
 
 ### Content read as the session owner
 
@@ -123,6 +127,11 @@ Boundary values (each is a test):
 | `path` does not exist | 404 |
 | `path` resolves outside `locationPath` through a symlink | 400 / 403 `ValidationError`, never content |
 | `path` is a tree-route request for a file | 400 |
+| A symlink to a directory inside `locationPath`, expanded | lists the target's entries |
+| A symlink to a file outside `locationPath`, opened | 400 / 403 `ValidationError`, never content |
+| A dotfile such as a dot-env file | listed and readable like any file (owner direction) |
+| `.git` | listed as a directory (collapsed like any other) |
+| A directory that is not a git repository | listed like any other directory |
 
 ### Wire shapes
 
@@ -175,20 +184,20 @@ The `workers` row stores `id`, `session_id`, `type`, `name`, `created_at`, and n
 
 ## Surfaces
 
-Decision table per [decision-table.md](../../.claude/rules/decision-table.md). Rows are operations; columns are surfaces. Every cell is `do:` or `not here:`; there is no undecided cell. The UI cells (worker tab, add-worker menu) are marked **owner confirmation pending**: the owner confirms them on the design-doc PR, and the table then records `owner-confirmed <date>`.
+Decision table per [decision-table.md](../../.claude/rules/decision-table.md). Rows are operations; columns are surfaces. Every cell is `do:` or `not here:`; there is no undecided cell. The UI cells (worker tab, add-worker menu) are **owner-confirmed 2026-10-18**.
 
 | Operation | Worker tab | Add-worker menu | REST | MCP `create_worker` / `delegate_to_worktree` options | Embedded-agent-visible |
 |---|---|---|---|---|---|
-| Create viewer | not here: a tab is the result of creating, not a way to create one. (owner confirmation pending) | do: new "File viewer" item in `AddAgentWorkerMenu` (`onSelectFileViewer` -> `addFileViewerTab` in `useTabManagement.ts`). (owner confirmation pending) | do: `POST /api/sessions/:sid/workers` with `{ type: 'file-viewer' }` (new `CreateWorkerRequestSchema` variant) | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
-| List tree | do: `FileViewerWorkerView` left pane (lazy expand, directories first, name sort; mobile: toggle drawer). (owner confirmation pending) | not here: the menu only creates workers. (owner confirmation pending) | do: `GET .../workers/:wid/files/tree?path=<dir>` (one directory level) | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
-| Read file | do: `FileViewerWorkerView` right pane (highlighted, line numbers, truncation / binary notices). (owner confirmation pending) | not here: the menu only creates workers. (owner confirmation pending) | do: `GET .../workers/:wid/files/content?path=<file>` | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
-| Refresh | do: Refresh button in the tree header (re-lists open directories, re-reads the selected file). (owner confirmation pending) | not here: the menu only creates workers. (owner confirmation pending) | not here: refresh is the client calling the two GET routes again; the server has no cache to invalidate. | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
-| Live updates (watch and push changes) | not here: later, a follow-up Issue will be filed on the owner's answer to question 1. (owner confirmation pending) | not here: the menu only creates workers. (owner confirmation pending) | not here: later, a follow-up Issue will be filed on the owner's answer to question 1. | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
-| Comment (later) | not here: later version, designed in [Later: comments to the main agent](#later-comments-to-the-main-agent); v1 builds nothing. A follow-up Issue is filed when v1 merges. (owner confirmation pending) | not here: the menu only creates workers. (owner confirmation pending) | not here: later version; v1 reserves only a stable `path` and `language` on the content response. | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
+| Create viewer | not here: a tab is the result of creating, not a way to create one. (owner-confirmed 2026-10-18) | do: new "File viewer" item in `AddAgentWorkerMenu` (`onSelectFileViewer` -> `addFileViewerTab` in `useTabManagement.ts`). (owner-confirmed 2026-10-18) | do: `POST /api/sessions/:sid/workers` with `{ type: 'file-viewer' }` (new `CreateWorkerRequestSchema` variant) | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
+| List tree | do: `FileViewerWorkerView` left pane (lazy expand, directories first, name sort; mobile: toggle drawer), including dotfiles and `.git`; nothing filtered. (owner-confirmed 2026-10-18) | not here: the menu only creates workers. (owner-confirmed 2026-10-18) | do: `GET .../workers/:wid/files/tree?path=<dir>` (one directory level) | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
+| Read file | do: `FileViewerWorkerView` right pane (highlighted, line numbers, truncation / binary notices). (owner-confirmed 2026-10-18) | not here: the menu only creates workers. (owner-confirmed 2026-10-18) | do: `GET .../workers/:wid/files/content?path=<file>` | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
+| Refresh | do: Refresh button in the tree header (re-lists open directories, re-reads the selected file). (owner-confirmed 2026-10-18) | not here: the menu only creates workers. (owner-confirmed 2026-10-18) | not here: refresh is the client calling the two GET routes again; the server has no cache to invalidate. | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
+| Live updates (watch and push changes) | not here: later, tracked in #2205. (owner-confirmed 2026-10-18) | not here: the menu only creates workers. (owner-confirmed 2026-10-18) | not here: later, tracked in #2205. | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
+| Comment (later) | not here: later version, designed in [Later: comments to the main agent](#later-comments-to-the-main-agent); v1 builds nothing. (owner-confirmed 2026-10-18) | not here: the menu only creates workers. (owner-confirmed 2026-10-18) | not here: later version; v1 reserves only a stable `path` and `language` on the content response. | not here: a viewer is a human surface; agents read files with their own tools. | not here: a viewer is a human surface; agents read files with their own tools. |
 
 Notes on the table:
 
-- The "Live updates" row is included because the AC's open question 1 makes it a real operation with a decided v1 answer (not built); the cell names the follow-up that the owner's answer triggers.
+- The "Live updates" row is included because question 1 made it a real operation with a decided v1 answer (not built, Refresh only); the cells name the follow-up Issue #2205. The comments feature and the dot-env editing direction have no Issue yet; each is filed when v1 merges (prose note, see the Later sections).
 - MCP cells are `not here` for a reason that is the Issue's own framing. `delegate_to_worktree` and `create_worker` expose agent-selection options; a viewer has none, so a caller that wants file contents uses its own Read / Glob / Grep tools, which see the same tree. If the owner later wants a session to open a viewer for the user (for example, "open this file for me"), that is a new operation and a new row.
 - The "embedded-agent-visible" column follows `AGENT_OPERATIONS` in `packages/shared/src/types/agent-operations.ts` in spirit but not in type: the file viewer is not an agent operation, so no `satisfies Record<AgentOperation, SurfaceExposure>` table is added. The decision is recorded here, in the document, where [decision-table.md](../../.claude/rules/decision-table.md) puts it.
 
@@ -200,7 +209,7 @@ No code in v1. This section fixes the model so v1 does not close the door.
 
 **Delivery.** Through the existing `SessionManager.deliverWorkerNotification` seam (`packages/server/src/services/session-manager.ts`), the same path that inbound events, timers, conditional wakeups and todos use. The seam routes to a PTY-backed worker through `writePtyNotification` and to an embedded-agent worker through its system-notification path, and returns `{ ok: false, reason }` otherwise. A comment is therefore a notification with a rendered body such as "File comment: `src/a.ts` lines 10-12: <body>", addressed to the session's primary agent worker. The viewer worker is not itself a notification target (it is neither PTY-backed nor an embedded agent), so the predicate `canReceiveNotifications` is unchanged.
 
-**Reply.** The agent answers by an MCP tool call (a new tool, designed then) that the server turns into a `file-viewer` worker event pushed to the viewer, the way review annotations reach the diff viewer. This is the point at which the viewer gains a live channel: a worker WebSocket for events, which is also where the live-updates follow-up from open question 1 would attach, so the two should be designed together.
+**Reply.** The agent answers by an MCP tool call (a new tool, designed then) that the server turns into a `file-viewer` worker event pushed to the viewer, the way review annotations reach the diff viewer. This is the point at which the viewer gains a live channel: a worker WebSocket for events, which is also where the live-updates follow-up (#2205) would attach, so the two should be designed together.
 
 **What v1 reserves:**
 
@@ -211,45 +220,31 @@ No code in v1. This section fixes the model so v1 does not close the door.
 
 **What v1 does not build:** comment UI, comment persistence (no table and no column), the delivery code, the reply tool and event, anchoring that survives the file changing underneath a comment (a later design must choose between line-based anchors with a staleness check and content-hash anchors; v1 takes no position), and any WebSocket channel for the viewer.
 
-## Open questions for the owner
-
-Each has a recommendation (marked) and none blocks writing the implementation AC; the doc PR is where they are answered.
+## Decisions by the owner (2026-10-18)
 
 ### 1. Live updates
 
-**Background.** The git diff worker watches the session's `locationPath` and recomputes the diff when files change (`startWatching` in `packages/server/src/services/git-diff-service.ts`, driven from `git-diff-handler.ts`). If the file viewer rode the same watcher, the tree and the open file would follow changes as the agent writes them, but that needs a WebSocket channel for the viewer and widens the v1 implementation.
-
-**Options.**
-- (A) v1 has a Refresh button only. Live updates are a follow-up Issue.
-- (B) v1 shares the watcher: the tree updates automatically, and the content updates for the open file only.
-
-**Recommendation: (A).** The problem the owner described is "there is no place to see the files"; following changes as they happen is secondary. The follow-up Issue is named in the Surfaces table's "Live updates" cell and is filed on the owner's answer.
+**Decided: (A), owner, 2026-10-18.** No live updates in v1; the tree header has a Refresh button only. Live updates (a worker WebSocket channel, optionally riding the git diff worker's watcher: `startWatching` in `packages/server/src/services/git-diff-service.ts`, driven from `git-diff-handler.ts`) are the follow-up Issue #2205. The rejected option (B) was sharing that watcher in v1.
 
 ### 2. Directories that are not git repositories
 
-**Background.** Taking the tree from `git ls-files` makes `.gitignore` and `.git` correct for free, but a quick session's arbitrary directory that is not under git yields an empty result.
-
-**Options.**
-- (A) v1 supports git-managed worktrees and directories only. A directory outside git shows "not a git repository".
-- (B) A directory outside git is listed with an `ls`-equivalent as the session owner, with no ignore rules.
-
-**Recommendation: (A).** The owner's example is a worktree. (B) would show `node_modules` and similar with no ignore rules, which is a different design.
+Superseded by the plain directory listing: a non-git directory is listed like any other.
 
 ### 3. Showing ignored files
 
-**Background.** `--exclude-standard` hides everything `.gitignore` names. There are occasions to look at generated output (build artifacts, logs).
+Superseded by the plain directory listing: nothing is filtered, ignored files included.
 
-**Options.**
-- (A) v1 always hides ignored files.
-- (B) v1 adds a "show ignored" toggle that additionally calls `git ls-files --others --ignored --exclude-standard`.
+## Later: editing dot-env-class files
 
-**Recommendation: (A).** v1 is for reading source. The toggle can be added later without changing the wire shapes (a query parameter on the tree route).
+The owner's stated direction is to inspect, and later EDIT, configuration files such as dot-env files from the viewer. v1 is read-only and builds no write route. A later design adds a write route with the same containment and identity as the read routes, and must decide the audit and confirmation shape. An Issue for it is filed when v1 merges.
+
+This direction adds weight to #2201: a viewer that can show another user's dot-env secrets in multi-user mode makes the worker-route read-access policy a question with a concrete payload, and the write direction makes it a write-access question too.
 
 ## Implementation Tasks
 
 1. Shared: `FileViewerWorkerSchema`, the `CreateWorkerRequestSchema` variant, the `Worker` / app-server-message unions, `FileTreeResponse` / `FileContentResponse` types and schemas (`v.strictObject`), `FILE_VIEWER_MAX_BYTES` documented in `server-config.ts`; regenerate `SCHEMA_VERSION` (`bun run build`).
-2. Server: `InternalFileViewerWorker`, worker creation / persistence / conversion / deletion / restart-all handling at every `git-diff` site; export `isValidFilePath`; a `file-viewer-service` (tree via `gitSafe`, content via `runAsUser`, realpath containment, binary and size rules); the two routes with `assertCanOperateSession`.
+2. Server: `InternalFileViewerWorker`, worker creation / persistence / conversion / deletion / restart-all handling at every `git-diff` site; export `isValidFilePath`; a `file-viewer-service` (tree via `readdir` (direct) / `find -printf` (elevated), content via `runAsUser`, realpath containment, binary and size rules); the two routes with `assertCanOperateSession`.
 3. Client: `FileViewerWorkerView` (tree + content, mobile drawer), the hoisted language helper (and `DiffViewer` switched to it), always-windowed rendering, highlighting only up to 256 KiB (measured tokenise time for 256 KiB and 1 MiB recorded in the PR), `tabAppearance.ts`, `SessionPage.tsx` icon and view branches, `AddAgentWorkerMenu` item and `addFileViewerTab`.
-4. Tests: every boundary value in the table above; one test per mode (single-user, multi-user server-owned, multi-user other owner); a symlink-escape test; a wire-level integration test in `packages/integration/src/`; a `tabAppearance` exhaustiveness test; browser QA with screenshots attached to the PR, including the mobile drawer.
+4. Tests: every boundary value in the table above; one test per mode (single-user, multi-user server-owned, multi-user other owner); a symlink-escape test, symlink listing (kind `symlink`, expand inside and outside), a non-git temp directory, a dot-env file and `.git` listed and readable; a wire-level integration test in `packages/integration/src/`; a `tabAppearance` exhaustiveness test; browser QA with screenshots attached to the PR, including the mobile drawer.
 5. Docs: README Features entry (`(in development)` until finished), `docs/glossary.md` entry (already added with this document), `session-worker-design.md` row (already added with this document).
-6. Follow-ups (filed by their owners, not by this work): `getFileLines` working-directory read as the server process (#2199); live updates (Issue filed on the owner's answer to question 1); comments (Issue filed when v1 merges).
+6. Follow-ups (filed by their owners, not by this work): `getFileLines` working-directory read as the server process (#2199); live updates (#2205); read-access policy for worker routes (#2201); comments and dot-env editing (Issues filed when v1 merges).
