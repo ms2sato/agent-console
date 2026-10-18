@@ -152,6 +152,16 @@ describe('RootLayout hook failure dialog', () => {
         </QueryClientProvider>,
       );
     });
+    return router;
+  }
+
+  // The harness must land on its own '/' route: if the layout redirected (for example to
+  // /login) or the router matched nothing, the dialog assertions below would be checking a
+  // page that is not the one under test, so fail on the route first.
+  function expectChildRouteRendered(router: Awaited<ReturnType<typeof mountRootLayout>>) {
+    expect(router.state.location.pathname).toBe('/');
+    expect(screen.queryByText('Not Found')).toBeNull();
+    expect(screen.queryByText('Report failure')).not.toBeNull();
   }
 
   // Polarity (measured): with the <SessionHookFailureDialog /> element deleted
@@ -159,8 +169,10 @@ describe('RootLayout hook failure dialog', () => {
   // pause command over the current page and dismisses on OK" and "shows a
   // failed resume command with the resume title"); restored, both pass.
   it('shows a failed pause command over the current page and dismisses on OK', async () => {
-    await mountRootLayout('pause');
-    fireEvent.click(await screen.findByText('Report failure'));
+    const router = await mountRootLayout('pause');
+    await screen.findByText('Report failure');
+    expectChildRouteRendered(router);
+    fireEvent.click(screen.getByText('Report failure'));
 
     expect(await screen.findByText('Pause Command Failed')).toBeTruthy();
     expect(screen.getByText('boom')).toBeTruthy();
@@ -171,8 +183,10 @@ describe('RootLayout hook failure dialog', () => {
   });
 
   it('shows a failed resume command with the resume title', async () => {
-    await mountRootLayout('resume');
-    fireEvent.click(await screen.findByText('Report failure'));
+    const router = await mountRootLayout('resume');
+    await screen.findByText('Report failure');
+    expectChildRouteRendered(router);
+    fireEvent.click(screen.getByText('Report failure'));
     expect(await screen.findByText('Resume Command Failed')).toBeTruthy();
   });
 });
