@@ -15,8 +15,26 @@
  * so this file runs in the second (real-fs) `bun test` invocation
  * (`package.json`) and calls `assertRealFs` first.
  *
- * Measured reach (mutation, then reverted by hand) -- see the PR report for the
- * table; each mutation names the tests that failed.
+ * Measured reach (each mutation applied to the production line, the tests run,
+ * the line restored; failures named by test, over this file plus
+ * file-viewer-service.test.ts and workers-files-real-fs.test.ts):
+ *   - drop the real-path containment check: the three "symlink ... outside ... refused"
+ *     tests in BOTH modes (6), the "path through a symlink that leaves the tree" test
+ *     in both modes, plus 3 unit tests in file-viewer-service.test.ts (outside root,
+ *     string-prefix sibling, read-never-happens) and the 2 route tests.
+ *   - `! -type d ! -type l` -> `-type f` in the listing: "a fifo is listed as a file"
+ *     (shell mode), "three sections in the documented order" (real sh), and the two
+ *     command-string unit tests; the direct mode cannot see it (it never runs find).
+ *   - drop `test -e` from the realpath command: "a missing directory and a dangling
+ *     symlink are NotFound" (shell mode) and the realpath real-sh test.
+ *   - drop `test -d` from the listing command: "a tree request for a file" (shell mode)
+ *     and the "empty directory ... exits 44" real-sh test.
+ *   - drop regularOnly from the builder: the shell-mode fifo test; from the in-process
+ *     path: the direct-mode fifo test and the character-device test below.
+ *   - binary window 8192 -> 8193 / 8191: the "NUL at byte 8193" / "NUL within the first
+ *     8 KiB" test of each mode.
+ *   - list the lexical path instead of the real path: "a symlink to a directory inside
+ *     the working directory, expanded" (shell mode).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { constants as fsConstants, closeSync, openSync } from 'node:fs';

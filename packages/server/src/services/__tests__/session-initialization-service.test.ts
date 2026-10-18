@@ -345,16 +345,21 @@ describe('SessionInitializationService', () => {
       expect(count).toBe(0);
     });
 
-    it('should skip file-viewer workers (no process)', async () => {
+    it('should skip file-viewer workers by type, even a row that somehow carries a live pid', async () => {
+      // A file-viewer row has no pid column of its own; the guard must not rely on that, so give
+      // it one (assigned through a variable so the extra field is not a fresh-literal error).
+      const viewerWithPid = { ...buildPersistedFileViewerWorker({ id: 'w1', name: 'Files' }), pid: 1001 };
+      mockProcess.markAlive(1001);
       const session = buildPersistedQuickSession({
         id: 'session-1',
         locationPath: '/some/path',
-        workers: [buildPersistedFileViewerWorker({ id: 'w1', name: 'Files' })],
+        workers: [viewerWithPid],
         serverPid: 999,
       });
 
       const count = await SessionInitializationService.killOrphanWorkers(session, defaultResolveSpawnUsername);
       expect(count).toBe(0);
+      expect(mockProcess.wasKilled(1001)).toBe(false);
     });
 
     it('should skip workers with no pid', async () => {

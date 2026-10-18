@@ -12,6 +12,15 @@
  * With `AUTH_MODE` unset the routes read in-process (no OS user), which is the
  * single-user path; the shell branch of the service is covered against real
  * files in `file-viewer-service-real-fs.test.ts`.
+ *
+ * Measured reach (mutation, restored by hand): the route passing the spawn user
+ * instead of null fails "a session whose working directory is gone is 404" (plus 2
+ * tests in workers.test.ts); dropping the access check fails "403 for a non-owner
+ * ... on both routes" (plus workers.test.ts's 403 test); dropping the worker-type
+ * check fails "400 for a worker that is not a file-viewer worker" (plus its twin in
+ * workers.test.ts); the server emitting a `size` on tree entries fails the 6 tree
+ * tests that parse the shared strict schema; dropping regularOnly from the
+ * in-process read fails "a fifo is 400 ... does not hang".
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { constants as fsConstants, closeSync, openSync } from 'node:fs';
