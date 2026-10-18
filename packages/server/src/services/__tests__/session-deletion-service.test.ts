@@ -161,15 +161,23 @@ describe('SessionDeletionService', () => {
       expect(mockStopWatching).toHaveBeenCalledWith('/test/worktree');
     });
 
-    it('should leave file-viewer workers alone: not killed, no watcher stopped, no embedded-agent deactivation', async () => {
+    it('a recoverable kill (killSessionWorkers) leaves a file-viewer worker\'s watch alone: zero stopFileViewerWatching calls, nothing killed, no git-diff unwatch, no deactivation', async () => {
       const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const viewer = buildInternalFileViewerWorker({ id: 'w-fv' });
       const session = buildInternalWorktreeSession([agentWorker, viewer]);
       const deactivateEmbeddedAgentWorker = mock(async () => {});
-      const deps = createMockDeps({ getSession: () => session, deactivateEmbeddedAgentWorker });
+      const stopFileViewerWatching = mock((_sessionId: string, _workerId: string) => {});
+      const deps = createMockDeps({
+        getSession: () => session,
+        deactivateEmbeddedAgentWorker,
+        getWebSocketCallbacks: () => ({ notifySessionDeleted: mock(() => {}), stopFileViewerWatching }),
+      });
       const service = new SessionDeletionService(deps);
 
       await service.killSessionWorkers(session.id);
+
+      // killSessionWorkers also runs when a worktree removal fails recoverably and the session is kept for a retry.
+      expect(stopFileViewerWatching).not.toHaveBeenCalled();
 
       expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(1);
       expect(deps.workerManager.killWorker).toHaveBeenCalledWith(agentWorker, session.id);
@@ -286,7 +294,7 @@ describe('SessionDeletionService', () => {
       const deps = createMockDeps({
         getSession: (id) => id === 'session-1' ? session : undefined,
         getSessionLifecycleCallbacks: () => ({ onSessionDeleted }),
-        getWebSocketCallbacks: () => ({ notifySessionDeleted }),
+        getWebSocketCallbacks: () => ({ notifySessionDeleted, stopFileViewerWatching: mock(() => {}) }),
         jobQueue: asJobQueue({ enqueue: enqueueMock }),
       });
       const service = new SessionDeletionService(deps);
@@ -393,17 +401,38 @@ describe('SessionDeletionService', () => {
       expect(conditionalWakeupCleanup).toHaveBeenCalledWith('session-1');
     });
 
-    it('should not kill, unwatch or deactivate anything for a file-viewer worker during deletion', async () => {
+    it('should stop the watch subscription of a file-viewer worker during deletion, and kill or deactivate nothing', async () => {
       const session = buildInternalWorktreeSession([buildInternalFileViewerWorker({ id: 'w-fv' })]);
       const deactivateEmbeddedAgentWorker = mock(async () => {});
-      const deps = createMockDeps({ getSession: () => session, deactivateEmbeddedAgentWorker });
+      const stopFileViewerWatching = mock((_sessionId: string, _workerId: string) => {});
+      const deps = createMockDeps({
+        getSession: () => session,
+        deactivateEmbeddedAgentWorker,
+        getWebSocketCallbacks: () => ({ notifySessionDeleted: mock(() => {}), stopFileViewerWatching }),
+      });
       const service = new SessionDeletionService(deps);
 
       expect(await service.deleteSession('session-1')).toBe(true);
 
+      expect(stopFileViewerWatching).toHaveBeenCalledTimes(1);
+      expect(stopFileViewerWatching).toHaveBeenCalledWith('session-1', 'w-fv');
+
       expect(deps.workerManager.killWorker).not.toHaveBeenCalled();
       expect(deactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
       expect(mockStopWatching).not.toHaveBeenCalled();
+    });
+
+    it('should not stop any file-viewer watch when the session has no viewer (the empty case)', async () => {
+      const session = buildInternalWorktreeSession([buildInternalGitDiffWorker({ id: 'w1' })]);
+      const stopFileViewerWatching = mock((_sessionId: string, _workerId: string) => {});
+      const deps = createMockDeps({
+        getSession: () => session,
+        getWebSocketCallbacks: () => ({ notifySessionDeleted: mock(() => {}), stopFileViewerWatching }),
+      });
+
+      await new SessionDeletionService(deps).deleteSession('session-1');
+
+      expect(stopFileViewerWatching).not.toHaveBeenCalled();
     });
 
     it('should stop watching git-diff workers during deletion', async () => {

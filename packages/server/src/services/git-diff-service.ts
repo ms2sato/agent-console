@@ -5,7 +5,7 @@
  * - Calculate base commit (merge-base with default branch)
  * - Compute diff data (summary + raw diff)
  * - Parse staging status
- * - File watching for auto-updates (optional, via chokidar or similar)
+ * - File watching for auto-updates (a subscriber of the shared file-watch-service)
  */
 
 import type { GitDiffData, GitDiffSummary, GitDiffFile, GitFileStatus, GitStageState, GitDiffTarget } from '@agent-console/shared';
@@ -22,10 +22,10 @@ import {
   gitSafe,
   readWorkingTreeFile,
 } from '../lib/git.js';
-import { watch, type FSWatcher } from 'node:fs';
 import { isValidFilePath } from '../lib/relative-file-path.js';
 import { createLogger } from '../lib/logger.js';
 import { fileWatchIgnorePatterns } from '../lib/server-config.js';
+import { subscribeToFileChanges, pathHasIgnoredSegment } from './file-watch-service.js';
 
 const logger = createLogger('git-diff-service');
 
@@ -679,95 +679,71 @@ type FileChangeCallback = () => void;
 /** Debounce delay for file change notifications (ms) */
 const DEBOUNCE_DELAY = 300;
 
-interface WatcherState {
-  watcher: FSWatcher;
-  callback: FileChangeCallback;
-  debounceTimer: ReturnType<typeof setTimeout> | null;
-}
-
-const watchers = new Map<string, WatcherState>();
+/** Delay of a manual refresh trigger (ms) */
+const MANUAL_REFRESH_DELAY = 100;
 
 /**
- * Check if a filename should be ignored based on configured patterns.
- * Uses simple string matching for performance.
+ * The diff worker's subscription to the shared watcher. One per repository
+ * path: a second `startWatching` for the same path replaces it. Other
+ * subscribers of the same path (the file viewer) are not touched.
  */
-function shouldIgnore(filename: string | null): boolean {
-  if (!filename) return true;
-  return fileWatchIgnorePatterns.some(pattern => filename.includes(pattern));
+interface DiffSubscription {
+  unsubscribe: () => void;
+  callback: FileChangeCallback;
+  manualRefreshTimer: ReturnType<typeof setTimeout> | null;
 }
 
+const diffSubscriptions = new Map<string, DiffSubscription>();
+
 /**
- * Start watching a repository for file changes.
- * Uses Bun-native fs.watch for efficient file system watching with debounced callbacks.
+ * Start watching a repository for file changes on behalf of the diff worker.
+ * The watch itself is shared (see file-watch-service.ts); this registers the
+ * diff worker's subscriber: paths are discarded, only "something changed" is
+ * reported, debounced.
  *
  * @param repoPath - Path to the git repository
  * @param onChange - Callback when files change (debounced)
  */
 export function startWatching(repoPath: string, onChange: FileChangeCallback): void {
-  // Stop any existing watcher for this path
+  // Replace this worker's earlier subscription for the path
   stopWatching(repoPath);
 
   const log = logger.child({ repoPath });
-
-  try {
-    const state: WatcherState = {
-      watcher: null as unknown as FSWatcher, // Will be set below
-      callback: onChange,
-      debounceTimer: null,
-    };
-
-    // Create fs.watch watcher with recursive option
-    const watcher = watch(repoPath, { recursive: true }, (eventType, filename) => {
-      if (shouldIgnore(filename)) return;
-
-      log.debug({ eventType, filename }, 'File change detected');
-
-      // Clear existing timer
-      if (state.debounceTimer) {
-        clearTimeout(state.debounceTimer);
-      }
-
-      // Set new debounced callback
-      state.debounceTimer = setTimeout(() => {
-        log.debug('Triggering diff refresh after debounce');
-        state.callback();
-        state.debounceTimer = null;
-      }, DEBOUNCE_DELAY);
-    });
-
-    watcher.on('error', (error) => {
-      log.error({ error }, 'File watcher error');
-    });
-
-    state.watcher = watcher;
-    watchers.set(repoPath, state);
-    log.info('File watching started');
-  } catch (error) {
-    log.error({ error }, 'Failed to start file watching');
-    throw error;
-  }
+  const subscription: DiffSubscription = {
+    unsubscribe: () => {},
+    callback: onChange,
+    manualRefreshTimer: null,
+  };
+  subscription.unsubscribe = subscribeToFileChanges(repoPath, {
+    ignore: (relPath) => pathHasIgnoredSegment(relPath, fileWatchIgnorePatterns),
+    debounceMs: DEBOUNCE_DELAY,
+    maxWaitMs: null,
+    maxPaths: 1,
+    onChange: () => {
+      log.debug('Triggering diff refresh after debounce');
+      onChange();
+    },
+    onError: (reason) => {
+      log.error({ reason }, 'File watcher error');
+    },
+  });
+  diffSubscriptions.set(repoPath, subscription);
 }
 
 /**
- * Stop watching a repository and clean up resources.
+ * Stop the diff worker's watching of a repository. The shared watch closes
+ * only when no other subscriber (the file viewer) remains.
  *
  * @param repoPath - Path to the git repository
  */
 export function stopWatching(repoPath: string): void {
-  const state = watchers.get(repoPath);
-  if (state) {
-    const log = logger.child({ repoPath });
-
-    // Clear any pending debounce timer
-    if (state.debounceTimer) {
-      clearTimeout(state.debounceTimer);
+  const subscription = diffSubscriptions.get(repoPath);
+  if (subscription) {
+    if (subscription.manualRefreshTimer) {
+      clearTimeout(subscription.manualRefreshTimer);
     }
-
-    // Close the fs.watch watcher
-    state.watcher.close();
-
-    watchers.delete(repoPath);
-    log.info('File watching stopped');
+    subscription.unsubscribe();
+    diffSubscriptions.delete(repoPath);
   }
 }
 
@@ -830,7 +806,7 @@ export async function getFileLines(
 }
 
 export function isWatching(repoPath: string): boolean {
-  return watchers.has(repoPath);
+  return diffSubscriptions.has(repoPath);
 }
 
 /**
@@ -840,15 +816,15 @@ export function isWatching(repoPath: string): boolean {
  * @param repoPath - Path to the git repository
  */
 export function triggerRefresh(repoPath: string): void {
-  const state = watchers.get(repoPath);
-  if (state) {
-    // Clear existing timer and trigger immediately with short debounce
-    if (state.debounceTimer) {
-      clearTimeout(state.debounceTimer);
+  const subscription = diffSubscriptions.get(repoPath);
+  if (subscription) {
+    // Clear existing timer and trigger with a short delay
+    if (subscription.manualRefreshTimer) {
+      clearTimeout(subscription.manualRefreshTimer);
     }
-    state.debounceTimer = setTimeout(() => {
-      state.callback();
-      state.debounceTimer = null;
-    }, 100);
+    subscription.manualRefreshTimer = setTimeout(() => {
+      subscription.callback();
+      subscription.manualRefreshTimer = null;
+    }, MANUAL_REFRESH_DELAY);
   }
 }
