@@ -35,6 +35,18 @@
  *     calls pass an explicit `timeoutMs` (the underlying `runAsUser` sets NO
  *     timer at all when this is omitted). Any phase timing out exits with
  *     code 2 (environment problem), distinct from an assertion failure.
+ *   - `runAsUser` timeout tree-kill case (`checkTimeoutKillsTree`): a command
+ *     that backgrounds a `sleep 300` grandchild and waits is run with a short
+ *     `timeoutMs`. The call must return within 3 s with `timedOut === true` and
+ *     the grandchild's pid in stdout, and that grandchild must be gone (ESRCH,
+ *     not merely `/proc` presence) within 2 s of the return; a negative
+ *     control (an unrelated tracked `sleep` of the same user) must survive,
+ *     proving the kill hit the snapshot and not the user's other processes.
+ *     Before the fix the surviving grandchild held the pipes and the call did
+ *     not return, so the case bounds the call with its own 10 s guard and
+ *     reports that as an assertion failure (exit 1), not an environment
+ *     problem. Degenerate same-user mode runs the same assertions on the
+ *     direct branch (signals sent from the server process).
  *   - Cleanup verification: `killAsUser` resolves normally on a non-zero
  *     exit code or a timeout (it does not reject), so the best-effort
  *     cleanup pass inspects the result's `timedOut`/`exitCode` explicitly
@@ -86,7 +98,7 @@
  */
 
 import './_env.js';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import { spawnAsUser, killAsUser, runAsUser, CWD_FAILED_EXIT_CODE } from '../../packages/server/src/services/privilege-elevation.js';
@@ -274,6 +286,95 @@ async function checkCwdFailClosed(username: string, degenerate: boolean): Promis
   }
 }
 
+/** Deadline for the timeout case's own bound on `runAsUser` (a regression hangs it). */
+const TIMEOUT_CASE_GUARD_MS = 10_000;
+
+/**
+ * True once `pid` no longer exists (kill(pid, 0) fails with ESRCH). EPERM means
+ * the pid exists but belongs to another user, so it reads as ALIVE: the gone
+ * assertions must rest on ESRCH, never on "I could not signal it". Signal 0
+ * delivers nothing.
+ */
+function isGoneByEsrch(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+async function waitUntilGoneByEsrch(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (isGoneByEsrch(pid)) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return isGoneByEsrch(pid);
+}
+
+/**
+ * `runAsUser` timeout tree-kill case. The command is delivered over stdin
+ * (`sh -s`) because it uses `$!`, which the elevated login shell would
+ * otherwise expand before the inner shell runs (`elevation-helpers.md`). The
+ * grandchild pid is also written to a pid file in /tmp so cleanup still finds
+ * it when the call under test hangs.
+ */
+async function checkTimeoutKillsTree(username: string, degenerate: boolean): Promise<void> {
+  const token = randomUUID();
+  const pidFile = `/tmp/agent-console-smoke-timeout-pid-${token}`;
+  let controlPid: number | undefined;
+  try {
+    console.log(`==> negative control: an unrelated tracked sleep as '${username}' (elevated: ${!degenerate})`);
+    controlPid = await spawnTrackedSleep(username, 300);
+
+    console.log('==> runAsUser timeout must terminate the backgrounded grandchild and return promptly');
+    const script = `sleep 300 &\necho $! > '${pidFile}'\necho $!\nwait\n`;
+    const started = Date.now();
+    const guarded = await Promise.race([
+      runAsUser({ username, command: 'sh -s', stdin: script, cwd: '/', timeoutMs: 500 }),
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), TIMEOUT_CASE_GUARD_MS)),
+    ]);
+    const elapsed = Date.now() - started;
+    expect(guarded !== undefined, `timeout: runAsUser returned within the ${TIMEOUT_CASE_GUARD_MS}ms guard`);
+    if (guarded !== undefined) {
+      expect(guarded.timedOut === true, 'timeout: timedOut is true', `exitCode=${guarded.exitCode}`);
+      expect(elapsed < 3000, 'timeout: runAsUser returned within 3s', `elapsed=${elapsed}ms`);
+    }
+
+    const recorded = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8').trim()) : NaN;
+    const grandchild = Number.isInteger(recorded) && recorded > 0 ? recorded : undefined;
+    expect(grandchild !== undefined, 'timeout: the grandchild pid was recorded', `pidFile=${pidFile}`);
+    if (grandchild !== undefined) {
+      if (guarded !== undefined) {
+        expect(
+          guarded.stdout.includes(String(grandchild)),
+          'timeout: partial stdout carries the grandchild pid',
+          `stdout=${JSON.stringify(guarded.stdout)}`,
+        );
+      }
+      const gone = await waitUntilGoneByEsrch(grandchild, 2_000);
+      expect(gone, 'timeout: the grandchild is gone (ESRCH) within 2s of the return', `pid=${grandchild}`);
+      if (!gone) {
+        // Leave nothing behind: this is the failure being reported.
+        await killAsUser(grandchild, 'SIGKILL', username, { timeoutMs: KILL_AS_USER_TIMEOUT_MS }).catch(() => {});
+      }
+    }
+
+    expect(
+      !isGoneByEsrch(controlPid),
+      'timeout: the unrelated control sleep survived (the kill hit the snapshot only)',
+      `pid=${controlPid}`,
+    );
+  } finally {
+    if (controlPid !== undefined && !isGoneByEsrch(controlPid)) {
+      await killAsUser(controlPid, 'SIGKILL', username, { timeoutMs: KILL_AS_USER_TIMEOUT_MS }).catch(() => {});
+      expect(await waitUntilGoneByEsrch(controlPid, 3_000), `cleanup left no surviving control sleep pid=${controlPid}`);
+    }
+    await runAsUser({ username, command: `unlink '${pidFile}'`, cwd: '/', timeoutMs: KILL_AS_USER_TIMEOUT_MS }).catch(() => {});
+  }
+}
+
 async function main(): Promise<void> {
   // Ad-hoc invocation inherits cwd from the caller (often /root or an
   // interactive user's home, neither readable by an elevation-target service
@@ -339,6 +440,8 @@ async function main(): Promise<void> {
     expect(procAlive(controlPid), 'control pid is still alive after killAsUser on the target pid', `pid=${controlPid}`);
 
     await checkCwdFailClosed(targetUsername, degenerate);
+
+    await checkTimeoutKillsTree(targetUsername, degenerate);
   } catch (err) {
     if (err instanceof ProbeTimeoutError) {
       timedOut = true;
