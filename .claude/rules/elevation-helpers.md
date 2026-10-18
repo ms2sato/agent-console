@@ -167,6 +167,18 @@ The reciprocal cost of preserving two branches is a small per-caller `if (should
 - Any caller currently doing `Bun.spawn(['sh','-c', cmd], { env: getCleanChildProcessEnv() })` (or analogous env-shape transformation) that is about to gain a multi-user elevation path. Check `getCleanChildProcessEnv` usage in `packages/server/src/`.
 - Any caller doing pre-spawn arg sanitization (path normalization, secret stripping, etc.) where the sanitization is not encoded in the spawn primitive.
 
+### `timeoutMs` on `runAsUser`: bounded return, possibly partial output
+
+When `timeoutMs` fires, `runAsUser` terminates the user-side process tree and returns. The result is bounded by `timeoutMs + TIMEOUT_DRAIN_BUDGET_MS` (500 ms), plus the 5 s process-table bound in the worst case (the descendant snapshot reads `ps`, whose ppid graph is readable across users even though signalling is not). In order: snapshot the wrapper's descendants BEFORE any signal (a killed shell reparents its children to init), send them SIGTERM (elevated: ONE elevated `kill -s TERM -- <pids>` spawned through the same injected `spawn`, never through `runAsUser` itself; direct: `signalPids` from the server), kill the wrapper, then wait for the wrapper's exit, the kill command and both pipes under ONE shared deadline. At the deadline the snapshot and wrapper get SIGKILL, the pipes are abandoned and the call returns.
+
+Consequences for a consumer:
+
+- **`stdout` / `stderr` may be PARTIAL when `timedOut` is true** (before this, a timed-out call with a surviving grandchild never returned at all). A consumer that reads output after a timeout must not treat it as a complete result; branch on `timedOut` first, as `gitExec` does by throwing.
+- The exit code is `137` and `cwdFailed` is `false` on a timeout, unchanged.
+- A descendant that detaches itself (its own `setsid` or a double fork) before the snapshot escapes; `orphan-process-sweeper.ts` covers those, not `runAsUser`.
+- Without `timeoutMs` (or with `<= 0`) there is no timer, no snapshot and no kill command: the hot path is unchanged.
+- The `listDescendants` third parameter of `runAsUser` is a test seam, not a caller option; do not add it to `RunAsUserOpts`.
+
 ### `cwd` on the elevated path: branch on `cwdFailed`, not on exit 125
 
 The elevated inner command is `cd <cwd> || { echo '<CWD_FAILED_SENTINEL><cwd> is not available' >&2; exit 125; }; export ...; <command>` (built once by `buildCwdGuard` in `elevation-args.ts`), so a `cwd` that cannot be entered stops the shell before the command runs (the command used to run in the target user's HOME). `runAsUser` reports this as `RunAsUserResult.cwdFailed`: true only when a `cwd` was given, the run was elevated, there was no timeout, the exit code is `CWD_FAILED_EXIT_CODE` (125) AND stderr contains `CWD_FAILED_SENTINEL` (`deriveCwdFailed`). The elevated command is arbitrary and may exit 125 on its own, so a bare 125 is an ordinary non-zero exit. A consumer that runs a cwd-relative command (every `git` call) maps `cwdFailed` to its own error, as `gitExec` does with a `GitError` naming the cwd; it does not compare against 125 itself. The non-elevated path has no cd guard: Bun rejects the spawn when the `cwd` is unusable, which callers already see as a thrown error. The PTY login path (`buildElevationArgs`) uses the same guard, but a PTY cannot read stderr separately, so there exit 125 plus the visible line is the contract; the agent-worker exit handler turns an elevated exit 125 seen before the login-shell sentinel into the same notification the direct path emits when it refuses the spawn.
