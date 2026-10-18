@@ -30,6 +30,7 @@ function renderTree(props: Partial<React.ComponentProps<typeof FileViewerTree>> 
     onToggleDir: mock(() => {}),
     onOpenFile: mock(() => {}),
     onOpenSymlink: mock(() => {}),
+    onDirectoryGone: mock((_path: string) => {}),
   };
   const result = renderWithQuery(
     <FileViewerTree
@@ -124,6 +125,24 @@ describe('FileViewerTree', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toBe('Path resolves outside the working directory');
+  });
+
+  it('reports a deleted (404) non-root directory as gone without an alert row', async () => {
+    installFetch({ tree: { '': rootEntries } });
+    const { result, handlers } = renderTree({ expanded: new Set(['src']) });
+    await result;
+
+    await waitFor(() => expect(handlers.onDirectoryGone).toHaveBeenCalledWith('src'));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('keeps the alert and does not report the root as gone when the root listing is 404', async () => {
+    installFetch({ tree: {} });
+    const { result, handlers } = renderTree();
+    await result;
+
+    expect((await screen.findByRole('alert')).textContent).toBe('Not found');
+    expect(handlers.onDirectoryGone).not.toHaveBeenCalled();
   });
 
   it('says so when an expanded directory is empty', async () => {

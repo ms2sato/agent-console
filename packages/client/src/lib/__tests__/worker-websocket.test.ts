@@ -9,6 +9,7 @@ import {
   subscribeState,
   _reset,
   type GitDiffWorkerCallbacks,
+  type FileViewerWorkerCallbacks,
 } from '../worker-websocket';
 
 describe('worker-websocket', () => {
@@ -146,6 +147,74 @@ describe('worker-websocket', () => {
 
       expect(getState('session-1', 'worker-1').diffError).toBe('Invalid server message');
       expect(getState('session-1', 'worker-1').diffLoading).toBe(false);
+    });
+  });
+
+  describe('file-viewer message handling', () => {
+    const createFileViewerCallbacks = (): FileViewerWorkerCallbacks => ({
+      type: 'file-viewer',
+      onFilesChanged: mock(() => {}),
+      onWatchUnavailable: mock(() => {}),
+    });
+
+    function openViewer() {
+      const callbacks = createFileViewerCallbacks();
+      connect('session-1', 'viewer-1', callbacks);
+      const ws = MockWebSocket.getLastInstance()!;
+      ws.simulateOpen();
+      return { callbacks, ws };
+    }
+
+    it('delivers a valid files-changed frame to onFilesChanged', () => {
+      const { callbacks, ws } = openViewer();
+
+      ws.simulateMessage(JSON.stringify({ type: 'files-changed', paths: ['sub/a.ts'], overflow: false }));
+
+      expect(callbacks.onFilesChanged).toHaveBeenCalledTimes(1);
+      expect(callbacks.onFilesChanged).toHaveBeenCalledWith({ paths: ['sub/a.ts'], overflow: false });
+      expect(callbacks.onWatchUnavailable).not.toHaveBeenCalled();
+    });
+
+    it('delivers a valid watch-unavailable frame to onWatchUnavailable', () => {
+      const { callbacks, ws } = openViewer();
+
+      ws.simulateMessage(JSON.stringify({ type: 'watch-unavailable', reason: 'permission-denied' }));
+
+      expect(callbacks.onWatchUnavailable).toHaveBeenCalledWith('permission-denied');
+      expect(callbacks.onFilesChanged).not.toHaveBeenCalled();
+    });
+
+    it('drops a frame with an extra field (strict schema) without a state change or callback', () => {
+      const { callbacks, ws } = openViewer();
+      const before = getState('session-1', 'viewer-1');
+
+      ws.simulateMessage(JSON.stringify({ type: 'files-changed', paths: ['a.ts'], overflow: false, extra: 1 }));
+
+      expect(callbacks.onFilesChanged).not.toHaveBeenCalled();
+      expect(getState('session-1', 'viewer-1')).toBe(before);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    });
+
+    it('drops a frame with an unknown type or a malformed body without a state change', () => {
+      const { callbacks, ws } = openViewer();
+      const before = getState('session-1', 'viewer-1');
+
+      ws.simulateMessage(JSON.stringify({ type: 'diff-data', data: {} }));
+      ws.simulateMessage('not json');
+
+      expect(callbacks.onFilesChanged).not.toHaveBeenCalled();
+      expect(callbacks.onWatchUnavailable).not.toHaveBeenCalled();
+      expect(getState('session-1', 'viewer-1')).toBe(before);
+    });
+
+    it('leaves diffLoading false for a file-viewer connection, while git-diff is loading after open (control)', () => {
+      openViewer();
+      connect('session-1', 'worker-1', createGitDiffCallbacks());
+      MockWebSocket.getLastInstance()!.simulateOpen();
+
+      expect(getState('session-1', 'viewer-1').connected).toBe(true);
+      expect(getState('session-1', 'viewer-1').diffLoading).toBe(false);
+      expect(getState('session-1', 'worker-1').diffLoading).toBe(true);
     });
   });
 
