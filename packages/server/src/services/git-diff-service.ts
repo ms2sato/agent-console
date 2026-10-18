@@ -20,10 +20,10 @@ import {
   gitRaw,
   gitRefExists,
   gitSafe,
+  readWorkingTreeFile,
 } from '../lib/git.js';
-import { readFile, stat } from 'fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
-import { isAbsolute, join } from 'path';
+import { isAbsolute } from 'path';
 import { createLogger } from '../lib/logger.js';
 import { fileWatchIgnorePatterns } from '../lib/server-config.js';
 
@@ -339,22 +339,26 @@ function isBinaryContent(content: Buffer): boolean {
  *
  * @param filePath - Path to the file (relative to repo root)
  * @param repoPath - Path to the git repository
+ * @param requestUser - OS username owning the worktree; the file is read as that user.
  * @returns Object containing diff string, line count, and binary flag
  */
 async function generateUntrackedFileDiff(
   filePath: string,
-  repoPath: string
+  repoPath: string,
+  requestUser: string | null
 ): Promise<{ diff: string; lineCount: number; isBinary: boolean }> {
   try {
-    const fullPath = join(repoPath, filePath);
-    const fileStats = await stat(fullPath);
+    const read = await readWorkingTreeFile(repoPath, filePath, requestUser);
 
     // Skip directories
-    if (fileStats.isDirectory()) {
+    if (read?.kind === 'directory') {
       return { diff: '', lineCount: 0, isBinary: false };
     }
+    if (read === null) {
+      throw new Error(`File not found: ${filePath}`);
+    }
 
-    const contentBuffer = await readFile(fullPath);
+    const contentBuffer = read.content;
 
     // Check for binary file
     if (isBinaryContent(contentBuffer)) {
@@ -574,7 +578,7 @@ export async function getDiffData(
     const untrackedFilesToProcess = untrackedFiles.filter(path => !fileStats.has(path));
     const untrackedResults = await Promise.all(
       untrackedFilesToProcess.map(async (path) => {
-        const { diff, lineCount, isBinary } = await generateUntrackedFileDiff(path, repoPath);
+        const { diff, lineCount, isBinary } = await generateUntrackedFileDiff(path, repoPath, requestUser);
         return { path, diff, lineCount, isBinary };
       })
     );
@@ -675,7 +679,7 @@ export async function getFileDiff(
     // File not found in regular diff - check if it's an untracked file
     const untrackedFiles = await getUntrackedFiles(repoPath, requestUser);
     if (untrackedFiles.includes(filePath)) {
-      const { diff } = await generateUntrackedFileDiff(filePath, repoPath);
+      const { diff } = await generateUntrackedFileDiff(filePath, repoPath, requestUser);
       return diff;
     }
 
@@ -799,7 +803,8 @@ export function stopWatching(repoPath: string): void {
  * @param endLine - End line number (1-based, inclusive)
  * @param ref - 'working-dir' or a commit hash
  * @param requestUser - OS username to run git as. See {@link computeDefaultBaseSpec}.
- *   Ignored on the 'working-dir' branch (direct filesystem read).
+ *   The 'working-dir' file is read as this user too (the worktree may be
+ *   unreadable by the server process in multi-user mode).
  * @returns Array of line contents
  */
 export async function getFileLines(
@@ -817,8 +822,10 @@ export async function getFileLines(
   let content: string;
   if (ref === 'working-dir') {
     try {
-      const buffer = await readFile(join(repoPath, filePath));
-      content = buffer.toString('utf-8');
+      const read = await readWorkingTreeFile(repoPath, filePath, requestUser);
+      if (read === null) throw new Error('file not found');
+      if (read.kind === 'directory') throw new Error(`${filePath} is a directory`);
+      content = read.content.toString('utf-8');
     } catch (error) {
       throw new Error(`Failed to read ${filePath} from working directory: ${error instanceof Error ? error.message : String(error)}`);
     }

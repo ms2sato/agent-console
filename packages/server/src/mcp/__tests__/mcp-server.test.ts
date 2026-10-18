@@ -106,7 +106,7 @@ const fakeRunAsUserAlwaysSuccess: typeof runAsUser = async (opts) => {
     stdout: '',
     stderr: '',
     exitCode: 0,
-    timedOut: false,
+    timedOut: false, cwdFailed: false,
   };
 };
 
@@ -441,7 +441,7 @@ describe('MCP Server Tools', () => {
   const mcpRunAsUserCapture: {
     lastCommand: string;
     capturedWorktreePath: string;
-    responseOverride: { stdout: string; stderr: string; exitCode: number; timedOut: boolean } | null;
+    responseOverride: { stdout: string; stderr: string; exitCode: number; timedOut: boolean, cwdFailed: false } | null;
   } = {
     lastCommand: '',
     capturedWorktreePath: '',
@@ -649,7 +649,7 @@ describe('MCP Server Tools', () => {
         if (mcpRunAsUserCapture.responseOverride) {
           return mcpRunAsUserCapture.responseOverride;
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       },
     });
 
@@ -3019,7 +3019,7 @@ describe('MCP Server Tools', () => {
         stdout: '',
         stderr: 'fatal: branch already exists',
         exitCode: 128,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       };
 
       await setupDelegateRepoManager([{

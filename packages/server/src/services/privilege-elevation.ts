@@ -8,9 +8,10 @@
  *   --preserve-env=... -i sh -c <innerCommand>`. Because `sudo -i` resets the
  *   environment and chdirs to the target user's HOME, `cwd` and `env` cannot
  *   travel through the outer spawn options; they MUST be interpolated into
- *   `innerCommand` itself (`cd <cwd> && export KEY=val ...; <command>`). This
- *   mirrors the canonical PTY worker pattern at
- *   `packages/server/src/services/user-mode.ts:493-500`.
+ *   `innerCommand` itself (`cd <cwd> || exit 125; export KEY=val ...;
+ *   <command>`). A failed `cd` stops the shell with CWD_FAILED_EXIT_CODE
+ *   before the command runs. The PTY worker builds the same shape in
+ *   `elevation-args.ts`.
  * - Otherwise (single-user mode, no username, or same-user) -> invoke
  *   `['sh', '-c', command]` directly with no elevation. In that branch `cwd`
  *   and `env` are passed via spawn options (the outer shell is not reset).
@@ -29,7 +30,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
-import { shellEscape } from './elevation-args.js';
+import { CWD_FAILED_EXIT_CODE, CWD_FAILED_SENTINEL, buildCwdGuard, shellEscape } from './elevation-args.js';
 
 const logger = createLogger('service:privilege-elevation');
 
@@ -100,6 +101,17 @@ export interface RunAsUserResult {
    */
   exitCode: number;
   timedOut: boolean;
+  /**
+   * True only when a `cwd` was given, the command ran elevated, and the inner
+   * shell's `cd <cwd>` failed: exit CWD_FAILED_EXIT_CODE AND the guard's
+   * CWD_FAILED_SENTINEL line on stderr (see `deriveCwdFailed`). The command
+   * never ran. `false` for a timeout, for the non-elevated path (which has no
+   * cd guard: Bun rejects the spawn when the cwd is unusable), when no cwd was
+   * given, and when the command itself exited 125 without the sentinel -- that
+   * is an ordinary non-zero exit. (The PTY path cannot read stderr separately;
+   * there exit 125 plus the visible line is the contract.)
+   */
+  cwdFailed: boolean;
 }
 
 /**
@@ -113,11 +125,33 @@ export type SpawnFn = (
 
 // Re-exported so the elevation consumers keep importing it from here;
 // `elevation-args.ts` is its single writer.
-export { shellEscape };
+export { shellEscape, CWD_FAILED_EXIT_CODE };
 
 /**
- * Build the `cd <cwd> && export K=v ...; <command>` inner shell string used
- * when elevation is in play. Returns `command` unchanged when there is
+ * Decide whether an outcome is the cd guard's failure rather than the caller's
+ * own command: elevated, a cwd was given, no timeout, exit CWD_FAILED_EXIT_CODE
+ * AND the sentinel on stderr. Neither half alone is enough.
+ * @internal Exported for testing
+ */
+export function deriveCwdFailed(outcome: {
+  elevated: boolean;
+  cwd: string | undefined;
+  timedOut: boolean;
+  exitCode: number;
+  stderr: string;
+}): boolean {
+  return (
+    outcome.elevated &&
+    outcome.cwd !== undefined &&
+    !outcome.timedOut &&
+    outcome.exitCode === CWD_FAILED_EXIT_CODE &&
+    outcome.stderr.includes(CWD_FAILED_SENTINEL)
+  );
+}
+
+/**
+ * Build the `cd <cwd> || { echo ... >&2; exit 125; }; export K=v ...; <command>`
+ * inner shell string used when elevation is in play. Returns `command` unchanged when there is
  * nothing to prepend. Keys that do not match POSIX env-var naming are
  * silently dropped (with a warn log) to prevent shell injection via crafted
  * key names.
@@ -139,24 +173,20 @@ export function buildInnerCommand(
     }
   }
 
-  const parts: string[] = [];
+  const statements: string[] = [];
   if (cwd !== undefined) {
-    parts.push(`cd ${shellEscape(cwd)}`);
+    // `||` guard (not `&&`/`;`): when the cd fails the caller's command must
+    // not run in the login shell's HOME.
+    statements.push(buildCwdGuard(cwd));
   }
   if (exportPairs.length > 0) {
-    // `export K1=v1 K2=v2` in one statement; ';' between cd and export so the
-    // export still runs even if `cd` fails to set up the env for diagnostic
-    // visibility -- but we prefer `&&` to fail fast on cwd error. Match
-    // user-mode.ts:478-480 which uses `&& export ...; <command>`.
-    parts.push(`export ${exportPairs.join(' ')}`);
+    // `export K1=v1 K2=v2` in one statement.
+    statements.push(`export ${exportPairs.join(' ')}`);
   }
-  if (parts.length === 0) {
+  if (statements.length === 0) {
     return command;
   }
-  // user-mode.ts pattern: `cd X && export A=1 B=2; <command>`
-  // -- `&&` between cd and export (fail fast on bad cwd),
-  //    `;` before the user command (so `export` warnings do not block).
-  return `${parts.join(' && ')}; ${command}`;
+  return `${statements.join('; ')}; ${command}`;
 }
 
 /**
@@ -342,7 +372,9 @@ export async function runAsUser(
     'runAsUser completed',
   );
 
-  return { stdout, stderr, exitCode, timedOut };
+  const cwdFailed = deriveCwdFailed({ elevated, cwd: opts.cwd, timedOut, exitCode, stderr });
+
+  return { stdout, stderr, exitCode, timedOut, cwdFailed };
 }
 
 /**

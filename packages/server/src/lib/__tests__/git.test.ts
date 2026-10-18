@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach, afterAll, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { shellEscape } from '../../services/privilege-elevation.js';
 import { rootLogger } from '../logger.js';
 import { timerClearedAfter } from '../../__tests__/utils/timer-capture.js';
 
@@ -205,7 +209,7 @@ describe('git remote operations', () => {
       const runAsUserCalls: Array<Record<string, unknown>> = [];
       const fakeRunAsUser = async (opts: Record<string, unknown>) => {
         runAsUserCalls.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -270,7 +274,7 @@ describe('git remote operations', () => {
       const runAsUserCalls: Array<Record<string, unknown>> = [];
       const fakeRunAsUser = async (opts: Record<string, unknown>) => {
         runAsUserCalls.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -583,7 +587,7 @@ index abc1234..def5678 100644
       const runAsUserCalls: Array<Record<string, unknown>> = [];
       const fakeRunAsUser = async (opts: Record<string, unknown>) => {
         runAsUserCalls.push(opts);
-        return { stdout: 'abc1234\n', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: 'abc1234\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -783,13 +787,13 @@ index abc1234..def5678 100644
             (c) => String(c.command ?? '').includes("'rev-parse' 'HEAD'"),
           ).length;
           const stdout = revParseCallsSoFar === 1 ? 'abc1234' : 'def5678';
-          return { stdout, stderr: '', exitCode: 0, timedOut: false };
+          return { stdout, stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
         if (command.includes("'rev-list' '--count'")) {
-          return { stdout: '3', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '3', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         }
         // git pull --ff-only
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -1011,7 +1015,7 @@ index abc1234..def5678 100644
       const runAsUserCalls: Array<Record<string, unknown>> = [];
       const fakeRunAsUser = async (opts: Record<string, unknown>) => {
         runAsUserCalls.push(opts);
-        return { stdout: 'mainbranch\n', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: 'mainbranch\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
 
       const mod = await getGitModule();
@@ -1038,7 +1042,7 @@ index abc1234..def5678 100644
         stdout: '',
         stderr: 'fatal: bad revision\n',
         exitCode: 128,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
 
       const mod = await getGitModule();
@@ -1057,12 +1061,67 @@ index abc1234..def5678 100644
       }
     });
 
+    it('maps cwdFailed from runAsUser to a GitError that names the cwd, before the generic non-zero handling', async () => {
+      const fakeRunAsUser = async () => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 125,
+        timedOut: false,
+        cwdFailed: true,
+      });
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        let caught: unknown;
+        try {
+          await mod.git(['status'], '/gone/worktree', undefined, 'alice');
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(mod.GitError);
+        const error = caught as InstanceType<typeof mod.GitError>;
+        expect(error.message).toContain('/gone/worktree');
+        expect(error.message).toContain('git status');
+        expect(error.message).not.toContain('exit code');
+        expect(error.exitCode).toBe(125);
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+
+    it('does not treat a bare exit 125 (cwdFailed false) as a cwd failure', async () => {
+      const fakeRunAsUser = async () => ({
+        stdout: '',
+        stderr: 'xargs: command failed\n',
+        exitCode: 125,
+        timedOut: false,
+        cwdFailed: false,
+      });
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        let caught: unknown;
+        try {
+          await mod.git(['status'], '/repo', undefined, 'alice');
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(mod.GitError);
+        expect((caught as Error).message).toContain('xargs: command failed');
+        expect((caught as Error).message).not.toContain('working directory');
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+
     it('translates timedOut from runAsUser into a GitError', async () => {
       const fakeRunAsUser = async () => ({
         stdout: '',
         stderr: '',
         exitCode: 137,
-        timedOut: true,
+        timedOut: true, cwdFailed: false,
       });
 
       const mod = await getGitModule();
@@ -1134,7 +1193,7 @@ index abc1234..def5678 100644
         stdout: ' M file.ts\n?? new.ts\n',
         stderr: '',
         exitCode: 0,
-        timedOut: false,
+        timedOut: false, cwdFailed: false,
       });
 
       const mod = await getGitModule();
@@ -1300,7 +1359,7 @@ index abc1234..def5678 100644
         const runAsUserCalls: Array<Record<string, unknown>> = [];
         const fakeRunAsUser = async (opts: Record<string, unknown>) => {
           runAsUserCalls.push(opts);
-          return { stdout: 'feature-branch\n', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: 'feature-branch\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         };
 
         const mod = await getGitModule();
@@ -1325,7 +1384,7 @@ index abc1234..def5678 100644
           stdout: '',
           stderr: 'fatal: not a git repository\n',
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
 
         const mod = await getGitModule();
@@ -1349,7 +1408,7 @@ index abc1234..def5678 100644
           stdout: '',
           stderr: 'fatal: detected dubious ownership\n',
           exitCode: 128,
-          timedOut: false,
+          timedOut: false, cwdFailed: false,
         });
 
         const warnSpy = spyOn(rootLogger, 'warn');
@@ -1398,7 +1457,7 @@ index abc1234..def5678 100644
         const runAsUserCalls: Array<Record<string, unknown>> = [];
         const fakeRunAsUser = async (opts: Record<string, unknown>) => {
           runAsUserCalls.push(opts);
-          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
         };
 
         const mod = await getGitModule();
@@ -1412,6 +1471,194 @@ index abc1234..def5678 100644
           expect(runAsUserCalls[0].username).toBe('alice');
           expect(runAsUserCalls[0].cwd).toBe('/repo');
           expect(runAsUserCalls[0].command).toBe("'git' 'branch' '-m' 'old-name' 'new-name'");
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+    });
+  });
+  describe('readWorkingTreeFile', () => {
+    type Opts = { username: string; command: string; cwd: string; timeoutMs?: number };
+    const captureSeam = (result: { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean; cwdFailed?: boolean }) => {
+      const calls: Opts[] = [];
+      const fake = async (opts: Opts) => {
+        calls.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false, ...result };
+      };
+      return { calls, fake };
+    };
+
+    describe('direct path (requestUser null, single-user mode)', () => {
+      let tmpDir: string;
+      beforeEach(() => {
+        tmpDir = mkdtempSync(join(tmpdir(), 'read-working-tree-'));
+      });
+      afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+      });
+
+      it('reads a file and never touches the runAsUser seam', async () => {
+        writeFileSync(join(tmpDir, 'a.txt'), 'hello\n');
+        const { calls, fake } = captureSeam({});
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          const result = await mod.readWorkingTreeFile(tmpDir, 'a.txt', null);
+          expect(result.kind).toBe('file');
+          expect(result.content.toString('utf-8')).toBe('hello\n');
+          expect(calls.length).toBe(0);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('returns null for a missing file', async () => {
+        const mod = await getGitModule();
+        expect(await mod.readWorkingTreeFile(tmpDir, 'missing.txt')).toBeNull();
+      });
+
+      it('returns kind directory for a directory', async () => {
+        mkdirSync(join(tmpDir, 'sub'));
+        const mod = await getGitModule();
+        expect(await mod.readWorkingTreeFile(tmpDir, 'sub', '')).toEqual({ kind: 'directory' });
+      });
+    });
+
+    describe('elevated path (multi-user mode, requestUser set)', () => {
+      it('runs cat as the user with the escaped path, cwd and timeout, and returns stdout as a Buffer', async () => {
+        const { calls, fake } = captureSeam({ stdout: 'line1\nline2\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          const result = await mod.readWorkingTreeFile('/work/tree', "dir/it's.ts", 'alice');
+          expect(result.kind).toBe('file');
+          expect(result.content.toString('utf-8')).toBe('line1\nline2\n');
+          expect(calls.length).toBe(1);
+          expect(calls[0].username).toBe('alice');
+          expect(calls[0].cwd).toBe('/work/tree');
+          expect(calls[0].timeoutMs).toBe(30000);
+          const e = shellEscape(join('/work/tree', "dir/it's.ts"));
+          expect(calls[0].command).toBe(`test -d ${e} && exit 42; cat -- ${e}`);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('maps exit code 42 with empty stdout to kind directory', async () => {
+        const { fake } = captureSeam({ exitCode: 42, stdout: '' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          expect(await mod.readWorkingTreeFile('/work/tree', 'sub', 'alice')).toEqual({ kind: 'directory' });
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('maps cwdFailed to a GitError naming the cwd instead of reading as if the file were absent', async () => {
+        const { fake } = captureSeam({ exitCode: 125, cwdFailed: true });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          let caught: unknown;
+          try {
+            await mod.readWorkingTreeFile('/gone/worktree', 'a.txt', 'alice');
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught).toBeInstanceOf(mod.GitError);
+          expect((caught as Error).message).toContain('/gone/worktree');
+          expect((caught as Error).message).toContain('read a.txt');
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('treats a regular file whose content is exactly __AC_DIR__ as a file', async () => {
+        const { fake } = captureSeam({ exitCode: 0, stdout: '__AC_DIR__\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          const result = await mod.readWorkingTreeFile('/work/tree', 'marker.txt', 'alice');
+          expect(result.kind).toBe('file');
+          expect(result.content.toString('utf-8')).toBe('__AC_DIR__\n');
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('maps a "No such file" failure to null', async () => {
+        const { fake } = captureSeam({ exitCode: 1, stderr: 'cat: x: No such file or directory\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          expect(await mod.readWorkingTreeFile('/work/tree', 'x', 'alice')).toBeNull();
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('throws GitError for any other failure', async () => {
+        const { fake } = captureSeam({ exitCode: 1, stderr: 'cat: x: Permission denied\n' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          const err = await mod.readWorkingTreeFile('/work/tree', 'x', 'alice').catch((e: unknown) => e);
+          expect(err).toBeInstanceOf(mod.GitError);
+          expect(err.exitCode).toBe(1);
+          expect(err.stderr).toContain('Permission denied');
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('throws GitError on timeout and on a spawn failure', async () => {
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(captureSeam({ timedOut: true, exitCode: -1 }).fake);
+        try {
+          await expect(mod.readWorkingTreeFile('/w', 'x', 'alice')).rejects.toBeInstanceOf(mod.GitError);
+          mod.__setRunAsUserForTesting(async () => {
+            throw new Error('spawn failed');
+          });
+          await expect(mod.readWorkingTreeFile('/w', 'x', 'alice')).rejects.toBeInstanceOf(mod.GitError);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+    });
+
+    describe('mode matrix (target-environment cross-check)', () => {
+      it('single-user mode: requestUser null never calls the seam', async () => {
+        const { calls, fake } = captureSeam({});
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          await mod.readWorkingTreeFile('/nonexistent-dir', 'a.txt', null);
+          expect(calls.length).toBe(0);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('single-user mode: omitted requestUser never calls the seam', async () => {
+        const { calls, fake } = captureSeam({});
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          await mod.readWorkingTreeFile('/nonexistent-dir', 'a.txt');
+          expect(calls.length).toBe(0);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('multi-user mode: a session owner name is handed to the seam', async () => {
+        const { calls, fake } = captureSeam({ stdout: 'x' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          await mod.readWorkingTreeFile('/home/bob/wt', 'a.txt', 'bob');
+          expect(calls.map((c) => c.username)).toEqual(['bob']);
         } finally {
           mod.__setRunAsUserForTesting(null);
         }

@@ -23,7 +23,7 @@ function makeFakeRunAsUser(
       stdout: partial.stdout ?? '',
       stderr: partial.stderr ?? '',
       exitCode: partial.exitCode ?? 0,
-      timedOut: partial.timedOut ?? false,
+      timedOut: partial.timedOut ?? false, cwdFailed: false,
     };
   };
   return { captured, impl };

@@ -3156,7 +3156,7 @@ describe('SessionManager', () => {
         if (opts.command.includes('cat >')) {
           writeCalls.push(opts);
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       return { fake, writeCalls };
     }
@@ -3295,7 +3295,7 @@ describe('SessionManager', () => {
     // on activation, so the injection write -- and this callback -- fires
     // before createSession's promise resolves).
     function createNoopRunAsUser(): typeof runAsUser {
-      return (async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false })) as typeof runAsUser;
+      return (async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false })) as typeof runAsUser;
     }
 
     it('sets session.initialPromptDelivered = true after the terminal-agent worker injects the prompt', async () => {
@@ -4686,7 +4686,7 @@ describe('SessionManager', () => {
       const manager = await getSessionManager({
         sweepOrphanProcessesImpl: async (sessionId: string) => {
           sweepCalls.push({ sessionId, killedBeforeSweep: sessionPty?.killed === true });
-          return { killedCount: 0, raw: { stdout: 'SWEPT=0\n', stderr: '', exitCode: 0, timedOut: false } };
+          return { killedCount: 0, raw: { stdout: 'SWEPT=0\n', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false } };
         },
       });
 
@@ -8085,7 +8085,7 @@ describe('SessionManager', () => {
       // cheap in-process non-elevated fallback).
       const noopSweepOrphanProcessesImpl: typeof sweepOrphanProcesses = async () => ({
         killedCount: 0,
-        raw: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+        raw: { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false },
       });
 
       const module1 = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
@@ -8345,7 +8345,7 @@ describe('SessionManager', () => {
         if (opts.command.includes('cat >')) {
           writeCalls.push(opts);
         }
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
       };
       return { fake, writeCalls };
     }

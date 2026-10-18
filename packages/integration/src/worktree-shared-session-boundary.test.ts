@@ -141,7 +141,7 @@ describe('createWorktreeWithSession: shared-session Session.isShared derivation 
         const fs = await import('fs');
         fs.mkdirSync(wtPath, { recursive: true });
       }
-      return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
     };
     worktreeService = new WorktreeService({ db, runAsUserImpl: stubRunAsUser });
 

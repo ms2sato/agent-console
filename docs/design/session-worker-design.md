@@ -45,6 +45,7 @@ How a cloned Repository is stored on disk (bare source repository plus linked wo
 | AgentWorker | AI Agent (Claude Code, etc.) | Yes | Yes |
 | TerminalWorker | Plain shell | Yes | No |
 | GitDiffWorker | Git diff viewer | No | No |
+| [FileViewerWorker](../glossary.md#file-viewer-worker) (design: [file-viewer-worker.md](file-viewer-worker.md)) | Read-only file tree and highlighted file content for the session's working directory | No | No |
 | [EmbeddedAgentWorker](../glossary.md#embeddedagentworker) | Agent Console's own in-process LLM-loop agent (OpenAI-compatible providers, incl. local LLMs) | No (streams NDJSON events over stdout instead) | No (own `activityState`, driven by loop-reported state, not PTY output-pattern detection) |
 | MarkdownWorker (future) | Markdown preview | No | No |
 | WebWorker* (future) | Embedded website | No | No |

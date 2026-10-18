@@ -62,7 +62,7 @@ import { extractCommandToken } from '../lib/command-token.js';
 import { buildDirectSentinelShellCommand, buildElevatedSentinelCommand } from './sentinel-spawn-command.js';
 import { getUnsetEnvPrefix } from './env-filter.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
-import { isMultiUserAuthMode, writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type runAsUser } from './privilege-elevation.js';
+import { CWD_FAILED_EXIT_CODE, isMultiUserAuthMode, writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type runAsUser } from './privilege-elevation.js';
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
 import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
@@ -855,7 +855,7 @@ export class WorkerManager {
       worker.activityState = 'idle';
       this.globalActivityCallback?.(sessionId, worker.id, 'idle');
 
-      this.setupWorkerEventHandlers(worker, sessionId, params.resolver, { command, username: params.username, sentinel });
+      this.setupWorkerEventHandlers(worker, sessionId, params.resolver, { command, username: params.username, sentinel, cwd: locationPath });
     } catch (err) {
       if (err instanceof SpawnCwdMissingError) {
         try {
@@ -940,7 +940,7 @@ export class WorkerManager {
     worker: InternalPtyWorker,
     sessionId: string,
     resolver: SessionDataPathResolver,
-    agentSpawnInfo?: { command: string; username: string; sentinel: string },
+    agentSpawnInfo?: { command: string; username: string; sentinel: string; cwd: string },
   ): void {
     if (!sessionId || sessionId.trim() === '') {
       throw new Error(
@@ -1101,6 +1101,36 @@ export class WorkerManager {
         }
       }
 
+      // Elevated exit 125 BEFORE the login shell printed its sentinel: the
+      // inner command's cd guard stopped the shell because the session's
+      // directory is gone (it ran after the pre-spawn check, so the directory
+      // vanished in between). Deliver the same notification the direct path
+      // delivers when it refuses the spawn. The PTY cannot read stderr
+      // separately, so exit 125 plus "no sentinel yet" is the contract here.
+      if (
+        worker.type === 'agent' &&
+        exitCode === CWD_FAILED_EXIT_CODE &&
+        agentSpawnInfo &&
+        !sentinelDetected &&
+        shouldElevateForUser(agentSpawnInfo.username)
+      ) {
+        try {
+          await this.appendCwdMissingNotification(
+            worker,
+            sessionId,
+            resolver,
+            agentSpawnInfo.command,
+            new SpawnCwdMissingError(agentSpawnInfo.cwd, agentSpawnInfo.username),
+            exitCode,
+          );
+        } catch (err) {
+          logger.error(
+            { workerId: worker.id, sessionId, err },
+            'Failed to synthesize cwd-unavailable diagnostic message; continuing teardown',
+          );
+        }
+      }
+
       // Mark worker as deactivated (PTY no longer running)
       this.detachPty(worker);
 
@@ -1213,9 +1243,10 @@ export class WorkerManager {
 
   /**
    * Synthesize and deliver a diagnostic message: the session's working
-   * directory was removed after creation, so the PTY
-   * spawn was refused before it ever started (no exit code -- the process
-   * never existed). Agent path only; the terminal path has no diagnostic
+   * directory was removed after creation. Direct mode refuses the PTY spawn
+   * before it starts (`exitCode` 'not-spawned'); elevated mode's inner shell
+   * exits CWD_FAILED_EXIT_CODE at its cd guard (that code is passed in). The
+   * diagnosis text is identical in both. Agent path only; the terminal path has no diagnostic
    * writer to deliver into (see activateTerminalWorkerPty) and the typed
    * error's own message reaches the caller directly.
    *
@@ -1230,6 +1261,7 @@ export class WorkerManager {
     resolver: SessionDataPathResolver,
     command: string | undefined,
     err: SpawnCwdMissingError,
+    exitCode: number | 'not-spawned' = 'not-spawned',
   ): Promise<void> {
     const text = buildPtyNotificationText({
       kind: 'internal-agent-spawn-failed',
@@ -1237,7 +1269,7 @@ export class WorkerManager {
       fields: {
         command: extractCommandToken(command ?? ''),
         username: err.username,
-        exitCode: 'not-spawned',
+        exitCode: String(exitCode),
         diagnosis: `working directory '${err.cwd}' does not exist -- the session's directory was removed after creation`,
         remedy: 'restore the directory, or delete this session and create a new one at a valid path',
       },

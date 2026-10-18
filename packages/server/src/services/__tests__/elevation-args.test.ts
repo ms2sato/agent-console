@@ -2,6 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import {
   buildElevationArgs,
   buildExportString,
+  CWD_FAILED_EXIT_CODE,
+  CWD_FAILED_SENTINEL,
   shellEscape,
 } from '../elevation-args.js';
 
@@ -280,11 +282,11 @@ describe('buildElevationArgs', () => {
       expect(ifIdx).toBeLessThan(explicitSockIdx);
     });
 
-    it('terminates the if-block so the following `&& export` chain is not aborted', () => {
+    it('terminates the if-block so the following `; export` statement still runs', () => {
       // The conditional must be valid POSIX shell that returns exit 0
-      // regardless of the branch taken, so the subsequent `&&` chain runs.
+      // regardless of the branch taken, so the statement after it runs.
       // We assert structurally: a `; then ... ; fi` (or equivalent) ends
-      // with `fi` followed by ` && export` (the combined-export segment).
+      // with `fi` followed by `; export` (the combined-export segment).
       const { innerCommand } = buildElevationArgs({
         username: 'alice',
         cwd: '/home/alice',
@@ -292,8 +294,76 @@ describe('buildElevationArgs', () => {
         sshAuthSockFallback: '/home/alice/.1password/agent.sock',
         command: 'env',
       });
-      // Look for the sequence: ...fi && export TERM=...
-      expect(innerCommand).toMatch(/fi\s+&&\s+export\s+TERM=/);
+      // Look for the sequence: ...fi; export TERM=...
+      expect(innerCommand).toMatch(/fi;\s+export\s+TERM=/);
     });
+  });
+});
+
+describe('buildElevationArgs cwd guard (fail closed on an unusable cwd)', () => {
+  const GUARD_PREFIX = "cd '/home/alice' || { echo 'agent-console: working directory /home/alice is not available' >&2; exit 125; }; ";
+
+  it('exports the same exit code the privileged runner reserves for a failed cd', () => {
+    expect(CWD_FAILED_EXIT_CODE).toBe(125);
+  });
+
+  it('guards the cd so a failed cd prints a clear line and exits 125 before the command', () => {
+    const { innerCommand } = buildElevationArgs({
+      username: 'alice',
+      cwd: '/home/alice',
+      additionalEnvVars: {},
+      command: 'exec $SHELL -l',
+    });
+    expect(innerCommand.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(innerCommand.endsWith('; exec $SHELL -l')).toBe(true);
+    // The old shape chained cd to export with `&&` and then ran the command
+    // after a bare `;`, so a failed cd still reached the command.
+    expect(innerCommand).not.toContain("cd '/home/alice' &&");
+  });
+
+  it('keeps the guard before the SSH_AUTH_SOCK fallback and the exports', () => {
+    const { innerCommand } = buildElevationArgs({
+      username: 'alice',
+      cwd: '/home/alice',
+      additionalEnvVars: {},
+      sshAuthSockFallback: '/home/alice/.1password/agent.sock',
+      command: 'env',
+    });
+    expect(innerCommand.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(innerCommand.indexOf('exit 125')).toBeLessThan(innerCommand.indexOf('SSH_AUTH_SOCK'));
+    expect(innerCommand.indexOf('exit 125')).toBeLessThan(innerCommand.indexOf('export TERM='));
+  });
+
+  it('shell-escapes a cwd containing a single quote in both the cd and the message', () => {
+    const { innerCommand } = buildElevationArgs({
+      username: 'alice',
+      cwd: "/home/alice/it's",
+      additionalEnvVars: {},
+      command: 'env',
+    });
+    expect(innerCommand).toContain("cd '/home/alice/it'\\''s' || {");
+    expect(innerCommand).toContain("working directory /home/alice/it'\\''s is not available");
+  });
+
+  it('prints the exported CWD_FAILED_SENTINEL followed by the cwd (the stable prefix the runner keys on)', () => {
+    const { innerCommand } = buildElevationArgs({
+      username: 'alice',
+      cwd: '/home/alice',
+      additionalEnvVars: {},
+      command: 'env',
+    });
+    expect(innerCommand).toContain(`echo '${CWD_FAILED_SENTINEL}/home/alice is not available' >&2`);
+  });
+
+  it('cwd and env together: guard, exports, command in that order with `;` between', () => {
+    const { innerCommand } = buildElevationArgs({
+      username: 'alice',
+      cwd: '/home/alice',
+      additionalEnvVars: { FOO: 'bar' },
+      command: 'run',
+    });
+    expect(innerCommand).toMatch(
+      /^cd '\/home\/alice' \|\| \{ echo 'agent-console: working directory \/home\/alice is not available' >&2; exit 125; \}; export [^;]*FOO='bar'[^;]*; run$/,
+    );
   });
 });

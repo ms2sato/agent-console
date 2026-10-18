@@ -18,6 +18,10 @@
  *     as the expected user.
  *   - (--elevated) the real OS elevation chain: real elevation binary, real
  *     sudoers config, target user's login shell init.
+ *   - (--elevated) the cwd fail-closed guard: a second PTY built by the same
+ *     `buildElevationArgs` with a cwd that does not exist must print the
+ *     "working directory ... is not available" line, exit 125, and never run
+ *     the command (a sentinel file the command would touch stays absent).
  *
  * What this smoke does NOT exercise:
  *   - The worker-manager's chunk-boundary sentinel gate (covered by the
@@ -68,7 +72,7 @@ import {
   buildDirectSentinelShellCommand,
   buildElevatedSentinelCommand,
 } from '../../packages/server/src/services/sentinel-spawn-command.js';
-import { buildElevationArgs } from '../../packages/server/src/services/elevation-args.js';
+import { buildElevationArgs, CWD_FAILED_SENTINEL } from '../../packages/server/src/services/elevation-args.js';
 import { expandTemplate } from '../../packages/server/src/lib/template.js';
 
 // Extracted into main() (Issue #1479), order-preserving verbatim move: this
@@ -359,6 +363,56 @@ async function main(): Promise<void> {
       `wc -c reports the exact payload byte length (${longPromptPayload.length})`,
       `got line: "${wcLine}"`,
     );
+  }
+
+  if (mode === 'elevated') {
+    console.log('==> cwd fail-closed (missing cwd must not start the shell or run the command)');
+    const token = crypto.randomUUID();
+    const missingCwd = `/tmp/agent-console-smoke-missing-cwd-${token}`;
+    const cwdSentinelFile = `/tmp/agent-console-smoke-cwd-ran-${token}`;
+    const elevationBin = resolveBin('elevation binary', ['/usr/bin/sudo', '/bin/sudo']);
+    const { argv: cwdArgv } = buildElevationArgs({
+      username: targetUser,
+      cwd: missingCwd,
+      additionalEnvVars: {},
+      command: `touch '${cwdSentinelFile}'; echo SMOKE_CWD_COMMAND_RAN`,
+    });
+    const cwdPty = bunPtyProvider.spawn(elevationBin, cwdArgv, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd: '/',
+    });
+    let cwdOutput = '';
+    let cwdExited = false;
+    let cwdExitCode: number | null = null;
+    cwdPty.onData((chunk) => {
+      cwdOutput += chunk;
+    });
+    cwdPty.onExit(({ exitCode }) => {
+      cwdExited = true;
+      cwdExitCode = exitCode;
+    });
+    const cwdStart = Date.now();
+    while (!cwdExited && Date.now() - cwdStart < PHASE_TIMEOUT_MS) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+    expect(cwdExited, 'missing-cwd PTY exited on its own', 'still running after the timeout');
+    expect(cwdExitCode === 125, 'missing-cwd PTY exit code is 125', `got ${cwdExitCode}`);
+    expect(
+      cwdOutput.includes(`${CWD_FAILED_SENTINEL}${missingCwd} is not available`),
+      'missing-cwd PTY printed the CWD_FAILED_SENTINEL line (the text the runner keys on)',
+      `captured: ${cwdOutput.slice(0, 300)}`,
+    );
+    expect(
+      !cwdOutput.includes('SMOKE_CWD_COMMAND_RAN') && !existsSync(cwdSentinelFile),
+      'missing-cwd PTY never ran the command (no output marker, sentinel file absent)',
+    );
+    try {
+      cwdPty.kill();
+    } catch {
+      // best-effort; the child has exited
+    }
   }
 
   console.log('==> sentinel-gate negatives');
