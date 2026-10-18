@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import type { AuthUser } from '@agent-console/shared';
@@ -70,6 +70,7 @@ describe('Worker WebSocket connection error codes', () => {
   const ptyFactory = createMockPtyFactory(10000);
   let testJobQueue: JobQueue | null = null;
   let sessionManager: SessionManager;
+  let embeddedAgentManager: EmbeddedAgentManager;
   let capturedWorkerHandlerFactory: WebSocketHandlerFactory | null = null;
   // The repository pause command's runner; a test replaces it to hold a pause open.
   let pauseHook: ExecuteHookCommand;
@@ -93,12 +94,13 @@ describe('Worker WebSocket connection error codes', () => {
     registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
     const sessionRepository = new SqliteSessionRepository(getDatabase());
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
-    const embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(getDatabase()));
+    embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(getDatabase()));
     const notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
     sessionManager = await SessionManager.create({
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      embeddedAgentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),
@@ -260,6 +262,61 @@ describe('Worker WebSocket connection error codes', () => {
     await pause;
   });
 
+  it('closes an embedded-agent worker socket opened while the session is pausing with SESSION_PAUSED and never activates it', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    let resolveHook!: (result: Awaited<ReturnType<ExecuteHookCommand>>) => void;
+    const held = mock<ExecuteHookCommand>(
+      () =>
+        new Promise((resolve) => {
+          resolveHook = resolve;
+        }),
+    );
+    pauseHook = held;
+
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      'test-user-id',
+    );
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const embeddedWorker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    const activate = spyOn(sessionManager, 'activateEmbeddedAgentWorker');
+    const restore = spyOn(sessionManager, 'restoreWorker');
+
+    const pause = sessionManager.pauseSession(session.id);
+    for (let i = 0; i < 400 && held.mock.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(sessionManager.isPausing(session.id)).toBe(true);
+
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? embeddedWorker!.id : '') },
+    });
+    const mockWs = createMockWs();
+    handlers.onOpen({}, mockWs);
+    for (let i = 0; i < 400 && mockWs.closeCalls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const errorMessage = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMessage).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
+    expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
+    expect(activate).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
+
+    resolveHook({ success: true });
+    await pause;
+  });
+
   it('should send SESSION_PAUSED error code when notifySessionPaused is called', async () => {
     expect(capturedWorkerHandlerFactory).not.toBeNull();
 
@@ -363,6 +420,7 @@ describe('WebSocket authentication rejection (C4)', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      embeddedAgentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),

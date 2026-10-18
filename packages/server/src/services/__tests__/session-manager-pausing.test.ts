@@ -192,27 +192,36 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     await pause;
   });
 
-  it('restartAllAgentWorkers skips a pausing session with a per-worker entry', async () => {
+  it('restartAllAgentWorkers skips every worker of a pausing session and still restarts a non-pausing one in the same call', async () => {
     const { manager, executeHookCommand, resolveHook } = await setup();
-    const session = await createSession(manager);
-    const agent = workerOfType(session, 'agent');
-    const pause = manager.pauseSession(session.id);
+    const pausingSession = await createSession(manager);
+    // A second worker so the assertion covers every non-git-diff worker, not one.
+    await manager.createWorker(pausingSession.id, { type: 'terminal', name: 'Shell' });
+    const idleSession = await manager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'other-branch',
+      agentId: 'claude-code',
+    });
+    const idleAgent = workerOfType(idleSession, 'agent');
+    const pause = manager.pauseSession(pausingSession.id);
     await hookStarted(executeHookCommand);
-    const spawnsBefore = ptyFactory.instances.length;
+    expect(manager.isPausing(idleSession.id)).toBe(false);
 
     const result = await manager.restartAllAgentWorkers({ kind: 'all' });
 
-    expect(result.results).toEqual([
-      {
-        sessionId: session.id,
-        workerId: agent.id,
-        workerType: 'agent',
-        outcome: 'skipped',
-        error: 'Session is pausing',
-      },
+    const pausingEntries = result.results.filter((r) => r.sessionId === pausingSession.id);
+    const pausingWorkers = manager.getSession(pausingSession.id)!.workers.filter((w) => w.type !== 'git-diff');
+    expect(pausingWorkers.length).toBeGreaterThanOrEqual(2);
+    expect(pausingEntries.map((r) => r.workerId).sort()).toEqual(pausingWorkers.map((w) => w.id).sort());
+    for (const entry of pausingEntries) {
+      expect(entry.outcome).toBe('skipped');
+      expect(entry.error).toBe('Session is pausing');
+    }
+    expect(result.results.filter((r) => r.sessionId === idleSession.id)).toEqual([
+      { sessionId: idleSession.id, workerId: idleAgent.id, workerType: 'agent', outcome: 'restarted' },
     ]);
-    expect(result).toMatchObject({ restarted: 0, failed: 0, skipped: 1 });
-    expect(ptyFactory.instances.length).toBe(spawnsBefore);
     resolveHook({ success: true });
     await pause;
   });

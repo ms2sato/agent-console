@@ -877,6 +877,16 @@ export async function setupWebSocketRoutes(
             return;
           }
 
+          // A pausing session answers every stream-worker open (PTY or
+          // embedded-agent) with the same terminal SESSION_PAUSED close, before
+          // either branch can start an activation. The manager-level guard and
+          // the per-branch SessionPausingError catches below remain as the
+          // second line of defence.
+          if (sessionManager.isPausing(sessionId)) {
+            sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+            return;
+          }
+
           // Handle embedded-agent workers differently: activate the loop
           // subprocess (idempotent no-op if already activated -- Phase 2's
           // in-flight guard already makes concurrent opens await the same
