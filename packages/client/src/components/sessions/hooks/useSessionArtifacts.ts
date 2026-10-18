@@ -35,6 +35,7 @@ export function useSessionArtifacts(sessionId: string) {
         queryClient.invalidateQueries({ queryKey: artifactKeys.listBySession(sessionId), exact: true });
       }
     },
+    invalidateOnReconnect: [artifactKeys.root()],
   });
 
   return useQuery({

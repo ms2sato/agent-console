@@ -23,6 +23,7 @@ export function useSessionTodos(sessionId: string) {
         queryClient.invalidateQueries({ queryKey: todoKeys.listBySession(sessionId), exact: true });
       }
     },
+    invalidateOnReconnect: [todoKeys.root()],
   });
 
   const { data: todos, isPending, isError, refetch } = useQuery({

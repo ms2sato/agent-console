@@ -37,6 +37,7 @@ export function useSessionBookmarks(sessionId: string) {
         queryClient.invalidateQueries({ queryKey: bookmarkKeys.listBySession(sessionId), exact: true });
       }
     },
+    invalidateOnReconnect: [bookmarkKeys.root()],
   });
 
   const { data: bookmarks, isPending } = useQuery({

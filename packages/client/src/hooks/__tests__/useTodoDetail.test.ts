@@ -3,6 +3,8 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useTodoDetail } from '../useTodoDetail';
+import { listReconnectInvalidationKeys, _resetReconnectInvalidation } from '../../lib/reconnect-invalidation';
+import { todoKeys } from '../../lib/query-keys';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import { fetchUrl, jsonResponse, makeTodo, makeTodoComment, makeTodoMove } from '../../test/todo-fixtures';
@@ -128,5 +130,30 @@ describe('useTodoDetail', () => {
 
     expect(result.current.error?.message).toBe('Todo not found');
     expect(result.current.data).toBeUndefined();
+  });
+});
+
+describe('useTodoDetail reconnect registration', () => {
+  let restoreWebSocket: () => void;
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue(jsonResponse({}));
+    restoreWebSocket = installMockWebSocket();
+    resetWebSocket();
+    _resetReconnectInvalidation();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    _resetReconnectInvalidation();
+  });
+
+  // Mutation: drop `invalidateOnReconnect` from the hook's useAppWsEvent -> a `tsc` error at the hook,
+  // and (type bypassed) this test fails because the family root is not registered.
+  it('registers its family root for the reconnect invalidation', () => {
+    renderHook(() => useTodoDetail('todo-1'), { wrapper: createWrapper() });
+
+    expect(listReconnectInvalidationKeys()).toContainEqual(todoKeys.root());
   });
 });

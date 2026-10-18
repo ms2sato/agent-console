@@ -9,7 +9,7 @@
  * implementation.
  */
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
-import { useState as useStateReal } from 'react';
+import { useSyncExternalStore } from 'react';
 import { screen, cleanup, waitFor, act, fireEvent } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import type { WorktreeDeletionCompletedPayload } from '@agent-console/shared';
@@ -18,6 +18,14 @@ import { waitForAbsent } from '../../../test/waitForAbsent';
 import * as useAppWsModule from '../../../hooks/useAppWs';
 import type { AppWebSocketState } from '../../../lib/app-websocket';
 import { NotificationBell } from '../NotificationBell';
+import { useReconnectInvalidation } from '../../../hooks/useReconnectInvalidation';
+import { registerReconnectInvalidation, _resetReconnectInvalidation } from '../../../lib/reconnect-invalidation';
+
+/** Renders the root-layout hook beside the bell: the reconnect refetch is the SHARED path, not a bell-local effect. */
+function BellWithRootHook() {
+  useReconnectInvalidation();
+  return <NotificationBell />;
+}
 
 // --- Fetch-level mocking: a tiny stateful fake server ---
 
@@ -91,6 +99,14 @@ function makeItem(overrides: Partial<FeedItem> = {}): FeedItem {
 let capturedWsOptions: Parameters<typeof useAppWsModule.useAppWsEvent>[0] | undefined;
 let setConnectedExternally: ((connected: boolean) => void) | null = null;
 
+// One shared connection value for every `useAppWsState` caller in the tree (the bell and the root hook
+// both read it), so a flip re-renders them all like the real singleton would.
+const connectionStore = {
+  connected: false,
+  hasEverConnected: false,
+  listeners: new Set<() => void>(),
+};
+
 let useAppWsEventSpy: ReturnType<typeof spyOn>;
 let useAppWsStateSpy: ReturnType<typeof spyOn>;
 
@@ -105,10 +121,20 @@ beforeEach(() => {
   blockSeenPut = false;
   resolveSeenPut = null;
   capturedWsOptions = undefined;
-  setConnectedExternally = null;
+  _resetReconnectInvalidation();
+  connectionStore.connected = false;
+  connectionStore.hasEverConnected = false;
+  connectionStore.listeners.clear();
+  setConnectedExternally = (connected) => {
+    connectionStore.connected = connected;
+    if (connected) connectionStore.hasEverConnected = true;
+    connectionStore.listeners.forEach((listener) => listener());
+  };
 
   useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation((options) => {
     capturedWsOptions = options as Parameters<typeof useAppWsModule.useAppWsEvent>[0];
+    // The registration the real hook performs, so the shared path sees this consumer's family root.
+    if (options?.invalidateOnReconnect) registerReconnectInvalidation(options.invalidateOnReconnect);
   });
   // A real, reactive hook double: owns local component state so that
   // calling `setConnectedExternally` triggers an actual React re-render of
@@ -116,11 +142,16 @@ beforeEach(() => {
   // real WebSocket reconnect would.
   useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(
     <T,>(selector: (state: AppWebSocketState) => T): T => {
-      const [connected, setConnected] = useStateReal(false);
-      setConnectedExternally = setConnected;
+      const connected = useSyncExternalStore(
+        (listener) => {
+          connectionStore.listeners.add(listener);
+          return () => connectionStore.listeners.delete(listener);
+        },
+        () => connectionStore.connected,
+      );
       return selector({
         connected,
-        hasEverConnected: connected,
+        hasEverConnected: connectionStore.hasEverConnected,
         sessionsSynced: false,
         agentsSynced: false,
         repositoriesSynced: false,
@@ -501,10 +532,10 @@ describe('NotificationBell', () => {
   });
 
   describe('reconnect refetch trigger', () => {
-    it('invalidates the feed on a WS false -> true connected transition, not on initial mount', async () => {
+    it('refetches the feed on a reconnect through the shared root hook, not on the first connection or the initial mount', async () => {
       serverItems = [makeItem()];
       serverUnreadCount = 1;
-      await renderWithRouter(<NotificationBell />);
+      await renderWithRouter(<BellWithRootHook />);
 
       await waitFor(() => expect(mockFetch.mock.calls.length).toBeGreaterThan(0));
       const callsAfterMount = mockFetch.mock.calls.length;
@@ -515,11 +546,30 @@ describe('NotificationBell', () => {
       });
       expect(mockFetch.mock.calls.length).toBe(callsAfterMount);
 
+      // The first connection of the page: mounting already fetched, nothing more.
+      await act(async () => {
+        setConnectedExternally?.(true);
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      expect(mockFetch.mock.calls.length).toBe(callsAfterMount);
+
+      // A drop and a reconnect: one refetch of the feed.
+      await act(async () => {
+        setConnectedExternally?.(false);
+      });
       await act(async () => {
         setConnectedExternally?.(true);
       });
 
       await waitFor(() => expect(mockFetch.mock.calls.length).toBe(callsAfterMount + 1));
+    });
+
+    it('registers the notification-center root for the reconnect refetch', async () => {
+      await renderWithRouter(<NotificationBell />);
+
+      expect(capturedWsOptions?.invalidateOnReconnect).toEqual([['notification-center']]);
     });
   });
 });

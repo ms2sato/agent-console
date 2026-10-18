@@ -70,6 +70,8 @@ export const sessionKeys = {
   branches: (sessionId: string) => ['sessionBranches', sessionId] as const,
   /** Memo content for a session */
   memo: (sessionId: string) => ['session-memo', sessionId] as const,
+  /** Root of every session memo (reconnect invalidation registers this one entry) */
+  memoRoot: () => ['session-memo'] as const,
 } as const;
 
 export const worktreeKeys = {
