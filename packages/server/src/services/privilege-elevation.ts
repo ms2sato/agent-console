@@ -392,8 +392,15 @@ async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolea
  * snapshot) + 500 ms (`TIMEOUT_DRAIN_BUDGET_MS`). The drain clock starts AFTER
  * the snapshot returns so a slow `ps` cannot eat the SIGTERM grace. Limit: a descendant that detaches
  * itself (own `setsid` or a double fork) before the snapshot escapes; the
- * orphan sweep covers those. Without `timeoutMs` no timer, snapshot or kill
- * command exists.
+ * orphan sweep covers those. The bound holds in BOTH orders: timer before
+ * the wrapper exits (tree terminated, 500 ms drain), and wrapper exit before
+ * the pipes close (streams abandoned at `timeoutMs`, partial output,
+ * `timedOut: true` / 137; no snapshot, signal or drain budget, because the
+ * children were reparented and cannot be identified, so a background child
+ * that still holds the pipes is left alive). Without `timeoutMs` no timer,
+ * snapshot or kill command exists, and a surviving child holding the pipes
+ * after the wrapper exits makes the call wait: passing a timeout is the
+ * caller's choice.
  *
  * `listDescendants` is a test seam for the descendant walk, not a caller option.
  */
@@ -506,10 +513,33 @@ export async function runAsUser(
     }
   };
 
+  // The wrapper may exit before the pipes close (a backgrounded child still
+  // holds them). Track that so the timer, which stays armed until both pipes
+  // settle, knows which phase to run.
+  let wrapperExited = false;
+  let wrapperExitCode: number | null | undefined;
+  void proc.exited.then((code) => {
+    wrapperExited = true;
+    wrapperExitCode = code;
+  });
+
+  // Wrapper already gone, pipes still open: its children were reparented
+  // before the timer fired, so there is no tree to snapshot or signal and no
+  // TERM grace to wait for. Abandon the streams and return what was read.
+  const runExitedFirstPhase = async (): Promise<void> => {
+    logger.warn(
+      { username: opts.username ?? null, elevated, timeoutMs: opts.timeoutMs, wrapperExitCode },
+      `runAsUser: wrapper exited (code ${wrapperExitCode}) but the output pipes stayed open past timeoutMs; ` +
+        'a background child is holding them and cannot be identified',
+    );
+    await Promise.all([out.cancel(), err.cancel()]);
+    await settlesWithin(Promise.all([out.done, err.done]), 25);
+  };
+
   if (typeof opts.timeoutMs === 'number' && opts.timeoutMs > 0) {
     timeoutHandle = setTimeout(() => {
       timedOut = true;
-      runTimeoutPhase()
+      (wrapperExited ? runExitedFirstPhase() : runTimeoutPhase())
         .catch((error) => {
           logger.warn({ err: error }, 'runAsUser timeout handling failed');
           proc.kill('SIGKILL');
@@ -523,13 +553,16 @@ export async function runAsUser(
   // `number`. `timedOut` is the canonical signal -- consumers should branch
   // on it, not on the exit code, to decide "did we hit the timeout?".
   const rawExitCode = await Promise.race([proc.exited, timeoutPhaseDone]);
+  if (!timedOut) {
+    // The timer stays armed until both pipes settle, not just until the
+    // wrapper exits: a surviving child can hold them open past `exited`.
+    await Promise.race([Promise.all([out.done, err.done]), timeoutPhaseDone]);
+  }
   if (timeoutHandle !== undefined) {
     clearTimeout(timeoutHandle);
   }
   if (timedOut) {
     await timeoutPhaseDone;
-  } else {
-    await Promise.all([out.done, err.done]);
   }
   const exitCode = timedOut
     ? TIMEOUT_EXIT_CODE

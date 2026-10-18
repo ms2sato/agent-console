@@ -176,6 +176,8 @@ Consequences for a consumer:
 - **`stdout` / `stderr` may be PARTIAL when `timedOut` is true** (before this, a timed-out call with a surviving grandchild never returned at all). A consumer that reads output after a timeout must not treat it as a complete result; branch on `timedOut` first, as `gitExec` does by throwing.
 - The exit code is `137` and `cwdFailed` is `false` on a timeout, unchanged.
 - A descendant that detaches itself (its own `setsid` or a double fork) before the snapshot escapes; `orphan-process-sweeper.ts` covers those, not `runAsUser`.
+- **The bound holds in both orders.** Timer before the wrapper exits: the tree is terminated and the 500 ms drain applies. Wrapper exits first while a background child still holds the pipes: the streams are abandoned at `timeoutMs` and the call returns `timedOut: true`, exit code 137 (the wrapper's real exit code only appears in a warn log as `wrapperExitCode`), partial output, no snapshot and no drain budget.
+- **In that second order the background child is left alive.** It was reparented before the timer fired and cannot be identified; the orphan sweep covers session-marked processes only, so nothing covers an unmarked one.
 - Without `timeoutMs` (or with `<= 0`) there is no timer, no snapshot and no kill command: the hot path is unchanged.
 - The `listDescendants` third parameter of `runAsUser` is a test seam, not a caller option; do not add it to `RunAsUserOpts`.
 

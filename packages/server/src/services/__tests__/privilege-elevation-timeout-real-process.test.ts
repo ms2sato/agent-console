@@ -75,8 +75,8 @@ async function isOurSleep(pid: number): Promise<boolean> {
 }
 
 /** Runs the real `runAsUser` in a fresh bun child; returns its JSON report. */
-async function runInChild(timeoutMs: number): Promise<ChildReport> {
-  const command = `sleep 30 & echo $! > ${pidFile}; echo $!; wait`;
+async function runInChild(timeoutMs: number, wait = true): Promise<ChildReport> {
+  const command = `sleep 30 & echo $! > ${pidFile}; echo $!${wait ? '; wait' : ''}`;
   const script = [
     `import { runAsUser } from ${JSON.stringify(PRIVILEGE_ELEVATION_TS)};`,
     'const started = Date.now();',
@@ -129,6 +129,22 @@ describe('runAsUser timeout in a real process tree', () => {
 
     // The background sleep is gone (ESRCH), not merely signalled.
     expect(await waitUntilGone(pid!, 2000)).toBe(true);
+  }, 15_000);
+
+  it('wrapper exits first: returns at timeoutMs with the partial output (the background child is NOT reaped)', async () => {
+    // No `wait`: the shell exits at once while the background sleep keeps the
+    // stdout pipe open. runAsUser must still return at timeoutMs. Documented
+    // limit: with the wrapper already gone the child is reparented and cannot
+    // be identified, so it survives; this test deliberately does not assert
+    // it is gone. The afterEach kills it after confirming it is our sleep.
+    const report = await runInChild(200, false);
+
+    expect(report.result.timedOut).toBe(true);
+    expect(report.result.exitCode).toBe(137);
+    expect(report.elapsedMs).toBeLessThan(3000);
+    const pid = await readBackgroundPid();
+    expect(pid).toBeDefined();
+    expect(report.result.stdout).toContain(String(pid));
   }, 15_000);
 
   it('control: a command that finishes before the timeout is untouched by the tree walk', async () => {

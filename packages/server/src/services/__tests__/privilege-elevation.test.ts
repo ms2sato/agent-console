@@ -708,6 +708,64 @@ describe('privilege-elevation', () => {
         expect(captured[1].args).toEqual(killArgv('TERM'));
       }, 3000);
 
+      describe('wrapper exits first while a background child holds the pipes', () => {
+        // The wrapper exits 0 at once; stdout delivers 'partial' and never
+        // closes (a surviving background child holds the write end). The timer
+        // must still bound the call: no descendant walk, no drain budget, no
+        // kill command, partial output, timedOut with exit code 137.
+        it('elevated user: returns at timeoutMs with the partial output and spends no drain budget', async () => {
+          process.env.AUTH_MODE = 'multi-user';
+          const captured: CapturedSpawn[] = [];
+          let walks = 0;
+          const fakeSpawn = makeFakeSpawn(captured, { stdoutNeverCloses: { partial: 'partial' } });
+
+          const started = Date.now();
+          const result = await runAsUser(
+            { username: elevatedUser, command: 'sleep 300 &', timeoutMs: 50 },
+            fakeSpawn,
+            async () => {
+              walks++;
+              return DESCENDANTS;
+            },
+          );
+          const elapsed = Date.now() - started;
+
+          expect(elapsed).toBeLessThan(TIMEOUT_DRAIN_BUDGET_MS);
+          expect(result).toEqual({ stdout: 'partial', stderr: '', exitCode: 137, timedOut: true, cwdFailed: false });
+          expect(walks).toBe(0);
+          expect(captured).toHaveLength(1);
+        }, 3000);
+
+        it('direct (username null): returns at timeoutMs with the partial output and signals nothing', async () => {
+          process.env.AUTH_MODE = 'none';
+          const signals: string[] = [];
+          killSpy = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+            signals.push(`${pid}:${String(signal)}`);
+            return true;
+          }) as typeof process.kill);
+          const captured: CapturedSpawn[] = [];
+          let walks = 0;
+          const fakeSpawn = makeFakeSpawn(captured, { stdoutNeverCloses: { partial: 'partial' } });
+
+          const started = Date.now();
+          const result = await runAsUser(
+            { username: null, command: 'sleep 300 &', timeoutMs: 50 },
+            fakeSpawn,
+            async () => {
+              walks++;
+              return DESCENDANTS;
+            },
+          );
+          const elapsed = Date.now() - started;
+
+          expect(elapsed).toBeLessThan(TIMEOUT_DRAIN_BUDGET_MS);
+          expect(result).toEqual({ stdout: 'partial', stderr: '', exitCode: 137, timedOut: true, cwdFailed: false });
+          expect(walks).toBe(0);
+          expect(captured).toHaveLength(1);
+          expect(signals).toEqual([]);
+        }, 3000);
+      });
+
       it('no timeout: the descendant walk is never consulted', async () => {
         process.env.AUTH_MODE = 'multi-user';
         let walks = 0;
