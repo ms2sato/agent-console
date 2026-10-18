@@ -24,7 +24,7 @@ afterEach(() => {
 async function renderRow(
   overrides: Parameters<typeof makeTodo>[0] = {},
   users = [ME],
-  extra: { showSessionLink?: boolean } = {},
+  extra: { showSessionLink?: boolean; focusable?: boolean } = {},
 ) {
   const todo = makeTodo(overrides);
   api.state.todos = [todo];
@@ -114,14 +114,56 @@ describe('TodoRow', () => {
       expect(screen.queryByRole('button', { name: 'Make global' })).toBeNull();
     });
 
-    it('Open calls onOpenDetail with the item id', async () => {
-      // Mutation: call onOpenDetail with the title instead of the id -> fails.
+    // Reach, measured by WHICH tests failed (each mutation applied alone to TodoRow.tsx, the Todo test files and
+    // SessionTodosPanel.test.tsx re-run, restored after):
+    //   title back to a plain span -> here: 'clicking the title ...', 'the title is the visible text ... Enter',
+    //     'has no separate "Open" button', 'focusable false takes the title out of the tab order'; also 5 tests in
+    //     SessionTodosPanel.test.tsx and 'Open navigates to the item's detail page' in TodosPage.test.tsx
+    //   onOpenDetail(todo.title) instead of the id -> here: 'clicking the title ...' and the Enter test; also
+    //     2 SessionTodosPanel tests and the TodosPage one
+    //   onClick on the whole <li> (bubbling) -> here: 'clicking the title ...' (called twice) and
+    //     'the Open session link and the row actions do not also open the detail'
+    it('clicking the title calls onOpenDetail with the item id', async () => {
       const { todo, onOpenDetail, user } = await renderRow({ id: 'todo-xyz', title: 'Ship it' });
 
       await user.click(screen.getByRole('button', { name: `Open ${todo.title}` }));
 
       expect(onOpenDetail).toHaveBeenCalledTimes(1);
       expect(onOpenDetail).toHaveBeenCalledWith('todo-xyz');
+    });
+
+    it('the title is the visible text of that control, reachable by keyboard: Tab then Enter opens the detail', async () => {
+      const { onOpenDetail, user } = await renderRow({ id: 'todo-key', title: 'Keyboard me' });
+
+      const control = screen.getByRole('button', { name: 'Open Keyboard me' });
+      expect(control.textContent).toBe('Keyboard me');
+      await user.tab();
+      expect(document.activeElement).toBe(control);
+      await user.keyboard('{Enter}');
+
+      expect(onOpenDetail).toHaveBeenCalledWith('todo-key');
+    });
+
+    it('has no separate "Open" button: the title is the only control that opens the detail', async () => {
+      await renderRow({ title: 'Only one' });
+
+      expect(screen.getAllByRole('button', { name: /^Open / })).toHaveLength(1);
+      expect(screen.queryByText('Open')).toBeNull();
+    });
+
+    it('the Open session link and the row actions do not also open the detail', async () => {
+      const { onOpenDetail, user } = await renderRow({ kind: 'action', sessionId: 'session-42' });
+
+      await user.click(screen.getByText('Open session'));
+      await user.click(screen.getByRole('button', { name: 'Resolve' }));
+
+      expect(onOpenDetail).not.toHaveBeenCalled();
+    });
+
+    it('focusable false takes the title out of the tab order', async () => {
+      const { todo } = await renderRow({ title: 'Hidden from tab' }, [ME], { focusable: false });
+
+      expect(screen.getByRole('button', { name: `Open ${todo.title}` }).getAttribute('tabindex')).toBe('-1');
     });
 
     it('labels a human creator by username and an agent creator as an agent', async () => {

@@ -56,7 +56,7 @@ async function renderPanel(props: { isExpanded?: boolean; compact?: boolean; onT
  *     -> 'adds with the session preset and the session scope ...'
  *   - the session field shown in the sidebar form -> 'the add form hides the session field ...'
  *   - the rows render the body -> 'rows are summaries ...'
- *   - the `tabIndex` dropped from one control type (the Open button, the assignee select, the
+ *   - the `tabIndex` dropped from one control type (the title button, the assignee select, the
  *     add-form controls, resolve/dismiss) -> 'excludes every control of the body from the tab order ...'
  *   - the header always shows the count, or the error line / Retry dropped
  *     -> 'a failed list fetch shows ...'
@@ -304,7 +304,7 @@ describe('SessionTodosPanel', () => {
       expect(screen.getByTestId('terminal-host')).toBeTruthy();
     });
 
-    it('Escape returns focus to the Open button that opened the dialog', async () => {
+    it('Escape returns focus to the title button that opened the dialog', async () => {
       api.state.todos = [makeTodo({ id: 'todo-9', title: 'Look closer' })];
       const { user } = await renderPanel();
       const opener = await screen.findByRole('button', { name: 'Open Look closer' });
