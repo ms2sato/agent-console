@@ -9,7 +9,7 @@ import {
   UpdateEmbeddedAgentWorkerRequestSchema,
   SetMcpServerPermissionsRequestSchema,
 } from '../worker';
-import type { AgentWorker, TerminalWorker, GitDiffWorker, EmbeddedAgentWorker } from '../app-server-message';
+import type { AgentWorker, TerminalWorker, GitDiffWorker, FileViewerWorker, EmbeddedAgentWorker } from '../app-server-message';
 
 describe('CreateWorkerRequestSchema', () => {
   // CreateWorkerRequestSchema accepts terminal, embedded-agent, and (since
@@ -262,6 +262,19 @@ describe('CreateWorkerRequestSchema', () => {
       type: 'git-diff',
     });
     expect(result.success).toBe(false);
+  });
+
+  it('should accept a file-viewer worker with and without a name', () => {
+    expect(v.safeParse(CreateWorkerRequestSchema, { type: 'file-viewer' }).success).toBe(true);
+    const named = v.safeParse(CreateWorkerRequestSchema, { type: 'file-viewer', name: 'Files' });
+    expect(named.success).toBe(true);
+    if (named.success) expect(named.output).toEqual({ type: 'file-viewer', name: 'Files' });
+  });
+
+  it('should reject a file-viewer worker carrying any option (it has none)', () => {
+    expect(v.safeParse(CreateWorkerRequestSchema, { type: 'file-viewer', agentId: 'a' }).success).toBe(false);
+    expect(v.safeParse(CreateWorkerRequestSchema, { type: 'file-viewer', continueConversation: true }).success).toBe(false);
+    expect(v.safeParse(CreateWorkerRequestSchema, { type: 'file-viewer', path: 'src' }).success).toBe(false);
   });
 
   it('should reject invalid type', () => {
@@ -758,7 +771,7 @@ describe('WorkersResponseSchema', () => {
 type Assert<T extends true> = T;
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 export type _WorkerResponseIsExact = Assert<
-  Equals<WorkerResponse, { worker: AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker }>
+  Equals<WorkerResponse, { worker: AgentWorker | TerminalWorker | GitDiffWorker | FileViewerWorker | EmbeddedAgentWorker }>
 >;
 
 describe('WorkerResponseSchema', () => {

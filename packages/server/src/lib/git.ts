@@ -15,7 +15,8 @@
  * historical `Bun.spawn(['git', ...args])` direct-spawn path runs verbatim.
  */
 import path from 'node:path';
-import { readFile, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, readFile, stat } from 'node:fs/promises';
 import {
   runAsUser as defaultRunAsUser,
   shellEscape,
@@ -1012,8 +1013,32 @@ export async function readRepoFileAtRef(
 const WORKING_TREE_DIR_EXIT_CODE = 42;
 
 /**
+ * Exit code the `regularOnly` probe uses to say "this exists but is not a regular file" (fifo, socket, device).
+ * 42 (directory), 43 (this), 125 (`CWD_FAILED_EXIT_CODE`, the elevated cd guard) and 137 (a timed-out run)
+ * are distinct on purpose: the caller tells the outcomes apart by exit code alone, so none may be reused.
+ */
+const WORKING_TREE_NOT_REGULAR_EXIT_CODE = 43;
+
+/** Options of {@link buildWorkingTreeReadCommand} / {@link readWorkingTreeFile}; the default is the diff paths' read. */
+export interface WorkingTreeReadOptions {
+  /**
+   * Refuse anything that is not a regular file (after following symlinks):
+   * `cat` on a fifo blocks until the time box. Reported as `{ kind: 'not-regular' }`.
+   */
+  regularOnly?: boolean;
+  /**
+   * Read at most this many bytes and report the file's total size in `size`.
+   * Without it the whole file is read.
+   */
+  maxBytes?: number;
+}
+
+/**
  * Shell command the elevated path of `readWorkingTreeFile` runs: exit
- * `WORKING_TREE_DIR_EXIT_CODE` for a directory, else `cat` the file.
+ * `WORKING_TREE_DIR_EXIT_CODE` for a directory, (with `regularOnly`) exit
+ * `WORKING_TREE_NOT_REGULAR_EXIT_CODE` for an existing path that is not a
+ * regular file, else `cat` the file. With `maxBytes` the read is `wc -c` (the total size, one
+ * line) followed by `head -c <maxBytes>` of the content.
  *
  * Both paths are ABSOLUTE (`cwd` joined with `relPath`), so the command does not
  * depend on the shell's working directory. The elevated runner already stops
@@ -1021,9 +1046,40 @@ const WORKING_TREE_DIR_EXIT_CODE = 42;
  * absolute paths keep the command correct on any other route to it.
  * @internal Exported for testing
  */
-export function buildWorkingTreeReadCommand(cwd: string, relPath: string): string {
+export function buildWorkingTreeReadCommand(
+  cwd: string,
+  relPath: string,
+  opts: WorkingTreeReadOptions = {},
+): string {
   const escaped = shellEscape(path.join(cwd, relPath));
-  return `test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}; cat -- ${escaped}`;
+  const probes = [`test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}`];
+  // A path that does not exist falls through to the read and fails there with
+  // `No such file`, exactly as without the option; only an EXISTING non-regular
+  // path (fifo, socket, device) exits NOT_REGULAR.
+  if (opts.regularOnly) {
+    probes.push(`test -f ${escaped} || { test -e ${escaped} && exit ${WORKING_TREE_NOT_REGULAR_EXIT_CODE}; }`);
+  }
+  const read =
+    opts.maxBytes === undefined
+      ? `cat -- ${escaped}`
+      : `wc -c < ${escaped}; head -c ${opts.maxBytes} -- ${escaped}`;
+  return [...probes, read].join('; ');
+}
+
+/** A file read by {@link readWorkingTreeFile}; `size` (total bytes on disk) is present when `maxBytes` was given. */
+type WorkingTreeFile = { kind: 'file'; content: Buffer; size?: number };
+
+/**
+ * Parse the `wc -c` line a bounded elevated read starts with (GNU prints
+ * `123`, BSD pads it with leading spaces) and split it from the content.
+ */
+function splitSizeLine(stdout: string, relPath: string): { size: number; content: string } {
+  const newline = stdout.indexOf('\n');
+  const size = newline < 0 ? Number.NaN : Number.parseInt(stdout.slice(0, newline).trim(), 10);
+  if (!Number.isInteger(size) || size < 0) {
+    throw new GitError(`read ${relPath} failed: unexpected size line`, 0, '');
+  }
+  return { size, content: stdout.slice(newline + 1) };
 }
 
 /**
@@ -1043,17 +1099,35 @@ export function buildWorkingTreeReadCommand(cwd: string, relPath: string): strin
  * so `isBinaryContent` still classifies binaries, and no caller renders binary
  * content.
  *
- * @returns the file content, `{ kind: 'directory' }` for a directory, or `null`
- *   when the path does not exist.
+ * With `{ regularOnly: true, maxBytes }` (the file viewer's read) at most
+ * `maxBytes` bytes come back together with the file's total `size`, and a
+ * fifo, socket or device is refused as `{ kind: 'not-regular' }` instead of
+ * being opened.
+ *
+ * @returns the file content, `{ kind: 'directory' }` for a directory,
+ *   `{ kind: 'not-regular' }` for a non-regular file under `regularOnly`, or
+ *   `null` when the path does not exist.
  * @throws GitError when the elevated read fails for any other reason.
  */
 export async function readWorkingTreeFile(
   cwd: string,
   relPath: string,
   requestUser?: string | null,
-): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null> {
+): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null>;
+export async function readWorkingTreeFile(
+  cwd: string,
+  relPath: string,
+  requestUser: string | null | undefined,
+  opts: { regularOnly: true; maxBytes: number },
+): Promise<{ kind: 'file'; content: Buffer; size: number } | { kind: 'directory' } | { kind: 'not-regular' } | null>;
+export async function readWorkingTreeFile(
+  cwd: string,
+  relPath: string,
+  requestUser?: string | null,
+  opts: WorkingTreeReadOptions = {},
+): Promise<WorkingTreeFile | { kind: 'directory' } | { kind: 'not-regular' } | null> {
   if (requestUser != null && requestUser.length > 0) {
-    const command = buildWorkingTreeReadCommand(cwd, relPath);
+    const command = buildWorkingTreeReadCommand(cwd, relPath, opts);
     let result: RunAsUserResult;
     try {
       result = await _runAsUser({
@@ -1081,6 +1155,7 @@ export async function readWorkingTreeFile(
       );
     }
     if (result.exitCode === WORKING_TREE_DIR_EXIT_CODE) return { kind: 'directory' };
+    if (opts.regularOnly && result.exitCode === WORKING_TREE_NOT_REGULAR_EXIT_CODE) return { kind: 'not-regular' };
     if (result.exitCode !== 0) {
       if (/No such file/.test(result.stderr)) return null;
       throw new GitError(
@@ -1089,16 +1164,55 @@ export async function readWorkingTreeFile(
         result.stderr
       );
     }
-    return { kind: 'file', content: Buffer.from(result.stdout, 'utf-8') };
+    if (opts.maxBytes === undefined) return { kind: 'file', content: Buffer.from(result.stdout, 'utf-8') };
+    const { size, content } = splitSizeLine(result.stdout, relPath);
+    return { kind: 'file', content: Buffer.from(content, 'utf-8'), size };
   }
 
   const fullPath = path.join(cwd, relPath);
   try {
-    if ((await stat(fullPath)).isDirectory()) return { kind: 'directory' };
+    if (opts.regularOnly || opts.maxBytes !== undefined) return await readOpenedWorkingTreeFile(fullPath, opts);
+    // stat-then-read by name; the viewer's options go through readOpenedWorkingTreeFile because a fifo swap would park the read.
+    // Not applied here: git never lists a fifo, and O_NONBLOCK would turn a hang into EAGAIN for the diff viewer.
+    const stats = await stat(fullPath);
+    if (stats.isDirectory()) return { kind: 'directory' };
     return { kind: 'file', content: await readFile(fullPath) };
   } catch (error) {
     if (isErrnoException(error) && error.code === 'ENOENT') return null;
     throw error;
+  }
+}
+
+/**
+ * The in-process read for `{ regularOnly, maxBytes }`: open ONCE and decide
+ * everything from the descriptor. A `stat` by name followed by an `open` by
+ * name lets a regular file be swapped for a fifo in between, and `open` on a
+ * fifo blocks a libuv threadpool thread until a writer appears, with no
+ * timeout. Opening with `O_NONBLOCK` makes that `open` return immediately, and
+ * `handle.stat()` then classifies the very file that was opened; the read
+ * goes through the same handle. `O_NONBLOCK` has no effect on a regular file
+ * (reads never report EAGAIN for one; checked: the 1 MiB + 1 byte and the
+ * empty-file tests read through this handle), so it only matters for the case
+ * the descriptor's stat then refuses as not-regular before any read.
+ * The returned `size` is the descriptor's own size, so it agrees with the
+ * bytes read for a file that is not being written.
+ */
+async function readOpenedWorkingTreeFile(
+  fullPath: string,
+  opts: WorkingTreeReadOptions,
+): Promise<{ kind: 'file'; content: Buffer; size?: number } | { kind: 'directory' } | { kind: 'not-regular' }> {
+  const handle = await open(fullPath, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stats = await handle.stat();
+    if (stats.isDirectory()) return { kind: 'directory' };
+    if (opts.regularOnly && !stats.isFile()) return { kind: 'not-regular' };
+    if (opts.maxBytes === undefined) return { kind: 'file', content: await handle.readFile() };
+    const length = Math.min(opts.maxBytes, stats.size);
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    return { kind: 'file', content: buffer.subarray(0, bytesRead), size: stats.size };
+  } finally {
+    await handle.close();
   }
 }
 

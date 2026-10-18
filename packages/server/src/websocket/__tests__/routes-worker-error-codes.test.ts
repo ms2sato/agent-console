@@ -217,6 +217,47 @@ describe('Worker WebSocket connection error codes', () => {
     expect(mockWs.closeCalls.length).toBe(1);
   });
 
+  it('refuses a worker WebSocket for a file-viewer worker (REST only): UNSUPPORTED_OPERATION, normal closure so the client does not reconnect', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    const session = await sessionManager.createSession({
+      type: 'quick',
+      locationPath: '/test/path',
+      agentId: 'claude-code',
+    });
+    const viewer = await sessionManager.createWorker(session.id, { type: 'file-viewer' });
+    expect(viewer).not.toBeNull();
+
+    const handlers = capturedWorkerHandlerFactory!({
+      req: {
+        param: (name: string) => {
+          if (name === 'sessionId') return session.id;
+          if (name === 'workerId') return viewer!.id;
+          return '';
+        },
+      },
+    });
+    const mockWs = createMockWs();
+    const ptyCountBefore = ptyFactory.instances.length;
+
+    handlers.onOpen({}, mockWs);
+
+    const errorMessage = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMessage.type).toBe('error');
+    expect(errorMessage.code).toBe('UNSUPPORTED_OPERATION');
+    expect(JSON.parse(mockWs.sentMessages[1]).type).toBe('exit');
+    expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: errorMessage.message }]);
+    // Nothing was activated or attached on its behalf.
+    expect(ptyFactory.instances.length).toBe(ptyCountBefore);
+
+    // A frame that still arrives afterwards is ignored: no reply, no error.
+    mockWs.sentMessages.length = 0;
+    handlers.onMessage({ data: JSON.stringify({ type: 'input', data: 'x' }) }, mockWs);
+    handlers.onMessage({ data: JSON.stringify({ type: 'request-history', fromOffset: 0 }) }, mockWs);
+    await Bun.sleep(50); // the history path answers asynchronously
+    expect(mockWs.sentMessages).toEqual([]);
+  });
+
   it('closes a worker socket opened while the session is pausing with SESSION_PAUSED and does not spawn a PTY', async () => {
     expect(capturedWorkerHandlerFactory).not.toBeNull();
 

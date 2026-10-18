@@ -243,6 +243,15 @@ export interface InternalGitDiffWorker extends InternalWorkerBase {
 }
 
 /**
+ * Internal file-viewer worker. Does not use PTY - runs in server process. It
+ * holds no state of its own: the selected path and the expanded directories
+ * are client state, and the two read routes are stateless.
+ */
+export interface InternalFileViewerWorker extends InternalWorkerBase {
+  type: 'file-viewer';
+}
+
+/**
  * Internal embedded-agent worker. Owns an LLM-loop subprocess (not a PTY) and
  * streams NDJSON events. Deliberately does NOT extend InternalPtyWorkerBase (no
  * PTY, no ActivityDetector), but mirrors the stream fields (outputOffset,
@@ -384,6 +393,7 @@ export type InternalWorker =
   | InternalAgentWorker
   | InternalTerminalWorker
   | InternalGitDiffWorker
+  | InternalFileViewerWorker
   | InternalEmbeddedAgentWorker;
 
 /**

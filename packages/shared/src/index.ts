@@ -23,6 +23,7 @@ export * from './types/todo.js';
 export * from './utils/ndjson-lines.js';
 export * from './utils/agent-capabilities.js';
 export * from './utils/worker-predicates.js';
+export * from './utils/prism-language-for-path.js';
 export * from './schemas/index.js';
 export * from './constants/index.js';
 export * from './schema-version.gen.js';

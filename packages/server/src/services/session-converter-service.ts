@@ -243,6 +243,13 @@ export class SessionConverterService {
           createdAt: w.createdAt,
           baseCommit: w.baseCommit,
         };
+      } else if (w.type === 'file-viewer') {
+        return {
+          id: w.id,
+          type: 'file-viewer' as const,
+          name: w.name,
+          createdAt: w.createdAt,
+        };
       } else if (w.type === 'embedded-agent') {
         const definition = (this.deps.getEmbeddedAgent ?? (() => undefined))(w.embeddedAgentId);
         // Effective model/effort resolved through the single writer. This

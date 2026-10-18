@@ -411,6 +411,14 @@ export class WorkerLifecycleManager {
         reasoningEffort: overrides.reasoningEffort,
         contextWindowTokens: overrides.contextWindowTokens,
       });
+    } else if (request.type === 'file-viewer') {
+      // File-viewer worker: no process, no output stream, nothing to
+      // activate. The two read routes are stateless.
+      worker = this.deps.workerManager.initializeFileViewerWorker({
+        id: workerId,
+        name: workerName,
+        createdAt,
+      });
     } else {
       // git-diff worker (async initialization for base commit calculation).
       // Resolve the worktree-owning OS username so the initial
@@ -471,8 +479,8 @@ export class WorkerLifecycleManager {
     const worker = session.workers.get(workerId);
     if (!worker) return null;
 
-    // Non-PTY workers (git-diff, embedded-agent) have no PTY to activate here.
-    if (worker.type === 'git-diff' || worker.type === 'embedded-agent') return null;
+    // Non-PTY workers (git-diff, file-viewer, embedded-agent) have no PTY to activate here.
+    if (worker.type === 'git-diff' || worker.type === 'file-viewer' || worker.type === 'embedded-agent') return null;
 
     // If PTY is already active, return the worker
     if (worker.pty) {
@@ -562,6 +570,8 @@ export class WorkerLifecycleManager {
     } else if (worker.type === 'git-diff') {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
+    } else if (worker.type === 'file-viewer') {
+      // file-viewer worker: no process, watcher or output stream to tear down.
     } else {
       // embedded-agent worker: gracefully tear down the loop subprocess (and
       // revoke its MCP token) BEFORE cleaning the output stream. Cleanup must
@@ -1673,7 +1683,7 @@ export class WorkerLifecycleManager {
       };
     }
 
-    // Non-PTY workers (git-diff, embedded-agent) don't need PTY restoration
+    // Non-PTY workers (git-diff, file-viewer, embedded-agent) don't need PTY restoration
     if (!isInternalPtyWorker(existingWorker)) {
       return {
         success: false,
@@ -1844,7 +1854,7 @@ export class WorkerLifecycleManager {
   ): Promise<HistoryReadResult | null> {
     const session = this.deps.getSession(sessionId);
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return null;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'file-viewer') return null;
 
     const resolver = await this.resolveOutputResolver(sessionId, session);
     if (!resolver) {
@@ -1888,7 +1898,7 @@ export class WorkerLifecycleManager {
   ): Promise<HistoryRangeResult | null> {
     const session = this.deps.getSession(sessionId);
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return null;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'file-viewer') return null;
 
     const resolver = await this.resolveOutputResolver(sessionId, session);
     if (!resolver) return null;
@@ -1904,7 +1914,7 @@ export class WorkerLifecycleManager {
    */
   getWorkerEpoch(sessionId: string, workerId: string): number | null {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return null;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'file-viewer') return null;
     return worker.epoch;
   }
 
@@ -1916,7 +1926,7 @@ export class WorkerLifecycleManager {
   async getCurrentOutputOffset(sessionId: string, workerId: string): Promise<number> {
     const session = this.deps.getSession(sessionId);
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return 0;
+    if (!worker || worker.type === 'git-diff' || worker.type === 'file-viewer') return 0;
 
     const resolver = await this.resolveOutputResolver(sessionId, session);
     if (!resolver) {
@@ -1964,7 +1974,7 @@ export class WorkerLifecycleManager {
 
   private generateWorkerName(
     session: InternalSession,
-    type: 'agent' | 'terminal' | 'git-diff' | 'embedded-agent',
+    type: 'agent' | 'terminal' | 'git-diff' | 'file-viewer' | 'embedded-agent',
     agentId?: string,
     embeddedAgentName?: string,
   ): string {
@@ -1976,6 +1986,10 @@ export class WorkerLifecycleManager {
 
     if (type === 'git-diff') {
       return 'Git Diff';
+    }
+
+    if (type === 'file-viewer') {
+      return 'File Viewer';
     }
 
     if (type === 'embedded-agent') {

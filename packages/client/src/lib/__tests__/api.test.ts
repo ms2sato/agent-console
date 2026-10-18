@@ -1,6 +1,8 @@
 import { describe, it, expect as bunExpect, mock, beforeEach, afterAll, afterEach, spyOn } from 'bun:test';
 import {
   fetchConfig,
+  fetchFileTree,
+  fetchFileContent,
   createSession,
   getSession,
   deleteSession,
@@ -191,6 +193,87 @@ function expectAcceptedByWireSchema(body: unknown): void {
 describe('API Client', () => {
   beforeEach(() => {
     mockFetch.mockReset();
+  });
+
+  describe('file viewer fetchers', () => {
+    it('fetchFileTree GETs the tree route with the directory as the path query and parses the body', async () => {
+      const body = { path: 'src', entries: [{ name: 'a.ts', kind: 'file' }, { name: 'lnk', kind: 'symlink' }] };
+      mockFetch.mockResolvedValue(createMockResponse(body));
+
+      const result = await fetchFileTree('s1', 'w1', 'src');
+
+      expect(result).toEqual(body);
+      expect(getLastFetchMethod()).toBe('GET');
+      const url = new URL(getLastFetchUrl(), 'http://localhost');
+      expect(url.pathname).toBe('/api/sessions/s1/workers/w1/files/tree');
+      expect(url.searchParams.get('path')).toBe('src');
+    });
+
+    it('fetchFileTree sends the empty root path as an empty query value', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ path: '', entries: [] }));
+
+      await fetchFileTree('s1', 'w1', '');
+
+      const url = new URL(getLastFetchUrl(), 'http://localhost');
+      expect(url.searchParams.get('path')).toBe('');
+    });
+
+    it('fetchFileContent keeps a path with spaces, ampersands and unicode intact in the query', async () => {
+      const path = 'dir one/a & b=c#d.ts';
+      mockFetch.mockResolvedValue(
+        createMockResponse({ path, kind: 'text', content: '', size: 0, truncated: false, language: 'typescript' })
+      );
+
+      await fetchFileContent('s1', 'w1', path);
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').searchParams.get('path')).toBe(path);
+    });
+
+    it('fetchFileTree rejects an entry with an unknown kind (strict wire schema)', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ path: '', entries: [{ name: 'x', kind: 'socket' }] }));
+      await expect(fetchFileTree('s1', 'w1', '')).rejects.toThrow();
+    });
+
+    it('fetchFileTree surfaces the route message and status on a non-ok response', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ error: 'Path resolves outside the working directory' }, { status: 400, ok: false })
+      );
+
+      const error = await fetchFileTree('s1', 'w1', 'lnk').catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).message).toBe('Path resolves outside the working directory');
+      expect((error as ApiError).status).toBe(400);
+    });
+
+    it('fetchFileContent GETs the content route with the file as the path query and parses the body', async () => {
+      const body = { path: 'src/a.ts', kind: 'text', content: 'const a = 1;\n', size: 13, truncated: false, language: 'typescript' };
+      mockFetch.mockResolvedValue(createMockResponse(body));
+
+      const result = await fetchFileContent('s1', 'w1', 'src/a.ts');
+
+      expect(result).toEqual(body);
+      const url = new URL(getLastFetchUrl(), 'http://localhost');
+      expect(url.pathname).toBe('/api/sessions/s1/workers/w1/files/content');
+      expect(url.searchParams.get('path')).toBe('src/a.ts');
+    });
+
+    it('fetchFileContent rejects a binary body that carries content (cross-field rule of the shared schema)', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ path: 'a.bin', kind: 'binary', content: 'x', size: 1, truncated: false, language: 'text' })
+      );
+      await expect(fetchFileContent('s1', 'w1', 'a.bin')).rejects.toThrow();
+    });
+
+    it('fetchFileContent surfaces the route message on a non-ok response', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ error: 'File not found' }, { status: 404, ok: false }));
+
+      const error = await fetchFileContent('s1', 'w1', 'gone.ts').catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).message).toBe('File not found');
+      expect((error as ApiError).status).toBe(404);
+    });
   });
 
   describe('fetchConfig', () => {

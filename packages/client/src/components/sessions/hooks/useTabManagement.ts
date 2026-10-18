@@ -78,6 +78,7 @@ export interface UseTabManagementResult {
   activeTabId: string | null;
   /** Resolves to the created terminal tab, or null when nothing was created (the failure has already been surfaced via showError). */
   addTerminalTab: () => Promise<Tab | null>;
+  addFileViewerTab: () => Promise<void>;
   addAgentTab: (params: AddAgentWorkerParams) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   handleTabClick: (tabId: string) => void;
@@ -184,6 +185,29 @@ export function useTabManagement({
     }
   }, [activeSession, sessionId, tabs, navigateToWorker, showError]);
 
+  // Add a new file viewer tab. The server names the worker, so the request
+  // carries only the type.
+  const addFileViewerTab = useCallback(async () => {
+    if (!activeSession) return;
+
+    try {
+      const { worker } = await createWorker(sessionId, { type: 'file-viewer' });
+
+      const newTab: Tab = {
+        id: worker.id,
+        workerType: worker.type,
+        name: worker.name,
+      };
+      pendingWorkerIdRef.current = worker.id;
+      setTabs(prev => appendTabIfAbsent(prev, newTab));
+      setActiveTabId(worker.id);
+      navigateToWorker(worker.id);
+    } catch (error) {
+      logger.error('Failed to create file viewer worker:', error);
+      showError('Failed to Create Worker', error instanceof Error ? error.message : 'Unknown error');
+    }
+  }, [activeSession, sessionId, navigateToWorker, showError]);
+
   // Add a new agent-type tab (terminal AgentDefinition or EmbeddedAgentDefinition),
   // selected via the unified agent-selection picker.
   const addAgentTab = useCallback(async (params: AddAgentWorkerParams) => {
@@ -265,6 +289,7 @@ export function useTabManagement({
     tabs,
     activeTabId,
     addTerminalTab,
+    addFileViewerTab,
     addAgentTab,
     closeTab,
     handleTabClick,

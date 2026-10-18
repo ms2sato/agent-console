@@ -76,6 +76,8 @@ function completeWorker(worker: unknown): unknown {
       return { activated: true, ...base };
     case 'git-diff':
       return { baseCommit: 'abc123', ...base };
+    case 'file-viewer':
+      return base;
     case 'embedded-agent':
       return {
         embeddedAgentId: 'embedded-1',

@@ -30,6 +30,10 @@ describe('shared index exports', () => {
       'QuickSessionSchema',
       'SessionSchema',
       'WorkerSchema',
+      'FileViewerWorkerSchema',
+      'FileTreeEntrySchema',
+      'FileTreeResponseSchema',
+      'FileContentResponseSchema',
       'WorkerActivityInfoSchema',
       'RepositorySchema',
       'WorktreeCreationCompletedSchema',
@@ -50,6 +54,13 @@ describe('shared index exports', () => {
     ] as const) {
       expect(mod[name]).toBeDefined();
     }
+  });
+
+  it('should re-export the shared language map the server stamps and the client highlights with', async () => {
+    const mod = await import('../index.js');
+    expect(mod.prismLanguageForPath('src/a.ts')).toBe('typescript');
+    expect(mod.UNKNOWN_PRISM_LANGUAGE).toBe('text');
+    expect(mod.PRISM_LANGUAGE_NAMES).toContain('typescript');
   });
 
   it('should export InteractiveProcessInfo type', async () => {

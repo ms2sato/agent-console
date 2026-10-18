@@ -8179,7 +8179,7 @@ describe('SessionManager', () => {
       });
     }
 
-    describe.each(['agent', 'terminal', 'git-diff', 'embedded-agent'] as const)(
+    describe.each(['agent', 'terminal', 'git-diff', 'file-viewer', 'embedded-agent'] as const)(
       'for a %s worker',
       (workerType) => {
         async function setup() {
@@ -8191,6 +8191,9 @@ describe('SessionManager', () => {
           );
           if (workerType === 'terminal') {
             await manager.createWorker(session.id, { type: 'terminal' });
+          }
+          if (workerType === 'file-viewer') {
+            await manager.createWorker(session.id, { type: 'file-viewer' });
           }
           const worker = manager.getSession(session.id)!.workers.find((w) => w.type === workerType);
           expect(worker).toBeDefined();
@@ -8266,6 +8269,161 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('file-viewer worker', () => {
+    async function createSessionWithViewer(type: 'quick' | 'worktree' = 'quick') {
+      const manager = await getSessionManager();
+      const session = await manager.createSession(
+        type === 'quick'
+          ? { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' }
+          : {
+              type: 'worktree',
+              locationPath: '/test/path',
+              repositoryId: 'repo-1',
+              worktreeId: 'feature-branch',
+              agentId: 'claude-code',
+            },
+      );
+      const viewer = await manager.createWorker(session.id, { type: 'file-viewer' });
+      expect(viewer).not.toBeNull();
+      return { manager, session, viewer: viewer! };
+    }
+
+    it('createSession creates exactly the initial worker and Diff -- it never auto-creates a viewer (opt-in, unlike git-diff)', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+
+      expect(session.workers.map((w: Worker) => w.type)).toEqual(['agent', 'git-diff']);
+      expect(session.workers.some((w: Worker) => w.type === 'file-viewer')).toBe(false);
+    });
+
+    it('createWorker adds a bare worker: named File Viewer, no process spawned, public shape has no extra field', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      const viewer = await manager.createWorker(session.id, { type: 'file-viewer' });
+
+      expect(viewer).toEqual({
+        id: expect.any(String),
+        type: 'file-viewer',
+        name: 'File Viewer',
+        createdAt: expect.any(String),
+      });
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore);
+      expect(manager.getSession(session.id)!.workers.map((w) => w.type)).toEqual(['agent', 'git-diff', 'file-viewer']);
+    });
+
+    it('an explicit name wins over the default', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+      const viewer = await manager.createWorker(session.id, { type: 'file-viewer', name: 'Docs' });
+      expect(viewer!.name).toBe('Docs');
+    });
+
+    it('is persisted as a file-viewer row and broadcast in the session update', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const viewer = await manager.createWorker(session.id, { type: 'file-viewer' });
+
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted!.workers.find((w) => w.id === viewer!.id)).toEqual({
+        id: viewer!.id,
+        type: 'file-viewer',
+        name: 'File Viewer',
+        createdAt: viewer!.createdAt,
+      });
+      expect(onSessionUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workers: expect.arrayContaining([expect.objectContaining({ id: viewer!.id, type: 'file-viewer' })]),
+        }),
+      );
+    });
+
+    it('deleteWorker removes it from memory and from storage without touching the PTY worker', async () => {
+      const { manager, session, viewer } = await createSessionWithViewer();
+      const agent = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      expect(await manager.deleteWorker(session.id, viewer.id)).toBe(true);
+
+      expect(manager.getSession(session.id)!.workers.map((w) => w.id)).not.toContain(viewer.id);
+      expect(manager.getSession(session.id)!.workers.map((w) => w.id)).toContain(agent.id);
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted!.workers.map((w) => w.id)).not.toContain(viewer.id);
+      expect(ptyFactory.instances.at(0)!.killed).toBe(false);
+    });
+
+    it('survives pause and resume as a file-viewer worker, and resume spawns no extra process', async () => {
+      const { manager, session, viewer } = await createSessionWithViewer('worktree');
+
+      expect((await manager.pauseSession(session.id)).paused).toBe(true);
+      const ptyCountBeforeResume = ptyFactory.instances.length;
+      const resumed = await manager.resumeSession(session.id);
+
+      expect(resumed).not.toBeNull();
+      expect(resumed!.session.workers.find((w) => w.id === viewer.id)).toEqual(viewer);
+      // only the agent PTY is revived; the viewer has nothing to activate
+      expect(ptyFactory.instances.length).toBe(ptyCountBeforeResume + 1);
+    });
+
+    it('a session paused before a server restart resumes on a fresh manager with the viewer restored from storage', async () => {
+      const { manager, session, viewer } = await createSessionWithViewer('worktree');
+      await manager.pauseSession(session.id);
+
+      const manager2 = await simulateServerRestart();
+      const resumed = await manager2.resumeSession(session.id);
+
+      expect(resumed).not.toBeNull();
+      expect(resumed!.session.workers.find((w: Worker) => w.id === viewer.id)).toEqual(viewer);
+    });
+
+    it('deleteSession with a viewer succeeds and kills the PTY worker', async () => {
+      const { manager, session } = await createSessionWithViewer();
+      expect(await manager.deleteSession(session.id)).toBe(true);
+      expect(manager.getSession(session.id)).toBeUndefined();
+      expect(ptyFactory.instances.at(0)!.killed).toBe(true);
+    });
+
+    it('is not a message target or source, and not a notification target', async () => {
+      const { manager, session, viewer } = await createSessionWithViewer();
+      const agent = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // The guard is an early exit: without it the PTY injection would be attempted (and fail) for
+      // a worker that has no PTY, so the observable is that no injection is even tried.
+      const injectSpy = spyOn(manager['ptyMessageInjectionService'], 'injectMessage');
+      try {
+        expect(await manager.sendMessage(session.id, null, viewer.id, 'hi')).toBeNull();
+        expect(await manager.sendMessage(session.id, viewer.id, agent.id, 'hi')).toBeNull();
+        expect(injectSpy).not.toHaveBeenCalled();
+      } finally {
+        injectSpy.mockRestore();
+      }
+      const params: PtyNotificationParams = {
+        kind: 'internal-timer',
+        tag: 'internal:timer',
+        fields: { timerId: 't1', action: 'check', fireCount: '1', nextIntervalSeconds: '60', nextFireAt: '2026-01-01T00:01:00.000Z' },
+        intent: 'inform',
+      };
+      const result = await manager.deliverWorkerNotification(session.id, viewer.id, params);
+      expect(result).toEqual({ ok: false, error: expect.any(String), reason: 'unsupported-worker' });
+    });
+
+    it('has no PTY and no output stream: restore is refused, history / epoch / offset read as absent', async () => {
+      const { manager, session, viewer } = await createSessionWithViewer();
+
+      expect(await manager.getAvailableWorker(session.id, viewer.id)).toBeNull();
+      const restore = await manager.restoreWorker(session.id, viewer.id);
+      expect(restore.success).toBe(false);
+      expect(await manager.getWorkerOutputHistory(session.id, viewer.id)).toBeNull();
+      expect(await manager.getWorkerHistoryRange(session.id, viewer.id, 0)).toBeNull();
+      expect(manager.getWorkerEpoch(session.id, viewer.id)).toBeNull();
+      expect(await manager.getCurrentOutputOffset(session.id, viewer.id)).toBe(0);
+      expect(manager.attachWorkerCallbacks(session.id, viewer.id, {} as Parameters<typeof manager.attachWorkerCallbacks>[2])).toBeNull();
+    });
+  });
+
   describe('restartAllAgentWorkers', () => {
     it('should restart agent workers across multiple sessions', async () => {
       const manager = await getSessionManager();
@@ -8296,6 +8454,22 @@ describe('SessionManager', () => {
       const sessionIds = result.results.map((r: { sessionId: string }) => r.sessionId);
       expect(sessionIds).toContain(session1.id);
       expect(sessionIds).toContain(session2.id);
+    });
+
+    it('skips file-viewer workers silently: no result row, no failure, no extra process', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+      const viewer = await manager.createWorker(session.id, { type: 'file-viewer' });
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      const result = await manager.restartAllAgentWorkers({ kind: 'all' });
+
+      expect(result.results.map((r: { workerId: string }) => r.workerId)).not.toContain(viewer!.id);
+      expect(result.results).toHaveLength(1);
+      expect(result.failed).toBe(0);
+      expect(result.restarted).toBe(1);
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
+      expect(manager.getSession(session.id)!.workers.some((w) => w.id === viewer!.id)).toBe(true);
     });
 
     // Issue #1299 PR-2 AC test T1: inverts the PR-1 pin above -- PR-1

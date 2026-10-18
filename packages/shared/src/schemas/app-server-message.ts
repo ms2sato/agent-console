@@ -45,6 +45,16 @@ export const GitDiffWorkerSchema = v.strictObject({
   baseCommit: v.string(),
 });
 
+/**
+ * A read-only file tree + content view of the session's working directory.
+ * Server-process worker with no PTY and no type-specific field: the selected
+ * path and the expanded directories are client state.
+ */
+export const FileViewerWorkerSchema = v.strictObject({
+  ...WorkerBaseSchema.entries,
+  type: v.literal('file-viewer'),
+});
+
 export const EmbeddedAgentWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('embedded-agent'),
@@ -136,6 +146,7 @@ export const WorkerSchema = v.union([
   AgentWorkerSchema,
   TerminalWorkerSchema,
   GitDiffWorkerSchema,
+  FileViewerWorkerSchema,
   EmbeddedAgentWorkerSchema,
 ]);
 
@@ -143,6 +154,7 @@ export type WorkerBase = v.InferOutput<typeof WorkerBaseSchema>;
 export type AgentWorker = v.InferOutput<typeof AgentWorkerSchema>;
 export type TerminalWorker = v.InferOutput<typeof TerminalWorkerSchema>;
 export type GitDiffWorker = v.InferOutput<typeof GitDiffWorkerSchema>;
+export type FileViewerWorker = v.InferOutput<typeof FileViewerWorkerSchema>;
 export type EmbeddedAgentWorker = v.InferOutput<typeof EmbeddedAgentWorkerSchema>;
 export type Worker = v.InferOutput<typeof WorkerSchema>;
 

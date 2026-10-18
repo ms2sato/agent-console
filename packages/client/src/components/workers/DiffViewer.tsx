@@ -2,58 +2,7 @@ import { useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
 import { parsePatch } from 'diff';
 import { Highlight, themes, type Language } from 'prism-react-renderer';
 import type { GitDiffFile, ExpandedLineChunk, ReviewAnnotationSet, ReviewAnnotation } from '@agent-console/shared';
-
-// Import additional language support (ruby, bash, css, scss, less, typescript, javascript, sql)
-import '../../lib/prism-languages';
-
-/**
- * Get Prism language from file path extension
- */
-function getLanguageFromPath(filePath: string): Language {
-  const extension = filePath.split('.').pop()?.toLowerCase() || '';
-  const languageMap: Record<string, Language> = {
-    ts: 'typescript',
-    tsx: 'tsx',
-    js: 'javascript',
-    jsx: 'jsx',
-    mjs: 'javascript',
-    cjs: 'javascript',
-    css: 'css',
-    scss: 'scss',
-    sass: 'scss',
-    less: 'less',
-    json: 'json',
-    md: 'markdown',
-    mdx: 'markdown',
-    sh: 'bash',
-    bash: 'bash',
-    zsh: 'bash',
-    yml: 'yaml',
-    yaml: 'yaml',
-    py: 'python',
-    rs: 'rust',
-    go: 'go',
-    sql: 'sql',
-    rb: 'ruby',
-    ruby: 'ruby',
-    rake: 'ruby',
-    gemspec: 'ruby',
-    erb: 'markup',
-    rhtml: 'markup',
-    html: 'markup',
-    htm: 'markup',
-    xml: 'markup',
-    svg: 'markup',
-  };
-
-  // Handle special filenames
-  const fileName = filePath.split('/').pop()?.toLowerCase() || '';
-  if (fileName === 'dockerfile') return 'bash';
-  if (fileName === 'gemfile' || fileName === 'rakefile') return 'ruby';
-  if (fileName === '.gitignore' || fileName === '.env') return 'bash';
-
-  return languageMap[extension] || 'plain';
-}
+import { rendererLanguageForPath } from '../../lib/prism-grammar';
 
 interface DiffViewerProps {
   rawDiff: string;
@@ -532,7 +481,7 @@ function AnnotationReasonBanner({ annotations }: { annotations: ReviewAnnotation
 }
 
 function FileHunks({ hunks, filePath, expandedChunks, onRequestExpand, fileAnnotations, showFullDiff, onLineClick }: FileHunksProps) {
-  const language = getLanguageFromPath(filePath);
+  const language = rendererLanguageForPath(filePath);
   const isFilteredView = fileAnnotations != null && fileAnnotations.length > 0 && !showFullDiff;
   const hasAnnotations = fileAnnotations != null && fileAnnotations.length > 0;
 

@@ -226,6 +226,22 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     await pause;
   });
 
+  it('restartAllAgentWorkers yields no result entry for a file-viewer worker of a pausing session (no process, like git-diff)', async () => {
+    const { manager, executeHookCommand, resolveHook } = await setup();
+    const session = await createSession(manager);
+    const viewer = await manager.createWorker(session.id, { type: 'file-viewer' });
+    const agent = workerOfType(session, 'agent');
+    const pause = manager.pauseSession(session.id);
+    await hookStarted(executeHookCommand);
+
+    const result = await manager.restartAllAgentWorkers({ kind: 'all' });
+
+    expect(result.results.map((r) => r.workerId)).toEqual([agent.id]);
+    expect(result.results.map((r) => r.workerId)).not.toContain(viewer!.id);
+    resolveHook({ success: true });
+    await pause;
+  });
+
   it('a second pauseSession joins the one in flight: same outcome, one hook run', async () => {
     const { manager, executeHookCommand, resolveHook } = await setup();
     const session = await createSession(manager);

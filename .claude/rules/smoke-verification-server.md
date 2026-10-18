@@ -33,6 +33,9 @@ paths:
   - "scripts/smoke/check-embedded-agent-bash-env.ts"
   - "scripts/smoke/check-embedded-agent-elevation.ts"
   - "scripts/smoke/check-kill-as-user.ts"
+  - "scripts/smoke/check-file-viewer-elevated-read.ts"
+  - "packages/server/src/services/file-viewer-service.ts"
+  - "packages/server/src/lib/git.ts"
   - "scripts/smoke/check-orphan-sweep.ts"
   - "scripts/smoke/check-login-shell-sentinel.ts"
   - "scripts/smoke/check-exit-127-diagnostic.ts"
@@ -138,6 +141,12 @@ The same smoke also carries the `runAsUser` cwd fail-closed case, so PRs touchin
 Requires elevation privilege for `<target-user>`; passing the current process user as `<target-user>` runs in a degraded mode that skips the real `sudo` boundary.
 
 The `runAsUser` timeout tree-kill case accepts a zombie grandchild (state `Z`, logged as a NOTE) unless the opt-in `--require-reaped` flag is given, in which case the grandchild must disappear from /proc (ESRCH). The container driver passes the flag and first asserts that the container's PID 1 is `docker-init` (compose `init: true`), so a regression to `bun` as PID 1 fails the run; a host run omits the flag because its PID 1 is not under the smoke's control.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
+
+## Additional Verification: File Viewer Elevated Read Smoke
+
+PRs touching `packages/server/src/services/file-viewer-service.ts`, or `readWorkingTreeFile` / `buildWorkingTreeReadCommand` in `packages/server/src/lib/git.ts`, must run `bun scripts/smoke/check-file-viewer-elevated-read.ts <target-user>` locally before pushing. The file viewer lists and reads a directory that can be mode 0700 and owned by another OS user, so every list, path resolution and read goes through `runAsUser`; unit tests pin the command text and real-`sh` tests pin its semantics, but only this smoke sends it through the elevated login shell (which re-parses the inner command) and the three-run `find -print0` output through the wrapper's pipes into the double-NUL parser. As the server user it builds a `<target-user>`-owned 0700 directory through the elevated runner (a subdirectory, a dotfile, a symlink to a regular file inside, a symlink pointing outside, a fifo, a 1 MiB + 1 byte file, a file with a NUL in its first 8 KiB, an empty file), then calls the REAL `listDirectory` / `readFileContent` with `requestUser = <target-user>` and asserts the kind of every entry, directories first and byte-order names, the text content, `truncated` with the real size, `kind: 'binary'`, empty content, the symlink-out and fifo `ValidationError`s (the fifo promptly, not a blocked `cat`) and the missing-path `NotFoundError`. A negative control in the same run asserts the server process's own `readdir` / `readFile` on that directory fail with EACCES, so a pass is attributable to elevation. It also exercises `readWorkingTreeFile`'s elevated branch end to end, which no executed verification had done before. Passing the current process user runs in a degraded mode: the cross-user boundary and the EACCES control are skipped, but the command text, the `sh` parsing of the listing and the double-NUL parse are still proven against real files.
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
 

@@ -20,6 +20,7 @@ import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
   buildInternalGitDiffWorker,
+  buildInternalFileViewerWorker,
   buildInternalEmbeddedAgentWorker,
   buildInternalWorktreeSession,
   buildPersistedWorktreeSession,
@@ -158,6 +159,22 @@ describe('SessionDeletionService', () => {
 
       expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(2);
       expect(mockStopWatching).toHaveBeenCalledWith('/test/worktree');
+    });
+
+    it('should leave file-viewer workers alone: not killed, no watcher stopped, no embedded-agent deactivation', async () => {
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const viewer = buildInternalFileViewerWorker({ id: 'w-fv' });
+      const session = buildInternalWorktreeSession([agentWorker, viewer]);
+      const deactivateEmbeddedAgentWorker = mock(async () => {});
+      const deps = createMockDeps({ getSession: () => session, deactivateEmbeddedAgentWorker });
+      const service = new SessionDeletionService(deps);
+
+      await service.killSessionWorkers(session.id);
+
+      expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(1);
+      expect(deps.workerManager.killWorker).toHaveBeenCalledWith(agentWorker, session.id);
+      expect(deactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      expect(mockStopWatching).not.toHaveBeenCalled();
     });
 
     it('should deactivate embedded-agent workers instead of killWorker (polarity guard)', async () => {
@@ -374,6 +391,19 @@ describe('SessionDeletionService', () => {
       await service.deleteSession('session-1');
 
       expect(conditionalWakeupCleanup).toHaveBeenCalledWith('session-1');
+    });
+
+    it('should not kill, unwatch or deactivate anything for a file-viewer worker during deletion', async () => {
+      const session = buildInternalWorktreeSession([buildInternalFileViewerWorker({ id: 'w-fv' })]);
+      const deactivateEmbeddedAgentWorker = mock(async () => {});
+      const deps = createMockDeps({ getSession: () => session, deactivateEmbeddedAgentWorker });
+      const service = new SessionDeletionService(deps);
+
+      expect(await service.deleteSession('session-1')).toBe(true);
+
+      expect(deps.workerManager.killWorker).not.toHaveBeenCalled();
+      expect(deactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      expect(mockStopWatching).not.toHaveBeenCalled();
     });
 
     it('should stop watching git-diff workers during deletion', async () => {

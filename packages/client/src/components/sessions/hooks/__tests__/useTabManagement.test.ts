@@ -347,6 +347,59 @@ describe('useTabManagement', () => {
       expect(navigateToWorker).toHaveBeenCalledWith('new-terminal-1');
     });
 
+    it('addFileViewerTab posts a file-viewer worker with no name and adds a tab for it', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const navigateToWorker = mock(() => {});
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+        navigateToWorker,
+      });
+      createWorkerResponse = () => ({
+        worker: {
+          id: 'new-viewer-1',
+          type: 'file-viewer' as const,
+          name: 'File Viewer',
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+      navigateToWorker.mockClear();
+
+      await act(async () => {
+        await result.current.addFileViewerTab();
+      });
+
+      const postCalls = findFetchCalls(/\/sessions\/session-1\/workers$/);
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0].method).toBe('POST');
+      expect(postCalls[0].body).toEqual({ type: 'file-viewer' });
+      expect(result.current.tabs).toHaveLength(2);
+      expect(result.current.tabs[1]).toEqual({
+        id: 'new-viewer-1',
+        workerType: 'file-viewer',
+        name: 'File Viewer',
+      });
+      expect(navigateToWorker).toHaveBeenCalledWith('new-viewer-1');
+    });
+
+    it('addFileViewerTab surfaces an error via showError and adds no tab when the create fails', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const showError = mock(() => {});
+      const options = createDefaultOptions({ activeSession: { workers }, urlWorkerId: 'agent-1', showError });
+      mockFetch.mockImplementationOnce(async () => new Response(JSON.stringify({ error: 'boom' }), { status: 400 }));
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      await act(async () => {
+        await result.current.addFileViewerTab();
+      });
+
+      expect(showError).toHaveBeenCalledWith('Failed to Create Worker', 'boom');
+      expect(result.current.tabs).toHaveLength(1);
+    });
+
     it('closeTab deletes worker and removes tab', async () => {
       const workers = [createAgentWorker('agent-1'), createTerminalWorker('terminal-1')];
       const options = createDefaultOptions({

@@ -85,6 +85,8 @@ export class SessionDeletionService {
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         this.deps.stopWatching(session.locationPath);
+      } else if (worker.type === 'file-viewer') {
+        // No process, watcher or output stream: nothing to tear down.
       } else if (worker.type === 'embedded-agent') {
         killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));
       } else {
@@ -169,6 +171,8 @@ export class SessionDeletionService {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
         this.deps.stopWatching(session.locationPath);
+      } else if (worker.type === 'file-viewer') {
+        // No process, watcher or output stream: nothing to tear down.
       } else if (worker.type === 'embedded-agent') {
         // Tear down the loop subprocess (killWorker no-ops on non-PTY workers).
         killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));

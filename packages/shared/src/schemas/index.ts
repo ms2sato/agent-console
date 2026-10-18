@@ -109,6 +109,7 @@ export {
   type CreateAgentWorkerParams,
   type CreateTerminalWorkerParams,
   type CreateGitDiffWorkerParams,
+  type CreateFileViewerWorkerParams,
   type CreateEmbeddedAgentWorkerParams,
   type CreateWorkerParams,
   // API types
@@ -121,6 +122,16 @@ export {
   WorkerResponseSchema,
   type WorkerResponse,
 } from './worker.js';
+
+// File viewer schemas
+export {
+  FileTreeEntrySchema,
+  FileTreeResponseSchema,
+  FileContentResponseSchema,
+  type FileTreeEntry,
+  type FileTreeResponse,
+  type FileContentResponse,
+} from './file-viewer.js';
 
 // Embedded agent schemas
 export {
@@ -276,6 +287,7 @@ export {
   AgentWorkerSchema,
   TerminalWorkerSchema,
   GitDiffWorkerSchema,
+  FileViewerWorkerSchema,
   EmbeddedAgentWorkerSchema,
   WorkerSchema,
   SessionBaseSchema,
@@ -295,6 +307,7 @@ export {
   type AgentWorker,
   type TerminalWorker,
   type GitDiffWorker,
+  type FileViewerWorker,
   type EmbeddedAgentWorker,
   type Worker,
   type SessionBase,

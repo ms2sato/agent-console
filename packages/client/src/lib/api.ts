@@ -34,6 +34,8 @@ import type {
   UsersListResponse,
   SetMcpServerPermissionsRequest,
   ListSharedAccountsResponse,
+  FileTreeResponse,
+  FileContentResponse,
 } from '@agent-console/shared';
 import {
   ArtifactsListResponseSchema,
@@ -93,6 +95,8 @@ import {
   MessageTemplateResponseSchema,
   SuccessResponseSchema,
   RegisterSharedAccountResponseSchema,
+  FileTreeResponseSchema,
+  FileContentResponseSchema,
 } from '@agent-console/shared';
 import type {
   WorkersResponse,
@@ -254,6 +258,47 @@ export async function createWorker(
     await handleApiError(res, 'Failed to create worker');
   }
   return v.parse(WorkerResponseSchema, await res.json());
+}
+
+/**
+ * Manual fetch for the two file viewer routes: they read `?path=` straight
+ * from the request without a validator, so the Hono RPC client has no typed
+ * `query` for them. The body is parsed by the shared schemas instead.
+ */
+function fileViewerUrl(sessionId: string, workerId: string, route: 'tree' | 'content', path: string): string {
+  const query = new URLSearchParams({ path });
+  return `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/workers/${encodeURIComponent(workerId)}/files/${route}?${query}`;
+}
+
+/**
+ * List one directory level of a file-viewer worker's session directory.
+ * `path` is relative to the session location; '' is the root. A failure
+ * surfaces the route's own message (e.g. a symlink that leaves the working
+ * directory).
+ */
+export async function fetchFileTree(
+  sessionId: string,
+  workerId: string,
+  path: string
+): Promise<FileTreeResponse> {
+  const res = await fetch(fileViewerUrl(sessionId, workerId, 'tree', path));
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to list directory');
+  }
+  return v.parse(FileTreeResponseSchema, await res.json());
+}
+
+/** Read one file of a file-viewer worker's session directory (first 1 MiB at most). */
+export async function fetchFileContent(
+  sessionId: string,
+  workerId: string,
+  path: string
+): Promise<FileContentResponse> {
+  const res = await fetch(fileViewerUrl(sessionId, workerId, 'content', path));
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to read file');
+  }
+  return v.parse(FileContentResponseSchema, await res.json());
 }
 
 export async function deleteWorker(sessionId: string, workerId: string): Promise<void> {
