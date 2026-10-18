@@ -16,6 +16,7 @@ import {
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
+  buildPersistedFileViewerWorker,
 } from '../../__tests__/utils/build-test-data.js';
 import { toRepository } from '../../database/mappers.js';
 import type { RepositoryRow } from '../../database/schema.js';
@@ -76,6 +77,7 @@ describe('app-sync payloads parse against the strict AppServerMessageSchema', ()
         buildPersistedAgentWorker({ id: 'pw-1', agentId: 'agent-1', createdAt: '2026-01-01T00:00:00Z' }),
         buildPersistedTerminalWorker({ id: 'pw-2', createdAt: '2026-01-01T00:01:00Z' }),
         buildPersistedGitDiffWorker({ id: 'pw-3', baseCommit: 'abc123', createdAt: '2026-01-01T00:02:00Z' }),
+        buildPersistedFileViewerWorker({ id: 'pw-4', name: 'File Viewer', createdAt: '2026-01-01T00:03:00Z' }),
       ],
     }),
   );
@@ -94,6 +96,13 @@ describe('app-sync payloads parse against the strict AppServerMessageSchema', ()
     const parsed = result.success ? result.output : undefined;
     const sessions = parsed?.type === 'sessions-sync' ? parsed.sessions : [];
     expect(sessions[0]?.createdByUsername).toBe('alice');
+    // The file-viewer worker crosses the wire as exactly the base fields.
+    expect(sessions[0]?.workers.find((w) => w.id === 'pw-4')).toEqual({
+      id: 'pw-4',
+      type: 'file-viewer',
+      name: 'File Viewer',
+      createdAt: '2026-01-01T00:03:00Z',
+    });
   });
 
   it('repositories-sync built from the real toRepository mapper', () => {

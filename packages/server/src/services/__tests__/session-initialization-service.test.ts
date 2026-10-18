@@ -22,6 +22,7 @@ import {
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
+  buildPersistedFileViewerWorker,
 } from '../../__tests__/utils/build-test-data.js';
 
 // Guaranteed to differ from the test runner's own OS username, so
@@ -337,6 +338,18 @@ describe('SessionInitializationService', () => {
         workers: [
           buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'abc123' }),
         ],
+        serverPid: 999,
+      });
+
+      const count = await SessionInitializationService.killOrphanWorkers(session, defaultResolveSpawnUsername);
+      expect(count).toBe(0);
+    });
+
+    it('should skip file-viewer workers (no process)', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-1',
+        locationPath: '/some/path',
+        workers: [buildPersistedFileViewerWorker({ id: 'w1', name: 'Files' })],
         serverPid: 999,
       });
 

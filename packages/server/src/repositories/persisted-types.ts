@@ -67,6 +67,10 @@ export interface PersistedGitDiffWorker extends PersistedWorkerBase {
   baseCommit: string;  // No pid - runs in server process
 }
 
+export interface PersistedFileViewerWorker extends PersistedWorkerBase {
+  type: 'file-viewer';  // No pid, no type-specific column - runs in server process
+}
+
 export interface PersistedEmbeddedAgentWorker extends PersistedWorkerBase {
   type: 'embedded-agent';
   embeddedAgentId: string;
@@ -95,6 +99,7 @@ export type PersistedWorker =
   | PersistedAgentWorker
   | PersistedTerminalWorker
   | PersistedGitDiffWorker
+  | PersistedFileViewerWorker
   | PersistedEmbeddedAgentWorker;
 
 interface PersistedSessionBase {

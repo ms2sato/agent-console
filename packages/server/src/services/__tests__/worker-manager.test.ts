@@ -13,6 +13,8 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import {
   buildInternalGitDiffWorker,
+  buildInternalFileViewerWorker,
+  buildPersistedFileViewerWorker,
   buildInternalEmbeddedAgentWorker,
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
@@ -204,6 +206,23 @@ describe('WorkerManager', () => {
       expect(worker.outputBuffer).toBe('');
       expect(worker.outputOffset).toBe(0);
       expect(worker.connectionCallbacks.size).toBe(0);
+    });
+  });
+
+  describe('initializeFileViewerWorker', () => {
+    it('returns a bare in-process worker: no PTY, no buffer, no callbacks, no type-specific field', () => {
+      const worker = workerManager.initializeFileViewerWorker({
+        id: 'fv-1',
+        name: 'File Viewer',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
+
+      expect(worker).toEqual({
+        id: 'fv-1',
+        type: 'file-viewer',
+        name: 'File Viewer',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
     });
   });
 
@@ -1593,6 +1612,10 @@ describe('WorkerManager', () => {
       7000,
     );
 
+    it('should be safe to call on a file-viewer worker (no process)', async () => {
+      await workerManager.killWorker(buildInternalFileViewerWorker({ id: 'fv-kill' }), 'test-session');
+    });
+
     it('should be safe to call on a git-diff worker (no PTY)', async () => {
       const worker = buildInternalGitDiffWorker({ id: 'git-diff-1', name: 'Diff' });
 
@@ -1890,6 +1913,17 @@ describe('WorkerManager', () => {
       if (publicWorker.type === 'git-diff') {
         expect(publicWorker.baseCommit).toBe('abc123');
       }
+    });
+
+    it('should convert a file-viewer worker to exactly the base wire fields', () => {
+      const worker = buildInternalFileViewerWorker({ id: 'pub-fv', name: 'Files' });
+
+      expect(workerManager.toPublicWorker(worker)).toEqual({
+        id: 'pub-fv',
+        type: 'file-viewer',
+        name: 'Files',
+        createdAt: worker.createdAt,
+      });
     });
 
     it('should convert an embedded-agent worker with activated: false when subprocess is null', () => {
@@ -2284,6 +2318,17 @@ describe('WorkerManager', () => {
       }
     });
 
+    it('should persist a file-viewer worker with no type-specific field', () => {
+      const worker = buildInternalFileViewerWorker({ id: 'fv-1', name: 'Files' });
+
+      expect(workerManager.toPersistedWorker(worker)).toEqual({
+        id: 'fv-1',
+        type: 'file-viewer',
+        name: 'Files',
+        createdAt: worker.createdAt,
+      });
+    });
+
     it('should persist embedded-agent worker with pid: null when subprocess is null', () => {
       const worker = buildInternalEmbeddedAgentWorker({ id: 'embedded-1', embeddedAgentId: 'def-1', subprocess: null });
 
@@ -2636,6 +2681,19 @@ describe('WorkerManager', () => {
       if (worker.type === 'git-diff') {
         expect(worker.baseCommit).toBe('xyz789');
       }
+    });
+
+    it('should restore file-viewer workers fully (nothing to activate)', () => {
+      const workers = workerManager.restoreWorkersFromPersistence([
+        buildPersistedFileViewerWorker({ id: 'restored-fv', name: 'Files' }),
+      ]);
+
+      expect(workers.get('restored-fv')).toEqual({
+        id: 'restored-fv',
+        type: 'file-viewer',
+        name: 'Files',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
     });
 
     it('should restore embedded-agent workers with subprocess: null and deliverInitialPromptOnActivation: true when persisted as eligible (Issue #1074)', () => {

@@ -12,6 +12,7 @@ import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
   buildInternalGitDiffWorker,
+  buildInternalFileViewerWorker,
   buildInternalEmbeddedAgentWorker,
   buildInternalWorktreeSession,
   buildInternalQuickSession,
@@ -218,6 +219,23 @@ describe('SessionPauseResumeService', () => {
       expect(deps.deleteSession).toHaveBeenCalled();
       // Lifecycle callback fired
       expect(onSessionPaused).toHaveBeenCalledTimes(1);
+    });
+
+    it('should pause a session with a file-viewer worker without killing, unwatching or deactivating it', async () => {
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const viewer = buildInternalFileViewerWorker({ id: 'w-fv' });
+      const session = buildInternalWorktreeSession([agentWorker, viewer]);
+      const deactivateEmbeddedAgentWorker = mock(async () => {});
+      mockStopWatching.mockClear();
+      const deps = createMockDeps({ getSession: () => session, deactivateEmbeddedAgentWorker });
+      const service = new SessionPauseResumeService(deps);
+
+      expect(await service.pauseSession('session-1')).toBe(true);
+
+      expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(1);
+      expect(deps.workerManager.killWorker).toHaveBeenCalledWith(agentWorker, 'session-1');
+      expect(deactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      expect(mockStopWatching).not.toHaveBeenCalled();
     });
 
     it('should kill both agent and terminal workers', async () => {

@@ -8,6 +8,7 @@ import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
   buildInternalGitDiffWorker,
+  buildInternalFileViewerWorker,
   buildInternalWorktreeSession,
   buildInternalQuickSession,
   buildPersistedWorktreeSession,
@@ -15,6 +16,7 @@ import {
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
+  buildPersistedFileViewerWorker,
   buildPersistedEmbeddedAgentWorker,
 } from '../../__tests__/utils/build-test-data.js';
 
@@ -83,6 +85,8 @@ describe('SessionConverterService', () => {
           return { id: w.id, type: 'terminal', name: w.name, createdAt: w.createdAt, activated: w.pty !== null };
         } else if (w.type === 'git-diff') {
           return { id: w.id, type: 'git-diff', name: w.name, createdAt: w.createdAt, baseCommit: w.baseCommit };
+        } else if (w.type === 'file-viewer') {
+          return { id: w.id, type: 'file-viewer', name: w.name, createdAt: w.createdAt };
         } else {
           return { id: w.id, type: 'embedded-agent', name: w.name, createdAt: w.createdAt, embeddedAgentId: w.embeddedAgentId, activated: w.subprocess !== null, autoCompaction: w.autoCompaction, reasoningEffort: null, hasParameterOverride: false };
         }
@@ -107,6 +111,8 @@ describe('SessionConverterService', () => {
           return { id: w.id, type: 'terminal', name: w.name, createdAt: w.createdAt, pid: w.pty?.pid ?? null };
         } else if (w.type === 'git-diff') {
           return { id: w.id, type: 'git-diff', name: w.name, createdAt: w.createdAt, baseCommit: w.baseCommit };
+        } else if (w.type === 'file-viewer') {
+          return { id: w.id, type: 'file-viewer', name: w.name, createdAt: w.createdAt };
         } else {
           return {
             id: w.id,
@@ -152,6 +158,19 @@ describe('SessionConverterService', () => {
     it('returns running when there are no PTY workers (only git-diff)', () => {
       const session = buildInternalWorktreeSession([buildInternalGitDiffWorker()]);
       expect(service.computeActivationState(session)).toBe('running');
+    });
+
+    it('returns running when the only worker is a file-viewer (it is not a PTY worker)', () => {
+      const session = buildInternalWorktreeSession([buildInternalFileViewerWorker()]);
+      expect(service.computeActivationState(session)).toBe('running');
+    });
+
+    it('returns hibernated when the PTY workers are dormant, regardless of a file-viewer worker beside them', () => {
+      const session = buildInternalWorktreeSession([
+        buildInternalAgentWorker({ pty: null }),
+        buildInternalFileViewerWorker(),
+      ]);
+      expect(service.computeActivationState(session)).toBe('hibernated');
     });
 
     it('returns running when there are no workers at all', () => {
@@ -473,6 +492,25 @@ describe('SessionConverterService', () => {
       if (result.workers[0].type === 'git-diff') {
         expect(result.workers[0].baseCommit).toBe('abc123');
       }
+    });
+
+    it('converts a persisted session with a file-viewer worker (no type-specific field, never activated)', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-fv',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        workers: [buildPersistedFileViewerWorker({ id: 'pw-fv', name: 'File Viewer', createdAt: '2026-01-01T00:00:00Z' })],
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.workers[0]).toEqual({
+        id: 'pw-fv',
+        type: 'file-viewer',
+        name: 'File Viewer',
+        createdAt: '2026-01-01T00:00:00Z',
+      });
     });
 
     describe('embedded-agent worker contextWindowTokens (Issue #1556)', () => {

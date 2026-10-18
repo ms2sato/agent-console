@@ -9,6 +9,7 @@ import type {
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedFileViewerWorker,
   PersistedEmbeddedAgentWorker,
   PersistedWorktreeSession,
   PersistedQuickSession,
@@ -193,6 +194,20 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): WorkerR
       reasoning_effort: null,
       context_window_tokens: null,
     };
+  } else if (worker.type === 'file-viewer') {
+    return {
+      ...base,
+      pid: null,
+      agent_id: null,
+      base_commit: null,
+      embedded_agent_id: null,
+      deliver_initial_prompt_on_activation: null,
+      sdk_session_id: null,
+      auto_compaction: 1,
+      model: null,
+      reasoning_effort: null,
+      context_window_tokens: null,
+    };
   } else if (worker.type === 'embedded-agent') {
     return {
       ...base,
@@ -215,7 +230,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): WorkerR
 /**
  * Valid worker types. Used for runtime validation of database values.
  */
-const VALID_WORKER_TYPES = ['agent', 'terminal', 'git-diff', 'embedded-agent'] as const;
+const VALID_WORKER_TYPES = ['agent', 'terminal', 'git-diff', 'file-viewer', 'embedded-agent'] as const;
 
 /**
  * Convert a database worker row to a persisted worker.
@@ -267,6 +282,13 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       createdAt: worker.created_at,
       baseCommit: worker.base_commit,
     } as PersistedGitDiffWorker;
+  } else if (worker.type === 'file-viewer') {
+    return {
+      id: worker.id,
+      type: 'file-viewer',
+      name: worker.name,
+      createdAt: worker.created_at,
+    } as PersistedFileViewerWorker;
   } else if (worker.type === 'embedded-agent') {
     if (worker.embedded_agent_id === null || worker.embedded_agent_id === undefined) {
       throw new DataIntegrityError('worker', worker.id, 'embedded_agent_id (missing required field)');

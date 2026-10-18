@@ -144,9 +144,9 @@ export type { RestoreWorkerResult } from './worker-lifecycle-manager.js';
 
 /**
  * One worker's outcome from {@link SessionManager.restartAllAgentWorkers}.
- * `workerType` intentionally omits `'git-diff'`: git-diff workers run
- * in-process (no PTY, no subprocess) and are silently excluded from this
- * bulk operation, same as before this type existed.
+ * `workerType` intentionally omits `'git-diff'` and `'file-viewer'`: those
+ * workers run in-process (no PTY, no subprocess) and are silently excluded
+ * from this bulk operation, same as before this type existed.
  */
 export interface RestartAllAgentWorkersResultEntry {
   sessionId: string;
@@ -810,13 +810,13 @@ export class SessionManager {
     const filePaths = (attachments ?? []).map((a) => a.path);
 
     const targetWorker = session.workers.get(toWorkerId);
-    if (!targetWorker || targetWorker.type === 'git-diff') return null;
+    if (!targetWorker || targetWorker.type === 'git-diff' || targetWorker.type === 'file-viewer') return null;
 
     let fromWorkerName = 'User';
     let effectiveFromWorkerId = 'user';
     if (fromWorkerId) {
       const fromWorker = session.workers.get(fromWorkerId);
-      if (!fromWorker || fromWorker.type === 'git-diff') return null;
+      if (!fromWorker || fromWorker.type === 'git-diff' || fromWorker.type === 'file-viewer') return null;
       fromWorkerName = fromWorker.name;
       effectiveFromWorkerId = fromWorkerId;
     }
@@ -2189,10 +2189,10 @@ export class SessionManager {
           continue;
         }
 
-        if (worker.type === 'git-diff') {
-          // git-diff workers run in-process (no PTY, no subprocess) and were
-          // never included in this bulk operation's results before this
-          // change; preserved as a silent skip rather than newly surfaced,
+        if (worker.type === 'git-diff' || worker.type === 'file-viewer') {
+          // git-diff and file-viewer workers run in-process (no PTY, no
+          // subprocess) and were never included in this bulk operation's
+          // results; preserved as a silent skip rather than newly surfaced,
           // since they have no restart concept at all (unlike terminal
           // workers, which do have a live PTY process but are intentionally
           // excluded from restart).

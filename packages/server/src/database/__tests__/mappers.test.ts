@@ -34,6 +34,7 @@ import {
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
+  buildPersistedFileViewerWorker,
   buildPersistedEmbeddedAgentWorker,
   buildPersistedRepository,
   buildAgentDefinition,
@@ -205,6 +206,27 @@ describe('mappers', () => {
       expect(row.agent_id).toBeNull();
       expect(row.base_commit).toBe('abc123');
       expect(row.embedded_agent_id).toBeNull();
+    });
+
+    it('should convert file-viewer worker: every type-specific column is empty or default', () => {
+      const worker = buildPersistedFileViewerWorker({
+        id: 'worker-1',
+        name: 'File Viewer',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.type).toBe('file-viewer');
+      expect(row.pid).toBeNull();
+      expect(row.agent_id).toBeNull();
+      expect(row.base_commit).toBeNull();
+      expect(row.embedded_agent_id).toBeNull();
+      expect(row.deliver_initial_prompt_on_activation).toBeNull();
+      expect(row.sdk_session_id).toBeNull();
+      expect(row.model).toBeNull();
+      expect(row.reasoning_effort).toBeNull();
+      expect(row.context_window_tokens).toBeNull();
     });
 
     it('sets embedded_agent_id null for agent workers', () => {
@@ -839,6 +861,34 @@ describe('mappers', () => {
 
       expect(worker.type).toBe('git-diff');
       expect((worker as PersistedGitDiffWorker).baseCommit).toBe('abc123def456');
+    });
+
+    it('should convert a valid file-viewer worker (no type-specific column is required)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'file-viewer',
+        name: 'File Viewer',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: null,
+        agent_id: null,
+        base_commit: null,
+        embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
+        auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
+        context_window_tokens: null,
+      };
+
+      expect(toPersistedWorker(dbWorker)).toEqual({
+        id: 'worker-1',
+        type: 'file-viewer',
+        name: 'File Viewer',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
     });
 
     it('should throw DataIntegrityError when embedded_agent_id is missing for embedded-agent worker', () => {
