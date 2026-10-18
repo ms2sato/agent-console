@@ -1,9 +1,10 @@
 import * as v from 'valibot';
 
 /**
- * Wire schemas of the file viewer worker's two read-only routes
- * (`GET .../files/tree` and `GET .../files/content`,
- * docs/design/file-viewer-worker.md). The schema is the single writer: the
+ * Wire schemas of the file viewer worker: its two read-only routes
+ * (`GET .../files/tree` and `GET .../files/content`) and the server-to-client
+ * messages of its worker WebSocket (docs/design/file-viewer-worker.md). The
+ * schema is the single writer: the
  * entity types are derived from it, there is no hand-written twin.
  *
  * Strict, so a server response that silently drops or adds a field fails to
@@ -61,3 +62,41 @@ export const FileContentResponseSchema = v.pipe(
 export type FileTreeEntry = v.InferOutput<typeof FileTreeEntrySchema>;
 export type FileTreeResponse = v.InferOutput<typeof FileTreeResponseSchema>;
 export type FileContentResponse = v.InferOutput<typeof FileContentResponseSchema>;
+
+/**
+ * A changed path as the live-updates watcher reports it: relative to the
+ * session location, `/`-separated, no leading slash, and no `..` segment. The
+ * predicate is restated here (the server's `isValidFilePath` is not importable
+ * from shared) so a producer that leaks an absolute or escaping path fails at
+ * the parse boundary.
+ */
+const ChangedPathSchema = v.pipe(
+  v.string(),
+  v.check((p) => !p.startsWith('/') && !p.split('/').includes('..'), 'a changed path must be relative and contain no `..` segment'),
+);
+
+/**
+ * Directory content changed. `overflow` is true when more distinct paths
+ * changed than the batch keeps (`paths` then holds the first ones and the
+ * client refetches the whole worker). `paths` is never empty on the wire the
+ * server sends, but an empty array is a valid shape.
+ */
+export const FilesChangedMessageSchema = v.strictObject({
+  type: v.literal('files-changed'),
+  paths: v.array(ChangedPathSchema),
+  overflow: v.boolean(),
+});
+
+/** The server cannot watch the working directory; the viewer falls back to Refresh. */
+export const WatchUnavailableMessageSchema = v.strictObject({
+  type: v.literal('watch-unavailable'),
+  reason: v.picklist(['permission-denied', 'watch-failed']),
+});
+
+/** Server-to-client messages of the file viewer's worker WebSocket (there are no client messages). */
+export const FileViewerServerMessageSchema = v.variant('type', [
+  FilesChangedMessageSchema,
+  WatchUnavailableMessageSchema,
+]);
+
+export type FileViewerServerMessage = v.InferOutput<typeof FileViewerServerMessageSchema>;
