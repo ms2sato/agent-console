@@ -48,7 +48,7 @@
 #      directory left, same name cloneable again). Numbered 11b so that nothing
 #      else is renumbered.
 #
-# --smokes additionally runs seven real-host smoke scripts
+# --smokes additionally runs eight real-host smoke scripts
 # (scripts/smoke/*.ts) inside the verification container, as the service
 # user (agentconsole), against target user alice, using the workspace copy
 # docker/Dockerfile bakes at /workspace (the smokes import production
@@ -56,6 +56,7 @@
 # host them):
 #   - check-multiuser-pty-env.ts
 #   - check-kill-as-user.ts
+#   - check-file-viewer-elevated-read.ts
 #   - check-login-shell-sentinel.ts
 #   - check-orphan-sweep.ts
 #   - check-delegated-ssh-auth-sock.ts
@@ -1994,6 +1995,7 @@ if [ "$SMOKES" -eq 1 ]; then
 
   run_smoke "check-multiuser-pty-env" "check-multiuser-pty-env.ts" alice
   run_smoke "check-kill-as-user" "check-kill-as-user.ts" --require-reaped alice
+  run_smoke "check-file-viewer-elevated-read" "check-file-viewer-elevated-read.ts" alice
   run_smoke "check-login-shell-sentinel" "check-login-shell-sentinel.ts" --elevated alice
   run_smoke "check-orphan-sweep" "check-orphan-sweep.ts" alice
   run_smoke "check-delegated-ssh-auth-sock" "check-delegated-ssh-auth-sock.ts" alice

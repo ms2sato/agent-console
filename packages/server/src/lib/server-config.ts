@@ -163,6 +163,14 @@ export const serverConfig = {
     512 * 1024,
   ),
   /**
+   * Largest number of content bytes the file viewer returns for one file
+   * (`GET .../files/content`). A larger file comes back cut to this many bytes
+   * with `truncated: true`. Positive-only: `0` or a negative value would turn
+   * the bound into "return nothing", so it falls back to the default.
+   * Default: 1MiB (1024 * 1024 bytes)
+   */
+  FILE_VIEWER_MAX_BYTES: parsePositiveIntWithDefault(process.env.FILE_VIEWER_MAX_BYTES, 1024 * 1024),
+  /**
    * Base URL for the application.
    * Used to generate URLs in outbound notifications (e.g., Slack "Open Session" button).
    * If not set, notifications will show a warning about missing configuration.

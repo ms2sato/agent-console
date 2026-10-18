@@ -324,6 +324,25 @@ describe('WorkerLifecycleManager', () => {
       expect(ptyFactory.instances.length).toBe(1);
     });
 
+    it('should create a file-viewer worker: named File Viewer, no PTY, no subprocess, persisted once', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+
+      const worker = await lifecycleManager.createWorker(session.id, { type: 'file-viewer' });
+
+      expect(worker).toEqual({
+        id: expect.any(String),
+        type: 'file-viewer',
+        name: 'File Viewer',
+        createdAt: expect.any(String),
+      });
+      expect(session.workers.size).toBe(1);
+      expect(session.workers.get(worker!.id)!.type).toBe('file-viewer');
+      expect(ptyFactory.instances.length).toBe(0);
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+    });
+
     it('should create a git-diff worker successfully', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
@@ -1299,6 +1318,27 @@ describe('WorkerLifecycleManager', () => {
 
       expect(result).toBe(true);
       expect(session.workers.size).toBe(0);
+    });
+
+    it('should delete a file-viewer worker with no teardown at all (no watcher, no PTY, no embedded-agent deactivation)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const worker = await lifecycleManager.createWorker(session.id, { type: 'file-viewer' });
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+
+      const stopWatchingSpy = spyOn(gitDiffService, 'stopWatching');
+      try {
+        const result = await lifecycleManager.deleteWorker(session.id, worker!.id);
+
+        expect(result).toBe(true);
+        expect(session.workers.size).toBe(0);
+        expect(stopWatchingSpy).not.toHaveBeenCalled();
+        // The embedded-agent branch is the old `else`: a file-viewer worker must not reach it.
+        expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+        expect(ptyFactory.instances.length).toBe(0);
+      } finally {
+        stopWatchingSpy.mockRestore();
+      }
     });
 
     it('should delete an embedded-agent worker without calling stopWatching', async () => {

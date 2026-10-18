@@ -877,6 +877,15 @@ export async function setupWebSocketRoutes(
             return;
           }
 
+          // The file viewer is REST-only in v1 (no live channel): refuse the
+          // connection explicitly rather than letting the PTY restore path
+          // reject it by accident. NORMAL_CLOSURE keeps the client from
+          // reconnecting in a loop (it is in the client's no-reconnect set).
+          if (worker.type === 'file-viewer') {
+            sendErrorAndClose(ws, 'The file viewer does not use a WebSocket connection', 'UNSUPPORTED_OPERATION');
+            return;
+          }
+
           // A pausing session answers every stream-worker open (PTY or
           // embedded-agent) with the same terminal SESSION_PAUSED close, before
           // either branch can start an activation. The manager-level guard and
@@ -978,6 +987,9 @@ export async function setupWebSocketRoutes(
 
           const worker = session.workers.find(w => w.id === workerId);
           if (!worker) return;
+
+          // The connection was refused in onOpen; ignore anything that still arrives.
+          if (worker.type === 'file-viewer') return;
 
           // Handle git-diff messages differently
           if (worker.type === 'git-diff') {

@@ -157,12 +157,12 @@ const worktreeDeletionTasksValue: UseWorktreeDeletionTasksReturn = {
   handleWorktreeDeletionFailed: () => {},
 };
 
-function renderSessionPage(stopTasks: UseSessionStopTasksReturn = sessionStopTasksValue) {
+function renderSessionPage(stopTasks: UseSessionStopTasksReturn = sessionStopTasksValue, workerId?: string) {
   return renderWithRouter(
     <SessionDataContext.Provider value={sessionDataContextValue}>
       <SessionStopTasksContext.Provider value={stopTasks}>
         <WorktreeDeletionTasksContext.Provider value={worktreeDeletionTasksValue}>
-          <SessionPage sessionId="session-1" />
+          <SessionPage sessionId="session-1" workerId={workerId} />
         </WorktreeDeletionTasksContext.Provider>
       </SessionStopTasksContext.Provider>
     </SessionDataContext.Provider>
@@ -321,6 +321,41 @@ describe('SessionPage mobile side-panels drawer gate', () => {
     const triggerAgain = await waitFor(() => screen.getByLabelText('Open session panels'));
     expect(triggerAgain.getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull();
+  });
+
+  describe('file-viewer tab', () => {
+    const VIEWER_WORKER = createMockWorker({ id: 'viewer-1', type: 'file-viewer', name: 'File Viewer' });
+    const TERMINAL_WORKER = createMockWorker({ id: 'term-1', type: 'terminal', name: 'Shell 1', activated: true } as Partial<Worker> & { type: 'terminal' });
+
+    function workerSocketUrls(): string[] {
+      return MockWebSocket.getInstances().map((ws) => ws.url).filter((url) => url.includes('/worker/'));
+    }
+
+    it('renders the viewer view and opens no worker WebSocket for it (the app socket does open)', async () => {
+      // Reach (measured): dropping SessionPage's file-viewer view branch (so the
+      // tab falls through to the terminal view) fails this test: the terminal
+      // view opens `/ws/session/session-1/worker/viewer-1`.
+      const { matchMedia } = createMockMatchMedia(false);
+      window.matchMedia = matchMedia;
+      routeFetch([VIEWER_WORKER]);
+
+      await renderSessionPage(sessionStopTasksValue, 'viewer-1');
+
+      await waitFor(() => expect(screen.getByText('Select a file to view it.')).toBeTruthy());
+      // Positive control: the harness sees WebSocket opens (the app-wide socket).
+      expect(MockWebSocket.getInstances().some((ws) => ws.url.includes('/ws/app'))).toBe(true);
+      expect(workerSocketUrls()).toEqual([]);
+    });
+
+    it('control: a terminal tab in the same harness does open its worker WebSocket', async () => {
+      const { matchMedia } = createMockMatchMedia(false);
+      window.matchMedia = matchMedia;
+      routeFetch([TERMINAL_WORKER]);
+
+      await renderSessionPage(sessionStopTasksValue, 'term-1');
+
+      await waitFor(() => expect(workerSocketUrls().some((url) => url.includes('/worker/term-1'))).toBe(true));
+    });
   });
 });
 

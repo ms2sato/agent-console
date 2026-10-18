@@ -71,6 +71,15 @@ const CreateGitDiffWorkerParamsSchema = v.strictObject({
 });
 
 /**
+ * Schema for creating a file viewer worker. The viewer has no options: it
+ * lists and reads the session's working directory, nothing to configure.
+ */
+const CreateFileViewerWorkerParamsSchema = v.strictObject({
+  name: v.optional(v.string()),
+  type: v.literal('file-viewer'),
+});
+
+/**
  * Schema for creating an embedded-agent worker
  */
 const CreateEmbeddedAgentWorkerParamsSchema = v.strictObject({
@@ -104,12 +113,13 @@ const CreateEmbeddedAgentWorkerParamsSchema = v.strictObject({
 });
 
 /**
- * Schema for API: clients can create terminal, embedded-agent, and agent
- * worker types. Agent workers can be added to an already-running session via
+ * Schema for API: clients can create terminal, embedded-agent, file-viewer, and
+ * agent worker types. Agent workers can be added to an already-running session via
  * the unified agent-selection picker, not just at session-creation time.
  */
 export const CreateWorkerRequestSchema = v.union([
   CreateTerminalWorkerParamsSchema,
+  CreateFileViewerWorkerParamsSchema,
   CreateEmbeddedAgentWorkerParamsSchema,
   CreateAgentWorkerParamsSchema,
 ]);
@@ -283,14 +293,16 @@ export const SetMcpServerPermissionsRequestSchema = v.union([
 export type CreateAgentWorkerParams = v.InferOutput<typeof CreateAgentWorkerParamsSchema>;
 export type CreateTerminalWorkerParams = v.InferOutput<typeof CreateTerminalWorkerParamsSchema>;
 export type CreateGitDiffWorkerParams = v.InferOutput<typeof CreateGitDiffWorkerParamsSchema>;
+export type CreateFileViewerWorkerParams = v.InferOutput<typeof CreateFileViewerWorkerParamsSchema>;
 export type CreateEmbeddedAgentWorkerParams = v.InferOutput<typeof CreateEmbeddedAgentWorkerParamsSchema>;
 export type CreateWorkerParams =
   | CreateAgentWorkerParams
   | CreateTerminalWorkerParams
   | CreateGitDiffWorkerParams
+  | CreateFileViewerWorkerParams
   | CreateEmbeddedAgentWorkerParams;
 
-// API types (client can create terminal, embedded-agent, and agent workers)
+// API types (client can create terminal, embedded-agent, file-viewer, and agent workers)
 export type CreateWorkerRequest = v.InferOutput<typeof CreateWorkerRequestSchema>;
 export type RestartWorkerRequest = v.InferOutput<typeof RestartWorkerRequestSchema>;
 

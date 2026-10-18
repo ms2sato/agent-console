@@ -3,13 +3,14 @@ import { Link, useNavigate } from '@tanstack/react-router';
 import { TerminalAdapter } from '../../components/terminal/TerminalAdapter';
 import type { ConnectionStatus } from '../../components/terminal/terminal-contract';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
+import { FileViewerWorkerView } from '../workers/FileViewerWorkerView';
 import { EmbeddedAgentWorkerView } from '../workers/EmbeddedAgentWorkerView';
 import { AddAgentWorkerMenu } from './AddAgentWorkerMenu';
 import { SessionSettings } from '../SessionSettings';
 import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
-import { DiffIcon, AlertCircleIcon, PanelRightIcon } from '../Icons';
+import { DiffIcon, FolderIcon, AlertCircleIcon, PanelRightIcon } from '../Icons';
 import { getSession, restartAgentWorker, resumeSession, deleteSession, openPath } from '../../lib/api';
 import { isSessionOrphanedError } from './resumeErrors';
 import { formatPath } from '../../lib/path';
@@ -290,6 +291,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     tabs,
     activeTabId,
     addTerminalTab,
+    addFileViewerTab,
     addAgentTab,
     closeTab,
     handleTabClick,
@@ -673,6 +675,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         >
           {tab.workerType === 'git-diff' ? (
             <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
+          ) : tab.workerType === 'file-viewer' ? (
+            <FolderIcon className="w-3.5 h-3.5 text-green-400" />
           ) : (
             <span className={`inline-block w-2 h-2 rounded-full ${getTabDotColor(tab.workerType)}`} aria-hidden="true" />
           )}
@@ -728,6 +732,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           />
         ) : activeTab.workerType === 'git-diff' ? (
           <GitDiffWorkerView
+            sessionId={sessionId}
+            workerId={activeTab.id}
+          />
+        ) : activeTab.workerType === 'file-viewer' ? (
+          <FileViewerWorkerView
             sessionId={sessionId}
             workerId={activeTab.id}
           />
@@ -793,7 +802,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         <div role="tablist" aria-label="Worker tabs" className="flex items-center overflow-x-auto scrollbar-hide" onKeyDown={handleTabKeyDown}>
           {tabButtons}
         </div>
-        <AddAgentWorkerMenu onSelect={addAgentTab} onSelectShell={addTerminalTab} />
+        <AddAgentWorkerMenu
+          onSelect={addAgentTab}
+          onSelectShell={addTerminalTab}
+          onSelectFileViewer={addFileViewerTab}
+        />
 
         {/* Spacer */}
         <div className="flex-1" />

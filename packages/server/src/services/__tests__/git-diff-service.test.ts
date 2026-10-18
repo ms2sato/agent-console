@@ -615,6 +615,12 @@ describe('GitDiffService', () => {
       ).rejects.toThrow('Invalid file path');
     });
 
+    it('throws on a path containing a NUL byte (the shared lexical guard is still wired in)', async () => {
+      await expect(
+        getFileLines(tmpDir, 'file\0.ts', 1, 10, 'working-dir', null)
+      ).rejects.toThrow('Invalid file path');
+    });
+
     it('throws when file does not exist in working-dir', async () => {
       await expect(
         getFileLines(tmpDir, 'nonexistent.ts', 1, 10, 'working-dir', null)

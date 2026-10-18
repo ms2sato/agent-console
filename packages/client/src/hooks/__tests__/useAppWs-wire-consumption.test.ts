@@ -438,6 +438,30 @@ describe('useAppWsEvent wire consumption (fully populated derived entities)', ()
     expect(onSessionCreated).toHaveBeenCalledWith(fullWorktreeSession);
   });
 
+  it('session-updated: a session carrying a file-viewer worker beside a git-diff worker reaches onSessionUpdated unchanged', () => {
+    // A file-viewer worker has no type-specific field: the frame must still
+    // survive the strict parse (a union without the variant would drop the
+    // whole frame, and the viewer tab would never appear).
+    const sessionWithViewer = {
+      ...quickSession,
+      workers: [
+        { id: 'worker-d', name: 'Diff', createdAt: '2024-01-01', type: 'git-diff', baseCommit: 'abc123' },
+        { id: 'worker-v', name: 'File Viewer', createdAt: '2024-01-01', type: 'file-viewer' },
+      ],
+    };
+    const onSessionUpdated = mock(() => {});
+    renderHook(() => useAppWsEvent({ onSessionUpdated }));
+    const ws = MockWebSocket.getLastInstance();
+
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-updated', session: sessionWithViewer }));
+    });
+
+    expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+    expect(onSessionUpdated).toHaveBeenCalledWith(sessionWithViewer);
+  });
+
   it('repository-created: a fully populated repository reaches onRepositoryCreated unchanged', () => {
     const onRepositoryCreated = mock(() => {});
     const fullRepository = {

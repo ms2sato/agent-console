@@ -496,8 +496,8 @@ export class SessionInitializationService {
     }
 
     for (const worker of session.workers) {
-      // Skip git-diff workers (no process) and workers with no pid (not yet activated)
-      if (worker.type === 'git-diff' || worker.pid === null) continue;
+      // Skip git-diff and file-viewer workers (no process) and workers with no pid (not yet activated)
+      if (worker.type === 'git-diff' || worker.type === 'file-viewer' || worker.pid === null) continue;
       const pid = worker.pid;
 
       if (!isProcessAlive(pid)) continue;

@@ -16,6 +16,7 @@ import type {
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedFileViewerWorker,
   PersistedEmbeddedAgentWorker,
   PersistedRepository,
 } from '../../repositories/persisted-types.js';
@@ -27,6 +28,7 @@ import type {
   InternalAgentWorker,
   InternalTerminalWorker,
   InternalGitDiffWorker,
+  InternalFileViewerWorker,
   InternalEmbeddedAgentWorker,
   InternalWorker,
 } from '../../services/worker-types.js';
@@ -72,6 +74,18 @@ export function buildPersistedGitDiffWorker(
     type: 'git-diff',
     name: 'Git Diff',
     baseCommit: 'abc123def456',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+export function buildPersistedFileViewerWorker(
+  overrides?: Partial<PersistedFileViewerWorker>
+): PersistedFileViewerWorker {
+  return {
+    id: 'test-file-viewer-worker-id',
+    type: 'file-viewer',
+    name: 'File Viewer',
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -201,6 +215,18 @@ export function buildInternalGitDiffWorker(
     name: 'Git Diff',
     createdAt: '2026-01-01T00:00:00.000Z',
     baseCommit: 'abc123',
+    ...overrides,
+  };
+}
+
+export function buildInternalFileViewerWorker(
+  overrides?: Partial<InternalFileViewerWorker>
+): InternalFileViewerWorker {
+  return {
+    id: 'w-fileviewer-1',
+    type: 'file-viewer',
+    name: 'File Viewer',
+    createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
 }
