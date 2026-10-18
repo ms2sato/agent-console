@@ -437,7 +437,8 @@ export async function setupWebSocketRoutes(
     notifySessionDeleted,
     notifySessionPaused,
     broadcastToApp,
-    stopFileViewerWatching: handleFileViewerDisconnection,
+    // Service teardown has no socket: it unsubscribes regardless of which socket is current.
+    stopFileViewerWatching: (sessionId, workerId) => handleFileViewerDisconnection(sessionId, workerId),
   });
   completedSteps.add('setWebSocketCallbacks');
 
@@ -855,7 +856,7 @@ export async function setupWebSocketRoutes(
           });
         } else if (worker?.type === 'file-viewer') {
           // The viewer's only resource is its watch subscription; it never attached stream-worker callbacks.
-          handleFileViewerDisconnection(sid, wid);
+          handleFileViewerDisconnection(sid, wid, ws);
         } else if (effectiveConnectionId) {
           // Detach this connection's callbacks but keep the worker alive (any
           // stream worker -- PTY or embedded-agent). Other connections

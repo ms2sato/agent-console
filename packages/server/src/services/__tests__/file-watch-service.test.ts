@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'bun:test';
-import { EventEmitter } from 'node:events';
-import type { watch as fsWatch } from 'node:fs';
 import {
   subscribeToFileChanges,
   matchesIgnorePattern,
@@ -10,43 +8,10 @@ import {
   type FileWatchFailureReason,
 } from '../file-watch-service.js';
 import { fileWatchIgnorePatterns } from '../../lib/server-config.js';
+import { createFakeWatch } from '../../__tests__/utils/fake-file-watch.js';
 
 // Debounce and max wait use small real delays: bun:test has no fake timers.
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-interface FakeWatch {
-  watch: typeof fsWatch;
-  calls: string[];
-  closeCount: () => number;
-  emit: (filename: string | null) => void;
-  emitError: (error?: Error) => void;
-}
-
-/** A fake `fs.watch` that records its calls and lets the test emit events. */
-function createFakeWatch(opts: { throwWith?: Error } = {}): FakeWatch {
-  const calls: string[] = [];
-  let closes = 0;
-  let listener: ((eventType: string, filename: string | null) => void) | null = null;
-  const emitter = new EventEmitter();
-  const watcher = Object.assign(emitter, {
-    close: () => {
-      closes += 1;
-    },
-  });
-  const watch = ((path: string, _options: unknown, cb: typeof listener) => {
-    calls.push(path);
-    if (opts.throwWith) throw opts.throwWith;
-    listener = cb;
-    return watcher;
-  }) as unknown as typeof fsWatch;
-  return {
-    watch,
-    calls,
-    closeCount: () => closes,
-    emit: (filename) => listener?.('change', filename),
-    emitError: (error = new Error('boom')) => emitter.emit('error', error),
-  };
-}
 
 function makeSubscriber(overrides: Partial<FileChangeSubscriber> = {}) {
   const batches: FileChangeBatch[] = [];

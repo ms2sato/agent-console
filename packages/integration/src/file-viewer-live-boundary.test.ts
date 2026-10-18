@@ -18,25 +18,14 @@
  * NOTE: packages/integration uses a FLAT sibling test layout (no __tests__/).
  */
 import { describe, it, expect } from 'bun:test';
-import { EventEmitter } from 'node:events';
-import type { watch as fsWatch } from 'node:fs';
 import * as v from 'valibot';
 
 import { createFileViewerHandlers } from '@agent-console/server/src/websocket/file-viewer-handler';
 import { subscribeToFileChanges } from '@agent-console/server/src/services/file-watch-service';
+import { createFakeWatch } from '@agent-console/server/src/__tests__/utils/fake-file-watch';
 import { FileViewerServerMessageSchema } from '@agent-console/shared';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function createFakeWatch() {
-  let listener: ((eventType: string, filename: string | null) => void) | null = null;
-  const watcher = Object.assign(new EventEmitter(), { close: () => {} });
-  const watch = ((_path: string, _options: unknown, cb: typeof listener) => {
-    listener = cb;
-    return watcher;
-  }) as unknown as typeof fsWatch;
-  return { watch, emit: (filename: string) => listener?.('change', filename) };
-}
 
 function createWs() {
   const sent: string[] = [];

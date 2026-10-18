@@ -89,8 +89,10 @@ export class SessionDeletionService {
       if (worker.type === 'git-diff') {
         this.deps.stopWatching(session.locationPath);
       } else if (worker.type === 'file-viewer') {
-        // Close the viewer's watch subscription (idempotent).
-        this.deps.getWebSocketCallbacks()?.stopFileViewerWatching(id, worker.id);
+        // Nothing to tear down here, on purpose: this path also runs when a worktree removal
+        // fails recoverably and the session is KEPT for a retry, and the viewer's watch must
+        // survive that. The subscription is released by the final deleteSession() below and
+        // by the pause branch.
       } else if (worker.type === 'embedded-agent') {
         killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));
       } else {

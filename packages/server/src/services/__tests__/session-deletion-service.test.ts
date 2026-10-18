@@ -161,7 +161,7 @@ describe('SessionDeletionService', () => {
       expect(mockStopWatching).toHaveBeenCalledWith('/test/worktree');
     });
 
-    it('should stop a file-viewer worker\'s watch subscription once and nothing else: not killed, no git-diff unwatch, no embedded-agent deactivation', async () => {
+    it('a recoverable kill (killSessionWorkers) leaves a file-viewer worker\'s watch alone: zero stopFileViewerWatching calls, nothing killed, no git-diff unwatch, no deactivation', async () => {
       const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const viewer = buildInternalFileViewerWorker({ id: 'w-fv' });
       const session = buildInternalWorktreeSession([agentWorker, viewer]);
@@ -176,8 +176,8 @@ describe('SessionDeletionService', () => {
 
       await service.killSessionWorkers(session.id);
 
-      expect(stopFileViewerWatching).toHaveBeenCalledTimes(1);
-      expect(stopFileViewerWatching).toHaveBeenCalledWith(session.id, 'w-fv');
+      // killSessionWorkers also runs when a worktree removal fails recoverably and the session is kept for a retry.
+      expect(stopFileViewerWatching).not.toHaveBeenCalled();
 
       expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(1);
       expect(deps.workerManager.killWorker).toHaveBeenCalledWith(agentWorker, session.id);

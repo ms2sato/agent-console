@@ -132,9 +132,15 @@ describe('GitDiffHandler', () => {
       // `diff-error: Connection failed` and closed the socket: an unwatchable worktree had no diff worker.
       const unwatchable = '/definitely/not/a/real/dir-' + Date.now();
       const closeCalls: unknown[] = [];
-      (mockWs as unknown as { close: (...args: unknown[]) => void }).close = (...args) => {
-        closeCalls.push(args);
-      };
+      const watchlessWs = asWSContext({
+        send: (msg: string) => {
+          sentMessages.push(msg);
+        },
+        close: (...args: unknown[]) => {
+          closeCalls.push(args);
+        },
+        readyState: 1,
+      });
       const realHandlers = createGitDiffHandlers({
         getDiffData: mockGetDiffData,
         resolveRef: mockResolveRef,
@@ -145,7 +151,7 @@ describe('GitDiffHandler', () => {
         annotationService: new AnnotationService(),
       });
 
-      await realHandlers.handleConnection(mockWs, 'session-1', 'worker-unwatchable', unwatchable, 'base-commit', null);
+      await realHandlers.handleConnection(watchlessWs, 'session-1', 'worker-unwatchable', unwatchable, 'base-commit', null);
 
       const messages: GitDiffServerMessage[] = sentMessages.map((m) => JSON.parse(m));
       expect(messages.map((m) => m.type)).toEqual(['diff-data']);

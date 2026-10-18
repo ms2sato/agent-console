@@ -90,6 +90,30 @@ describe('createFileViewerHandlers', () => {
     expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
   });
 
+  it('a late close of the OLD socket after a reconnect does not unsubscribe the NEW socket\'s watch', () => {
+    const { handlers, unsubscribes } = createHarness();
+    const ws1 = createMockWs();
+    const ws2 = createMockWs();
+    handlers.handleConnection(ws1, 's1', 'w1', '/work/dir');
+    handlers.handleConnection(ws2, 's1', 'w1', '/work/dir');
+    expect(unsubscribes[0]).toHaveBeenCalledTimes(1); // the reconnect replaced the first subscription
+
+    handlers.handleDisconnection('s1', 'w1', ws1);
+    expect(unsubscribes[1]).not.toHaveBeenCalled();
+
+    handlers.handleDisconnection('s1', 'w1', ws2);
+    expect(unsubscribes[1]).toHaveBeenCalledTimes(1);
+  });
+
+  it('a disconnection without a socket (service teardown) unsubscribes whichever socket is current', () => {
+    const { handlers, unsubscribes } = createHarness();
+    handlers.handleConnection(createMockWs(), 's1', 'w1', '/work/dir');
+
+    handlers.handleDisconnection('s1', 'w1');
+
+    expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
+  });
+
   it('a reconnect of the same worker replaces the earlier subscription', () => {
     const { handlers, unsubscribes } = createHarness();
     handlers.handleConnection(createMockWs(), 's1', 'w1', '/work/dir');

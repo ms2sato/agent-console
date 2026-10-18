@@ -9,7 +9,7 @@
  * (docs/design/file-viewer-worker.md, "Live updates").
  */
 
-import { watch as fsWatch, type FSWatcher } from 'node:fs';
+import { watch as fsWatch } from 'node:fs';
 import { sep } from 'node:path';
 import { createLogger } from '../lib/logger.js';
 import { isErrnoException } from '../lib/type-guards.js';
@@ -39,9 +39,24 @@ export interface FileChangeSubscriber {
   onError: (reason: FileWatchFailureReason) => void;
 }
 
-export interface FileWatchDeps {
-  watch?: typeof fsWatch;
+/** What this service needs of a watcher: an error hook and a close. `fs.FSWatcher` satisfies it. */
+export interface FileWatcher {
+  on(event: 'error', listener: (error: Error) => void): unknown;
+  close(): void;
 }
+
+/** The `fs.watch` call this service makes (recursive, string filenames), narrowed so a test fake needs no cast. */
+export type FileWatchFn = (
+  path: string,
+  options: { recursive: true },
+  listener: (eventType: string, filename: string | null) => void,
+) => FileWatcher;
+
+export interface FileWatchDeps {
+  watch?: FileWatchFn;
+}
+
+const defaultWatch: FileWatchFn = (path, options, listener) => fsWatch(path, options, listener);
 
 interface Subscription {
   subscriber: FileChangeSubscriber;
@@ -53,7 +68,7 @@ interface Subscription {
 }
 
 interface WatchEntry {
-  watcher: FSWatcher;
+  watcher: FileWatcher;
   subscriptions: Set<Subscription>;
 }
 
@@ -124,12 +139,11 @@ function record(sub: Subscription, relPath: string): void {
   }
 }
 
-function handleEvent(entry: WatchEntry, filename: string | Buffer | null): void {
+function handleEvent(subscriptions: ReadonlySet<Subscription>, filename: string | null): void {
   // A null filename carries no path to match an ignore rule against.
   if (filename === null || filename === undefined) return;
-  const raw = typeof filename === 'string' ? filename : filename.toString();
-  const relPath = sep === '/' ? raw : raw.split(sep).join('/');
-  for (const sub of entry.subscriptions) {
+  const relPath = sep === '/' ? filename : filename.split(sep).join('/');
+  for (const sub of subscriptions) {
     if (sub.closed || sub.subscriber.ignore(relPath)) continue;
     record(sub, relPath);
   }
@@ -156,11 +170,14 @@ export function subscribeToFileChanges(
 
   let entry = entries.get(watchPath);
   if (!entry) {
-    const watchFn = deps.watch ?? fsWatch;
-    const created: WatchEntry = { watcher: null as unknown as FSWatcher, subscriptions: new Set() };
+    const watchFn = deps.watch ?? defaultWatch;
+    // The subscriptions set exists before the watcher so the event callback can close over it; the entry
+    // is built only once the watcher exists, so it is never partially constructed.
+    const subscriptions = new Set<Subscription>();
+    let watcher: FileWatcher;
     try {
-      created.watcher = watchFn(watchPath, { recursive: true }, (_eventType, filename) => {
-        handleEvent(created, filename);
+      watcher = watchFn(watchPath, { recursive: true }, (_eventType, filename) => {
+        handleEvent(subscriptions, filename);
       });
     } catch (error) {
       const code = isErrnoException(error) ? error.code : undefined;
@@ -169,16 +186,17 @@ export function subscribeToFileChanges(
       fail(sub, reason);
       return () => {};
     }
-    created.watcher.on('error', (error) => {
+    const created: WatchEntry = { watcher, subscriptions };
+    watcher.on('error', (error) => {
       logger.error({ error, watchPath }, 'File watcher error');
       if (entries.get(watchPath) === created) entries.delete(watchPath);
       try {
-        created.watcher.close();
+        watcher.close();
       } catch (closeError) {
         logger.warn({ closeError, watchPath }, 'Failed to close a failed file watcher');
       }
-      for (const s of created.subscriptions) fail(s, 'watch-failed');
-      created.subscriptions.clear();
+      for (const s of subscriptions) fail(s, 'watch-failed');
+      subscriptions.clear();
     });
     entries.set(watchPath, created);
     entry = created;

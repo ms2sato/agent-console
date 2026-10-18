@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { EventEmitter } from 'node:events';
-import type { watch as fsWatch } from 'node:fs';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
@@ -19,6 +17,7 @@ import {
   triggerRefresh,
 } from '../git-diff-service.js';
 import { subscribeToFileChanges } from '../file-watch-service.js';
+import { createFakeWatch, type FakeWatch } from '../../__tests__/utils/fake-file-watch.js';
 
 describe('GitDiffService', () => {
   beforeEach(() => {
@@ -659,18 +658,7 @@ describe('GitDiffService', () => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     let counter = 0;
 
-    function createFakeWatch() {
-      let listener: ((eventType: string, filename: string | null) => void) | null = null;
-      let closes = 0;
-      const watcher = Object.assign(new EventEmitter(), { close: () => { closes += 1; } });
-      const watch = ((_path: string, _options: unknown, cb: typeof listener) => {
-        listener = cb;
-        return watcher;
-      }) as unknown as typeof fsWatch;
-      return { watch, emit: (filename: string) => listener?.('change', filename), closeCount: () => closes };
-    }
-
-    function joinAsViewer(path: string, fake: ReturnType<typeof createFakeWatch>) {
+    function joinAsViewer(path: string, fake: FakeWatch) {
       const batches: Array<{ paths: string[]; overflow: boolean }> = [];
       const unsubscribe = subscribeToFileChanges(
         path,
