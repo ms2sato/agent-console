@@ -1322,13 +1322,19 @@ export class WorktreeService {
           result = await elevated;
         } else {
           let timer: ReturnType<typeof setTimeout> | undefined;
+          let deadlineWon = false;
           const deadline = new Promise<'timed-out'>((resolve) => {
-            timer = setTimeout(() => resolve('timed-out'), timeoutMs);
+            timer = setTimeout(() => {
+              deadlineWon = true;
+              resolve('timed-out');
+            }, timeoutMs);
           });
           // runAsUser's cleanup may settle (or reject) after the race is over;
-          // record the eventual exit once so the journal still has it.
+          // record the eventual exit once so the journal still has it. A run that
+          // settled inside the deadline is not late and logs nothing here.
           elevated.then(
             (late) => {
+              if (!deadlineWon) return;
               logger.warn(
                 { worktreePath, requestUsername, exitCode: late.exitCode, timedOut: late.timedOut },
                 'Elevated hook command finished after its deadline',

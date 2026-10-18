@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test';
 import { SessionPauseResumeService, type SessionPauseResumeDeps } from '../session-pause-resume-service.js';
 import type { InternalSession } from '../internal-types.js';
 import type { InternalWorker, InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
@@ -8,6 +8,7 @@ import type { NotificationManager } from '../notifications/notification-manager.
 import type { MessageService } from '../message-service.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { SessionOrphanedError } from '../../lib/errors.js';
+import { rootLogger } from '../../lib/logger.js';
 import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
@@ -147,6 +148,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     startBranchWatching: async () => {},
     stopBranchWatching: () => {},
     getServerPid: () => 99999,
+    hasSessionHookCommand: mock(() => false),
     runSessionHookCommand: mock(async () => undefined),
     appendRestoreBoundaryMarker: mock(async () => {}),
     ...overrides,
@@ -417,6 +419,44 @@ describe('SessionPauseResumeService', () => {
       expect(runSessionHookCommand).not.toHaveBeenCalled();
       expect(deps.workerManager.activateAgentWorkerPty).toHaveBeenCalledTimes(1);
       expect(deps.sessionRepository.save).toHaveBeenCalledTimes(1);
+    });
+
+    // The service logger is a child created at import time, so the spy on
+    // `rootLogger.child` is installed before a fresh import of the module.
+    async function resumeWithRecordingLogger(hasCommand: boolean) {
+      const infos: unknown[][] = [];
+      const original = rootLogger.child.bind(rootLogger);
+      const childSpy = spyOn(rootLogger, 'child').mockImplementation(((bindings: { service?: string }) => {
+        const child = original(bindings);
+        if (bindings?.service !== 'session-pause-resume') return child;
+        return new Proxy(child, {
+          get: (target, prop) => {
+            if (prop === 'info') return (...args: unknown[]) => infos.push(args);
+            return Reflect.get(target, prop);
+          },
+        });
+      }) as unknown as typeof rootLogger.child);
+      try {
+        const fresh = await import(`../session-pause-resume-service.js?v=${Math.random()}`) as typeof import('../session-pause-resume-service.js');
+        const deps = buildResumeDeps({ hasSessionHookCommand: mock(() => hasCommand) });
+        const service = new fresh.SessionPauseResumeService(deps);
+        const result = await service.resumeSession('session-1', false);
+        expect(result).not.toBeNull();
+        return infos.filter((args) => String(args[1]).includes('Skipping the resume command'));
+      } finally {
+        childSpy.mockRestore();
+      }
+    }
+
+    it('logs one INFO line when the auto-resume skips a configured resume command', async () => {
+      const skips = await resumeWithRecordingLogger(true);
+
+      expect(skips).toHaveLength(1);
+      expect(skips[0][0]).toMatchObject({ sessionId: 'session-1', reason: 'server-start' });
+    });
+
+    it('logs nothing when the auto-resume has no resume command to skip', async () => {
+      expect(await resumeWithRecordingLogger(false)).toHaveLength(0);
     });
 
     it('still resumes when the resume command fails or throws', async () => {

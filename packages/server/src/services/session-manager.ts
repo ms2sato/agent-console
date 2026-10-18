@@ -728,6 +728,7 @@ export class SessionManager {
         this.branchWatcherCallbacks?.startWatching(sessionId, locationPath, currentBranch) ?? Promise.resolve(),
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
       getServerPid,
+      hasSessionHookCommand: (kind, session) => this.configuredHookCommand(kind, session) !== undefined,
       runSessionHookCommand: (kind, session, username) => this.runSessionHookCommand(kind, session, username),
       appendRestoreBoundaryMarker: (worker, sessionId, resolver, restoredAt) =>
         this.workerManager.appendRestoreBoundaryMarker(worker, sessionId, resolver, restoredAt),
@@ -2093,22 +2094,32 @@ export class SessionManager {
    * Resolves `undefined` when there is nothing to run. Never throws: a failure
    * is returned as `{ success: false, error }`.
    */
+  /** The repository's non-blank pause or resume command for a worktree session, if any. */
+  private configuredHookCommand(
+    kind: 'pause' | 'resume',
+    session: InternalSession,
+  ): { command: string; repositoryName: string } | undefined {
+    if (session.type !== 'worktree') return undefined;
+    const repository = this.repositoryEnvLookup.getRepositoryInfo(session.repositoryId);
+    if (!repository) return undefined;
+    const command = kind === 'pause' ? repository.pauseCommand : repository.resumeCommand;
+    if (!command?.trim()) return undefined;
+    return { command, repositoryName: repository.name };
+  }
+
   private async runSessionHookCommand(
     kind: 'pause' | 'resume',
     session: InternalSession,
     username: string,
   ): Promise<HookCommandResult | undefined> {
     if (session.type !== 'worktree' || !this.executeHookCommand) return undefined;
-
-    const repository = this.repositoryEnvLookup.getRepositoryInfo(session.repositoryId);
-    if (!repository) return undefined;
-
-    const command = kind === 'pause' ? repository.pauseCommand : repository.resumeCommand;
-    if (!command?.trim()) return undefined;
+    const configured = this.configuredHookCommand(kind, session);
+    if (!configured) return undefined;
+    const { command, repositoryName } = configured;
 
     let result: HookCommandResult;
     try {
-      const { worktreeNum, branch, repo } = await this.resolveTemplateVars(session, repository.name);
+      const { worktreeNum, branch, repo } = await this.resolveTemplateVars(session, repositoryName);
       result = await this.executeHookCommand(
         command,
         session.locationPath,

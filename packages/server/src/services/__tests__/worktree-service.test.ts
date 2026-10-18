@@ -3747,6 +3747,54 @@ detached
         expect(result).toEqual({ success: false, error: 'working directory not available' });
       });
 
+      // The service logger is a child created at import time, so the spy on
+      // `rootLogger.child` must be installed before the fresh module import.
+      async function lateSettleWarnsFor(settleAfterMs: number, timeoutMs: number): Promise<unknown[][]> {
+        process.env.AUTH_MODE = 'multi-user';
+        const warns: unknown[][] = [];
+        const original = rootLogger.child.bind(rootLogger);
+        const childSpy = spyOn(rootLogger, 'child').mockImplementation(((bindings: { service?: string }) => {
+          if (bindings?.service !== 'worktree-service') return original(bindings);
+          return new Proxy({} as Record<string, unknown>, {
+            get: (_t, prop) => {
+              if (prop === 'warn') return (...args: unknown[]) => warns.push(args);
+              return () => {};
+            },
+          });
+        }) as unknown as typeof rootLogger.child);
+        try {
+          runAsUserMock.responder.fn = async () => {
+            await new Promise((resolve) => setTimeout(resolve, settleAfterMs));
+            return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false };
+          };
+          const WorktreeService = await getWorktreeService();
+          const service = new WorktreeService({
+            worktreeRepository: mockRepo,
+            runAsUserImpl: runAsUserMock.runAsUserImpl,
+          });
+          await service.executeHookCommand(
+            'echo hi',
+            '/test/worktree',
+            { worktreeNum: 1, branch: 'main', repo: 'r' },
+            'alice-multiuser-test',
+            timeoutMs,
+          );
+          // Let a late settle (if any) run its handler.
+          await new Promise((resolve) => setTimeout(resolve, settleAfterMs + 100));
+        } finally {
+          childSpy.mockRestore();
+        }
+        return warns.filter((args) => String(args[1]).includes('finished after its deadline'));
+      }
+
+      it('elevated branch logs no late-settle warn when the command settles inside the deadline', async () => {
+        expect(await lateSettleWarnsFor(10, 2000)).toHaveLength(0);
+      });
+
+      it('elevated branch logs exactly one late-settle warn when the command settles after the deadline', async () => {
+        expect(await lateSettleWarnsFor(300, 100)).toHaveLength(1);
+      });
+
       it('elevated branch without a time box still waits for runAsUser', async () => {
         process.env.AUTH_MODE = 'multi-user';
         runAsUserMock.responder.fn = async () => {

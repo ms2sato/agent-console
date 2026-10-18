@@ -95,6 +95,8 @@ export interface SessionPauseResumeDeps {
   startBranchWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
   stopBranchWatching: (sessionId: string) => void;
   getServerPid: () => number;
+  /** Whether the session's repository has a non-blank pause or resume command configured. */
+  hasSessionHookCommand: (kind: 'pause' | 'resume', session: InternalSession) => boolean;
   /**
    * Run the repository's pause or resume command for a worktree session as
    * `username`. Resolves `undefined` when there is nothing to run (no command
@@ -297,7 +299,7 @@ export class SessionPauseResumeService {
 
     // Run the repository's resume command before any worker comes up. It never
     // blocks the resume; a failure travels back to the caller in the result.
-    if (!runResumeCommand) {
+    if (!runResumeCommand && this.deps.hasSessionHookCommand('resume', internalSession)) {
       logger.info(
         { sessionId: id, reason: 'server-start' },
         'Skipping the resume command: auto-resume at server start brings workers back only',
