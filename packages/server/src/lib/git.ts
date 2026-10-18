@@ -1005,12 +1005,19 @@ export async function readRepoFileAtRef(
 const WORKING_TREE_DIR_EXIT_CODE = 42;
 
 /**
- * Shell command the elevated path of `readWorkingTreeFile` runs in the worktree:
- * exit `WORKING_TREE_DIR_EXIT_CODE` for a directory, else `cat` the file.
+ * Shell command the elevated path of `readWorkingTreeFile` runs: exit
+ * `WORKING_TREE_DIR_EXIT_CODE` for a directory, else `cat` the file.
+ *
+ * Both paths are ABSOLUTE (`cwd` joined with `relPath`), so the command is
+ * cwd-independent by construction. The elevated runner wraps the command as
+ * `cd <cwd>; <command>`, and if that `cd` fails (worktree deleted or
+ * unreadable) the command still runs, in the target user's HOME. A relative
+ * path would then read from the wrong place; an absolute one cannot be
+ * redirected, and a missing worktree surfaces as `No such file`.
  * @internal Exported for testing
  */
-export function buildWorkingTreeReadCommand(relPath: string): string {
-  const escaped = shellEscape(relPath);
+export function buildWorkingTreeReadCommand(cwd: string, relPath: string): string {
+  const escaped = shellEscape(path.join(cwd, relPath));
   return `test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}; cat -- ${escaped}`;
 }
 
@@ -1041,7 +1048,7 @@ export async function readWorkingTreeFile(
   requestUser?: string | null,
 ): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null> {
   if (requestUser != null && requestUser.length > 0) {
-    const command = buildWorkingTreeReadCommand(relPath);
+    const command = buildWorkingTreeReadCommand(cwd, relPath);
     let result: RunAsUserResult;
     try {
       result = await _runAsUser({
