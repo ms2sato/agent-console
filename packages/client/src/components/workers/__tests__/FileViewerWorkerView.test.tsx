@@ -319,6 +319,13 @@ describe('FileViewerWorkerView (live updates)', () => {
     return { ...stub, user, ws: openSocket() };
   }
 
+  // Reach (measured): this is the pin for "a collapsed directory is NOT
+  // refetched", which rests on refetchType defaulting to 'active'. Passing
+  // refetchType: 'all' on the tree invalidation fails THIS test (tree:other
+  // joins the fetch set) plus, at the hook level, `never asks to refetch
+  // inactive queries` and the 7 table tests that pin the filter object.
+  // Dropping `exact: true` fails no test in this file: React Query matches keys
+  // element-wise, so tree(s, w, 'sub') never prefix-matches another directory.
   it('refetches the changed open directory and the selected file, and not a collapsed directory', async () => {
     const r = liveRoutes();
     const { calls, user, ws } = await openSubFile(r);

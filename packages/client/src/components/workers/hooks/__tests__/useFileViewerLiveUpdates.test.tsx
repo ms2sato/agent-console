@@ -66,6 +66,11 @@ describe('useFileViewerLiveUpdates', () => {
     expect(ws.close).toHaveBeenCalled();
   });
 
+  // The table below pins the exact filter object passed to invalidateQueries.
+  // Measured: dropping `exact: true` fails the 7 table tests (names below) and
+  // no FileViewerWorkerView test, because React Query key matching is
+  // element-wise, so tree(s, w, 'sub') never prefix-matches another directory.
+  // `exact: true` documents intent; it is not an observable refetch difference.
   const cases: Array<{
     name: string;
     paths: string[];
@@ -117,6 +122,8 @@ describe('useFileViewerLiveUpdates', () => {
     expect(invalidated).toEqual([{ queryKey: fileViewerKeys.worker(S, W) }]);
   });
 
+  // Argument-shape pin only, NOT the reach measurement of "a collapsed directory
+  // is not refetched": that behaviour is pinned by FileViewerWorkerView.test.tsx.
   it('never asks to refetch inactive queries', () => {
     const { ws } = setup('sub/a.ts');
 
