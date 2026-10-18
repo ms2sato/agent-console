@@ -4,6 +4,8 @@ import {
   FileTreeEntrySchema,
   FileTreeResponseSchema,
   FileContentResponseSchema,
+  FileViewerServerMessageSchema,
+  type FileViewerServerMessage,
   type FileTreeEntry,
   type FileTreeResponse,
   type FileContentResponse,
@@ -21,6 +23,13 @@ export type _FileTreeEntryKeys = Assert<Equals<keyof FileTreeEntry, 'name' | 'ki
 export type _FileTreeResponseKeys = Assert<Equals<keyof FileTreeResponse, 'path' | 'entries'>>;
 export type _FileContentResponseKeys = Assert<
   Equals<keyof FileContentResponse, 'path' | 'kind' | 'content' | 'size' | 'truncated' | 'language'>
+>;
+
+export type _FilesChangedKeys = Assert<
+  Equals<keyof Extract<FileViewerServerMessage, { type: 'files-changed' }>, 'type' | 'paths' | 'overflow'>
+>;
+export type _WatchUnavailableKeys = Assert<
+  Equals<keyof Extract<FileViewerServerMessage, { type: 'watch-unavailable' }>, 'type' | 'reason'>
 >;
 
 const ok = (schema: v.GenericSchema, value: unknown) => v.safeParse(schema, value).success;
@@ -90,5 +99,46 @@ describe('FileContentResponseSchema', () => {
   it('rejects an extra key', () => {
     expect(ok(FileContentResponseSchema, { ...text, mtime: 1 })).toBe(false);
     expect(ok(FileContentResponseSchema, { ...binary, mtime: 1 })).toBe(false);
+  });
+});
+
+describe('FileViewerServerMessageSchema', () => {
+  const changed = { type: 'files-changed', paths: ['sub/a.ts'], overflow: false };
+
+  it('accepts files-changed, including an empty paths array (never sent, but a valid shape)', () => {
+    expect(ok(FileViewerServerMessageSchema, changed)).toBe(true);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: [] })).toBe(true);
+  });
+
+  it('accepts overflow with the full 200 paths', () => {
+    const paths = Array.from({ length: 200 }, (_, i) => `d/f${i}.ts`);
+    expect(ok(FileViewerServerMessageSchema, { type: 'files-changed', paths, overflow: true })).toBe(true);
+  });
+
+  it.each(['permission-denied', 'watch-failed'] as const)('accepts watch-unavailable with reason %s', (reason) => {
+    expect(ok(FileViewerServerMessageSchema, { type: 'watch-unavailable', reason })).toBe(true);
+  });
+
+  it('rejects an empty path, a backslash or drive-letter path, an absolute path and a `..` segment, in any element', () => {
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['/abs'] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: [''] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['C:\\repo\\file'] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['a\\..\\b'] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['ok.ts', '/abs'] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['../up.ts'] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['a/../b.ts'] })).toBe(false);
+  });
+
+  it('accepts a name that merely contains two dots (a segment rule, not a substring rule)', () => {
+    expect(ok(FileViewerServerMessageSchema, { ...changed, paths: ['a..b.ts', '..hidden/x'] })).toBe(true);
+  });
+
+  it('rejects an unknown reason, a missing field, an extra field on either member and an unknown type', () => {
+    expect(ok(FileViewerServerMessageSchema, { type: 'watch-unavailable', reason: 'unknown' })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { type: 'watch-unavailable' })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { type: 'files-changed', paths: [] })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { ...changed, extra: 1 })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { type: 'watch-unavailable', reason: 'watch-failed', extra: 1 })).toBe(false);
+    expect(ok(FileViewerServerMessageSchema, { type: 'refresh' })).toBe(false);
   });
 });
