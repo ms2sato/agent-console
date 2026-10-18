@@ -84,7 +84,7 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExp
     }
   }, [sessionId, queryClient]);
 
-  useAppWsEvent({ onMemoUpdated: handleMemoUpdated });
+  useAppWsEvent({ onMemoUpdated: handleMemoUpdated, invalidateOnReconnect: [sessionKeys.memoRoot()] });
 
   const { mutate: saveMemo, isPending: isSaving } = useMutation({
     mutationFn: async (text: string) => {

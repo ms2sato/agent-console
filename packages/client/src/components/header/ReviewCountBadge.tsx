@@ -17,6 +17,7 @@ export function ReviewCountBadge() {
     onReviewQueueUpdated: () => {
       queryClient.invalidateQueries({ queryKey: reviewQueueKeys.root() });
     },
+    invalidateOnReconnect: [reviewQueueKeys.root()],
   });
 
   const pendingCount = groups?.reduce((sum, g) => sum + g.items.length, 0) ?? 0;

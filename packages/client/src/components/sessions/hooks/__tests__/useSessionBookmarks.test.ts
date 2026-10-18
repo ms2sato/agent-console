@@ -3,6 +3,8 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useSessionBookmarks } from '../useSessionBookmarks';
+import { listReconnectInvalidationKeys, _resetReconnectInvalidation } from '../../../../lib/reconnect-invalidation';
+import { bookmarkKeys } from '../../../../lib/query-keys';
 import { _reset as resetWebSocket } from '../../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../../test/mock-websocket';
 
@@ -281,5 +283,30 @@ describe('useSessionBookmarks', () => {
       expect(mockFetch.mock.calls.length).toBe(emptyCallsBefore);
       expect(result.current.bookmarks).toEqual([]);
     });
+  });
+});
+
+describe('useSessionBookmarks reconnect registration', () => {
+  let restoreWebSocket: () => void;
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue(jsonResponse({}));
+    restoreWebSocket = installMockWebSocket();
+    resetWebSocket();
+    _resetReconnectInvalidation();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    _resetReconnectInvalidation();
+  });
+
+  // Mutation: drop `invalidateOnReconnect` from the hook's useAppWsEvent -> a `tsc` error at the hook,
+  // and (type bypassed) this test fails because the family root is not registered.
+  it('registers its family root for the reconnect invalidation', () => {
+    renderHook(() => useSessionBookmarks('session-1'), { wrapper: createWrapper() });
+
+    expect(listReconnectInvalidationKeys()).toContainEqual(bookmarkKeys.root());
   });
 });

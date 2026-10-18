@@ -274,4 +274,16 @@ describe('Query Keys', () => {
       expect(userKeys.list()[0]).not.toBe(todoKeys.root()[0]);
     });
   });
+
+  describe('sessionKeys memo root', () => {
+    it('memoRoot is the prefix of every per-session memo key (one registered root covers all sessions)', () => {
+      expect(sessionKeys.memo('session-a').slice(0, sessionKeys.memoRoot().length)).toEqual([...sessionKeys.memoRoot()]);
+      expect(sessionKeys.memo('session-b').slice(0, sessionKeys.memoRoot().length)).toEqual([...sessionKeys.memoRoot()]);
+    });
+
+    it('memoRoot is not the root of the other session families', () => {
+      expect(sessionKeys.memoRoot()).not.toEqual(sessionKeys.root());
+      expect(sessionKeys.prLink('s').slice(0, 1)).not.toEqual([...sessionKeys.memoRoot()]);
+    });
+  });
 });

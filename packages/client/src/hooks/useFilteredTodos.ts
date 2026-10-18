@@ -23,6 +23,7 @@ export function useFilteredTodos(filters: FetchTodosFilter, options: { enabled?:
     onSessionDeleted: () => {
       queryClient.invalidateQueries({ queryKey: todoKeys.listRoot() });
     },
+    invalidateOnReconnect: [todoKeys.root()],
   });
 
   return useQuery({

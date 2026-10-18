@@ -22,6 +22,7 @@ export function useTodoDetail(id: string) {
     onTodosUpdated: () => {
       queryClient.invalidateQueries({ queryKey: todoKeys.detail(id), exact: true });
     },
+    invalidateOnReconnect: [todoKeys.root()],
   });
 
   return useQuery({

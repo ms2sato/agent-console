@@ -1,8 +1,8 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchNotifications, markNotificationsSeen } from '../../lib/api';
 import { notificationCenterKeys } from '../../lib/query-keys';
-import { useAppWsEvent, useAppWsState } from '../../hooks/useAppWs';
+import { useAppWsEvent } from '../../hooks/useAppWs';
 import { BellIcon } from '../Icons';
 import { NotificationPanel } from './NotificationPanel';
 import { logger } from '../../lib/logger';
@@ -69,18 +69,10 @@ export function NotificationBell() {
     onTodosUpdated: () => {
       queryClient.invalidateQueries({ queryKey: notificationCenterKeys.root() });
     },
+    // The app-WS reconnect refetch is the shared `useReconnectInvalidation`
+    // (mounted in the root layout), fed by this registration.
+    invalidateOnReconnect: [notificationCenterKeys.root()],
   });
-
-  // v1 refetch trigger: app-WS reconnect (false -> true transition only,
-  // not the initial mount -- initial mount already gets a normal fetch).
-  const connected = useAppWsState((s) => s.connected);
-  const wasConnectedRef = useRef(connected);
-  useEffect(() => {
-    if (!wasConnectedRef.current && connected) {
-      queryClient.invalidateQueries({ queryKey: notificationCenterKeys.root() });
-    }
-    wasConnectedRef.current = connected;
-  }, [connected, queryClient]);
 
   // Close on outside click / Escape, mirroring MobileNavMenu's pattern.
   useEffect(() => {

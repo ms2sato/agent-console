@@ -9,7 +9,11 @@ import { createRoute, createRouter, createMemoryHistory, RouterProvider } from '
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderWithRouter } from '../../test/renderWithRouter';
 import { waitForAbsent } from '../../test/waitForAbsent';
-import { installMockWebSocket } from '../../test/mock-websocket';
+import { installMockWebSocket, MockWebSocket } from '../../test/mock-websocket';
+import { dropAndReopenAppSocket } from '../../test/app-socket-reconnect';
+import { useAppWsEvent } from '../../hooks/useAppWs';
+import { _resetReconnectInvalidation } from '../../lib/reconnect-invalidation';
+import { useQuery } from '@tanstack/react-query';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
 import { _reset as resetAuth } from '../../lib/auth';
 import { Route as RootRoute, useSessionStopTasksContext } from '../__root';
@@ -193,5 +197,83 @@ describe('RootLayout hook failure dialog', () => {
     expectChildRouteRendered(router);
     fireEvent.click(screen.getByText('Report failure'));
     expect(await screen.findByText('Resume Command Failed')).toBeTruthy();
+  });
+});
+
+// Polarity (measured): with `useReconnectInvalidation()` removed from RootLayout this test stays at 1
+// fetch after the reconnect and fails; with it, the family registered by a page-level consumer is
+// refetched. The hook's own behaviour is pinned in hooks/__tests__/useReconnectInvalidation.test.tsx;
+// this pins that the REAL root layout mounts it.
+describe('RootLayout reconnect invalidation', () => {
+  const originalFetch = globalThis.fetch;
+  let restoreWebSocket: () => void;
+  let probeFetches = 0;
+
+  function ProbeConsumer() {
+    useAppWsEvent({ onTodosUpdated: () => {}, invalidateOnReconnect: [['root-mount-probe']] });
+    useQuery({
+      queryKey: ['root-mount-probe'],
+      queryFn: async () => {
+        probeFetches += 1;
+        return 'ok';
+      },
+    });
+    return <div>Probe consumer</div>;
+  }
+
+  beforeEach(() => {
+    probeFetches = 0;
+    globalThis.fetch = Object.assign(
+      async () => new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    restoreWebSocket = installMockWebSocket();
+    resetWebSocket();
+    resetAuth();
+    _resetReconnectInvalidation();
+  });
+
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = originalFetch;
+    resetWebSocket();
+    restoreWebSocket();
+    resetAuth();
+    _resetReconnectInvalidation();
+  });
+
+  it('refetches a registered family after an app-WS reconnect (staleTime Infinity, so only the mechanism can)', async () => {
+    const childRoute = createRoute({ getParentRoute: () => RootRoute, path: '/', component: ProbeConsumer });
+    const router = createRouter({
+      routeTree: RootRoute.addChildren([childRoute]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+      defaultPendingMinMs: 0,
+    });
+    await act(async () => {
+      await router.load();
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+    });
+    await screen.findByText('Probe consumer');
+    await act(async () => {
+      MockWebSocket.getLastInstance()?.simulateOpen();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(probeFetches).toBe(1);
+
+    dropAndReopenAppSocket();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(probeFetches).toBe(2);
   });
 });
