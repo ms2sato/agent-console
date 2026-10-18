@@ -393,6 +393,23 @@ describe('FileViewerWorkerView (live updates)', () => {
     expect(screen.queryByText('Not found')).toBeNull();
   });
 
+  it('expands a re-created directory with ONE click after it was collapsed by a 404', async () => {
+    const r = liveRoutes();
+    const { user, ws } = await openSubFile(r);
+    const subItem = () => screen.getByRole('button', { name: 'sub' }).closest('li')!;
+
+    delete r.tree!.sub;
+    sendFrame(ws, { type: 'files-changed', paths: ['sub/a.ts'], overflow: false });
+    await waitFor(() => expect(subItem().getAttribute('aria-expanded')).toBe('false'));
+
+    r.tree!.sub = [{ name: 'a.ts', kind: 'file' }];
+    await user.click(screen.getByRole('button', { name: 'sub' }));
+
+    // The cached 404 must not be read as "gone" while the refetch is in flight.
+    expect(await screen.findByRole('button', { name: 'a.ts' })).toBeTruthy();
+    expect(subItem().getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('keeps the alert when the root listing itself is gone', async () => {
     const r = liveRoutes();
     const { ws } = await openSubFile(r);

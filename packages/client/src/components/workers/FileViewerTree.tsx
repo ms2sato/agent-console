@@ -59,21 +59,24 @@ interface DirectoryEntriesProps extends FileViewerTreeProps {
 
 function DirectoryEntries(props: DirectoryEntriesProps) {
   const { sessionId, workerId, path, depth, onDirectoryGone } = props;
-  const { data, error, isPending } = useQuery({
+  const { data, error, isPending, isFetching } = useQuery({
     queryKey: fileViewerKeys.tree(sessionId, workerId, path),
     queryFn: () => fetchFileTree(sessionId, workerId, path),
     ...FILE_VIEWER_QUERY_OPTIONS,
   });
   const indent = { paddingLeft: `${depth * 12 + 8}px` };
   // The root keeps its alert: there is nothing above it to collapse.
-  const isGone = path !== '' && error instanceof ApiError && error.status === 404;
+  // A refetch over a query that had data keeps the OLD error while it runs, so a cached 404 from an earlier
+  // deletion is only trusted once the refetch has settled.
+  const isGone = path !== '' && !isFetching && error instanceof ApiError && error.status === 404;
+  const isRecheckingGone = path !== '' && isFetching && error instanceof ApiError && error.status === 404;
 
   useEffect(() => {
     if (isGone) onDirectoryGone(path);
   }, [isGone, path, onDirectoryGone]);
 
   if (isGone) return null;
-  if (isPending) {
+  if (isPending || isRecheckingGone) {
     return <div className="py-1 text-gray-500 text-xs" style={indent}>Loading...</div>;
   }
   if (error) {
