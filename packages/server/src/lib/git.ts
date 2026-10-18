@@ -15,7 +15,7 @@
  * historical `Bun.spawn(['git', ...args])` direct-spawn path runs verbatim.
  */
 import path from 'node:path';
-import { readFile, stat } from 'node:fs/promises';
+import { open, readFile, stat } from 'node:fs/promises';
 import {
   runAsUser as defaultRunAsUser,
   shellEscape,
@@ -1011,9 +1011,29 @@ export async function readRepoFileAtRef(
 /** Exit code the elevated directory probe in `readWorkingTreeFile` uses to say "this is a directory". */
 const WORKING_TREE_DIR_EXIT_CODE = 42;
 
+/** Exit code the `regularOnly` probe uses to say "this exists but is not a regular file" (fifo, socket, device). */
+const WORKING_TREE_NOT_REGULAR_EXIT_CODE = 43;
+
+/** Options of {@link buildWorkingTreeReadCommand} / {@link readWorkingTreeFile}; the default is the diff paths' read. */
+export interface WorkingTreeReadOptions {
+  /**
+   * Refuse anything that is not a regular file (after following symlinks):
+   * `cat` on a fifo blocks until the time box. Reported as `{ kind: 'not-regular' }`.
+   */
+  regularOnly?: boolean;
+  /**
+   * Read at most this many bytes and report the file's total size in `size`.
+   * Without it the whole file is read.
+   */
+  maxBytes?: number;
+}
+
 /**
  * Shell command the elevated path of `readWorkingTreeFile` runs: exit
- * `WORKING_TREE_DIR_EXIT_CODE` for a directory, else `cat` the file.
+ * `WORKING_TREE_DIR_EXIT_CODE` for a directory, (with `regularOnly`) exit
+ * `WORKING_TREE_NOT_REGULAR_EXIT_CODE` for an existing path that is not a
+ * regular file, else `cat` the file. With `maxBytes` the read is `wc -c` (the total size, one
+ * line) followed by `head -c <maxBytes>` of the content.
  *
  * Both paths are ABSOLUTE (`cwd` joined with `relPath`), so the command does not
  * depend on the shell's working directory. The elevated runner already stops
@@ -1021,9 +1041,40 @@ const WORKING_TREE_DIR_EXIT_CODE = 42;
  * absolute paths keep the command correct on any other route to it.
  * @internal Exported for testing
  */
-export function buildWorkingTreeReadCommand(cwd: string, relPath: string): string {
+export function buildWorkingTreeReadCommand(
+  cwd: string,
+  relPath: string,
+  opts: WorkingTreeReadOptions = {},
+): string {
   const escaped = shellEscape(path.join(cwd, relPath));
-  return `test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}; cat -- ${escaped}`;
+  const probes = [`test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}`];
+  // A path that does not exist falls through to the read and fails there with
+  // `No such file`, exactly as without the option; only an EXISTING non-regular
+  // path (fifo, socket, device) exits NOT_REGULAR.
+  if (opts.regularOnly) {
+    probes.push(`test -f ${escaped} || { test -e ${escaped} && exit ${WORKING_TREE_NOT_REGULAR_EXIT_CODE}; }`);
+  }
+  const read =
+    opts.maxBytes === undefined
+      ? `cat -- ${escaped}`
+      : `wc -c < ${escaped}; head -c ${opts.maxBytes} -- ${escaped}`;
+  return [...probes, read].join('; ');
+}
+
+/** A file read by {@link readWorkingTreeFile}; `size` (total bytes on disk) is present when `maxBytes` was given. */
+type WorkingTreeFile = { kind: 'file'; content: Buffer; size?: number };
+
+/**
+ * Parse the `wc -c` line a bounded elevated read starts with (GNU prints
+ * `123`, BSD pads it with leading spaces) and split it from the content.
+ */
+function splitSizeLine(stdout: string, relPath: string): { size: number; content: string } {
+  const newline = stdout.indexOf('\n');
+  const size = newline < 0 ? Number.NaN : Number.parseInt(stdout.slice(0, newline).trim(), 10);
+  if (!Number.isInteger(size) || size < 0) {
+    throw new GitError(`read ${relPath} failed: unexpected size line`, 0, '');
+  }
+  return { size, content: stdout.slice(newline + 1) };
 }
 
 /**
@@ -1043,17 +1094,35 @@ export function buildWorkingTreeReadCommand(cwd: string, relPath: string): strin
  * so `isBinaryContent` still classifies binaries, and no caller renders binary
  * content.
  *
- * @returns the file content, `{ kind: 'directory' }` for a directory, or `null`
- *   when the path does not exist.
+ * With `{ regularOnly: true, maxBytes }` (the file viewer's read) at most
+ * `maxBytes` bytes come back together with the file's total `size`, and a
+ * fifo, socket or device is refused as `{ kind: 'not-regular' }` instead of
+ * being opened.
+ *
+ * @returns the file content, `{ kind: 'directory' }` for a directory,
+ *   `{ kind: 'not-regular' }` for a non-regular file under `regularOnly`, or
+ *   `null` when the path does not exist.
  * @throws GitError when the elevated read fails for any other reason.
  */
 export async function readWorkingTreeFile(
   cwd: string,
   relPath: string,
   requestUser?: string | null,
-): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null> {
+): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null>;
+export async function readWorkingTreeFile(
+  cwd: string,
+  relPath: string,
+  requestUser: string | null | undefined,
+  opts: { regularOnly: true; maxBytes: number },
+): Promise<{ kind: 'file'; content: Buffer; size: number } | { kind: 'directory' } | { kind: 'not-regular' } | null>;
+export async function readWorkingTreeFile(
+  cwd: string,
+  relPath: string,
+  requestUser?: string | null,
+  opts: WorkingTreeReadOptions = {},
+): Promise<WorkingTreeFile | { kind: 'directory' } | { kind: 'not-regular' } | null> {
   if (requestUser != null && requestUser.length > 0) {
-    const command = buildWorkingTreeReadCommand(cwd, relPath);
+    const command = buildWorkingTreeReadCommand(cwd, relPath, opts);
     let result: RunAsUserResult;
     try {
       result = await _runAsUser({
@@ -1081,6 +1150,7 @@ export async function readWorkingTreeFile(
       );
     }
     if (result.exitCode === WORKING_TREE_DIR_EXIT_CODE) return { kind: 'directory' };
+    if (opts.regularOnly && result.exitCode === WORKING_TREE_NOT_REGULAR_EXIT_CODE) return { kind: 'not-regular' };
     if (result.exitCode !== 0) {
       if (/No such file/.test(result.stderr)) return null;
       throw new GitError(
@@ -1089,16 +1159,33 @@ export async function readWorkingTreeFile(
         result.stderr
       );
     }
-    return { kind: 'file', content: Buffer.from(result.stdout, 'utf-8') };
+    if (opts.maxBytes === undefined) return { kind: 'file', content: Buffer.from(result.stdout, 'utf-8') };
+    const { size, content } = splitSizeLine(result.stdout, relPath);
+    return { kind: 'file', content: Buffer.from(content, 'utf-8'), size };
   }
 
   const fullPath = path.join(cwd, relPath);
   try {
-    if ((await stat(fullPath)).isDirectory()) return { kind: 'directory' };
-    return { kind: 'file', content: await readFile(fullPath) };
+    const stats = await stat(fullPath);
+    if (stats.isDirectory()) return { kind: 'directory' };
+    if (opts.regularOnly && !stats.isFile()) return { kind: 'not-regular' };
+    if (opts.maxBytes === undefined) return { kind: 'file', content: await readFile(fullPath) };
+    return { kind: 'file', content: await readPrefix(fullPath, Math.min(opts.maxBytes, stats.size)), size: stats.size };
   } catch (error) {
     if (isErrnoException(error) && error.code === 'ENOENT') return null;
     throw error;
+  }
+}
+
+/** First `maxBytes` bytes of a regular file, without reading the rest. */
+async function readPrefix(fullPath: string, maxBytes: number): Promise<Buffer> {
+  const handle = await open(fullPath, 'r');
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
   }
 }
 

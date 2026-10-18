@@ -48,15 +48,32 @@ async function defaultResolveGitDir(repoPath: string): Promise<{ gitDir: string;
   return existsSync(join(repoPath, '.git')) ? { gitDir: join(repoPath, '.git'), bare: false } : null;
 }
 
-type WorkingTreeRead = { kind: 'file'; content: Buffer } | { kind: 'directory' } | null;
+type WorkingTreeRead =
+  | { kind: 'file'; content: Buffer; size?: number }
+  | { kind: 'directory' }
+  | { kind: 'not-regular' }
+  | null;
+type WorkingTreeReadOptions = { regularOnly?: boolean; maxBytes?: number };
 
 // Default for `readWorkingTreeFile`: read the real file from disk so tests that
 // write temp files and call through the service keep exercising real content.
-async function defaultReadWorkingTreeFile(cwd: string, relPath: string): Promise<WorkingTreeRead> {
+// Honors the same options as the real function (a regular-file check, and a
+// bounded read that also reports the total size), so a caller that passes them
+// sees the shape it expects.
+async function defaultReadWorkingTreeFile(
+  cwd: string,
+  relPath: string,
+  _requestUser?: string | null,
+  opts: WorkingTreeReadOptions = {},
+): Promise<WorkingTreeRead> {
   const fullPath = join(cwd, relPath);
   try {
-    if ((await stat(fullPath)).isDirectory()) return { kind: 'directory' };
-    return { kind: 'file', content: await readFile(fullPath) };
+    const stats = await stat(fullPath);
+    if (stats.isDirectory()) return { kind: 'directory' };
+    if (opts.regularOnly && !stats.isFile()) return { kind: 'not-regular' };
+    const content = await readFile(fullPath);
+    if (opts.maxBytes === undefined) return { kind: 'file', content };
+    return { kind: 'file', content: content.subarray(0, opts.maxBytes), size: content.length };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
@@ -123,7 +140,7 @@ export const mockGit = {
 
   // Working-tree reads (as the session owner when requestUser is set)
   readWorkingTreeFile: mock(defaultReadWorkingTreeFile) as Mock<
-    (cwd: string, relPath: string, requestUser?: string | null) => Promise<WorkingTreeRead>
+    (cwd: string, relPath: string, requestUser?: string | null, opts?: WorkingTreeReadOptions) => Promise<WorkingTreeRead>
   >,
 
   // Remote fetch operations

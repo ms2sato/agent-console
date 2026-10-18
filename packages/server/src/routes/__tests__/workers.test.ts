@@ -1007,6 +1007,51 @@ describe('Workers API', () => {
       expect(body.worker.type).toBe('terminal');
     });
 
+    it('should create a file-viewer worker (no options, no process) and list it', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const ptyCountBefore = ptyFactory.instances.length;
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'file-viewer' }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { worker: { id: string; type: string; name: string; createdAt: string } };
+      expect(body.worker).toEqual({
+        id: expect.any(String),
+        type: 'file-viewer',
+        name: 'File Viewer',
+        createdAt: expect.any(String),
+      });
+      expect(ptyFactory.instances.length).toBe(ptyCountBefore);
+
+      const listed = await app.request(`/api/sessions/${session.id}/workers`);
+      const listBody = (await listed.json()) as { workers: Array<{ id: string; type: string }> };
+      expect(listBody.workers.find((w) => w.id === body.worker.id)?.type).toBe('file-viewer');
+    });
+
+    it('should reject a file-viewer worker request that carries an option (strict schema)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'file-viewer', path: 'src' }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
     it('should create an embedded-agent worker (deactivated in Phase 1)', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
@@ -1901,6 +1946,98 @@ describe('Workers API', () => {
       expect(res.status).toBeLessThan(500);
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Could not resolve diff base');
+    });
+  });
+
+  // ===========================================================================
+  // GET /api/sessions/:sessionId/workers/:workerId/files/tree and /files/content
+  // Wiring only (memfs): session / worker / access checks and the happy path.
+  // The boundary table against real files lives in workers-files-real-fs.test.ts.
+  // ===========================================================================
+
+  describe('GET /api/sessions/:sessionId/workers/:workerId/files/(tree|content)', () => {
+    async function sessionWithViewer(createdBy?: string) {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        createdBy ? { createdBy } : undefined,
+      );
+      const viewer = await sessionManager.createWorker(session.id, { type: 'file-viewer' });
+      expect(viewer).not.toBeNull();
+      return { session, viewer: viewer! };
+    }
+
+    const urls = (sessionId: string, workerId: string) => [
+      `/api/sessions/${sessionId}/workers/${workerId}/files/tree`,
+      `/api/sessions/${sessionId}/workers/${workerId}/files/content?path=hello.txt`,
+    ];
+
+    it('lists the session directory and reads a file for a file-viewer worker', async () => {
+      const { session, viewer } = await sessionWithViewer();
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        '/test/path/hello.txt': 'hi there\n',
+        '/test/path/sub/inner.ts': 'export {};\n',
+      });
+
+      const [treeUrl, contentUrl] = urls(session.id, viewer.id);
+      const tree = await app.request(treeUrl);
+      expect(tree.status).toBe(200);
+      expect(await tree.json()).toEqual({
+        path: '',
+        entries: [
+          { name: 'sub', kind: 'dir' },
+          { name: 'hello.txt', kind: 'file' },
+        ],
+      });
+
+      const content = await app.request(contentUrl);
+      expect(content.status).toBe(200);
+      expect(await content.json()).toEqual({
+        path: 'hello.txt',
+        kind: 'text',
+        content: 'hi there\n',
+        size: 9,
+        truncated: false,
+        language: 'text',
+      });
+    });
+
+    it('404 for an unknown session and for an unknown worker', async () => {
+      const { session } = await sessionWithViewer();
+      for (const url of urls('nope', 'x')) expect((await app.request(url)).status).toBe(404);
+      for (const url of urls(session.id, 'nope')) expect((await app.request(url)).status).toBe(404);
+    });
+
+    it('400 for a worker that is not a file-viewer worker (terminal and git-diff)', async () => {
+      const { session } = await sessionWithViewer();
+      const terminal = await sessionManager.createWorker(session.id, { type: 'terminal' });
+      const gitDiff = session.workers.find((w) => w.type === 'git-diff')!;
+      for (const worker of [terminal!, gitDiff]) {
+        for (const url of urls(session.id, worker.id)) {
+          const res = await app.request(url);
+          expect(res.status).toBe(400);
+          expect(((await res.json()) as { error: string }).error).toContain('not a file-viewer worker');
+        }
+      }
+    });
+
+    it('the content route needs a path', async () => {
+      const { session, viewer } = await sessionWithViewer();
+      const res = await app.request(`/api/sessions/${session.id}/workers/${viewer.id}/files/content`);
+      expect(res.status).toBe(400);
+    });
+
+    it('403 for a multi-user non-owner on both routes; the owner and a single-user caller pass the access check', async () => {
+      const { session, viewer } = await sessionWithViewer('someone-else-id');
+      const originalAuthMode = serverConfig.AUTH_MODE;
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+      try {
+        for (const url of urls(session.id, viewer.id)) expect((await app.request(url)).status).toBe(403);
+      } finally {
+        (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+      }
+      // Single-user mode never checks ownership (createdBy is someone else here).
+      expect((await app.request(urls(session.id, viewer.id)[0])).status).toBe(200);
     });
   });
 

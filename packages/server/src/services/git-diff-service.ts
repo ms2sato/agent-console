@@ -23,7 +23,7 @@ import {
   readWorkingTreeFile,
 } from '../lib/git.js';
 import { watch, type FSWatcher } from 'node:fs';
-import { isAbsolute } from 'path';
+import { isValidFilePath } from '../lib/relative-file-path.js';
 import { createLogger } from '../lib/logger.js';
 import { fileWatchIgnorePatterns } from '../lib/server-config.js';
 
@@ -625,26 +625,6 @@ export async function getDiffData(
     summary,
     rawDiff,
   };
-}
-
-/**
- * Validate that a file path is safe and doesn't escape the repository directory.
- * Prevents path traversal attacks via malicious filePath parameter.
- */
-function isValidFilePath(filePath: string): boolean {
-  // Reject absolute paths (including Windows drive-absolute)
-  if (isAbsolute(filePath)) {
-    return false;
-  }
-  // Reject paths containing .. (path traversal)
-  if (filePath.includes('..')) {
-    return false;
-  }
-  // Reject paths with null bytes (security concern)
-  if (filePath.includes('\0')) {
-    return false;
-  }
-  return true;
 }
 
 /**

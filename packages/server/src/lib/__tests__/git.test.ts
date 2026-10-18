@@ -1627,6 +1627,149 @@ index abc1234..def5678 100644
       });
     });
 
+    describe('buildWorkingTreeReadCommand options', () => {
+      const e = shellEscape(join('/work/tree', 'a.txt'));
+
+      it('default (no options) is byte-identical to the diff paths\' command', async () => {
+        const mod = await getGitModule();
+        expect(mod.buildWorkingTreeReadCommand('/work/tree', 'a.txt')).toBe(`test -d ${e} && exit 42; cat -- ${e}`);
+        expect(mod.buildWorkingTreeReadCommand('/work/tree', 'a.txt', {})).toBe(`test -d ${e} && exit 42; cat -- ${e}`);
+      });
+
+      it('regularOnly adds the existing-but-not-regular probe (exit 43) after the directory probe, absolute paths only', async () => {
+        const mod = await getGitModule();
+        expect(mod.buildWorkingTreeReadCommand('/work/tree', 'a.txt', { regularOnly: true })).toBe(
+          `test -d ${e} && exit 42; test -f ${e} || { test -e ${e} && exit 43; }; cat -- ${e}`,
+        );
+      });
+
+      it('maxBytes replaces cat with the size line then a bounded head', async () => {
+        const mod = await getGitModule();
+        expect(mod.buildWorkingTreeReadCommand('/work/tree', 'a.txt', { maxBytes: 1048577 })).toBe(
+          `test -d ${e} && exit 42; wc -c < ${e}; head -c 1048577 -- ${e}`,
+        );
+      });
+
+      it('both options together (the file viewer\'s read)', async () => {
+        const mod = await getGitModule();
+        expect(mod.buildWorkingTreeReadCommand('/work/tree', "it's.txt", { regularOnly: true, maxBytes: 10 })).toBe(
+          `test -d ${shellEscape(join('/work/tree', "it's.txt"))} && exit 42; ` +
+            `test -f ${shellEscape(join('/work/tree', "it's.txt"))} || { test -e ${shellEscape(join('/work/tree', "it's.txt"))} && exit 43; }; ` +
+            `wc -c < ${shellEscape(join('/work/tree', "it's.txt"))}; head -c 10 -- ${shellEscape(join('/work/tree', "it's.txt"))}`,
+        );
+      });
+    });
+
+    describe('regularOnly + maxBytes (the file viewer\'s bounded read)', () => {
+      const opts = { regularOnly: true, maxBytes: 100 } as const;
+
+      it('elevated: maps exit 43 to not-regular, but only when regularOnly was asked for', async () => {
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(captureSeam({ exitCode: 43 }).fake);
+        try {
+          expect(await mod.readWorkingTreeFile('/work/tree', 'p', 'alice', opts)).toEqual({ kind: 'not-regular' });
+          // Without regularOnly exit 43 is just another failure, never a kind.
+          await expect(mod.readWorkingTreeFile('/work/tree', 'p', 'alice')).rejects.toBeInstanceOf(mod.GitError);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('elevated: splits the size line from the content (GNU and BSD-padded wc output)', async () => {
+        const mod = await getGitModule();
+        for (const sizeLine of ['12', '      12']) {
+          mod.__setRunAsUserForTesting(captureSeam({ stdout: `${sizeLine}\nhello\nworld\n` }).fake);
+          try {
+            const result = await mod.readWorkingTreeFile('/work/tree', 'p', 'alice', opts);
+            expect(result.kind).toBe('file');
+            expect(result.size).toBe(12);
+            expect(result.content.toString('utf-8')).toBe('hello\nworld\n');
+          } finally {
+            mod.__setRunAsUserForTesting(null);
+          }
+        }
+      });
+
+      it('elevated: an empty file is a size line and nothing else', async () => {
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(captureSeam({ stdout: '0\n' }).fake);
+        try {
+          const result = await mod.readWorkingTreeFile('/work/tree', 'p', 'alice', opts);
+          expect(result.size).toBe(0);
+          expect(result.content.length).toBe(0);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('elevated: a missing or malformed size line is a GitError, never content', async () => {
+        const mod = await getGitModule();
+        for (const stdout of ['', 'no newline', 'abc\ncontent', '-3\ncontent']) {
+          mod.__setRunAsUserForTesting(captureSeam({ stdout }).fake);
+          try {
+            await expect(mod.readWorkingTreeFile('/work/tree', 'p', 'alice', opts)).rejects.toBeInstanceOf(mod.GitError);
+          } finally {
+            mod.__setRunAsUserForTesting(null);
+          }
+        }
+      });
+
+      it('elevated: runs exactly the bounded command with the cwd and timeout', async () => {
+        const { calls, fake } = captureSeam({ stdout: '1\nx' });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          await mod.readWorkingTreeFile('/work/tree', 'a.txt', 'alice', opts);
+          expect(calls.length).toBe(1);
+          expect(calls[0].command).toBe(mod.buildWorkingTreeReadCommand('/work/tree', 'a.txt', opts));
+          expect(calls[0].cwd).toBe('/work/tree');
+          expect(calls[0].timeoutMs).toBe(30000);
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      describe('direct path', () => {
+        let tmpDir: string;
+        beforeEach(() => {
+          tmpDir = mkdtempSync(join(tmpdir(), 'read-working-tree-bounded-'));
+        });
+        afterEach(() => {
+          rmSync(tmpDir, { recursive: true, force: true });
+        });
+
+        it('returns at most maxBytes with the total size, and the whole file when it fits', async () => {
+          writeFileSync(join(tmpDir, 'big.txt'), 'a'.repeat(250));
+          writeFileSync(join(tmpDir, 'small.txt'), 'abc');
+          writeFileSync(join(tmpDir, 'empty.txt'), '');
+          const mod = await getGitModule();
+          const big = await mod.readWorkingTreeFile(tmpDir, 'big.txt', null, opts);
+          expect(big.size).toBe(250);
+          expect(big.content.length).toBe(100);
+          const small = await mod.readWorkingTreeFile(tmpDir, 'small.txt', null, opts);
+          expect(small.size).toBe(3);
+          expect(small.content.toString('utf-8')).toBe('abc');
+          const empty = await mod.readWorkingTreeFile(tmpDir, 'empty.txt', null, opts);
+          expect(empty.size).toBe(0);
+          expect(empty.content.length).toBe(0);
+        });
+
+        it('regularOnly refuses a non-regular file (a character device stands in for a fifo, without blocking)', async () => {
+          const mod = await getGitModule();
+          expect(await mod.readWorkingTreeFile('/dev', 'null', null, opts)).toEqual({ kind: 'not-regular' });
+          // Without the option the same path is read as a file (the diff paths' behaviour).
+          expect((await mod.readWorkingTreeFile('/dev', 'null', null)).kind).toBe('file');
+        });
+
+        it('still reports a directory and a missing path', async () => {
+          mkdirSync(join(tmpDir, 'sub'));
+          const mod = await getGitModule();
+          expect(await mod.readWorkingTreeFile(tmpDir, 'sub', null, opts)).toEqual({ kind: 'directory' });
+          expect(await mod.readWorkingTreeFile(tmpDir, 'nope', null, opts)).toBeNull();
+        });
+      });
+    });
+
     describe('mode matrix (target-environment cross-check)', () => {
       it('single-user mode: requestUser null never calls the seam', async () => {
         const { calls, fake } = captureSeam({});
