@@ -12,7 +12,6 @@ import {
   getFileDiff,
   getFileLines,
   startWatching,
-  stopWatching,
   isWatching,
   triggerRefresh,
 } from '../git-diff-service.js';
@@ -654,10 +653,11 @@ describe('GitDiffService', () => {
   // The diff worker is one subscriber of the shared watcher (file-watch-service.ts). A second
   // subscriber (the file viewer) joins the same entry through a fake `watch`, so these tests need no
   // real directory; the real `fs.watch` is measured in file-watch-service-real-fs.test.ts.
-  describe('startWatching / stopWatching (the diff worker as a subscriber)', () => {
+  describe('startWatching (each call is its own diff subscription)', () => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     let counter = 0;
 
+    /** Holds the shared watch open through the fake `watch`, standing in for the viewer or a first subscriber. */
     function joinAsViewer(path: string, fake: FakeWatch) {
       const batches: Array<{ paths: string[]; overflow: boolean }> = [];
       const unsubscribe = subscribeToFileChanges(
@@ -668,33 +668,75 @@ describe('GitDiffService', () => {
       return { batches, unsubscribe };
     }
 
-    it('stopWatching removes only the diff subscription: a viewer on the same path survives and still receives events', async () => {
+    // Reach (each mutation applied alone to git-diff-service.ts, this file re-run):
+    //   a second startWatching replaces the first (the old per-path map)
+    //     -> 'two startWatching calls on one path both fire'
+    //   the returned unsubscribe removes every subscription of the path
+    //     -> 'unsubscribing one leaves the other firing'
+    it('two startWatching calls on one path both fire on one event', async () => {
       const path = `/virtual/diff-${counter++}`;
       const fake = createFakeWatch();
-      const viewer = joinAsViewer(path, fake);
-      const callback = mock(() => {});
-      startWatching(path, callback);
-      expect(isWatching(path)).toBe(true);
+      const holder = joinAsViewer(path, fake);
+      const first = mock(() => {});
+      const second = mock(() => {});
+      const stopFirst = startWatching(path, first);
+      const stopSecond = startWatching(path, second);
+      expect(fake.calls).toEqual([path]);
 
-      stopWatching(path);
+      fake.emit('a.ts');
+      await sleep(450);
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(1);
+
+      stopFirst();
+      stopSecond();
+      holder.unsubscribe();
+    });
+
+    it('unsubscribing one leaves the other firing; the watch closes only when the last subscriber leaves', async () => {
+      const path = `/virtual/diff-${counter++}`;
+      const fake = createFakeWatch();
+      const holder = joinAsViewer(path, fake);
+      const first = mock(() => {});
+      const second = mock(() => {});
+      const stopFirst = startWatching(path, first);
+      const stopSecond = startWatching(path, second);
+
+      stopFirst();
+      expect(isWatching(path)).toBe(true);
+      fake.emit('a.ts');
+      await sleep(450);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
+
+      stopSecond();
+      expect(isWatching(path)).toBe(false);
+      expect(fake.closeCount()).toBe(0); // the holder still subscribes
+      holder.unsubscribe();
+      expect(fake.closeCount()).toBe(1);
+    });
+
+    it('a returned unsubscribe is idempotent', () => {
+      const path = `/virtual/diff-${counter++}`;
+      const fake = createFakeWatch();
+      const holder = joinAsViewer(path, fake);
+      const stop = startWatching(path, () => {});
+
+      stop();
+      stop();
+
       expect(isWatching(path)).toBe(false);
       expect(fake.closeCount()).toBe(0);
-
-      fake.emit('after.ts');
-      await sleep(60);
-      expect(viewer.batches).toEqual([{ paths: ['after.ts'], overflow: false }]);
-      expect(callback).not.toHaveBeenCalled();
-
-      viewer.unsubscribe();
+      holder.unsubscribe();
       expect(fake.closeCount()).toBe(1);
     });
 
     it('fires after the 300 ms debounce for a non-ignored path, never for an ignored segment, and keeps catalog.logic.ts (the substring over-match)', async () => {
       const path = `/virtual/diff-${counter++}`;
       const fake = createFakeWatch();
-      const viewer = joinAsViewer(path, fake);
+      const holder = joinAsViewer(path, fake);
       const callback = mock(() => {});
-      startWatching(path, callback);
+      const stop = startWatching(path, callback);
 
       fake.emit('node_modules/x.js');
       await sleep(400);
@@ -706,44 +748,36 @@ describe('GitDiffService', () => {
       await sleep(250);
       expect(callback).toHaveBeenCalledTimes(1);
 
-      stopWatching(path);
-      viewer.unsubscribe();
+      stop();
+      holder.unsubscribe();
     });
 
-    it('a second startWatching for the same path replaces the first diff callback', async () => {
+    it('triggerRefresh fires every subscription of the path once, after a short delay, and nothing after its unsubscribe', async () => {
       const path = `/virtual/diff-${counter++}`;
       const fake = createFakeWatch();
-      const viewer = joinAsViewer(path, fake);
+      const holder = joinAsViewer(path, fake);
       const first = mock(() => {});
       const second = mock(() => {});
-      startWatching(path, first);
-      startWatching(path, second);
+      const stopFirst = startWatching(path, first);
+      const stopSecond = startWatching(path, second);
 
-      fake.emit('a.ts');
-      await sleep(450);
-      expect(first).not.toHaveBeenCalled();
+      triggerRefresh(path);
+      await sleep(200);
+      expect(first).toHaveBeenCalledTimes(1);
       expect(second).toHaveBeenCalledTimes(1);
 
-      stopWatching(path);
-      viewer.unsubscribe();
+      triggerRefresh(path);
+      stopFirst();
+      await sleep(200);
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(2);
+
+      stopSecond();
+      holder.unsubscribe();
     });
 
-    it('triggerRefresh calls the current callback after a short delay, and nothing after stopWatching', async () => {
-      const path = `/virtual/diff-${counter++}`;
-      const fake = createFakeWatch();
-      const viewer = joinAsViewer(path, fake);
-      const callback = mock(() => {});
-      startWatching(path, callback);
-
-      triggerRefresh(path);
-      await sleep(200);
-      expect(callback).toHaveBeenCalledTimes(1);
-
-      triggerRefresh(path);
-      stopWatching(path);
-      await sleep(200);
-      expect(callback).toHaveBeenCalledTimes(1);
-      viewer.unsubscribe();
+    it('triggerRefresh on a path nobody watches is a no-op (the empty case)', () => {
+      expect(() => triggerRefresh(`/virtual/nobody-${counter++}`)).not.toThrow();
     });
   });
 });

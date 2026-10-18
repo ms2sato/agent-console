@@ -29,7 +29,6 @@ import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { AnnotationService } from '../annotation-service.js';
 import { InterSessionMessageService } from '../inter-session-message-service.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
-import * as gitDiffService from '../git-diff-service.js';
 import type { InternalEmbeddedAgentWorker } from '../worker-types.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { NotificationManager } from '../notifications/notification-manager.js';
@@ -1321,34 +1320,49 @@ describe('WorkerLifecycleManager', () => {
       expect(session.workers.size).toBe(0);
     });
 
-    it('should delete a file-viewer worker by stopping only its watch subscription (no git-diff unwatch, no PTY, no embedded-agent deactivation)', async () => {
-      const stopFileViewerWatching = mock((_sessionId: string, _workerId: string) => {});
+    it.each(['git-diff', 'file-viewer'] as const)('should delete a %s worker by stopping its worker watch once (no PTY, no embedded-agent deactivation)', async (type) => {
+      const stopWorkerWatching = mock((_sessionId: string, _workerId: string) => {});
       lifecycleManager = new WorkerLifecycleManager(
-        createDeps({ getWebSocketCallbacks: () => ({ stopFileViewerWatching }) }),
+        createDeps({ getWebSocketCallbacks: () => ({ stopWorkerWatching }) }),
       );
       const session = createTestSession();
       sessions.set(session.id, session);
-      const worker = await lifecycleManager.createWorker(session.id, { type: 'file-viewer' });
+      const worker = await lifecycleManager.createWorker(
+        session.id,
+        type === 'git-diff' ? { type: 'git-diff' } : { type: 'file-viewer' },
+      );
       mockDeactivateEmbeddedAgentWorker.mockClear();
 
-      const stopWatchingSpy = spyOn(gitDiffService, 'stopWatching');
-      try {
-        const result = await lifecycleManager.deleteWorker(session.id, worker!.id);
+      const result = await lifecycleManager.deleteWorker(session.id, worker!.id);
 
-        expect(result).toBe(true);
-        expect(stopFileViewerWatching).toHaveBeenCalledTimes(1);
-        expect(stopFileViewerWatching).toHaveBeenCalledWith(session.id, worker!.id);
-        expect(session.workers.size).toBe(0);
-        expect(stopWatchingSpy).not.toHaveBeenCalled();
-        // The embedded-agent branch is the old `else`: a file-viewer worker must not reach it.
-        expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
-        expect(ptyFactory.instances.length).toBe(0);
-      } finally {
-        stopWatchingSpy.mockRestore();
-      }
+      expect(result).toBe(true);
+      expect(stopWorkerWatching).toHaveBeenCalledTimes(1);
+      expect(stopWorkerWatching).toHaveBeenCalledWith(session.id, worker!.id);
+      expect(session.workers.size).toBe(0);
+      // The embedded-agent branch is the old `else`: these workers must not reach it.
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      expect(ptyFactory.instances.length).toBe(0);
     });
 
-    it('should delete an embedded-agent worker without calling stopWatching', async () => {
+    it('should delete an agent worker without stopping any worker watch', async () => {
+      const stopWorkerWatching = mock((_sessionId: string, _workerId: string) => {});
+      lifecycleManager = new WorkerLifecycleManager(
+        createDeps({ getWebSocketCallbacks: () => ({ stopWorkerWatching }) }),
+      );
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const worker = await lifecycleManager.createWorker(session.id, { type: 'terminal' });
+
+      await lifecycleManager.deleteWorker(session.id, worker!.id);
+
+      expect(stopWorkerWatching).not.toHaveBeenCalled();
+    });
+
+    it('should delete an embedded-agent worker without stopping any worker watch', async () => {
+      const stopWorkerWatching = mock((_sessionId: string, _workerId: string) => {});
+      lifecycleManager = new WorkerLifecycleManager(
+        createDeps({ getWebSocketCallbacks: () => ({ stopWorkerWatching }) }),
+      );
       const session = createTestSession();
       sessions.set(session.id, session);
 
@@ -1357,20 +1371,14 @@ describe('WorkerLifecycleManager', () => {
         embeddedAgentId: 'def-1',
       });
 
-      const stopWatchingSpy = spyOn(gitDiffService, 'stopWatching');
-      try {
-        const result = await lifecycleManager.deleteWorker(session.id, worker!.id);
+      const result = await lifecycleManager.deleteWorker(session.id, worker!.id);
 
-        expect(result).toBe(true);
-        expect(session.workers.size).toBe(0);
-        // stopWatching is a git-diff-only cleanup path; it must NOT run for
-        // embedded-agent workers.
-        expect(stopWatchingSpy).not.toHaveBeenCalled();
-        // No PTY was ever spawned, so none should be killed.
-        expect(ptyFactory.instances.length).toBe(0);
-      } finally {
-        stopWatchingSpy.mockRestore();
-      }
+      expect(result).toBe(true);
+      expect(session.workers.size).toBe(0);
+      // The worker watch is a git-diff and file-viewer concern; it must NOT run for embedded-agent workers.
+      expect(stopWorkerWatching).not.toHaveBeenCalled();
+      // No PTY was ever spawned, so none should be killed.
+      expect(ptyFactory.instances.length).toBe(0);
     });
 
     it('should deactivate the embedded-agent subprocess when deleting (polarity guard)', async () => {

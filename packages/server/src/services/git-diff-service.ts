@@ -683,38 +683,37 @@ const DEBOUNCE_DELAY = 300;
 const MANUAL_REFRESH_DELAY = 100;
 
 /**
- * The diff worker's subscription to the shared watcher. One per repository
- * path: a second `startWatching` for the same path replaces it. Other
- * subscribers of the same path (the file viewer) are not touched.
+ * One diff connection's subscription to the shared watcher. Several
+ * connections can watch the same repository path (two browser tabs, or two
+ * sessions on one directory), so each `startWatching` call keeps its own
+ * subscription and returns its own unsubscribe; other subscribers of the same
+ * path (the file viewer, other diff connections) are never touched by it. The
+ * per-path set exists only so `triggerRefresh(repoPath)` can reach every diff
+ * subscription of a directory.
  */
 interface DiffSubscription {
-  unsubscribe: () => void;
   callback: FileChangeCallback;
   manualRefreshTimer: ReturnType<typeof setTimeout> | null;
 }
 
-const diffSubscriptions = new Map<string, DiffSubscription>();
+const diffSubscriptions = new Map<string, Set<DiffSubscription>>();
 
 /**
- * Start watching a repository for file changes on behalf of the diff worker.
- * The watch itself is shared (see file-watch-service.ts); this registers the
- * diff worker's subscriber: paths are discarded, only "something changed" is
- * reported, debounced.
+ * Start watching a repository for file changes on behalf of one diff
+ * connection. The watch itself is shared (see file-watch-service.ts); this
+ * registers the diff worker's subscriber: paths are discarded, only
+ * "something changed" is reported, debounced. Returns THIS subscription's own
+ * unsubscribe (idempotent), which the connection calls on disconnect. There is
+ * deliberately no path-keyed stop: it would silence every tab and session
+ * watching the directory.
  *
  * @param repoPath - Path to the git repository
  * @param onChange - Callback when files change (debounced)
  */
-export function startWatching(repoPath: string, onChange: FileChangeCallback): void {
-  // Replace this worker's earlier subscription for the path
-  stopWatching(repoPath);
-
+export function startWatching(repoPath: string, onChange: FileChangeCallback): () => void {
   const log = logger.child({ repoPath });
-  const subscription: DiffSubscription = {
-    unsubscribe: () => {},
-    callback: onChange,
-    manualRefreshTimer: null,
-  };
-  subscription.unsubscribe = subscribeToFileChanges(repoPath, {
+  const subscription: DiffSubscription = { callback: onChange, manualRefreshTimer: null };
+  const unsubscribeShared = subscribeToFileChanges(repoPath, {
     ignore: (relPath) => pathHasIgnoredSegment(relPath, fileWatchIgnorePatterns),
     debounceMs: DEBOUNCE_DELAY,
     maxWaitMs: null,
@@ -727,24 +726,22 @@ export function startWatching(repoPath: string, onChange: FileChangeCallback): v
       log.error({ reason }, 'File watcher error');
     },
   });
-  diffSubscriptions.set(repoPath, subscription);
-}
+  const set = diffSubscriptions.get(repoPath) ?? new Set<DiffSubscription>();
+  set.add(subscription);
+  diffSubscriptions.set(repoPath, set);
 
-/**
- * Stop the diff worker's watching of a repository. The shared watch closes
- * only when no other subscriber (the file viewer) remains.
- *
- * @param repoPath - Path to the git repository
- */
-export function stopWatching(repoPath: string): void {
-  const subscription = diffSubscriptions.get(repoPath);
-  if (subscription) {
+  return () => {
     if (subscription.manualRefreshTimer) {
       clearTimeout(subscription.manualRefreshTimer);
+      subscription.manualRefreshTimer = null;
     }
-    subscription.unsubscribe();
-    diffSubscriptions.delete(repoPath);
-  }
+    unsubscribeShared();
+    const current = diffSubscriptions.get(repoPath);
+    if (current) {
+      current.delete(subscription);
+      if (current.size === 0) diffSubscriptions.delete(repoPath);
+    }
+  };
 }
 
 /**
@@ -806,7 +803,7 @@ export async function getFileLines(
 }
 
 export function isWatching(repoPath: string): boolean {
-  return diffSubscriptions.has(repoPath);
+  return (diffSubscriptions.get(repoPath)?.size ?? 0) > 0;
 }
 
 /**
@@ -816,8 +813,7 @@ export function isWatching(repoPath: string): boolean {
  * @param repoPath - Path to the git repository
  */
 export function triggerRefresh(repoPath: string): void {
-  const subscription = diffSubscriptions.get(repoPath);
-  if (subscription) {
+  for (const subscription of diffSubscriptions.get(repoPath) ?? []) {
     // Clear existing timer and trigger with a short delay
     if (subscription.manualRefreshTimer) {
       clearTimeout(subscription.manualRefreshTimer);

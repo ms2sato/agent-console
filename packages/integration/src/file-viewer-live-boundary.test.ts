@@ -75,4 +75,28 @@ describe('Client-Server Boundary: file viewer live updates', () => {
     expect(parsed.paths).toHaveLength(200);
     handlers.handleDisconnection('session', 'worker');
   });
+
+  it('two sockets on one viewer worker both receive the batch; closing one never silences the other', async () => {
+    const fake = createFakeWatch();
+    const handlers = createFileViewerHandlers({ subscribe: (p, s) => subscribeToFileChanges(p, s, { watch: fake.watch }) });
+    const tab1 = createWs();
+    const tab2 = createWs();
+    const dir = `/virtual/live-${counter++}`;
+    handlers.handleConnection(tab1.ws, 'session', 'worker', dir);
+    handlers.handleConnection(tab2.ws, 'session', 'worker', dir);
+
+    fake.emit('a.ts');
+    await sleep(500);
+    expect(tab1.sent).toHaveLength(1);
+    expect(tab2.sent).toHaveLength(1);
+    expect(v.parse(FileViewerServerMessageSchema, JSON.parse(tab2.sent[0])).type).toBe('files-changed');
+
+    handlers.handleDisconnection('session', 'worker', tab1.ws);
+    fake.emit('b.ts');
+    await sleep(500);
+
+    expect(tab1.sent).toHaveLength(1);
+    expect(tab2.sent).toHaveLength(2);
+    handlers.handleDisconnection('session', 'worker', tab2.ws);
+  });
 });

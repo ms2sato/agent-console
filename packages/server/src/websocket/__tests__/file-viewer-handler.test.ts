@@ -90,40 +90,66 @@ describe('createFileViewerHandlers', () => {
     expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
   });
 
-  it('a late close of the OLD socket after a reconnect does not unsubscribe the NEW socket\'s watch', () => {
+  // Reach (each mutation applied alone to file-viewer-handler.ts, this file re-run):
+  //   a connection map keyed by workerId again -> 'a second socket on the same worker ADDS' and the stale-close test
+  //   handleDisconnection ignoring `ws` -> the stale-close test
+  it('a late close of an already-removed socket does not touch the other socket\'s watch', () => {
     const { handlers, unsubscribes } = createHarness();
     const ws1 = createMockWs();
     const ws2 = createMockWs();
     handlers.handleConnection(ws1, 's1', 'w1', '/work/dir');
     handlers.handleConnection(ws2, 's1', 'w1', '/work/dir');
-    expect(unsubscribes[0]).toHaveBeenCalledTimes(1); // the reconnect replaced the first subscription
 
     handlers.handleDisconnection('s1', 'w1', ws1);
+    expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
+    expect(unsubscribes[1]).not.toHaveBeenCalled();
+
+    // ws1's close arrives again after it was removed: nothing changes
+    handlers.handleDisconnection('s1', 'w1', ws1);
+    expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
     expect(unsubscribes[1]).not.toHaveBeenCalled();
 
     handlers.handleDisconnection('s1', 'w1', ws2);
     expect(unsubscribes[1]).toHaveBeenCalledTimes(1);
   });
 
-  it('a disconnection without a socket (service teardown) unsubscribes whichever socket is current', () => {
+  it('a disconnection without a socket (service teardown) unsubscribes every socket of the worker', () => {
     const { handlers, unsubscribes } = createHarness();
+    handlers.handleConnection(createMockWs(), 's1', 'w1', '/work/dir');
     handlers.handleConnection(createMockWs(), 's1', 'w1', '/work/dir');
 
     handlers.handleDisconnection('s1', 'w1');
 
     expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
+    expect(unsubscribes[1]).toHaveBeenCalledTimes(1);
   });
 
-  it('a reconnect of the same worker replaces the earlier subscription', () => {
+  it('a disconnection for a socket that is not registered is a no-op', () => {
     const { handlers, unsubscribes } = createHarness();
     handlers.handleConnection(createMockWs(), 's1', 'w1', '/work/dir');
-    handlers.handleConnection(createMockWs(), 's1', 'w1', '/work/dir');
 
-    expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
-    expect(unsubscribes[1]).not.toHaveBeenCalled();
+    handlers.handleDisconnection('s1', 'w1', createMockWs());
+
+    expect(unsubscribes[0]).not.toHaveBeenCalled();
   });
 
-  it('two viewer workers on one path keep separate subscriptions (keyed by worker, not by path)', () => {
+  it('a second socket on the same worker ADDS a subscription: both receive files-changed, neither is unsubscribed', () => {
+    const { handlers, subscribers, unsubscribes } = createHarness();
+    const ws1 = createMockWs();
+    const ws2 = createMockWs();
+    handlers.handleConnection(ws1, 's1', 'w1', '/work/dir');
+    handlers.handleConnection(ws2, 's1', 'w1', '/work/dir');
+
+    expect(subscribers).toHaveLength(2);
+    expect(unsubscribes[0]).not.toHaveBeenCalled();
+    subscribers[0].onChange({ paths: ['a.ts'], overflow: false });
+    subscribers[1].onChange({ paths: ['a.ts'], overflow: false });
+
+    expect(ws1.sent.map((m) => JSON.parse(m).type)).toEqual(['files-changed']);
+    expect(ws2.sent.map((m) => JSON.parse(m).type)).toEqual(['files-changed']);
+  });
+
+  it('a teardown of one worker leaves another worker on the same path alone', () => {
     const { handlers, unsubscribes } = createHarness();
     handlers.handleConnection(createMockWs(), 's1', 'w1', '/work/dir');
     handlers.handleConnection(createMockWs(), 's1', 'w2', '/work/dir');

@@ -28,6 +28,7 @@ import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { serverConfig } from '../../lib/server-config.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
+import { triggerRefresh } from '../../services/git-diff-service.js';
 import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
@@ -300,6 +301,43 @@ describe('Worker WebSocket connection error codes', () => {
 
     resolveHook({ success: true });
     await pause;
+  });
+
+  // Two tabs on one git-diff worker: the socket's own close must release only its own watch (the socket is
+  // passed to the handler). Polarity: with cleanupWorkerConnection calling handleGitDiffDisconnection without
+  // the socket, the close of ws1 stops every connection of the worker and ws2 receives nothing.
+  it('closing one git-diff socket leaves the other tab receiving diff frames on a refresh trigger', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff');
+    expect(diffWorker).toBeDefined();
+    const openSocket = () => {
+      const handlers = capturedWorkerHandlerFactory!({
+        req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? diffWorker!.id : '') },
+      });
+      const ws = createMockWs();
+      handlers.onOpen({}, ws);
+      return { handlers, ws };
+    };
+    const tab1 = openSocket();
+    const tab2 = openSocket();
+    await Bun.sleep(150); // the initial diff frames (data or error: the diff source is not under test)
+    tab1.ws.sentMessages.length = 0;
+    tab2.ws.sentMessages.length = 0;
+
+    tab1.handlers.onClose({}, tab1.ws);
+    triggerRefresh(session.locationPath);
+    await Bun.sleep(300);
+
+    expect(tab1.ws.sentMessages).toEqual([]);
+    expect(tab2.ws.sentMessages.length).toBeGreaterThan(0);
+    tab2.handlers.onClose({}, tab2.ws);
   });
 
   it('notifySessionPaused sends SESSION_PAUSED and closes with 1000 on an open file-viewer socket', async () => {

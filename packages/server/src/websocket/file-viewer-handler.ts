@@ -31,8 +31,9 @@ export interface FileViewerHandlerDependencies {
 export function createFileViewerHandlers(deps: FileViewerHandlerDependencies) {
   const { subscribe } = deps;
 
-  // The open viewer connection of each worker, keyed by workerId: its socket and the unsubscribe of its watch.
-  const activeConnections = new Map<string, { ws: WSContext; unsubscribe: () => void }>();
+  // The open viewer connections, keyed by socket (several tabs can hold one worker, each with its own
+  // watch subscription). The same WSContext object reaches onOpen and onClose.
+  const activeConnections = new Map<WSContext, { workerId: string; unsubscribe: () => void }>();
 
   function send(ws: WSContext, message: FileViewerServerMessage | WorkerServerMessage): void {
     try {
@@ -52,10 +53,6 @@ export function createFileViewerHandlers(deps: FileViewerHandlerDependencies) {
   function handleConnection(ws: WSContext, sessionId: string, workerId: string, locationPath: string): void {
     log.info({ sessionId, workerId, locationPath }, 'File viewer WebSocket connected');
 
-    // A reconnect of the same worker replaces the earlier subscription (teardown without a socket: the
-    // old socket's late close is then ignored as stale, see handleDisconnection).
-    handleDisconnection(sessionId, workerId);
-
     const unsubscribe = subscribe(locationPath, {
       ignore: viewerIgnores,
       debounceMs: VIEWER_DEBOUNCE_MS,
@@ -68,21 +65,30 @@ export function createFileViewerHandlers(deps: FileViewerHandlerDependencies) {
         send(ws, { type: 'watch-unavailable', reason });
       },
     });
-    activeConnections.set(workerId, { ws, unsubscribe });
+    activeConnections.set(ws, { workerId, unsubscribe });
   }
 
   /**
-   * Stop the worker's subscription. Idempotent. With `ws` (a socket's own close), it acts only when `ws`
-   * is the stored socket: after a reconnect the OLD socket's late close must not unsubscribe the NEW
-   * socket's watch. Without `ws` (a service tearing the worker down: pause, delete) it always acts.
+   * Stop watch subscriptions. With `ws` (a socket's own close) only that socket's subscription is stopped,
+   * and a socket that is not registered (already removed) is a no-op, so a late close never touches another
+   * connection. Without `ws` (a service tearing the worker down: pause, delete) every connection of the
+   * worker is stopped. Idempotent.
    */
   function handleDisconnection(sessionId: string, workerId: string, ws?: WSContext): void {
-    const connection = activeConnections.get(workerId);
-    if (!connection) return;
-    if (ws !== undefined && connection.ws !== ws) return;
-    log.info({ sessionId, workerId }, 'File viewer WebSocket disconnected');
-    activeConnections.delete(workerId);
-    connection.unsubscribe();
+    if (ws !== undefined) {
+      const connection = activeConnections.get(ws);
+      if (!connection) return;
+      log.info({ sessionId, workerId }, 'File viewer WebSocket disconnected');
+      activeConnections.delete(ws);
+      connection.unsubscribe();
+      return;
+    }
+    for (const [socket, connection] of [...activeConnections]) {
+      if (connection.workerId !== workerId) continue;
+      log.info({ sessionId, workerId }, 'File viewer WebSocket disconnected');
+      activeConnections.delete(socket);
+      connection.unsubscribe();
+    }
   }
 
   /** The viewer's socket is server-to-client only: answer a client frame with an error and keep the socket open. */

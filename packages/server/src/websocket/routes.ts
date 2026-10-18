@@ -305,13 +305,12 @@ export async function setupWebSocketRoutes(
   const { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, annotationService } = appContext;
 
   // Initialize git-diff handlers with injected dependencies
-  const { getDiffData, getFileLines, resolveRef, resolveBaseSpec, startWatching, stopWatching } = await import('../services/git-diff-service.js');
+  const { getDiffData, getFileLines, resolveRef, resolveBaseSpec, startWatching } = await import('../services/git-diff-service.js');
   initializeGitDiffHandlers({
     getDiffData,
     resolveRef,
     resolveBaseSpec,
     startWatching,
-    stopWatching,
     getFileLines,
     annotationService,
   });
@@ -437,8 +436,13 @@ export async function setupWebSocketRoutes(
     notifySessionDeleted,
     notifySessionPaused,
     broadcastToApp,
-    // Service teardown has no socket: it unsubscribes regardless of which socket is current.
-    stopFileViewerWatching: (sessionId, workerId) => handleFileViewerDisconnection(sessionId, workerId),
+    // Service teardown (pause, final delete, worker delete) has no socket: it stops every connection of the worker.
+    stopWorkerWatching: (sessionId, workerId) => {
+      handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
+        logger.error({ sessionId, workerId, err }, 'Error stopping git-diff watching');
+      });
+      handleFileViewerDisconnection(sessionId, workerId);
+    },
   });
   completedSteps.add('setWebSocketCallbacks');
 
@@ -851,7 +855,7 @@ export async function setupWebSocketRoutes(
         const worker = session?.workers.find(w => w.id === wid);
 
         if (worker?.type === 'git-diff') {
-          handleGitDiffDisconnection(sid, wid).catch((err) => {
+          handleGitDiffDisconnection(sid, wid, ws).catch((err) => {
             logger.error({ sessionId: sid, workerId: wid, err }, 'Error cleaning up git-diff on WebSocket close/error');
           });
         } else if (worker?.type === 'file-viewer') {
