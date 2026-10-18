@@ -295,6 +295,15 @@ async pauseSession(id: string): Promise<boolean> {
 }
 ```
 
+#### Pausing is a state
+
+The pause command makes the window between the last worker kill and the removal of the session from memory as long as the command's time box, instead of a few awaits. In that window the session is still in memory with every PTY cleared, so anything that activates a worker would start it again behind the pause. The session manager therefore keeps a `pausing` entry per session from before the first worker is killed until the pause has settled (cleared in a `finally`, so a throwing command or a failed save also clears it), and:
+
+- a second pause request **joins** the in-flight one and gets the same outcome (HTTP 200, not 409): a double click or a retry must not surface an error for an operation that is succeeding;
+- worker activation entry points (`getAvailableWorker`, `restoreWorker`, `createWorker`, `activateEmbeddedAgentWorker`, `restartWorker`) are **refused** with `SessionPausingError` (HTTP 409); `restartAllAgentWorkers` skips the session and says why in its per-session result;
+- a worker WebSocket opened in that window is closed with the existing `SESSION_PAUSED` code and the reason `Session is pausing`, which the client already treats as "do not reconnect";
+- a resume request is not affected: the session is still in memory, so it returns the existing session and activates nothing.
+
 ### Resume Implementation
 
 ```typescript
