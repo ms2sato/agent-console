@@ -670,13 +670,23 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
 
       const NEAREST = { block: 'nearest', inline: 'nearest' };
 
+      /** The tab's container (label + rename pencil + close), which must be what is scrolled. */
+      function wrapperOf(name: string): Element {
+        const tab = screen.getByRole('tab', { name });
+        const wrapper = tab.parentElement!;
+        // The wrapper holds the selected tab and its sibling controls.
+        expect(wrapper.contains(tab)).toBe(true);
+        expect(wrapper.querySelector('[aria-label^="Rename "]')).not.toBeNull();
+        return wrapper;
+      }
+
       it('on first render, scrolls the non-first active tab into view', async () => {
         routeFetch(WORKERS);
         await renderSessionPage(sessionStopTasksValue, 'w-viewer');
         await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
 
-        const viewerTab = screen.getByRole('tab', { name: 'File Viewer' });
-        expect(calls.some((c) => c.el === viewerTab && JSON.stringify(c.options) === JSON.stringify(NEAREST))).toBe(true);
+        const viewerWrapper = wrapperOf('File Viewer');
+        expect(calls.some((c) => c.el === viewerWrapper && JSON.stringify(c.options) === JSON.stringify(NEAREST))).toBe(true);
       });
 
       it('a tab bar that remounts after a pause/resume (same active tab id) scrolls the selected tab again', async () => {
@@ -702,10 +712,37 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         send({ type: 'session-resumed', session: createMockSession({ workers: WORKERS }), activityStates: [] });
         await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
 
-        const viewerTab = screen.getByRole('tab', { name: 'File Viewer' });
-        expect(viewerTab.getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true');
         expect(calls.length).toBe(1);
-        expect(calls[0].el).toBe(viewerTab);
+        expect(calls[0].el).toBe(wrapperOf('File Viewer'));
+        expect(calls[0].options).toEqual(NEAREST);
+      });
+
+      it('renaming an earlier tab while a later tab is selected scrolls the selected tab again, and an unrelated re-render does not', async () => {
+        routeFetch(WORKERS);
+        await renderSessionPage(sessionStopTasksValue, 'w-viewer');
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+        const appSocket = MockWebSocket.getInstances().find(ws => ws.url.includes('/ws/app'));
+        expect(appSocket).toBeDefined();
+        const send = (frame: unknown) => act(() => {
+          appSocket!.simulateOpen();
+          appSocket!.simulateMessage(JSON.stringify(completeWireBody(frame)));
+        });
+
+        // A session-updated frame with identical names re-renders without a label change.
+        calls.length = 0;
+        send({ type: 'session-updated', session: createMockSession({ workers: WORKERS }) });
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' })).toBeTruthy());
+        expect(calls.length).toBe(0);
+
+        // Renaming an earlier tab (the rename reaches the tab via this broadcast).
+        const renamed = WORKERS.map((w) => (w.id === 'w-agent' ? { ...w, name: 'Renamed agent tab' } : w));
+        send({ type: 'session-updated', session: createMockSession({ workers: renamed }) });
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'Renamed agent tab' })).toBeTruthy());
+
+        expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true');
+        expect(calls.length).toBe(1);
+        expect(calls[0].el).toBe(wrapperOf('File Viewer'));
         expect(calls[0].options).toEqual(NEAREST);
       });
 
@@ -717,9 +754,8 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
           screen.getByRole('tab', { name: 'A very long worker tab name' }).click();
         });
         await waitFor(() => expect(screen.getByRole('tab', { name: 'A very long worker tab name' }).getAttribute('aria-selected')).toBe('true'));
-        const terminalTab = screen.getByRole('tab', { name: 'A very long worker tab name' });
         expect(calls.length).toBe(1);
-        expect(calls[0].el).toBe(terminalTab);
+        expect(calls[0].el).toBe(wrapperOf('A very long worker tab name'));
         expect(calls[0].options).toEqual(NEAREST);
 
         calls.length = 0;
@@ -728,7 +764,7 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         });
         await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
         expect(calls.length).toBe(1);
-        expect(calls[0].el).toBe(screen.getByRole('tab', { name: 'File Viewer' }));
+        expect(calls[0].el).toBe(wrapperOf('File Viewer'));
         expect(calls[0].options).toEqual(NEAREST);
       });
     });

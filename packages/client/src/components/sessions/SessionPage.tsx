@@ -334,17 +334,24 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   }, [state.type, sessionTitle, branchName]);
 
   // Keep the selected tab visible in the horizontally scrolling tab bar (a
-  // selected tab can sit past the right edge on a narrow viewport). `nearest`
-  // on both axes is a no-op when the tab is already visible, so wide layouts
-  // never jump. Also runs on first mount of the bar, so a session opened on a
-  // non-first tab starts with it in view. `state.type` is a dependency because
-  // the bar only mounts once the session is loaded. Scoped to the tablist ref,
-  // not a document-wide query; this syncs with a browser layout API.
+  // selected tab can sit past the right edge on a narrow viewport). The whole
+  // tab container is scrolled (label, rename pencil and close button), not just
+  // the label button. `nearest` on both axes is a no-op when the tab is already
+  // visible, so wide layouts never jump. Also runs when the bar first mounts, so
+  // a session opened on a non-first tab starts with it in view.
+  // Deps: `activeTabId` (selection moved); `state.type` (a pause/resume remounts
+  // the bar scrolled to 0 with the same selection); `tabLabelsKey` (a rename
+  // changes tab widths and a browser may reset scrollLeft, leaving the selected
+  // tab off-screen). The key is a string, compared by value, so the effect does
+  // not re-run on unrelated renders. Scoped to the tablist ref, not a
+  // document-wide query; this syncs with a browser layout API.
+  const tabLabelsKey = tabs.map(t => t.name).join('\0');
   useEffect(() => {
     tablistRef.current
       ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.closest('[data-worker-tab]')
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [activeTabId, state.type]);
+  }, [activeTabId, state.type, tabLabelsKey]);
 
   const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
@@ -672,6 +679,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     return (
       <div
         key={tab.id}
+        data-worker-tab=""
         className={`group flex items-center shrink-0 whitespace-nowrap border-r border-slate-600 hover:bg-slate-700 ${
           tab.id === activeTabId
             ? 'bg-slate-700 text-white'
