@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { screen, cleanup, waitFor, act } from '@testing-library/react';
+import { screen, cleanup, waitFor, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { waitForAbsent } from '../../../test/waitForAbsent';
@@ -587,6 +587,54 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
 
     const closeButtons = screen.queryAllByRole('button', { name: 'Close tab' });
     expect(closeButtons.length).toBe(1);
+  });
+
+  describe('tab labels stay on one line and the bar scrolls (Issue #2216)', () => {
+    // happy-dom has no layout, so these pin the classes that produce the
+    // behaviour: a tab that may shrink or wrap is squeezed to "Vi" / wrapped
+    // at 390 px instead of letting the bar scroll. Desktop is unchanged
+    // because the bar only overflows when the tabs do not fit.
+    // Keyed by Worker['type'] so a new worker kind is a compile error here,
+    // i.e. the pin covers every tab kind.
+    const ONE_PER_KIND = {
+      agent: createMockWorker({ id: 'w-agent', type: 'agent', name: 'Claude Code', agentId: 'claude-code', activated: true }),
+      'embedded-agent': createMockWorker({ id: 'w-embedded', type: 'embedded-agent', name: 'An embedded agent with a long name', embeddedAgentId: 'e-1', activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false }),
+      terminal: createMockWorker({ id: 'w-term', type: 'terminal', name: 'A very long worker tab name', activated: true }),
+      'git-diff': createMockWorker({ id: 'w-diff', type: 'git-diff', name: 'Diff', baseCommit: 'abc123' }),
+      'file-viewer': createMockWorker({ id: 'w-viewer', type: 'file-viewer', name: 'File Viewer' }),
+    } satisfies Record<Worker['type'], Worker>;
+    const WORKERS = Object.values(ONE_PER_KIND);
+
+    async function renderAllKinds() {
+      routeFetch(WORKERS);
+      await renderSessionPage();
+      await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(WORKERS.length));
+    }
+
+    it('every tab kind: the tab container and the tab activator are no-shrink and no-wrap', async () => {
+      await renderAllKinds();
+
+      for (const worker of WORKERS) {
+        const tab = screen.getByRole('tab', { name: worker.name });
+        const classes = tab.className.split(/\s+/);
+        expect(classes).toContain('shrink-0');
+        expect(classes).toContain('whitespace-nowrap');
+        const containerClasses = tab.parentElement!.className.split(/\s+/);
+        expect(containerClasses).toContain('shrink-0');
+        expect(containerClasses).toContain('whitespace-nowrap');
+      }
+    });
+
+    it('the tab bar scrolls horizontally and holds every tab, while the add button sits outside it', async () => {
+      await renderAllKinds();
+
+      const tablist = screen.getByRole('tablist', { name: 'Worker tabs' });
+      expect(tablist.className.split(/\s+/)).toContain('overflow-x-auto');
+      expect(within(tablist).getAllByRole('tab').length).toBe(WORKERS.length);
+      // Positive control: the add button exists, and is not one of the scrolled tabs.
+      expect(screen.getByRole('button', { name: 'Add agent worker' })).toBeTruthy();
+      expect(within(tablist).queryByRole('button', { name: 'Add agent worker' })).toBeNull();
+    });
   });
 });
 

@@ -658,7 +658,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     return (
       <div
         key={tab.id}
-        className={`group flex items-center border-r border-slate-600 hover:bg-slate-700 ${
+        className={`group flex items-center shrink-0 whitespace-nowrap border-r border-slate-600 hover:bg-slate-700 ${
           tab.id === activeTabId
             ? 'bg-slate-700 text-white'
             : 'text-gray-400'
@@ -669,7 +669,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           workerId={tab.id}
           name={tab.name}
           active={tab.id === activeTabId}
-          buttonClassName={`py-2 text-sm flex items-center gap-2 pl-4 ${closeable ? 'pr-1' : 'pr-4'}`}
+          buttonClassName={`py-2 text-sm flex items-center shrink-0 whitespace-nowrap gap-2 pl-4 ${closeable ? 'pr-1' : 'pr-4'}`}
           onSelect={() => handleTabClick(tab.id)}
           onError={(message) => showError('Rename Failed', message)}
         >
