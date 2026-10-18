@@ -18,7 +18,6 @@ import {
   parseDirectoryListing,
   listDirectory,
   readFileContent,
-  FILE_VIEWER_BINARY_PROBE_BYTES,
   type FileViewerDeps,
 } from '../file-viewer-service.js';
 
@@ -330,8 +329,9 @@ describe('readFileContent', () => {
   });
 
   it('NUL just inside the 8 KiB window is binary: no content, size reported, never truncated', async () => {
-    const bytes = Buffer.alloc(FILE_VIEWER_BINARY_PROBE_BYTES + 10, 0x61);
-    bytes[FILE_VIEWER_BINARY_PROBE_BYTES - 1] = 0; // byte #8192
+    // Literal 8192, not the exported constant: the pin must not move with the code it pins.
+    const bytes = Buffer.alloc(8192 + 10, 0x61);
+    bytes[8191] = 0; // byte #8192
     const response = await readFileContent(ROOT, 'x.bin', 'alice', harness(file(bytes, 9_999_999)).deps);
     expect(response).toEqual({
       path: 'x.bin',
@@ -343,8 +343,8 @@ describe('readFileContent', () => {
   });
 
   it('NUL at byte 8193 (just past the window) is text: the window is the definition', async () => {
-    const bytes = Buffer.alloc(FILE_VIEWER_BINARY_PROBE_BYTES + 10, 0x61);
-    bytes[FILE_VIEWER_BINARY_PROBE_BYTES] = 0; // byte #8193
+    const bytes = Buffer.alloc(8192 + 10, 0x61);
+    bytes[8192] = 0; // byte #8193
     const response = await readFileContent(ROOT, 'x.txt', 'alice', harness(file(bytes, bytes.length)).deps);
     expect(response.kind).toBe('text');
     expect(response.content).toBeDefined();

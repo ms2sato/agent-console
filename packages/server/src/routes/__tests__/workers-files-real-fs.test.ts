@@ -121,6 +121,7 @@ beforeAll(async () => {
   ];
   sessions.set('S', { id: 'S', locationPath: worktree, createdBy: OWNER.id, workers: workersFor() });
   sessions.set('NG', { id: 'NG', locationPath: nonGit, createdBy: OWNER.id, workers: workersFor() });
+  sessions.set('GONE', { id: 'GONE', locationPath: join(base, 'deleted-dir'), createdBy: OWNER.id, workers: workersFor() });
   sessions.set('SHARED', { id: 'SHARED', locationPath: worktree, createdBy: 'shared-account-id', workers: workersFor() });
 });
 
@@ -322,6 +323,15 @@ describe('both routes: session, worker and access checks', () => {
     expect(tree.status).toBe(400);
     expect(tree.body.error).toContain('not a file-viewer worker');
     expect((await getJson(contentUrl(q('plain.txt'), 'S', 'D'))).status).toBe(400);
+  });
+
+  it('a session whose working directory is gone is 404 on both routes (no elevation is needed, so the read is in-process and says so)', async () => {
+    // With an OS user the non-elevated runner would fail the spawn itself (500); the route passes
+    // no user when `shouldElevateForUser` is false, so the service answers NotFound.
+    const tree = await getJson(treeUrl('', 'GONE'));
+    expect(tree.status).toBe(404);
+    expect(tree.body.error).toBe('Working directory not found');
+    expect((await getJson(contentUrl(q('a.txt'), 'GONE'))).status).toBe(404);
   });
 
   describe('multi-user mode (assertCanOperateSession)', () => {

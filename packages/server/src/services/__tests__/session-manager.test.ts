@@ -8278,8 +8278,16 @@ describe('SessionManager', () => {
       const { manager, session, viewer } = await createSessionWithViewer();
       const agent = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      expect(await manager.sendMessage(session.id, null, viewer.id, 'hi')).toBeNull();
-      expect(await manager.sendMessage(session.id, viewer.id, agent.id, 'hi')).toBeNull();
+      // The guard is an early exit: without it the PTY injection would be attempted (and fail) for
+      // a worker that has no PTY, so the observable is that no injection is even tried.
+      const injectSpy = spyOn(manager['ptyMessageInjectionService'], 'injectMessage');
+      try {
+        expect(await manager.sendMessage(session.id, null, viewer.id, 'hi')).toBeNull();
+        expect(await manager.sendMessage(session.id, viewer.id, agent.id, 'hi')).toBeNull();
+        expect(injectSpy).not.toHaveBeenCalled();
+      } finally {
+        injectSpy.mockRestore();
+      }
       const params: PtyNotificationParams = {
         kind: 'internal-timer',
         tag: 'internal:timer',

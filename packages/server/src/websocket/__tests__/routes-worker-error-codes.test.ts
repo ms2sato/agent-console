@@ -247,6 +247,8 @@ describe('Worker WebSocket connection error codes', () => {
     // A frame that still arrives afterwards is ignored: no reply, no error.
     mockWs.sentMessages.length = 0;
     handlers.onMessage({ data: JSON.stringify({ type: 'input', data: 'x' }) }, mockWs);
+    handlers.onMessage({ data: JSON.stringify({ type: 'request-history', fromOffset: 0 }) }, mockWs);
+    await Bun.sleep(50); // the history path answers asynchronously
     expect(mockWs.sentMessages).toEqual([]);
   });
 
