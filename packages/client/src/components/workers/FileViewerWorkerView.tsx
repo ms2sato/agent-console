@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchFileContent, fetchFileTree } from '../../lib/api';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -30,6 +30,9 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [symlinkFailure, setSymlinkFailure] = useState<SymlinkTreeFailure | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Advances on every selection-changing action. A symlink probe is async; it
+  // applies its outcome only if no later action has happened since it started.
+  const selectionRequestRef = useRef(0);
 
   const isFetching = useIsFetching({ queryKey: fileViewerKeys.worker(sessionId, workerId) }) > 0;
   const content = useQuery({
@@ -48,12 +51,15 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
   }
 
   function openFile(path: string) {
+    selectionRequestRef.current++;
     setSymlinkFailure(null);
     setSelectedPath(path);
     setDrawerOpen(false);
   }
 
   async function openSymlink(path: string) {
+    const request = ++selectionRequestRef.current;
+    const isLatest = () => request === selectionRequestRef.current;
     setSymlinkFailure(null);
     try {
       await queryClient.fetchQuery({
@@ -62,8 +68,10 @@ export function FileViewerWorkerView({ sessionId, workerId }: FileViewerWorkerVi
         staleTime: 0,
         retry: false,
       });
+      if (!isLatest()) return;
       setExpanded((prev) => new Set(prev).add(path));
     } catch (error) {
+      if (!isLatest()) return;
       // Not a directory the viewer may list: try it as a file. If that fails
       // too, the content pane shows both routes' messages.
       setSymlinkFailure({ path, message: error instanceof Error ? error.message : 'Unknown error' });

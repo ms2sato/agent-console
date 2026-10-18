@@ -3,7 +3,7 @@
 // are parsed by the shared valibot schemas. The server-populates -> schema ->
 // client round trip lives in packages/integration/src/file-viewer-boundary.test.ts.
 import { describe, it, expect, afterEach, afterAll, beforeEach } from 'bun:test';
-import { cleanup, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { FileViewerWorkerView } from '../FileViewerWorkerView';
 import { renderWithQuery } from '../../../test/renderWithQuery';
@@ -176,6 +176,60 @@ describe('FileViewerWorkerView (desktop)', () => {
 
       expect(await screen.findByRole('button', { name: 'guide.md' })).toBeTruthy();
       expect(calls.some((c) => c.route === 'content')).toBe(false);
+    });
+
+    describe('a symlink probe that finishes after the user opened another file', () => {
+      const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+
+      it('does not expand the symlink when the probe succeeds late', async () => {
+        const r = routes();
+        r.tree!['docs-link'] = [{ name: 'guide.md', kind: 'file' }];
+        const { hold } = installFetch(r);
+        const release = hold('tree', 'docs-link');
+        await renderView();
+        const user = userEvent.setup();
+
+        await user.click(await screen.findByRole('button', { name: 'docs-link (symlink)' }));
+        await user.click(screen.getByRole('button', { name: 'README.md' }));
+        expect(await screen.findByText('readme title')).toBeTruthy();
+        release();
+        await settle();
+
+        expect(screen.queryByRole('button', { name: 'guide.md' })).toBeNull();
+        expect(screen.getByText('readme title')).toBeTruthy();
+      });
+
+      it('keeps the newer selection when the probe fails late and would fall back to opening the symlink', async () => {
+        const r = routes();
+        r.tree!['docs-link'] = { failure: { status: 400, error: 'Path is not a directory' } };
+        r.content!['docs-link'] = textFile('docs-link', 'linked content\n');
+        const { hold } = installFetch(r);
+        const release = hold('tree', 'docs-link');
+        await renderView();
+        const user = userEvent.setup();
+
+        await user.click(await screen.findByRole('button', { name: 'docs-link (symlink)' }));
+        await user.click(screen.getByRole('button', { name: 'README.md' }));
+        expect(await screen.findByText('readme title')).toBeTruthy();
+        release();
+        await settle();
+
+        expect(screen.getByText('readme title')).toBeTruthy();
+        expect(screen.queryByText('linked content')).toBeNull();
+      });
+
+      it('still applies the outcome when nothing else happened in between (control)', async () => {
+        const r = routes();
+        r.tree!['docs-link'] = [{ name: 'guide.md', kind: 'file' }];
+        const { hold } = installFetch(r);
+        const release = hold('tree', 'docs-link');
+        await renderView();
+
+        await userEvent.setup().click(await screen.findByRole('button', { name: 'docs-link (symlink)' }));
+        release();
+
+        expect(await screen.findByRole('button', { name: 'guide.md' })).toBeTruthy();
+      });
     });
 
     it('opens a symlink to a file as a file when the directory listing refuses it', async () => {

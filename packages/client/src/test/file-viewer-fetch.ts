@@ -26,6 +26,7 @@ function isFailure<T>(answer: Answer<T>): answer is { failure: { status: number;
  */
 export function createFileViewerFetch(routes: FileViewerFetchRoutes) {
   const calls: FileViewerFetchCall[] = [];
+  const holds = new Map<string, Promise<void>>();
   const fetchMock = mock(async (input: RequestInfo | URL): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
     const match = /\/files\/(tree|content)$/.exec(url.pathname);
@@ -33,6 +34,7 @@ export function createFileViewerFetch(routes: FileViewerFetchRoutes) {
     const route = match[1] as 'tree' | 'content';
     const path = url.searchParams.get('path') ?? '';
     calls.push({ route, path });
+    await holds.get(`${route}:${path}`);
 
     const answer = route === 'tree' ? routes.tree?.[path] : routes.content?.[path];
     if (answer === undefined) {
@@ -47,7 +49,16 @@ export function createFileViewerFetch(routes: FileViewerFetchRoutes) {
       headers: { 'Content-Type': 'application/json' },
     });
   });
-  return { fetchMock, calls };
+  /**
+   * Holds the answer to one route+path until the returned function is called,
+   * so a test can finish other actions while that request is still in flight.
+   */
+  function hold(route: 'tree' | 'content', path: string): () => void {
+    let release = () => {};
+    holds.set(`${route}:${path}`, new Promise<void>((resolve) => { release = resolve; }));
+    return release;
+  }
+  return { fetchMock, calls, hold };
 }
 
 export function textFile(path: string, content: string, overrides: Partial<FileContentResponse> = {}): FileContentResponse {
