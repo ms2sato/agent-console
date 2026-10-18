@@ -16,6 +16,7 @@
  */
 import { mock, type Mock } from 'bun:test';
 import { existsSync } from 'fs';
+import { readFile, stat } from 'fs/promises';
 import { join } from 'path';
 
 // Import and re-export the real GitError class from the git module.
@@ -45,6 +46,21 @@ const defaultGitStdout: GitFn = (args) =>
 
 async function defaultResolveGitDir(repoPath: string): Promise<{ gitDir: string; bare: boolean } | null> {
   return existsSync(join(repoPath, '.git')) ? { gitDir: join(repoPath, '.git'), bare: false } : null;
+}
+
+type WorkingTreeRead = { kind: 'file'; content: Buffer } | { kind: 'directory' } | null;
+
+// Default for `readWorkingTreeFile`: read the real file from disk so tests that
+// write temp files and call through the service keep exercising real content.
+async function defaultReadWorkingTreeFile(cwd: string, relPath: string): Promise<WorkingTreeRead> {
+  const fullPath = join(cwd, relPath);
+  try {
+    if ((await stat(fullPath)).isDirectory()) return { kind: 'directory' };
+    return { kind: 'file', content: await readFile(fullPath) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 // Exported mock functions - configure these in beforeEach
@@ -105,6 +121,11 @@ export const mockGit = {
     (repoPath: string, ref: string, relPath: string, destDir: string) => Promise<string | null>
   >,
 
+  // Working-tree reads (as the session owner when requestUser is set)
+  readWorkingTreeFile: mock(defaultReadWorkingTreeFile) as Mock<
+    (cwd: string, relPath: string, requestUser?: string | null) => Promise<WorkingTreeRead>
+  >,
+
   // Remote fetch operations
   fetchRemote: mock(() => Promise.resolve()) as Mock<
     (branch: string, cwd: string, requestUser?: string | null) => Promise<void>
@@ -163,6 +184,7 @@ export function resetGitMocks(): void {
   mockGit.resolveSourceReadRef.mockReset();
   mockGit.readRepoFileAtRef.mockReset();
   mockGit.exportRepoTreeAtRef.mockReset();
+  mockGit.readWorkingTreeFile.mockReset();
   mockGit.fetchRemote.mockReset();
   mockGit.fetchAllRemote.mockReset();
   mockGit.getCommitsBehind.mockReset();
@@ -205,6 +227,7 @@ export function resetGitMocks(): void {
   mockGit.resolveSourceReadRef.mockImplementation(() => Promise.resolve('HEAD'));
   mockGit.readRepoFileAtRef.mockImplementation(() => Promise.resolve(null));
   mockGit.exportRepoTreeAtRef.mockImplementation(() => Promise.resolve(null));
+  mockGit.readWorkingTreeFile.mockImplementation(defaultReadWorkingTreeFile);
   mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
   mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
   mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));

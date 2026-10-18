@@ -15,6 +15,7 @@
  * historical `Bun.spawn(['git', ...args])` direct-spawn path runs verbatim.
  */
 import path from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
 import {
   runAsUser as defaultRunAsUser,
   shellEscape,
@@ -998,6 +999,95 @@ export async function readRepoFileAtRef(
   const object = `${ref}:${relPath}`;
   if ((await gitSafe(['cat-file', '-e', object], repoPath)) === null) return null;
   return git(['show', object], repoPath);
+}
+
+/** Exit code the elevated directory probe in `readWorkingTreeFile` uses to say "this is a directory". */
+const WORKING_TREE_DIR_EXIT_CODE = 42;
+
+/**
+ * Shell command the elevated path of `readWorkingTreeFile` runs: exit
+ * `WORKING_TREE_DIR_EXIT_CODE` for a directory, else `cat` the file.
+ *
+ * Both paths are ABSOLUTE (`cwd` joined with `relPath`), so the command is
+ * cwd-independent by construction. The elevated runner wraps the command as
+ * `cd <cwd>; <command>`, and if that `cd` fails (worktree deleted or
+ * unreadable) the command still runs, in the target user's HOME. A relative
+ * path would then read from the wrong place; an absolute one cannot be
+ * redirected, and a missing worktree surfaces as `No such file`.
+ * @internal Exported for testing
+ */
+export function buildWorkingTreeReadCommand(cwd: string, relPath: string): string {
+  const escaped = shellEscape(path.join(cwd, relPath));
+  return `test -d ${escaped} && exit ${WORKING_TREE_DIR_EXIT_CODE}; cat -- ${escaped}`;
+}
+
+/**
+ * Read one file from a working tree, as the session owner when `requestUser`
+ * is set. A user worktree can be mode 0700 for another OS user in multi-user
+ * mode, so the server process cannot read it directly.
+ *
+ * Direct path (`requestUser` null/empty): `stat` + `readFile` in-process.
+ * Elevated path: `cat` through the same `_runAsUser` seam `gitExec` uses;
+ * `runAsUser` itself bypasses elevation when the user is the server user or
+ * AUTH_MODE is not multi-user. A directory is signalled by the exit code, never
+ * by stdout: stdout carries the file's bytes, so any stdout marker would
+ * misclassify a regular file whose content equals the marker.
+ *
+ * Accepted limitation: `runAsUser` returns stdout as a UTF-8 string, so on the
+ * elevated path invalid byte sequences come back as U+FFFD. NUL bytes survive,
+ * so `isBinaryContent` still classifies binaries, and no caller renders binary
+ * content.
+ *
+ * @returns the file content, `{ kind: 'directory' }` for a directory, or `null`
+ *   when the path does not exist.
+ * @throws GitError when the elevated read fails for any other reason.
+ */
+export async function readWorkingTreeFile(
+  cwd: string,
+  relPath: string,
+  requestUser?: string | null,
+): Promise<{ kind: 'file'; content: Buffer } | { kind: 'directory' } | null> {
+  if (requestUser != null && requestUser.length > 0) {
+    const command = buildWorkingTreeReadCommand(cwd, relPath);
+    let result: RunAsUserResult;
+    try {
+      result = await _runAsUser({
+        username: requestUser,
+        command,
+        cwd,
+        timeoutMs: DEFAULT_GIT_TIMEOUT_MS,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      throw new GitError(`read ${relPath} failed: ${message}`, -1, message);
+    }
+    if (result.timedOut) {
+      throw new GitError(
+        `read ${relPath} timed out after ${DEFAULT_GIT_TIMEOUT_MS}ms`,
+        result.exitCode,
+        'Timeout'
+      );
+    }
+    if (result.exitCode === WORKING_TREE_DIR_EXIT_CODE) return { kind: 'directory' };
+    if (result.exitCode !== 0) {
+      if (/No such file/.test(result.stderr)) return null;
+      throw new GitError(
+        `read ${relPath} failed: ${result.stderr.trim() || `exit code ${result.exitCode}`}`,
+        result.exitCode,
+        result.stderr
+      );
+    }
+    return { kind: 'file', content: Buffer.from(result.stdout, 'utf-8') };
+  }
+
+  const fullPath = path.join(cwd, relPath);
+  try {
+    if ((await stat(fullPath)).isDirectory()) return { kind: 'directory' };
+    return { kind: 'file', content: await readFile(fullPath) };
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 /**
