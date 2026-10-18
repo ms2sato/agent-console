@@ -227,6 +227,11 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   } = useSessionStopTasksContext();
   const stopTask = getStopTask(sessionId);
   const messagePanelRef = useRef<MessagePanelHandle>(null);
+  const tablistRef = useRef<HTMLDivElement>(null);
+  // Bumped when a tab leaves rename mode: the input and the label have
+  // different widths, so the tab bar's layout is only final after that commit.
+  const [tabEditEndCount, setTabEditEndCount] = useState(0);
+  const handleTabEditEnd = useCallback(() => setTabEditEndCount(n => n + 1), []);
   const navigate = useNavigate();
 
   // Re-runs the failed request through the same function the confirm dialog
@@ -331,6 +336,29 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       document.title = 'Agent Console';
     };
   }, [state.type, sessionTitle, branchName]);
+
+  // Keep the selected tab visible in the horizontally scrolling tab bar (a
+  // selected tab can sit past the right edge on a narrow viewport). The whole
+  // tab container is scrolled (label, rename pencil and close button), not just
+  // the label button. `nearest` on both axes is a no-op when the tab is already
+  // visible, so wide layouts never jump. Also runs when the bar first mounts, so
+  // a session opened on a non-first tab starts with it in view.
+  // Deps: `activeTabId` (selection moved); `state.type` (a pause/resume remounts
+  // the bar scrolled to 0 with the same selection); `tabLabelsKey` (a rename
+  // changes tab widths and a browser may reset scrollLeft, leaving the selected
+  // tab off-screen). The key is a string, compared by value, so the effect does
+  // not re-run on unrelated renders. Scoped to the tablist ref, not a
+  // document-wide query; this syncs with a browser layout API.
+  // `tabEditEndCount`: a renamed tab is wider as a label than as the edit input,
+  // and the new name can arrive while the input is still shown, so the scroll
+  // above may have measured the pre-final layout; leaving edit mode re-runs it.
+  const tabLabelsKey = tabs.map(t => t.name).join('\0');
+  useEffect(() => {
+    tablistRef.current
+      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.closest('[data-worker-tab]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeTabId, state.type, tabLabelsKey, tabEditEndCount]);
 
   const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
     const currentIndex = activeTabId ? tabs.findIndex(t => t.id === activeTabId) : 0;
@@ -658,7 +686,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     return (
       <div
         key={tab.id}
-        className={`group flex items-center border-r border-slate-600 hover:bg-slate-700 ${
+        data-worker-tab=""
+        className={`group flex items-center shrink-0 whitespace-nowrap border-r border-slate-600 hover:bg-slate-700 ${
           tab.id === activeTabId
             ? 'bg-slate-700 text-white'
             : 'text-gray-400'
@@ -669,9 +698,10 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           workerId={tab.id}
           name={tab.name}
           active={tab.id === activeTabId}
-          buttonClassName={`py-2 text-sm flex items-center gap-2 pl-4 ${closeable ? 'pr-1' : 'pr-4'}`}
+          buttonClassName={`py-2 text-sm flex items-center shrink-0 whitespace-nowrap gap-2 pl-4 ${closeable ? 'pr-1' : 'pr-4'}`}
           onSelect={() => handleTabClick(tab.id)}
           onError={(message) => showError('Rename Failed', message)}
+          onEditEnd={handleTabEditEnd}
         >
           {tab.workerType === 'git-diff' ? (
             <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
@@ -799,7 +829,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Tab bar with worker tabs */}
       <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">
         {/* Worker tabs */}
-        <div role="tablist" aria-label="Worker tabs" className="flex items-center overflow-x-auto scrollbar-hide" onKeyDown={handleTabKeyDown}>
+        <div ref={tablistRef} role="tablist" aria-label="Worker tabs" className="flex items-center overflow-x-auto scrollbar-hide" onKeyDown={handleTabKeyDown}>
           {tabButtons}
         </div>
         <AddAgentWorkerMenu
