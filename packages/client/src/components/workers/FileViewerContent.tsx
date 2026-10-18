@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
 import type { FileContentResponse } from '@agent-console/shared';
 import { formatBytes } from '../../lib/format';
-import { toRendererLanguage } from '../../lib/prism-grammar';
+import { toRendererLanguage, PRISM_PLAIN } from '../../lib/prism-grammar';
 import { FileViewerLines } from './FileViewerLines';
 
 /**
@@ -51,6 +51,9 @@ function TextFile({ file, content }: { file: FileContentResponse; content: strin
   // A trailing newline terminates the last line; it does not start another one.
   const code = content.endsWith('\n') ? content.slice(0, -1) : content;
   const highlight = content.length <= FILE_VIEWER_HIGHLIGHT_MAX_BYTES;
+  // The notice explains lost highlighting, so it only applies to a file that
+  // has a grammar: a plain-text file would render the same either way.
+  const hasGrammar = toRendererLanguage(file.language) !== PRISM_PLAIN;
   const shownBytes = useMemo(
     () => (file.truncated ? textEncoder.encode(content).length : 0),
     [file.truncated, content]
@@ -63,7 +66,7 @@ function TextFile({ file, content }: { file: FileContentResponse; content: strin
           Showing the first {formatBytes(shownBytes)} of {formatBytes(file.size)}.
         </Notice>
       )}
-      {!highlight && <Notice>highlighting off for files over 256 KiB</Notice>}
+      {!highlight && hasGrammar && <Notice>highlighting off for files over 256 KiB</Notice>}
       {content.length === 0 ? (
         <Notice>Empty file.</Notice>
       ) : highlight ? (

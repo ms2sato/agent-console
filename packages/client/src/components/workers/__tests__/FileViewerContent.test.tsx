@@ -117,6 +117,17 @@ describe('FileViewerContent', () => {
       expect(container.querySelector('[data-line="1"]')?.textContent).toContain('const answer = 42;');
     });
 
+    it('shows no highlighting-off notice for an over-threshold file that has no grammar (text), and still renders it plain', () => {
+      const content = 'plain words '.repeat(30000);
+      expect(content.length).toBeGreaterThan(262144);
+      const { container, queryByText } = render(
+        <FileViewerContent file={textFile('big.txt', content, { language: 'text' })} />
+      );
+
+      expect(queryByText(/highlighting off/)).toBeNull();
+      expect(container.querySelector('[data-line="1"]')).not.toBeNull();
+    });
+
     it('does not tokenise a file whose wire language is text', () => {
       const { container } = render(
         <FileViewerContent file={textFile('notes.txt', 'const answer = 42;', { language: 'text' })} />
@@ -131,7 +142,7 @@ describe('FileViewerContent', () => {
     // Short lines: 60000 characters, under the highlight threshold.
     const highlighted = textFile('many.ts', 'a\n'.repeat(LINES), { language: 'typescript' });
     // Long lines: 30000 x 21 characters, over the highlight threshold.
-    const plain = textFile('many.txt', 'a line of plain text\n'.repeat(LINES));
+    const plain = textFile('many-long.ts', 'a line of plain text\n'.repeat(LINES), { language: 'typescript' });
 
     for (const [label, file] of [
       ['highlighted', highlighted],
@@ -157,7 +168,7 @@ describe('FileViewerContent', () => {
       });
     }
 
-    it('shows the highlight-off notice only for the plain file', () => {
+    it('shows the highlight-off notice only for the over-threshold file that has a grammar', () => {
       expect(plain.content?.length).toBeGreaterThan(262144);
       expect(highlighted.content?.length).toBeLessThanOrEqual(262144);
       const a = render(<FileViewerContent file={plain} />);

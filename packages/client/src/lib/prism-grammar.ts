@@ -7,7 +7,7 @@ import { UNKNOWN_PRISM_LANGUAGE, prismLanguageForPath } from '@agent-console/sha
 import './prism-languages';
 
 /** Prism's own name for "no grammar": renders plain tokens. */
-const PRISM_PLAIN = 'plain';
+export const PRISM_PLAIN = 'plain';
 
 /**
  * Maps a language name from the shared map (or from the file-viewer wire's
