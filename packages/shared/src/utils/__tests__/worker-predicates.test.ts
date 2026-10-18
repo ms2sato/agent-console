@@ -4,6 +4,7 @@ import type {
   AgentWorker,
   TerminalWorker,
   GitDiffWorker,
+  FileViewerWorker,
   EmbeddedAgentWorker,
 } from '../../schemas/app-server-message.js';
 
@@ -32,6 +33,13 @@ const gitDiffWorker: GitDiffWorker = {
   baseCommit: 'abc123',
 };
 
+const fileViewerWorker: FileViewerWorker = {
+  id: 'w-file-viewer',
+  name: 'Files',
+  createdAt: '2026-01-01T00:00:00Z',
+  type: 'file-viewer',
+};
+
 const embeddedAgentWorker: EmbeddedAgentWorker = {
   id: 'w-embedded-agent',
   name: 'Embedded Agent',
@@ -55,6 +63,10 @@ describe('isPtyBackedWorker', () => {
 
   it('returns false for a git-diff worker', () => {
     expect(isPtyBackedWorker(gitDiffWorker)).toBe(false);
+  });
+
+  it('returns false for a file-viewer worker (no PTY)', () => {
+    expect(isPtyBackedWorker(fileViewerWorker)).toBe(false);
   });
 
   it('returns false for an embedded-agent worker', () => {
@@ -83,6 +95,10 @@ describe('canReceiveSessionMessages', () => {
 
   it('returns false for a git-diff worker', () => {
     expect(canReceiveSessionMessages(gitDiffWorker)).toBe(false);
+  });
+
+  it('returns false for a file-viewer worker (not a target)', () => {
+    expect(canReceiveSessionMessages(fileViewerWorker)).toBe(false);
   });
 
   it('returns true for an embedded-agent worker (Issue #1260 PR-2)', () => {
@@ -125,6 +141,10 @@ describe('canReceiveNotifications', () => {
 
   it('returns false for a git-diff worker', () => {
     expect(canReceiveNotifications(gitDiffWorker)).toBe(false);
+  });
+
+  it('returns false for a file-viewer worker (not a target)', () => {
+    expect(canReceiveNotifications(fileViewerWorker)).toBe(false);
   });
 
   it('narrows to an embedded-agent worker with an embeddedAgentId field', () => {

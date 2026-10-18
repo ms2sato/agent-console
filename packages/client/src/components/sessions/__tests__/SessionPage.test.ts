@@ -496,6 +496,7 @@ describe('embedded-agent tab bar wiring (Phase 3, Issue #1021)', () => {
       tabs: [],
       activeTabId: null,
       addTerminalTab: async () => null,
+      addFileViewerTab: async () => {},
       addAgentTab: async (_params: AddAgentWorkerParams) => {},
       closeTab: async () => {},
       handleTabClick: () => {},
@@ -883,6 +884,7 @@ describe('unified shell/agent picker wiring', () => {
       tabs: [],
       activeTabId: null,
       addTerminalTab: async () => null,
+      addFileViewerTab: async () => {},
       addAgentTab: async (_params: AddAgentWorkerParams) => {},
       closeTab: async () => {},
       handleTabClick: () => {},
@@ -892,9 +894,11 @@ describe('unified shell/agent picker wiring', () => {
     const props: Parameters<typeof AddAgentWorkerMenu>[0] = {
       onSelect: result.addAgentTab,
       onSelectShell: result.addTerminalTab,
+      onSelectFileViewer: result.addFileViewerTab,
     };
 
     expect(typeof props.onSelectShell).toBe('function');
+    expect(typeof props.onSelectFileViewer).toBe('function');
   });
 });
 

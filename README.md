@@ -13,10 +13,11 @@ A web application for managing multiple AI coding agent instances running in dif
 - **Unified Dashboard**: View and manage all repositories, worktrees, and agent sessions in one place
 - **Browser-based Terminal**: Full terminal access via [xterm.js](https://xtermjs.org) - no need for separate terminal windows
 - **Session Persistence**: Sessions continue running even when you close the browser tab (tmux-like behavior)
-- **Multiple Workers per Session**: Run agent, terminal, git-diff and (experimental) embedded-agent workers side-by-side within a single session
+- **Multiple Workers per Session**: Run agent, terminal, git-diff, file-viewer and (experimental) embedded-agent workers side-by-side within a single session
 - **Inter-worker Messaging**: Send messages between workers in the same session via an embedded message panel
 - **Git Worktree Integration**: Create and delete git worktrees directly from the UI; add a repository by cloning from a URL (optionally as a bare repository) or by registering an existing path
 - **Diff Review with Annotations**: A git-diff worker shows a worktree's changes; agents can push review annotations that appear in the diff in real time, and the Review page lists pending reviews
+- **File Viewer**: Add a File viewer tab from the `+` menu to browse the session's working directory read-only: a lazily expanded file tree (dotfiles and `.git` included, nothing filtered) beside the selected file with line numbers and syntax highlighting; large files are cut at 1 MiB, binary files show only their size, and on a phone the tree opens as a drawer
 - **Session Memo**: Agents write Markdown memos for a session; fenced code blocks have a one-click Copy control, and the memo's command blocks can be run in the session's terminal after a confirmation
 - **Human Todo List**: A Todo page, a per-item detail page (`/todos/:id`) and a per-session panel where agents leave questions and actions that need a human, and humans resolve, dismiss or reply on them (the agent answers on the same item), and move an item to another session
 - **Bookmarks and HTML Artifacts**: Agents register URLs as session bookmarks and publish self-contained HTML pages that you open from the session sidebar or the Artifacts page
@@ -34,6 +35,7 @@ A web application for managing multiple AI coding agent instances running in dif
   - **Agent Worker**: Runs an AI agent (e.g., Claude Code) in a PTY
   - **Terminal Worker**: A plain terminal shell
   - **Git-diff Worker**: A diff view of the worktree's changes, with review annotations
+  - **File-viewer Worker**: A read-only file tree and file view of the session's working directory
   - **Embedded-agent Worker** (experimental): An agent loop owned by Agent Console itself rather than a terminal program; see [docs/design/embedded-agent-worker.md](docs/design/embedded-agent-worker.md)
 - **Agent**: The definition of an AI tool (command, activity patterns, etc.). Claude Code is built in; custom agents can be registered.
 

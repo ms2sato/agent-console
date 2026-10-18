@@ -5,6 +5,7 @@ import {
   AgentWorkerSchema,
   TerminalWorkerSchema,
   GitDiffWorkerSchema,
+  FileViewerWorkerSchema,
   EmbeddedAgentWorkerSchema,
   WorkerSchema,
   SessionSchema,
@@ -23,6 +24,7 @@ import type {
   AgentWorker,
   TerminalWorker,
   GitDiffWorker,
+  FileViewerWorker,
   EmbeddedAgentWorker,
   WorkerActivityInfo,
   Repository,
@@ -49,6 +51,7 @@ export type _WorkerBaseKeys = Assert<Equals<keyof WorkerBase, WorkerBaseKeys>>;
 export type _AgentWorkerKeys = Assert<Equals<keyof AgentWorker, WorkerBaseKeys | 'type' | 'agentId' | 'activated'>>;
 export type _TerminalWorkerKeys = Assert<Equals<keyof TerminalWorker, WorkerBaseKeys | 'type' | 'activated'>>;
 export type _GitDiffWorkerKeys = Assert<Equals<keyof GitDiffWorker, WorkerBaseKeys | 'type' | 'baseCommit'>>;
+export type _FileViewerWorkerKeys = Assert<Equals<keyof FileViewerWorker, WorkerBaseKeys | 'type'>>;
 export type _EmbeddedAgentWorkerKeys = Assert<
   Equals<
     keyof EmbeddedAgentWorker,
@@ -993,6 +996,7 @@ describe('AppServerMessageSchema', () => {
             { id: 'w1', type: 'agent', name: 'Agent', agentId: 'claude-code', createdAt: '2026-01-01T00:00:00Z', activated: true },
             { id: 'w2', type: 'terminal', name: 'Terminal', createdAt: '2026-01-01T00:00:00Z', activated: true },
             { id: 'w3', type: 'git-diff', name: 'Diff', createdAt: '2026-01-01T00:00:00Z', baseCommit: 'abc123' },
+            { id: 'w5', type: 'file-viewer', name: 'Files', createdAt: '2026-01-01T00:00:00Z' },
             { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: false, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false },
           ],
         },
@@ -1314,6 +1318,7 @@ describe('exported entity schemas (shared with the REST response schemas)', () =
     ['agent', AgentWorkerSchema, { agentId: 'claude-code', activated: true }],
     ['terminal', TerminalWorkerSchema, { activated: false }],
     ['git-diff', GitDiffWorkerSchema, { baseCommit: 'abc' }],
+    ['file-viewer', FileViewerWorkerSchema, {}],
   ])('the %s worker-variant schema accepts its own shape and WorkerSchema (the union) accepts it too', (type, schema, extra) => {
     const worker = { id: 'w1', name: 'W', createdAt: '2026-01-01T00:00:00Z', type, ...extra };
     expect(v.safeParse(schema, worker).success).toBe(true);
@@ -1324,6 +1329,15 @@ describe('exported entity schemas (shared with the REST response schemas)', () =
     const terminal = { id: 'w1', name: 'W', createdAt: '2026-01-01T00:00:00Z', type: 'terminal', activated: true };
     expect(v.safeParse(AgentWorkerSchema, terminal).success).toBe(false);
     expect(v.safeParse(GitDiffWorkerSchema, terminal).success).toBe(false);
+    expect(v.safeParse(FileViewerWorkerSchema, terminal).success).toBe(false);
+  });
+
+  it('a file-viewer worker rejects any type-specific field (the worker has none)', () => {
+    const viewer = { id: 'w1', name: 'W', createdAt: '2026-01-01T00:00:00Z', type: 'file-viewer' };
+    expect(v.safeParse(FileViewerWorkerSchema, viewer).success).toBe(true);
+    expect(v.safeParse(FileViewerWorkerSchema, { ...viewer, activated: true }).success).toBe(false);
+    expect(v.safeParse(FileViewerWorkerSchema, { ...viewer, baseCommit: 'abc' }).success).toBe(false);
+    expect(v.safeParse(WorkerSchema, { ...viewer, selectedPath: 'a.ts' }).success).toBe(false);
   });
 
   it('EmbeddedAgentWorkerSchema is exported and rejects a worker of another type', () => {

@@ -140,7 +140,36 @@ describe('packages/server real-fs second `bun test` invocation registry (#1699)'
     expect([...callers].sort()).toEqual([...secondHalfFiles].sort());
   });
 
-  it("(iv) test:coverage's two halves name the same sets as test's two halves", async () => {
+  it('(iv) no real-fs file loads a mock.module poisoner: neither the file nor a src/__tests__/utils module it imports (one level deep) calls mock.module(', async () => {
+    // `mock.module` is process-global and irreversible, so one importer of a poisoner (mock-git-helper
+    // replaces lib/git.js, mock-fs-helper replaces fs) makes every LATER file in the same process
+    // run against the mock, depending on file order -- a real-fs file then passes or fails for the
+    // wrong reason (CI saw our fifo tests call mock-git-helper's stat stand-in). The same AST detector
+    // as scripts/check-mock-module-poisoners.mjs (its sibling: that script bans mock.module outside the
+    // central registry; this guard bans LOADING the registry's poisoners from the real-fs list) is
+    // used, so prose that merely mentions `mock.module(` is not a hit. One level of `__tests__/utils/*`
+    // imports is followed: a deeper chain is not.
+    const { findMockModuleCallsInSource } = (await import(join(SERVER_ROOT, '..', '..', 'scripts', 'check-mock-module-poisoners.mjs'))) as {
+      findMockModuleCallsInSource: (source: string, fileName: string) => Array<{ specifier: string }>;
+    };
+    const pkg = await readServerPackageJson();
+    const { secondHalfFiles } = parseTwoInvocationScript(pkg.scripts.test);
+    const offenders: string[] = [];
+    for (const file of secondHalfFiles) {
+      const source = await Bun.file(join(SERVER_ROOT, file)).text();
+      if (findMockModuleCallsInSource(source, file).length > 0) offenders.push(`${file} calls mock.module( itself`);
+      for (const match of source.matchAll(/(?:from|import)\s+['"](\.[^'"]*__tests__\/utils\/[^'"]+)['"]/g)) {
+        const util = join(dirname(join(SERVER_ROOT, file)), match[1]).replace(/\.js$/, '.ts');
+        const utilFile = Bun.file(util);
+        if (!(await utilFile.exists())) continue;
+        const specifiers = findMockModuleCallsInSource(await utilFile.text(), util).map((c) => c.specifier);
+        if (specifiers.length > 0) offenders.push(`${file} imports ${match[1]}, which calls mock.module(${specifiers.join(', ')})`);
+      }
+    }
+    expect(offenders, `real-fs files that load a mock.module poisoner:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it("(v) test:coverage's two halves name the same sets as test's two halves", async () => {
     const pkg = await readServerPackageJson();
     const testHalves = parseTwoInvocationScript(pkg.scripts.test);
     const coverageHalves = parseTwoInvocationScript(pkg.scripts['test:coverage']);

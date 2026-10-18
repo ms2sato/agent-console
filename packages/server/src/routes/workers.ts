@@ -14,25 +14,74 @@ import {
   EMBEDDED_AGENT_IMAGE_MIME_TYPES,
   MAX_IMAGE_ATTACHMENT_BYTES,
 } from '@agent-console/shared';
-import type { AppBindings } from '../app-context.js';
+import type { AppBindings, AppContext } from '../app-context.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
 import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
-import { isMultiUserAuthMode } from '../services/privilege-elevation.js';
+import { isMultiUserAuthMode, shouldElevateForUser } from '../services/privilege-elevation.js';
 import { assertCanOperateSession } from '../lib/session-access.js';
 import { serverConfig } from '../lib/server-config.js';
+import { listDirectory, readFileContent } from '../services/file-viewer-service.js';
 import { resolvePermissionDecisions } from '../lib/mcp-server-permissions.js';
 import {
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
   GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
 } from '../services/embedded-agent-worker-service.js';
-import type { Worker, WorkerMessage, EmbeddedAgentAttachment } from '@agent-console/shared';
+import type { Worker, WorkerMessage, EmbeddedAgentAttachment, AuthUser } from '@agent-console/shared';
 import type { StartupIntentPreference } from '../services/startup-intent.js';
 
 const logger = createLogger('api:workers');
+
+/**
+ * Shared front half of the two file-viewer routes: the session and the
+ * worker must exist (404), the caller must be allowed to operate the session
+ * (403, multi-user mode only), and the worker must be a file-viewer worker
+ * (400). Returns the directory to serve and the OS user to read it as.
+ *
+ * Unlike the diff routes, which read through git, these routes return raw file
+ * contents, so they check access. The session's spawn user -- not the caller --
+ * is who reads: for a shared session the caller is not the OS user that owns
+ * the directory. `requestUser` is null whenever no elevation would happen
+ * (single-user mode, or the spawn user is the server user), so the service
+ * reads in-process there instead of spawning a shell as the same user.
+ */
+async function resolveFileViewerTarget(
+  appContext: AppContext,
+  authUser: AuthUser,
+  sessionId: string,
+  workerId: string,
+): Promise<{ locationPath: string; requestUser: string | null }> {
+  const { sessionManager, userRepository, sharedAccountRegistry } = appContext;
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    throw new NotFoundError('Session');
+  }
+
+  assertCanOperateSession(
+    session,
+    authUser,
+    sharedAccountRegistry,
+    serverConfig.AUTH_MODE,
+    'Only the session owner can view this session\'s files',
+  );
+
+  const worker = session.workers.find((w) => w.id === workerId);
+  if (!worker) {
+    throw new NotFoundError('Worker');
+  }
+  if (worker.type !== 'file-viewer') {
+    throw new ValidationError('Worker is not a file-viewer worker');
+  }
+
+  const spawnUsername = await resolveSpawnUsername(session.createdBy, userRepository);
+  return {
+    locationPath: session.locationPath,
+    requestUser: shouldElevateForUser(spawnUsername) ? spawnUsername : null,
+  };
+}
 
 /** Longest accepted worker tab name, in characters (after trimming). */
 const MAX_WORKER_NAME_LENGTH = 64;
@@ -362,7 +411,7 @@ const workers = new Hono<AppBindings>()
     }
 
     // Extract continueConversation (terminal and agent workers carry this flag;
-    // embedded-agent and git-diff variants do not declare it in their schema)
+    // the embedded-agent, file-viewer and git-diff variants do not declare it in their schema)
     // and convert it to the caller's startup preference.
     const continueConversation =
       (body.type === 'terminal' || body.type === 'agent') && body.continueConversation === true;
@@ -653,6 +702,36 @@ const workers = new Hono<AppBindings>()
     const rawDiff = await getFileDiff(session.locationPath, resolved, filePath, spawnUsername);
 
     return c.json({ rawDiff });
+  })
+  // List one directory level of a file-viewer worker's session directory
+  .get('/:sessionId/workers/:workerId/files/tree', async (c) => {
+    const { locationPath, requestUser } = await resolveFileViewerTarget(
+      c.get('appContext'),
+      c.get('authUser'),
+      c.req.param('sessionId'),
+      c.req.param('workerId'),
+    );
+
+    // The empty string is the root of the session directory.
+    const dir = c.req.query('path') ?? '';
+
+    return c.json(await listDirectory(locationPath, dir, requestUser));
+  })
+  // Read one file of a file-viewer worker's session directory
+  .get('/:sessionId/workers/:workerId/files/content', async (c) => {
+    const { locationPath, requestUser } = await resolveFileViewerTarget(
+      c.get('appContext'),
+      c.get('authUser'),
+      c.req.param('sessionId'),
+      c.req.param('workerId'),
+    );
+
+    const filePath = c.req.query('path');
+    if (!filePath) {
+      throw new ValidationError('path query parameter is required');
+    }
+
+    return c.json(await readFileContent(locationPath, filePath, requestUser));
   });
 
 export { workers };

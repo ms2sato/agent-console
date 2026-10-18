@@ -14,6 +14,7 @@ import type { AddAgentWorkerParams } from './hooks/useTabManagement';
 interface AddAgentWorkerMenuProps {
   onSelect: (params: AddAgentWorkerParams) => Promise<void>;
   onSelectShell: () => Promise<unknown>;
+  onSelectFileViewer: () => Promise<unknown>;
   /**
    * Injectable seam for the kind-dispatch capability accessor, defaulting to
    * the real `getAgentParameterCapabilitiesFor` (agent-surface.ts's SINGLE
@@ -31,12 +32,12 @@ interface AddAgentWorkerMenuProps {
 /**
  * Unified worker-creation entry point (owner requirement; spec §UI in
  * docs/design/embedded-agent-worker.md): lists a plain "Shell"
- * (terminal worker) item, terminal `AgentDefinition`s, and
- * `EmbeddedAgentDefinition`s in ONE list, each item carrying a kind badge.
- * The user never picks a "worker type" as a separate prior step -- the kind
- * is a property of the item they click. Shell is always first, since it
- * doesn't depend on the agents/embedded-agents queries and is the most
- * common action.
+ * (terminal worker) item, a "File viewer" item (docs/design/file-viewer-worker.md),
+ * terminal `AgentDefinition`s, and `EmbeddedAgentDefinition`s in ONE list,
+ * each item carrying a kind badge. The user never picks a "worker type" as a
+ * separate prior step -- the kind is a property of the item they click. Shell
+ * and File viewer come first, since neither depends on the agents/
+ * embedded-agents queries and Shell is the most common action.
  *
  * Both terminal agent items and embedded-agent items are fully actionable:
  * `POST /api/sessions/:sessionId/workers` (`CreateWorkerRequestSchema`)
@@ -60,6 +61,7 @@ interface AddAgentWorkerMenuProps {
 export function AddAgentWorkerMenu({
   onSelect,
   onSelectShell,
+  onSelectFileViewer,
   getCapabilitiesImpl = getAgentParameterCapabilitiesFor,
 }: AddAgentWorkerMenuProps) {
   const [open, setOpen] = useState(false);
@@ -155,6 +157,12 @@ export function AddAgentWorkerMenu({
     setOpen(false);
     resetOptionsState();
     await onSelectShell();
+  };
+
+  const handleSelectFileViewer = async () => {
+    setOpen(false);
+    resetOptionsState();
+    await onSelectFileViewer();
   };
 
   // Value handling mirrors QuickSessionForm.tsx: trim; empty/whitespace
@@ -273,6 +281,17 @@ export function AddAgentWorkerMenu({
             <span className="truncate">Shell</span>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/40 text-green-300 shrink-0 ml-2">
               Shell
+            </span>
+          </button>
+          <button
+            role="menuitem"
+            type="button"
+            onClick={() => void handleSelectFileViewer()}
+            className="w-full flex items-center justify-between px-3 py-2 text-sm text-left text-gray-200 hover:bg-slate-700"
+          >
+            <span className="truncate">File viewer</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-900/40 text-violet-300 shrink-0 ml-2">
+              Files
             </span>
           </button>
           {isLoading && <div className="px-3 py-2 text-sm text-gray-400">Loading...</div>}

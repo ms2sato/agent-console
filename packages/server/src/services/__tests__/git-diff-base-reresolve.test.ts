@@ -6,12 +6,14 @@
  * the frozen merge-base hash makes those upstream commits show up as
  * "unexpected" file diffs — diverging from GitHub's three-dot PR view.
  *
- * This test drives the production `resolveBaseSpec` / `getDiffData` against a
- * REAL temp git repository. Because the `../lib/git.js` module is mocked
- * process-globally (mock-git-helper.ts) and that mock cannot be reliably undone
- * mid-process, we configure the SAME shared `mockGit` to delegate to the real
- * git CLI against the temp repo. This exercises the genuine production code path
- * deterministically and is immune to cross-file mock ordering.
+ * This test drives the production `resolveBaseSpec` / `getDiffData` -- and the
+ * production `lib/git.ts` underneath them, nothing mocked -- against a REAL temp
+ * git repository. It must not import `mock-git-helper.ts`: `mock.module` is
+ * process-global, so that import would replace `lib/git.js` for every later file
+ * in the shared real-fs process (`real-fs-invocation.test.ts` (iv) enforces
+ * this). The production git calls inherit the process environment, so the
+ * scratch repo's throwaway global config is exported into `process.env` for
+ * the duration of each test.
  *
  * The repo is created via `createScratchGitRepo` (scratch-git.ts) rather than
  * a hand-rolled temp dir, so every commit made below runs under a throwaway
@@ -30,7 +32,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { MERGE_BASE_REF_PREFIX } from '@agent-console/shared';
 import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
-import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { createScratchGitRepo, type ScratchGitRepo } from '../../__tests__/utils/scratch-git.js';
 import {
   resolveBaseSpec,
@@ -38,6 +39,8 @@ import {
 } from '../git-diff-service.js';
 
 let repo: ScratchGitRepo;
+/** Prior values of the env keys the test overrides (`undefined` = was unset). */
+let savedEnv: Record<string, string | undefined> = {};
 
 /** Run a git command against `cwd`, returning trimmed stdout (throws on failure). */
 async function git(args: string[], cwd: string): Promise<string> {
@@ -56,55 +59,6 @@ async function git(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
-/** Run a git command, returning null on failure (mirrors gitSafe). */
-async function gitSafeReal(args: string[], cwd: string): Promise<string | null> {
-  try {
-    return await git(args, cwd);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Wire the shared git mock to delegate to the real git CLI for the functions
- * `resolveBaseSpec` and `getDiffData` depend on. The cwd argument carries the
- * actual repo path through.
- */
-function wireRealGit(): void {
-  resetGitMocks();
-
-  mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
-  mockGit.gitRefExists.mockImplementation((ref: string, cwd: string) =>
-    gitSafeReal(['rev-parse', '--verify', ref], cwd).then((r) => r !== null)
-  );
-  mockGit.gitSafe.mockImplementation((args: string[], cwd: string) =>
-    gitSafeReal(args, cwd)
-  );
-  mockGit.getMergeBaseSafe.mockImplementation((ref1: string, ref2: string, cwd: string) =>
-    gitSafeReal(['merge-base', ref1, ref2], cwd)
-  );
-
-  // getDiffData dependencies
-  mockGit.getDiff.mockImplementation((baseRef: string, targetRef: string | undefined, cwd: string) =>
-    targetRef
-      ? git(['diff', baseRef, targetRef], cwd)
-      : git(['diff', baseRef], cwd)
-  );
-  mockGit.getDiffNumstat.mockImplementation((baseRef: string, targetRef: string | undefined, cwd: string) =>
-    targetRef
-      ? git(['diff', '--numstat', baseRef, targetRef], cwd)
-      : git(['diff', '--numstat', baseRef], cwd)
-  );
-  mockGit.getStatusPorcelain.mockImplementation((cwd: string) =>
-    git(['status', '--porcelain', '-uall'], cwd)
-  );
-  mockGit.getUntrackedFiles.mockImplementation((cwd: string) =>
-    git(['ls-files', '--others', '--exclude-standard'], cwd).then((out) =>
-      out.split('\n').filter(Boolean)
-    )
-  );
-}
-
 describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
   let scratchParent: string;
 
@@ -119,7 +73,14 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
 
   beforeEach(async () => {
     repo = await createScratchGitRepo({ parentDir: scratchParent, initialCommit: false });
-    wireRealGit();
+    // The production lib/git.ts spawns git with the process env: point it at the scratch config.
+    savedEnv = {};
+    for (const [key, value] of Object.entries(repo.env)) {
+      if (process.env[key] !== value) {
+        savedEnv[key] = process.env[key];
+        process.env[key] = value;
+      }
+    }
 
     // Initial commit on main
     await Bun.write(path.join(repo.dir, 'base.txt'), 'base\n');
@@ -128,8 +89,11 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
   });
 
   afterEach(async () => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     await repo.cleanup();
-    resetGitMocks();
   });
 
   it('does NOT include an upstream-only file in the diff after the feature branch merges main', async () => {

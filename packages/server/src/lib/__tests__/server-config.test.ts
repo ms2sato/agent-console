@@ -594,6 +594,28 @@ describe('worker output env vars (positive-int contract)', () => {
   });
 });
 
+describe('FILE_VIEWER_MAX_BYTES (positive-int contract)', () => {
+  it('defaults to 1 MiB when unset', async () => {
+    delete process.env.FILE_VIEWER_MAX_BYTES;
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.FILE_VIEWER_MAX_BYTES).toBe(1048576);
+  });
+
+  it('uses an explicit valid value', async () => {
+    process.env.FILE_VIEWER_MAX_BYTES = '2048';
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.FILE_VIEWER_MAX_BYTES).toBe(2048);
+  });
+
+  it('falls back to the default on an unparseable or non-positive value (0 would mean "return nothing")', async () => {
+    for (const raw of ['abc', '0', '-5']) {
+      process.env.FILE_VIEWER_MAX_BYTES = raw;
+      const { serverConfig } = await importServerConfig();
+      expect(serverConfig.FILE_VIEWER_MAX_BYTES).toBe(1048576);
+    }
+  });
+});
+
 describe('WORKER_OUTPUT_MAX_SEGMENTS (NaN-guard contract, not positive-only)', () => {
   it('falls back to the default when unset', async () => {
     delete process.env.WORKER_OUTPUT_MAX_SEGMENTS;

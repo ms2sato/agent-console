@@ -1267,6 +1267,10 @@ describe('RestartAllAgentsResponseSchema', () => {
     expect(
       v.safeParse(RestartAllAgentsResponseSchema, { ...base, results: [{ ...row, workerType: 'git-diff' }] }).success,
     ).toBe(false);
+    // In-process workers have no restart concept: file-viewer, like git-diff, never has a result row.
+    expect(
+      v.safeParse(RestartAllAgentsResponseSchema, { ...base, results: [{ ...row, workerType: 'file-viewer' }] }).success,
+    ).toBe(false);
   });
 });
 

@@ -98,8 +98,8 @@ export interface WorkersTable {
   id: string;
   /** Foreign key reference to sessions.id */
   session_id: string;
-  /** Worker type: 'agent', 'terminal', 'git-diff', or 'embedded-agent' */
-  type: 'agent' | 'terminal' | 'git-diff' | 'embedded-agent';
+  /** Worker type: 'agent', 'terminal', 'git-diff', 'file-viewer', or 'embedded-agent' */
+  type: 'agent' | 'terminal' | 'git-diff' | 'file-viewer' | 'embedded-agent';
   /** Display name for the worker */
   name: string;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */

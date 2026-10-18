@@ -1,9 +1,9 @@
 import type { Worker } from '@agent-console/shared';
 
 /**
- * Tailwind background-color class for a tab's status dot. `git-diff` tabs
- * render an icon instead of a dot (the caller branches on that before
- * calling this), so the `git-diff` case here is a defensive default only.
+ * Tailwind background-color class for a tab's status dot. `git-diff` and
+ * `file-viewer` tabs render an icon instead of a dot (the caller branches on
+ * that before calling this), so those cases here are defensive defaults only.
  */
 export function getTabDotColor(workerType: Worker['type']): string {
   switch (workerType) {
@@ -13,6 +13,7 @@ export function getTabDotColor(workerType: Worker['type']): string {
       return 'bg-purple-500';
     case 'terminal':
     case 'git-diff':
+    case 'file-viewer':
       return 'bg-green-500';
     default: {
       const _exhaustive: never = workerType;
@@ -23,7 +24,7 @@ export function getTabDotColor(workerType: Worker['type']): string {
 
 /**
  * Worker types whose tab renders a close ("x") button: opt-in workers a user
- * added to a running session and can remove again. `git-diff` is a fixed tab
+ * added to a running session and can remove again (`file-viewer` included). `git-diff` is a fixed tab
  * (auto-created with the session) and is never closeable -- see
  * `useTabManagement.ts`'s `closeTab` guard for the server-side mirror of
  * this rule. `agent` tabs are closeable EXCEPT for the session's primary
@@ -33,7 +34,9 @@ export function getTabDotColor(workerType: Worker['type']): string {
  */
 export function isCloseableTabType(workerType: Worker['type'], isPrimaryAgent = true): boolean {
   if (workerType === 'agent') return !isPrimaryAgent;
-  return workerType === 'terminal' || workerType === 'embedded-agent';
+  return (
+    workerType === 'terminal' || workerType === 'embedded-agent' || workerType === 'file-viewer'
+  );
 }
 
 /**
@@ -59,6 +62,8 @@ export function getWorkerTypeLabel(workerType: Worker['type']): string {
       return 'Terminal';
     case 'embedded-agent':
       return 'Embedded Agent';
+    case 'file-viewer':
+      return 'File Viewer';
     default: {
       const _exhaustive: never = workerType;
       return _exhaustive;

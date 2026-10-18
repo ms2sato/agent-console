@@ -111,7 +111,7 @@ describe('AddAgentWorkerMenu', () => {
     const onSelect = mock(async () => {});
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -157,7 +157,7 @@ describe('AddAgentWorkerMenu', () => {
     };
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -183,7 +183,7 @@ describe('AddAgentWorkerMenu', () => {
     for (const resolved of [undefined, { id: 'w1', workerType: 'terminal', name: 'Shell 1' }]) {
       const onSelectShell = mock(async () => resolved);
       const { unmount } = await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={onSelectShell} />,
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={onSelectShell} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -206,7 +206,7 @@ describe('AddAgentWorkerMenu', () => {
     embeddedAgentsResponse = { embeddedAgents: [] };
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -226,7 +226,7 @@ describe('AddAgentWorkerMenu', () => {
     embeddedAgentsResponse = { embeddedAgents: [] };
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -259,7 +259,7 @@ describe('AddAgentWorkerMenu', () => {
     };
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -293,7 +293,7 @@ describe('AddAgentWorkerMenu', () => {
     const onSelect = mock(async () => {});
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -313,7 +313,7 @@ describe('AddAgentWorkerMenu', () => {
     const onSelect = mock(async () => {});
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -330,7 +330,7 @@ describe('AddAgentWorkerMenu', () => {
 
   it('shows "No agents configured" when both registries are empty', async () => {
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -342,7 +342,7 @@ describe('AddAgentWorkerMenu', () => {
 
   it('fetches embedded agents from the /embedded-agents endpoint', async () => {
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -357,7 +357,7 @@ describe('AddAgentWorkerMenu', () => {
 
   it('shows a "Shell" item as the first item, with a distinct "Shell" badge, regardless of loading/empty state', async () => {
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -378,7 +378,7 @@ describe('AddAgentWorkerMenu', () => {
     );
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -392,7 +392,7 @@ describe('AddAgentWorkerMenu', () => {
     const onSelectShell = mock(async () => {});
 
     await renderWithRouter(
-      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={onSelectShell} />,
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={onSelectShell} onSelectFileViewer={async () => {}} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -404,6 +404,30 @@ describe('AddAgentWorkerMenu', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('clicking the "File viewer" item closes the menu and calls onSelectFileViewer only', async () => {
+    const onSelectFileViewer = mock(async () => {});
+    const onSelectShell = mock(async () => {});
+    const onSelect = mock(async () => {});
+
+    await renderWithRouter(
+      <AddAgentWorkerMenu
+        onSelect={onSelect}
+        onSelectShell={onSelectShell}
+        onSelectFileViewer={onSelectFileViewer}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+
+    const menu = screen.getByRole('menu');
+    await user.click(within(menu).getByRole('menuitem', { name: /File viewer/ }));
+
+    expect(onSelectFileViewer).toHaveBeenCalledTimes(1);
+    expect(onSelectShell).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
   // --- Issue #1560: per-item Options toggle exposing model/effort/window overrides ---
 
   describe('Options toggle (Issue #1560)', () => {
@@ -412,7 +436,7 @@ describe('AddAgentWorkerMenu', () => {
       embeddedAgentsResponse = { embeddedAgents: [embeddedClaudeSdkAgent] };
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -437,7 +461,7 @@ describe('AddAgentWorkerMenu', () => {
       agentsResponse = { agents: [modelCapableAgent] };
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -455,7 +479,7 @@ describe('AddAgentWorkerMenu', () => {
       embeddedAgentsResponse = { embeddedAgents: [embeddedClaudeSdkAgent] };
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -482,7 +506,7 @@ describe('AddAgentWorkerMenu', () => {
       const onSelect = mock((_params: AddAgentWorkerParams) => Promise.resolve());
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -514,7 +538,7 @@ describe('AddAgentWorkerMenu', () => {
       const onSelect = mock((_params: AddAgentWorkerParams) => Promise.resolve());
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -554,7 +578,7 @@ describe('AddAgentWorkerMenu', () => {
       const onSelect = mock(async () => {});
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -581,7 +605,7 @@ describe('AddAgentWorkerMenu', () => {
       agentsResponse = { agents: [modelCapableAgent, modelCapableAgentTwo] };
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -615,7 +639,7 @@ describe('AddAgentWorkerMenu', () => {
       agentsResponse = { agents: [modelCapableAgent] };
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -638,7 +662,7 @@ describe('AddAgentWorkerMenu', () => {
       agentsResponse = { agents: [modelCapableAgent] };
 
       await renderWithRouter(
-        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
       );
       const user = userEvent.setup();
       const trigger = screen.getByRole('button', { name: 'Add agent worker' });
@@ -667,7 +691,7 @@ describe('AddAgentWorkerMenu', () => {
         const onSelect = mock((_params: AddAgentWorkerParams) => Promise.resolve());
 
         await renderWithRouter(
-          <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+          <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} onSelectFileViewer={async () => {}} />,
         );
         const user = userEvent.setup();
         await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
@@ -763,6 +787,7 @@ describe('AddAgentWorkerMenu', () => {
           <AddAgentWorkerMenu
             onSelect={async () => {}}
             onSelectShell={async () => {}}
+            onSelectFileViewer={async () => {}}
             getCapabilitiesImpl={disagreeAllFalse}
           />,
         );
@@ -790,6 +815,7 @@ describe('AddAgentWorkerMenu', () => {
           <AddAgentWorkerMenu
             onSelect={async () => {}}
             onSelectShell={async () => {}}
+            onSelectFileViewer={async () => {}}
             getCapabilitiesImpl={alwaysCapable}
           />,
         );

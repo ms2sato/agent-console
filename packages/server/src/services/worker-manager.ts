@@ -17,6 +17,7 @@ import type {
   AgentWorker,
   TerminalWorker,
   GitDiffWorker,
+  FileViewerWorker,
   EmbeddedAgentWorker,
   AgentActivityState,
   ExitReason,
@@ -32,6 +33,7 @@ import type {
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedFileViewerWorker,
   PersistedEmbeddedAgentWorker,
 } from '../repositories/persisted-types.js';
 import type {
@@ -40,6 +42,7 @@ import type {
   InternalAgentWorker,
   InternalTerminalWorker,
   InternalGitDiffWorker,
+  InternalFileViewerWorker,
   InternalEmbeddedAgentWorker,
   WorkerCallbacks,
   Disposable,
@@ -148,6 +151,15 @@ export interface AgentWorkerInitParams {
  * Parameters for initializing a terminal worker.
  */
 export interface TerminalWorkerInitParams {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+/**
+ * Parameters for initializing a file-viewer worker.
+ */
+export interface FileViewerWorkerInitParams {
   id: string;
   name: string;
   createdAt: string;
@@ -421,6 +433,15 @@ export class WorkerManager {
     };
 
     return worker;
+  }
+
+  /**
+   * Initialize a file-viewer worker. It owns no process, buffer or callback:
+   * the two read routes are stateless, so there is nothing to activate.
+   */
+  initializeFileViewerWorker(params: FileViewerWorkerInitParams): InternalFileViewerWorker {
+    const { id, name, createdAt } = params;
+    return { id, type: 'file-viewer', name, createdAt };
   }
 
   /**
@@ -1439,6 +1460,9 @@ export class WorkerManager {
         case 'git-diff':
           worker = { ...base, type: 'git-diff', baseCommit: pw.baseCommit };
           break;
+        case 'file-viewer':
+          worker = { ...base, type: 'file-viewer' };
+          break;
         case 'embedded-agent':
           worker = {
             ...base,
@@ -1507,6 +1531,10 @@ export class WorkerManager {
         const gitDiffWorker: GitDiffWorker = { ...base, type: 'git-diff', baseCommit: worker.baseCommit };
         return gitDiffWorker;
       }
+      case 'file-viewer': {
+        const fileViewerWorker: FileViewerWorker = { ...base, type: 'file-viewer' };
+        return fileViewerWorker;
+      }
       case 'embedded-agent': {
         const definition = this.getEmbeddedAgentFn(worker.embeddedAgentId);
         // Effective model/effort resolved through the single writer, which
@@ -1557,6 +1585,10 @@ export class WorkerManager {
       case 'git-diff': {
         const persistedGitDiff: PersistedGitDiffWorker = { ...base, type: 'git-diff', baseCommit: worker.baseCommit };
         return persistedGitDiff;
+      }
+      case 'file-viewer': {
+        const persistedFileViewer: PersistedFileViewerWorker = { ...base, type: 'file-viewer' };
+        return persistedFileViewer;
       }
       case 'embedded-agent': {
         const persistedEmbeddedAgent: PersistedEmbeddedAgentWorker = {
