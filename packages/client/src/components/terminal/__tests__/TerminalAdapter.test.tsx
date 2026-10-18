@@ -76,8 +76,10 @@ function createMatchMediaList(matches: boolean): MediaQueryList {
 describe('TerminalAdapter', () => {
   const originalMatchMedia = window.matchMedia;
   const originalFetch = globalThis.fetch;
+  let fetchedUrls: string[] = [];
 
   beforeEach(() => {
+    fetchedUrls = [];
     mockGetOrCreateTerminal.mockClear();
     window.matchMedia = mock((_query: string) => createMatchMediaList(false));
     // useSessionRepoFullName queries the session PR-link endpoint. Answer it at
@@ -88,6 +90,7 @@ describe('TerminalAdapter', () => {
     const fetchStub: typeof fetch = Object.assign(
       mock((input: RequestInfo | URL): Promise<Response> => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        fetchedUrls.push(url);
         if (url.includes('/pr-link')) {
           return Promise.resolve(
             new Response(JSON.stringify({ prUrl: null, branchName: '', orgRepo: null }), {
@@ -128,6 +131,38 @@ describe('TerminalAdapter', () => {
     // The stub instance's exited snapshot flows through the adapter's banner,
     // proving the resolved instance is the one the adapter renders from.
     expect(screen.getByText(/Process exited \(code 0/)).toBeTruthy();
+  });
+
+  it('requests the session PR link for a worktree session (repo name for ref linkification)', async () => {
+    await act(async () =>
+      renderWithRouter(
+        <TerminalAdapter
+          sessionId="session-wt"
+          workerId="worker-1"
+          onFilesReceived={() => {}}
+          createInstance={mockGetOrCreateTerminal}
+          resolveRepoFullName
+        />,
+      ),
+    );
+
+    expect(fetchedUrls.filter((u) => u.includes('/api/sessions/session-wt/pr-link'))).toHaveLength(1);
+  });
+
+  it('makes no PR-link request for a quick session (the endpoint only serves worktree sessions)', async () => {
+    await act(async () =>
+      renderWithRouter(
+        <TerminalAdapter
+          sessionId="session-quick"
+          workerId="worker-1"
+          onFilesReceived={() => {}}
+          createInstance={mockGetOrCreateTerminal}
+          resolveRepoFullName={false}
+        />,
+      ),
+    );
+
+    expect(fetchedUrls.filter((u) => u.includes('/pr-link'))).toHaveLength(0);
   });
 
   it('multi-user mode: an OSC 52 write with recent input and focus shows the notice and does not write silently', async () => {

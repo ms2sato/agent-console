@@ -50,7 +50,7 @@ function TerminalPage({ sessionId, workerId }: { sessionId: string; workerId: st
   const focusInput = () => inputRef.current?.focus();
 
   // Linkify GitHub refs (#958); null repo -> bare refs stay plain text.
-  const repoFullName = useSessionRepoFullName(sessionId);
+  const repoFullName = useSessionRepoFullName(sessionId, true);
   const transformContext = useMemo<TransformContext>(() => ({ repoFullName }), [repoFullName]);
 
   // Image-paste / file-drop receipt toast. Stands in for the MessagePanel wiring

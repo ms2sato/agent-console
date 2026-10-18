@@ -43,7 +43,8 @@ export function TerminalAdapter({
   // the default `getOrCreateTerminal`; the `TerminalProps` drop-in contract is
   // unchanged (this extra prop is optional and internal to the adapter).
   createInstance = getOrCreateTerminal,
-}: TerminalProps & { createInstance?: typeof getOrCreateTerminal }) {
+  resolveRepoFullName = true,
+}: TerminalProps & { createInstance?: typeof getOrCreateTerminal; resolveRepoFullName?: boolean }) {
   const navigate = useNavigate();
   const { isMultiUser } = useAuth();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -71,8 +72,10 @@ export function TerminalAdapter({
   const focusInput = useCallback(() => inputRef.current?.focus(), []);
 
   // Linkify GitHub refs (#958). repoFullName is null for quick sessions / repos
-  // without a GitHub remote — bare refs then stay plain text.
-  const repoFullName = useSessionRepoFullName(sessionId);
+  // without a GitHub remote — bare refs then stay plain text. SessionPage passes
+  // `resolveRepoFullName={false}` for quick sessions, whose PR-link request the
+  // server can only answer with a 400.
+  const repoFullName = useSessionRepoFullName(sessionId, resolveRepoFullName);
   const transformContext = useMemo<TransformContext>(() => ({ repoFullName }), [repoFullName]);
 
   // Mirror Terminal.tsx delete-session recovery: delete via API, then broadcast
