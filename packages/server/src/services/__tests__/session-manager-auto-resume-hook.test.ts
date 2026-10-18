@@ -117,6 +117,32 @@ describe('SessionManager auto-resume does not run the resume command', () => {
     expect(persistedServerPid('wt-session')).toBe(process.pid);
   });
 
+  it('a user resume of a paused session still runs the resume command', async () => {
+    persistSessions([]);
+    const executeHookCommand = mock<ExecuteHookCommand>(async (): Promise<HookResult> => ({ success: true }));
+    const manager = await createSessionManager(executeHookCommand, {
+      name: 'test-repo',
+      path: '/test/repo',
+      pauseCommand: 'docker compose stop',
+      resumeCommand: RESUME_COMMAND,
+    });
+    const session = await manager.createSession({
+      type: 'worktree',
+      locationPath: '/path/to/worktree',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    await manager.pauseSession(session.id);
+    executeHookCommand.mockClear();
+
+    const outcome = await manager.resumeSession(session.id);
+
+    expect(executeHookCommand).toHaveBeenCalledTimes(1);
+    expect(executeHookCommand.mock.calls[0][0]).toBe(RESUME_COMMAND);
+    expect(outcome?.resumeCommandResult).toEqual({ success: true });
+  });
+
   it('does not call the hook for a worktree session whose repository has no resume command', async () => {
     persistSessions([worktreeSession()]);
     const executeHookCommand = mock<ExecuteHookCommand>(async (): Promise<HookResult> => ({ success: true }));

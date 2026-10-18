@@ -297,6 +297,12 @@ export class SessionPauseResumeService {
 
     // Run the repository's resume command before any worker comes up. It never
     // blocks the resume; a failure travels back to the caller in the result.
+    if (!runResumeCommand) {
+      logger.info(
+        { sessionId: id, reason: 'server-start' },
+        'Skipping the resume command: auto-resume at server start brings workers back only',
+      );
+    }
     const resumeCommandResult = runResumeCommand
       ? await this.runHookCommand('resume', internalSession)
       : undefined;
