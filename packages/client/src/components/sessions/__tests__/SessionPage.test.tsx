@@ -664,6 +664,36 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
         expect(calls.some((c) => c.el === viewerTab && JSON.stringify(c.options) === JSON.stringify(NEAREST))).toBe(true);
       });
 
+      it('a tab bar that remounts after a pause/resume (same active tab id) scrolls the selected tab again', async () => {
+        // Pins the `state.type` dependency. On the initial load the dependency
+        // is redundant (activeTabId is set in a later render than the one that
+        // mounts the tablist, so the activeTabId dep fires anyway). Its real
+        // job is this case: paused unmounts the tablist, resume mounts a fresh
+        // one scrolled to 0 with the SAME activeTabId.
+        routeFetch(WORKERS);
+        await renderSessionPage(sessionStopTasksValue, 'w-viewer');
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'File Viewer' }).getAttribute('aria-selected')).toBe('true'));
+        const appSocket = MockWebSocket.getInstances().find(ws => ws.url.includes('/ws/app'));
+        expect(appSocket).toBeDefined();
+        const send = (frame: unknown) => act(() => {
+          appSocket!.simulateOpen();
+          appSocket!.simulateMessage(JSON.stringify(completeWireBody(frame)));
+        });
+
+        send({ type: 'session-paused', session: createMockSession({ workers: WORKERS, activationState: 'hibernated', pausedAt: new Date().toISOString() }) });
+        await waitForAbsent(() => screen.queryByRole('tablist'));
+
+        calls.length = 0;
+        send({ type: 'session-resumed', session: createMockSession({ workers: WORKERS }), activityStates: [] });
+        await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
+
+        const viewerTab = screen.getByRole('tab', { name: 'File Viewer' });
+        expect(viewerTab.getAttribute('aria-selected')).toBe('true');
+        expect(calls.length).toBe(1);
+        expect(calls[0].el).toBe(viewerTab);
+        expect(calls[0].options).toEqual(NEAREST);
+      });
+
       it('switching tabs scrolls the newly active tab, and only it, with nearest/nearest', async () => {
         await renderAllKinds();
         calls.length = 0;
