@@ -1,6 +1,6 @@
 # File Viewer Worker
 
-Status: design (Issue #2194), redirected by the owner on 2026-10-18 to a plain directory listing that filters nothing (see the last paragraph of Background). The implementation AC follows after this document merges. Every statement about existing code below was checked against `main` at 3168977f and names a file and a symbol, not a line number.
+Status: implemented at <merge SHA> (Issue #2194), redirected by the owner on 2026-10-18 to a plain directory listing that filters nothing (see the last paragraph of Background). Every statement about existing code below was checked against `main` at 3168977f and names a file and a symbol, not a line number.
 
 ## Background
 
