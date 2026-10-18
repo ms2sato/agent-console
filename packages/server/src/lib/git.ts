@@ -15,6 +15,7 @@
  * historical `Bun.spawn(['git', ...args])` direct-spawn path runs verbatim.
  */
 import path from 'node:path';
+import { constants } from 'node:fs';
 import { open, readFile, stat } from 'node:fs/promises';
 import {
   runAsUser as defaultRunAsUser,
@@ -1170,24 +1171,44 @@ export async function readWorkingTreeFile(
 
   const fullPath = path.join(cwd, relPath);
   try {
+    if (opts.regularOnly || opts.maxBytes !== undefined) return await readOpenedWorkingTreeFile(fullPath, opts);
     const stats = await stat(fullPath);
     if (stats.isDirectory()) return { kind: 'directory' };
-    if (opts.regularOnly && !stats.isFile()) return { kind: 'not-regular' };
-    if (opts.maxBytes === undefined) return { kind: 'file', content: await readFile(fullPath) };
-    return { kind: 'file', content: await readPrefix(fullPath, Math.min(opts.maxBytes, stats.size)), size: stats.size };
+    return { kind: 'file', content: await readFile(fullPath) };
   } catch (error) {
     if (isErrnoException(error) && error.code === 'ENOENT') return null;
     throw error;
   }
 }
 
-/** First `maxBytes` bytes of a regular file, without reading the rest. */
-async function readPrefix(fullPath: string, maxBytes: number): Promise<Buffer> {
-  const handle = await open(fullPath, 'r');
+/**
+ * The in-process read for `{ regularOnly, maxBytes }`: open ONCE and decide
+ * everything from the descriptor. A `stat` by name followed by an `open` by
+ * name lets a regular file be swapped for a fifo in between, and `open` on a
+ * fifo blocks a libuv threadpool thread until a writer appears, with no
+ * timeout. Opening with `O_NONBLOCK` makes that `open` return immediately, and
+ * `handle.stat()` then classifies the very file that was opened; the read
+ * goes through the same handle. `O_NONBLOCK` has no effect on a regular file
+ * (reads never report EAGAIN for one; checked: the 1 MiB + 1 byte and the
+ * empty-file tests read through this handle), so it only matters for the case
+ * the descriptor's stat then refuses as not-regular before any read.
+ * The returned `size` is the descriptor's own size, so it agrees with the
+ * bytes read for a file that is not being written.
+ */
+async function readOpenedWorkingTreeFile(
+  fullPath: string,
+  opts: WorkingTreeReadOptions,
+): Promise<{ kind: 'file'; content: Buffer; size?: number } | { kind: 'directory' } | { kind: 'not-regular' }> {
+  const handle = await open(fullPath, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
-    const buffer = Buffer.alloc(maxBytes);
-    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
-    return buffer.subarray(0, bytesRead);
+    const stats = await handle.stat();
+    if (stats.isDirectory()) return { kind: 'directory' };
+    if (opts.regularOnly && !stats.isFile()) return { kind: 'not-regular' };
+    if (opts.maxBytes === undefined) return { kind: 'file', content: await handle.readFile() };
+    const length = Math.min(opts.maxBytes, stats.size);
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    return { kind: 'file', content: buffer.subarray(0, bytesRead), size: stats.size };
   } finally {
     await handle.close();
   }

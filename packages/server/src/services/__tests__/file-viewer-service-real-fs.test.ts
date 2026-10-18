@@ -36,7 +36,8 @@
  *   - list the lexical path instead of the real path: "a symlink to a directory inside
  *     the working directory, expanded" (shell mode).
  */
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, spyOn } from 'bun:test';
+import * as fsPromises from 'node:fs/promises';
 import { constants as fsConstants, closeSync, openSync } from 'node:fs';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
@@ -341,6 +342,45 @@ describe('readWorkingTreeFile direct path with { regularOnly, maxBytes } on real
     expect(await readWorkingTreeFile(worktree, 'nope', null, opts)).toBeNull();
     expect(await readWorkingTreeFile(worktree, 'dangling', null, opts)).toBeNull();
   });
+});
+
+describe('readWorkingTreeFile direct path: a fifo never blocks the read', () => {
+  const opts = { regularOnly: true, maxBytes: 100 } as const;
+
+  /** Resolves with the call's result, or 'blocked' after `ms`; unblocks a parked reader so nothing leaks. */
+  async function raceWithTimer<T>(call: Promise<T>, fifo: string, ms = 2_000): Promise<T | 'blocked'> {
+    const outcome = await Promise.race([call, Bun.sleep(ms).then(() => 'blocked' as const)]);
+    if (outcome === 'blocked') {
+      unblockFifo(fifo);
+      await call.catch(() => {});
+    }
+    return outcome;
+  }
+
+  it('a fifo at the path is not-regular, promptly (a real fifo; note a fifo present at stat time is also caught by name-based stat)', async () => {
+    if (!fifoMade) return;
+    const fifo = join(worktree, 'pipe');
+    const outcome = await raceWithTimer(readWorkingTreeFile(worktree, 'pipe', null, opts), fifo);
+    expect(outcome).toEqual({ kind: 'not-regular' });
+  }, 5_000);
+
+  it('the open is the only look at the path: a stat-by-name that says "regular file" cannot send a fifo into a blocking open (TOCTOU)', async () => {
+    if (!fifoMade) return;
+    const fifo = join(worktree, 'pipe');
+    // Simulate the swap deterministically: the by-name stat reports a regular file for the path,
+    // exactly what it would have said just before the file became a fifo.
+    const realStat = fsPromises.stat;
+    const statSpy = spyOn(fsPromises, 'stat').mockImplementation((async (...args: Parameters<typeof realStat>) => {
+      const real = await realStat(...args);
+      return Object.assign(Object.create(Object.getPrototypeOf(real)), real, { isFile: () => true, isFIFO: () => false });
+    }) as typeof realStat);
+    try {
+      const outcome = await raceWithTimer(readWorkingTreeFile(worktree, 'pipe', null, opts), fifo);
+      expect(outcome).toEqual({ kind: 'not-regular' });
+    } finally {
+      statSpy.mockRestore();
+    }
+  }, 5_000);
 });
 
 describe('direct mode: a missing working directory', () => {
