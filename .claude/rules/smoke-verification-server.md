@@ -140,6 +140,8 @@ The same smoke also carries the `runAsUser` cwd fail-closed case, so PRs touchin
 
 Requires elevation privilege for `<target-user>`; passing the current process user as `<target-user>` runs in a degraded mode that skips the real `sudo` boundary.
 
+The `runAsUser` timeout tree-kill case accepts a zombie grandchild (state `Z`, logged as a NOTE) unless the opt-in `--require-reaped` flag is given, in which case the grandchild must disappear from /proc (ESRCH). The container driver passes the flag and first asserts that the container's PID 1 is `docker-init` (compose `init: true`), so a regression to `bun` as PID 1 fails the run; a host run omits the flag because its PID 1 is not under the smoke's control.
+
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
 
 ## Additional Verification: File Viewer Elevated Read Smoke

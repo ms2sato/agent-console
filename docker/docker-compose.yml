@@ -27,6 +27,8 @@ services:
     # serves both; only the runtime wiring (mounts / command) differs.
     image: agent-console-multiuser-verify
     container_name: agent-console-dev
+    # dev-entrypoint.sh exec's into bun, so bun would be PID 1; see #2210.
+    init: true
     # Root is needed only for the entrypoint's mountpoint-ownership fixup;
     # dev-entrypoint.sh drops to the `agentconsole` service user (setpriv)
     # before installing dependencies or starting the dev servers.

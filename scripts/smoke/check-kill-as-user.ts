@@ -42,7 +42,11 @@
  *     of the return: ESRCH is the primary signal (EPERM reads as alive), and a
  *     zombie (`/proc/<pid>/stat` state `Z`: terminated but not reaped, e.g. by
  *     a container init that does not reap unknown children) also counts as
- *     gone and is logged distinctly so the evidence shows which case occurred; a negative
+ *     gone and is logged distinctly so the evidence shows which case occurred.
+ *     With `--require-reaped` a zombie is a FAILURE instead: the grandchild
+ *     must disappear from /proc (ESRCH), which pins that PID 1 reaps orphans.
+ *     The container driver passes it; a host run, where PID 1 is not an init
+ *     this smoke controls, omits it and keeps the zombie NOTE path. A negative
  *     control (an unrelated tracked `sleep` of the same user) must survive,
  *     proving the kill hit the snapshot and not the user's other processes.
  *     Before the fix the surviving grandchild held the pipes and the call did
@@ -328,6 +332,27 @@ function procState(pid: number): string | undefined {
 
 type TerminationOutcome = { gone: true; how: 'esrch' | 'zombie' } | { gone: false; state: string | undefined };
 
+/** Whether `outcome` satisfies the case: a zombie only counts when reaping is not required. */
+export function terminationAccepted(outcome: TerminationOutcome, requireReaped: boolean): boolean {
+  return outcome.gone && (outcome.how === 'esrch' || !requireReaped);
+}
+
+export interface CheckKillAsUserArgs {
+  targetUsername: string | undefined;
+  requireReaped: boolean;
+}
+
+/** Parses the argv after the script name: one positional target user plus the opt-in `--require-reaped`. */
+export function parseArgs(argv: string[]): CheckKillAsUserArgs {
+  let requireReaped = false;
+  const positionals: string[] = [];
+  for (const arg of argv) {
+    if (arg === '--require-reaped') requireReaped = true;
+    else positionals.push(arg);
+  }
+  return { targetUsername: positionals[0], requireReaped };
+}
+
 /**
  * Waits for `pid` to be terminated. ESRCH is the primary signal. A zombie
  * (state Z) is terminated but still has a process-table entry because its
@@ -360,7 +385,7 @@ async function waitUntilGoneByEsrch(pid: number, timeoutMs: number): Promise<boo
  * grandchild pid is also written to a pid file in /tmp so cleanup still finds
  * it when the call under test hangs.
  */
-async function checkTimeoutKillsTree(username: string, degenerate: boolean): Promise<void> {
+async function checkTimeoutKillsTree(username: string, degenerate: boolean, requireReaped: boolean): Promise<void> {
   const token = randomUUID();
   const pidFile = `/tmp/agent-console-smoke-timeout-pid-${token}`;
   let controlPid: number | undefined;
@@ -394,15 +419,17 @@ async function checkTimeoutKillsTree(username: string, degenerate: boolean): Pro
         );
       }
       const outcome = await waitUntilTerminated(grandchild, 2_000);
-      if (outcome.gone && outcome.how === 'zombie') {
+      if (outcome.gone && outcome.how === 'zombie' && !requireReaped) {
         console.log('  NOTE  timeout: grandchild is a zombie (terminated, not reaped by the container init)');
       }
       expect(
-        outcome.gone,
-        'timeout: the grandchild is terminated (ESRCH, or zombie) within 2s of the return',
+        terminationAccepted(outcome, requireReaped),
+        requireReaped
+          ? 'timeout: the grandchild is reaped (ESRCH, not a zombie) within 2s of the return'
+          : 'timeout: the grandchild is terminated (ESRCH, or zombie) within 2s of the return',
         `pid=${grandchild} state=${outcome.gone ? outcome.how : (outcome.state ?? 'unreadable')}`,
       );
-      if (!outcome.gone) {
+      if (!terminationAccepted(outcome, requireReaped)) {
         // Leave nothing behind: this is the failure being reported.
         await killAsUser(grandchild, 'SIGKILL', username, { timeoutMs: KILL_AS_USER_TIMEOUT_MS }).catch(() => {});
       }
@@ -432,9 +459,9 @@ async function main(): Promise<void> {
   // import.
   process.chdir('/');
 
-  const targetUsername = process.argv[2];
+  const { targetUsername, requireReaped } = parseArgs(process.argv.slice(2));
   if (!targetUsername) {
-    console.error('usage: bun scripts/smoke/check-kill-as-user.ts <target-user>');
+    console.error('usage: bun scripts/smoke/check-kill-as-user.ts [--require-reaped] <target-user>');
     process.exit(2);
   }
 
@@ -488,7 +515,7 @@ async function main(): Promise<void> {
 
     await checkCwdFailClosed(targetUsername, degenerate);
 
-    await checkTimeoutKillsTree(targetUsername, degenerate);
+    await checkTimeoutKillsTree(targetUsername, degenerate, requireReaped);
   } catch (err) {
     if (err instanceof ProbeTimeoutError) {
       timedOut = true;
