@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
 import { InternalError, NotFoundError, ValidationError } from '../../lib/errors.js';
 import { serverConfig } from '../../lib/server-config.js';
+import { readWorkingTreeFile } from '../../lib/git.js';
 import {
   buildDirectoryListingCommand,
   buildRealpathCommand,
@@ -295,6 +296,27 @@ describe.each(MODES)('boundary table: %s', (_label, user) => {
       expect(outcome).toBeInstanceOf(ValidationError);
       expect((outcome as ValidationError).message).toBe('Not a regular file');
     });
+  });
+});
+
+describe('readWorkingTreeFile direct path with { regularOnly, maxBytes } on real files', () => {
+  const opts = { regularOnly: true, maxBytes: 100 } as const;
+
+  it('refuses a non-regular file as not-regular (a character device; the fifo case is the boundary table above)', async () => {
+    expect(await readWorkingTreeFile('/dev', 'null', null, opts)).toEqual({ kind: 'not-regular' });
+    // Without the option the diff paths read the same path as a file, unchanged.
+    expect((await readWorkingTreeFile('/dev', 'null', null))?.kind).toBe('file');
+  });
+
+  it('reads at most maxBytes and reports the total size, follows a symlink to a regular file, and keeps directory / missing', async () => {
+    const capped = await readWorkingTreeFile(worktree, 'exact.txt', null, opts);
+    expect(capped).toMatchObject({ kind: 'file', size: CAP });
+    expect((capped as { content: Buffer }).content.length).toBe(100);
+    const viaLink = await readWorkingTreeFile(worktree, 'link-to-file', null, opts);
+    expect(viaLink).toMatchObject({ kind: 'file', size: 12 });
+    expect(await readWorkingTreeFile(worktree, 'sub', null, opts)).toEqual({ kind: 'directory' });
+    expect(await readWorkingTreeFile(worktree, 'nope', null, opts)).toBeNull();
+    expect(await readWorkingTreeFile(worktree, 'dangling', null, opts)).toBeNull();
   });
 });
 

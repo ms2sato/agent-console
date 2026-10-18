@@ -1754,13 +1754,6 @@ index abc1234..def5678 100644
           expect(empty.content.length).toBe(0);
         });
 
-        it('regularOnly refuses a non-regular file (a character device stands in for a fifo, without blocking)', async () => {
-          const mod = await getGitModule();
-          expect(await mod.readWorkingTreeFile('/dev', 'null', null, opts)).toEqual({ kind: 'not-regular' });
-          // Without the option the same path is read as a file (the diff paths' behaviour).
-          expect((await mod.readWorkingTreeFile('/dev', 'null', null)).kind).toBe('file');
-        });
-
         it('still reports a directory and a missing path', async () => {
           mkdirSync(join(tmpDir, 'sub'));
           const mod = await getGitModule();
