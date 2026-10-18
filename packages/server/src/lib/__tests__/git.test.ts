@@ -1061,6 +1061,61 @@ index abc1234..def5678 100644
       }
     });
 
+    it('maps cwdFailed from runAsUser to a GitError that names the cwd, before the generic non-zero handling', async () => {
+      const fakeRunAsUser = async () => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 125,
+        timedOut: false,
+        cwdFailed: true,
+      });
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        let caught: unknown;
+        try {
+          await mod.git(['status'], '/gone/worktree', undefined, 'alice');
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(mod.GitError);
+        const error = caught as InstanceType<typeof mod.GitError>;
+        expect(error.message).toContain('/gone/worktree');
+        expect(error.message).toContain('git status');
+        expect(error.message).not.toContain('exit code');
+        expect(error.exitCode).toBe(125);
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+
+    it('does not treat a bare exit 125 (cwdFailed false) as a cwd failure', async () => {
+      const fakeRunAsUser = async () => ({
+        stdout: '',
+        stderr: 'xargs: command failed\n',
+        exitCode: 125,
+        timedOut: false,
+        cwdFailed: false,
+      });
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        let caught: unknown;
+        try {
+          await mod.git(['status'], '/repo', undefined, 'alice');
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(mod.GitError);
+        expect((caught as Error).message).toContain('xargs: command failed');
+        expect((caught as Error).message).not.toContain('working directory');
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+
     it('translates timedOut from runAsUser into a GitError', async () => {
       const fakeRunAsUser = async () => ({
         stdout: '',
@@ -1424,11 +1479,11 @@ index abc1234..def5678 100644
   });
   describe('readWorkingTreeFile', () => {
     type Opts = { username: string; command: string; cwd: string; timeoutMs?: number };
-    const captureSeam = (result: { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean }) => {
+    const captureSeam = (result: { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean; cwdFailed?: boolean }) => {
       const calls: Opts[] = [];
       const fake = async (opts: Opts) => {
         calls.push(opts);
-        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, ...result };
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false, ...result };
       };
       return { calls, fake };
     };
@@ -1495,6 +1550,25 @@ index abc1234..def5678 100644
         mod.__setRunAsUserForTesting(fake);
         try {
           expect(await mod.readWorkingTreeFile('/work/tree', 'sub', 'alice')).toEqual({ kind: 'directory' });
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('maps cwdFailed to a GitError naming the cwd instead of reading as if the file were absent', async () => {
+        const { fake } = captureSeam({ exitCode: 125, cwdFailed: true });
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fake);
+        try {
+          let caught: unknown;
+          try {
+            await mod.readWorkingTreeFile('/gone/worktree', 'a.txt', 'alice');
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught).toBeInstanceOf(mod.GitError);
+          expect((caught as Error).message).toContain('/gone/worktree');
+          expect((caught as Error).message).toContain('read a.txt');
         } finally {
           mod.__setRunAsUserForTesting(null);
         }
