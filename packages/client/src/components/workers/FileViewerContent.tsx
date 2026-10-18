@@ -15,15 +15,40 @@ export const FILE_VIEWER_HIGHLIGHT_MAX_BYTES = 262144;
 
 const textEncoder = new TextEncoder();
 
+interface HighlightPlan {
+  /** Tokenise the whole file (otherwise it renders as plain text). */
+  highlight: boolean;
+  /** Tell the user highlighting was skipped: only when the file has a grammar to lose. */
+  showHighlightOffNotice: boolean;
+}
+
+/**
+ * How a file of `contentLength` characters in `language` (the wire's name,
+ * 'text' when unknown) is rendered. Exactly `maxLength` characters is still
+ * highlighted; one more is not. A file with no grammar renders the same
+ * either way, so it gets no notice.
+ */
+export function getHighlightPlan(
+  contentLength: number,
+  language: string,
+  maxLength: number = FILE_VIEWER_HIGHLIGHT_MAX_BYTES
+): HighlightPlan {
+  const highlight = contentLength <= maxLength;
+  const hasGrammar = toRendererLanguage(language) !== PRISM_PLAIN;
+  return { highlight, showHighlightOffNotice: !highlight && hasGrammar };
+}
+
 interface FileViewerContentProps {
   file: FileContentResponse;
+  /** Overrides the highlight threshold; the default is the specified one. */
+  highlightMaxLength?: number;
 }
 
 /**
  * Right pane of the file viewer: path header, notices, and the file's lines.
  * Callers key it by path so a newly selected file starts at the top.
  */
-export function FileViewerContent({ file }: FileViewerContentProps) {
+export function FileViewerContent({ file, highlightMaxLength }: FileViewerContentProps) {
   return (
     <div className="flex flex-col flex-1 min-h-0 min-w-0">
       <div className="px-4 py-2 bg-slate-800 border-b border-gray-700 shrink-0 flex items-center gap-3 text-sm">
@@ -33,7 +58,7 @@ export function FileViewerContent({ file }: FileViewerContentProps) {
       {file.kind === 'binary' ? (
         <Notice>Binary file ({formatBytes(file.size)}), content not shown.</Notice>
       ) : (
-        <TextFile file={file} content={file.content ?? ''} />
+        <TextFile file={file} content={file.content ?? ''} highlightMaxLength={highlightMaxLength} />
       )}
     </div>
   );
@@ -47,13 +72,18 @@ function Notice({ children }: { children: React.ReactNode }) {
   );
 }
 
-function TextFile({ file, content }: { file: FileContentResponse; content: string }) {
+function TextFile({
+  file,
+  content,
+  highlightMaxLength,
+}: {
+  file: FileContentResponse;
+  content: string;
+  highlightMaxLength?: number;
+}) {
   // A trailing newline terminates the last line; it does not start another one.
   const code = content.endsWith('\n') ? content.slice(0, -1) : content;
-  const highlight = content.length <= FILE_VIEWER_HIGHLIGHT_MAX_BYTES;
-  // The notice explains lost highlighting, so it only applies to a file that
-  // has a grammar: a plain-text file would render the same either way.
-  const hasGrammar = toRendererLanguage(file.language) !== PRISM_PLAIN;
+  const { highlight, showHighlightOffNotice } = getHighlightPlan(content.length, file.language, highlightMaxLength);
   const shownBytes = useMemo(
     () => (file.truncated ? textEncoder.encode(content).length : 0),
     [file.truncated, content]
@@ -66,7 +96,7 @@ function TextFile({ file, content }: { file: FileContentResponse; content: strin
           Showing the first {formatBytes(shownBytes)} of {formatBytes(file.size)}.
         </Notice>
       )}
-      {!highlight && hasGrammar && <Notice>highlighting off for files over 256 KiB</Notice>}
+      {showHighlightOffNotice && <Notice>highlighting off for files over 256 KiB</Notice>}
       {content.length === 0 ? (
         <Notice>Empty file.</Notice>
       ) : highlight ? (
