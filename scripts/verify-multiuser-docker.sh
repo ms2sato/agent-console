@@ -1984,8 +1984,16 @@ if [ "$SMOKES" -eq 1 ]; then
   echo "=== 12. real-host smokes inside the container (--smokes, #1619) ==="
   SMOKE_SUMMARY=""
 
+  # Orphans are only reaped when PID 1 is an init (compose `init: true`, Issue
+  # #2210). Fail loudly here so the --require-reaped smoke below cannot be
+  # satisfied by a stack that silently went back to bun as PID 1.
+  pid1_comm="$(compose exec -T agent-console cat /proc/1/comm 2>/dev/null | tr -d '\r\n')"
+  echo "  container PID 1: ${pid1_comm:-<unreadable>}"
+  pid1_ok=1; [ "$pid1_comm" = "docker-init" ] && pid1_ok=0
+  check "container PID 1 is docker-init (orphaned descendants are reaped)" "$pid1_ok"
+
   run_smoke "check-multiuser-pty-env" "check-multiuser-pty-env.ts" alice
-  run_smoke "check-kill-as-user" "check-kill-as-user.ts" alice
+  run_smoke "check-kill-as-user" "check-kill-as-user.ts" --require-reaped alice
   run_smoke "check-login-shell-sentinel" "check-login-shell-sentinel.ts" --elevated alice
   run_smoke "check-orphan-sweep" "check-orphan-sweep.ts" alice
   run_smoke "check-delegated-ssh-auth-sock" "check-delegated-ssh-auth-sock.ts" alice

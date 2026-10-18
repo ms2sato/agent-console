@@ -20,6 +20,9 @@ services:
       dockerfile: docker/Dockerfile
     image: agent-console-multiuser-verify
     container_name: agent-console-multiuser-verify
+    # The server is not an init: without this, bun is PID 1 (Dockerfile CMD
+    # exec's it) and orphaned descendants stay zombies (Issue #2210).
+    init: true
     environment:
       # Shared Account (Issue #1619; Release 2, Issue #1842, retired this as
       # a session-creation source): `shared1` is created by docker/Dockerfile
