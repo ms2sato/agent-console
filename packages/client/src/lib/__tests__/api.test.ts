@@ -218,6 +218,17 @@ describe('API Client', () => {
       expect(url.searchParams.get('path')).toBe('');
     });
 
+    it('fetchFileContent keeps a path with spaces, ampersands and unicode intact in the query', async () => {
+      const path = 'dir one/a & b=c#d.ts';
+      mockFetch.mockResolvedValue(
+        createMockResponse({ path, kind: 'text', content: '', size: 0, truncated: false, language: 'typescript' })
+      );
+
+      await fetchFileContent('s1', 'w1', path);
+
+      expect(new URL(getLastFetchUrl(), 'http://localhost').searchParams.get('path')).toBe(path);
+    });
+
     it('fetchFileTree rejects an entry with an unknown kind (strict wire schema)', async () => {
       mockFetch.mockResolvedValue(createMockResponse({ path: '', entries: [{ name: 'x', kind: 'socket' }] }));
       await expect(fetchFileTree('s1', 'w1', '')).rejects.toThrow();
