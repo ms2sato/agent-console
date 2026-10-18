@@ -61,7 +61,7 @@ async function renderPanel(props: { isExpanded?: boolean; compact?: boolean; onT
  *     -> 'New Todo dialog > a successful create closes ...', '... Escape closes the dialog and returns focus ...',
  *        '... Cancel closes the dialog, returns focus ...' (and nothing else)
  *   - the rows render the body -> 'rows are summaries ...'
- *   - the `tabIndex` dropped from one control type (the Open button, the assignee select, the
+ *   - the `tabIndex` dropped from one control type (the title button, the assignee select, the
  *     New Todo button, the status select, resolve/dismiss) -> 'excludes every control of the body from the tab order ...'
  *   - the header always shows the count, or the error line / Retry dropped
  *     -> 'a failed list fetch shows ...'
@@ -106,10 +106,10 @@ describe('SessionTodosPanel', () => {
   describe('status filter', () => {
     // Reach measured by test name (each mutation applied alone, re-measured after the final edit):
     //   - DEFAULT_TODO_STATUS_FILTER -> 'all' (todos/TodoStatusSelect.tsx)
-    //       fails 6 tests, 4 in this file: 'with zero items renders ...', 'counts only open items in the
+    //       fails 7 tests, 4 in this file: 'with zero items renders ...', 'counts only open items in the
     //       header and lists only open by default', 'status filter > defaults to open: ONE row, ...',
     //       'status filter > an item resolved from the row disappears ...'; plus TodosPage 'list >
-    //       fetches the open items by default' and TodoStatusSelect 'the shared default is the open items'
+    //       fetches the open items by default', TodosPage 'filters > the status filter starts on the shared default ...' and TodoStatusSelect 'the shared default is the open items'
     //   - `statusFilter === 'all' ||` dropped from the panel's filter
     //       fails only 'status filter > switching to done shows the other row, to all shows both, ...'
     //   - `focusable` dropped from the panel's TodoStatusSelect
@@ -468,7 +468,7 @@ describe('SessionTodosPanel', () => {
       expect(screen.getByTestId('terminal-host')).toBeTruthy();
     });
 
-    it('Escape returns focus to the Open button that opened the dialog', async () => {
+    it('Escape returns focus to the title button that opened the dialog', async () => {
       api.state.todos = [makeTodo({ id: 'todo-9', title: 'Look closer' })];
       const { user } = await renderPanel();
       const opener = await screen.findByRole('button', { name: 'Open Look closer' });

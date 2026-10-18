@@ -1,12 +1,13 @@
 /**
  * Worker WebSocket manager module.
- * Manages WebSocket connections for git-diff workers.
+ * Manages WebSocket connections for git-diff and file-viewer workers.
  * Follows the same singleton pattern as app-websocket.ts.
  *
  * Terminal/agent PTY transport used to live here too, but the terminal store
  * (components/terminal/terminal-store) owns its own WebSocket (issue #941 removed
- * the legacy renderer; #961 removed the orphaned terminal transport). git-diff is
- * the only worker type routed through this module now.
+ * the legacy renderer; #961 removed the orphaned terminal transport). git-diff and
+ * file-viewer (server-to-client live-update messages only) are the worker types
+ * routed through this module now; the callbacks' `type` selects the message union.
  *
  * Key design decisions:
  * - Each worker has its own WebSocket connection (different from app-websocket which is single)
@@ -14,9 +15,12 @@
  * - Uses useSyncExternalStore pattern for React integration
  * - Automatically handles wss:// vs ws:// based on page protocol
  */
+import * as v from 'valibot';
 import {
+  FileViewerServerMessageSchema,
   GIT_DIFF_SERVER_MESSAGE_TYPES,
   WS_CLOSE_CODE,
+  type FileViewerServerMessage,
   type GitDiffServerMessage,
   type GitDiffClientMessage,
   type GitDiffData,
@@ -64,14 +68,21 @@ interface WorkerConnection {
   workerId: string;
 }
 
-// Callbacks for git-diff workers (the only worker type routed through this module).
+// Callbacks for git-diff workers.
 export interface GitDiffWorkerCallbacks {
   type: 'git-diff';
   onDiffData?: (data: GitDiffData) => void;
   onDiffError?: (error: string) => void;
 }
 
-type WorkerCallbacks = GitDiffWorkerCallbacks;
+// Callbacks for file-viewer workers (server-to-client messages only).
+export interface FileViewerWorkerCallbacks {
+  type: 'file-viewer';
+  onFilesChanged: (batch: { paths: string[]; overflow: boolean }) => void;
+  onWatchUnavailable: (reason: Extract<FileViewerServerMessage, { type: 'watch-unavailable' }>['reason']) => void;
+}
+
+type WorkerCallbacks = GitDiffWorkerCallbacks | FileViewerWorkerCallbacks;
 
 // Connection storage
 const connections = new Map<string, WorkerConnection>();
@@ -168,7 +179,7 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     connected: false,
     diffData: null,
     diffError: null,
-    diffLoading: true,
+    diffLoading: callbacks.type === 'git-diff',
   };
 
   const conn: WorkerConnection = {
@@ -231,6 +242,32 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
 }
 
 /**
+ * Handle incoming WebSocket message for file-viewer workers. The frame is
+ * parsed with the strict shared schema; a frame that fails is logged and
+ * dropped (no state change).
+ */
+function handleFileViewerFrame(raw: unknown, callbacks: FileViewerWorkerCallbacks): void {
+  const result = v.safeParse(FileViewerServerMessageSchema, raw);
+  if (!result.success) {
+    logger.error('[WorkerWS] Dropped invalid file-viewer message:', result.issues);
+    return;
+  }
+  const msg = result.output;
+  switch (msg.type) {
+    case 'files-changed':
+      callbacks.onFilesChanged({ paths: msg.paths, overflow: msg.overflow });
+      break;
+    case 'watch-unavailable':
+      callbacks.onWatchUnavailable(msg.reason);
+      break;
+    default: {
+      const _exhaustive: never = msg;
+      logger.error('[WorkerWS] Unknown file-viewer message type:', _exhaustive);
+    }
+  }
+}
+
+/**
  * Set up WebSocket event handlers. The handlers read the current callbacks from
  * the connection map (they may be swapped via connect() on remount), so no
  * callbacks argument is threaded here.
@@ -242,7 +279,8 @@ function setupWebSocketHandlers(key: string, ws: WebSocket): void {
     if (conn) {
       conn.retryCount = 0; // Reset retry count on successful connection
     }
-    updateState(key, { connected: true, diffLoading: true });
+    // diffLoading belongs to git-diff only; a file-viewer connection has no diff to load.
+    updateState(key, conn?.callbacks.type === 'git-diff' ? { connected: true, diffLoading: true } : { connected: true });
   };
 
   ws.onmessage = (event) => {
@@ -250,6 +288,18 @@ function setupWebSocketHandlers(key: string, ws: WebSocket): void {
     const currentConn = connections.get(key);
     if (!currentConn) return;
     const currentCallbacks = currentConn.callbacks;
+
+    if (currentCallbacks.type === 'file-viewer') {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(event.data);
+      } catch (e) {
+        logger.error('[WorkerWS] Failed to parse file-viewer message:', e);
+        return;
+      }
+      handleFileViewerFrame(raw, currentCallbacks);
+      return;
+    }
 
     try {
       const parsed: unknown = JSON.parse(event.data);
@@ -340,7 +390,7 @@ export function connect(
     connected: false,
     diffData: null,
     diffError: null,
-    diffLoading: true,
+    diffLoading: callbacks.type === 'git-diff',
   };
 
   const conn: WorkerConnection = {

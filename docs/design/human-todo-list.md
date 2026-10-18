@@ -201,7 +201,7 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 |---|---|---|---|---|---|
 | create | do: New Todo button -> dialog with `AddTodoForm`, session-scoped only (narrowing pending owner confirmation, Refs #2136); a global item is created on /todos or re-scoped from the detail | do: `AddTodoForm` | not here: a detail is one item | do: `create_todo` | do: POST |
 | list / summary | do: `TodoRow` summary, open-only by default + status select (shared `TodoStatusSelect` with `/todos`) | do: `TodoRow` summary + filters | not here | do: `list_todos`; `global: true` also lists every session's global items (team-wide, like REST; session-scoped items stay private) | do: GET; `scope=global` lists the global ones |
-| read detail (full body, resolution history, provenance, timestamps, session link) | not here: summary only; "Open" opens the dialog | not here: "Open" links to the page | do | do: `list_todos` carries the full item | do: GET /:id |
+| read detail (full body, resolution history, provenance, timestamps, session link) | not here: summary only; the title opens the dialog | not here: the title opens the page | do | do: `list_todos` carries the full item | do: GET /:id |
 | resolve | do | do | do | do: `resolve_todo` | do: POST /:id/resolve |
 | dismiss | do | do | do | not here: the human's "not needed" count | do: POST /:id/dismiss |
 | assign / reassign | do: select on the summary row | do | do | not here: at create only | do: PATCH |
@@ -212,7 +212,7 @@ Authorization is the team-tool rule of section 2 (any member), not `assertCanOpe
 | adopt / supersede | not here | not here | not here | do: `adopt_todo` (re-target an open item to the caller's session and worker; an item of a session owned by another user is refused) / `create_todo { supersedes }` | not here: the human form is POST /:id/move |
 | human move to another session | not here: the detail has the picker | not here: same | do: "Move to session" (open items; live sessions; mine + shared by default, "All sessions" in multi-user) | not here: the agent form is `adopt_todo` | do: POST /:id/move |
 | default view "mine + shared" | n/a: per session | do: View select, default "Mine + shared" (multi-user only) | n/a | not here: `list_todos` is per session; `global: true` stays team-wide | do: `GET /api/todos` with `view=mine-and-shared` |
-| comment / reply (v3) | not here: the summary row ("Open" reaches the detail; a row-level shortcut is decided `not here`, flagged for the owner) | not here | do: Thread section, Reply on `open` and `done` | do: `comment_todo` (own session, `open` or `done`) | do: POST /:id/comments |
+| comment / reply (v3) | not here: the summary row (the title reaches the detail; a row-level shortcut is decided `not here`, flagged for the owner) | not here | do: Thread section, Reply on `open` and `done` | do: `comment_todo` (own session, `open` or `done`) | do: POST /:id/comments |
 | read the thread (v3) | not here: an "N replies" chip only | not here: chip only | do | do: `list_todos` items carry `activities` | do: GET /:id |
 | human notice of an agent's reply (v3) | do: chip count on the row | do: chip | do | n/a | n/a; notification-center entry: do: one entry per agent comment in the personal feed (assignee or creator) |
 | move on a human's instruction, by an agent (v3) | not here | not here | not here | do: `adopt_todo { statement, statedBy (optional) }`; a silent takeover of another user's item is refused | not here: the human form is the move route of (e1)-b |

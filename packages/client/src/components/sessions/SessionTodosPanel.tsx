@@ -23,9 +23,9 @@ interface SessionTodosPanelProps {
  * (`docs/design/human-todo-list.md`, section 4 "UI"): a New Todo button that
  * opens a dialog with the add form (session preset), a status filter select
  * (open by default, not remembered), then one summary row per item of the
- * chosen status (both scopes). "Open" shows the item's detail in a dialog over
- * the session page. The header count is the number of OPEN items only,
- * whatever the filter. The block renders nothing until the first fetch
+ * chosen status (both scopes). A row's title shows the item's detail in a
+ * dialog over the session page. The header count is the number of OPEN items
+ * only, whatever the filter. The block renders nothing until the first fetch
  * settles, and renders with zero items afterwards so an empty session can
  * still receive one.
  */

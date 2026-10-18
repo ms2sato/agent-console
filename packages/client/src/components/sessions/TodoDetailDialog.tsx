@@ -87,7 +87,7 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFo
 }
 
 /**
- * The in-session view of one Todo item (the sidebar's "Open"): a modal over
+ * The in-session view of one Todo item (opened by a row's title in the sidebar): a modal over
  * the session page, so the terminal behind it stays mounted. It owns the Run
  * wiring for ```terminal blocks, which only a session page can offer.
  */
