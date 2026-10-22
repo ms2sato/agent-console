@@ -620,7 +620,12 @@ describe('findDefaultFiles — live-tree scanned-file-count regression pin (R4, 
     // roots would produce, computed here with Bun.Glob's own default
     // (dot: false) rather than by importing anything from production.
     let withoutDot = 0;
-    for (const pattern of ['CLAUDE.md', 'docs/**', '.claude/**', 'scripts/**']) {
+    // `.claude/**` is deliberately absent from this control: Bun 1.4.4 matches
+    // a pattern that NAMES the dot-directory even without `dot: true`
+    // (measured: 85 files; Bun 1.3.14 gives 0), so it no longer models a
+    // dot-excluding scan. A dot-excluding scan of the wildcard roots never
+    // reaches `.claude/`, which contributes 0 here on every Bun version.
+    for (const pattern of ['CLAUDE.md', 'docs/**', 'scripts/**']) {
       const glob = new Glob(pattern);
       for await (const _file of glob.scan({ cwd: REPO_ROOT, onlyFiles: true })) {
         withoutDot++;
