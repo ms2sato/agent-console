@@ -87,7 +87,7 @@ jobs:
           persist-credentials: false
 
       # No bun setup on the runner: every bun invocation happens inside the
-      # container (the image pins bun 1.3.14 at /usr/local/bin/bun). Docker
+      # container (the image pins bun 1.4.4 at /usr/local/bin/bun). Docker
       # + compose v2 are preinstalled on ubuntu-latest.
       - name: Build the systemd image, boot it, run setup / deploy / smokes
         env:

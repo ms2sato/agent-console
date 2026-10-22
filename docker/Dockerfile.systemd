@@ -28,7 +28,7 @@
 
 # The bun version pin lives in this ONE ARG: it selects the oven/bun stage the
 # binary is copied from below (the same pinned base docker/Dockerfile uses).
-ARG BUN_VERSION=1.3.14
+ARG BUN_VERSION=1.4.4
 
 # Source stage for the bun binary -- a pinned, registry-published image rather
 # than `curl https://bun.sh/install | bash` (an unverified script run as root

@@ -126,6 +126,8 @@ const RenameWorkerRequestSchema = v.strictObject({
 //     branch only. Cost is one spawn per upload on the multi-user
 //     multipart path, which is already disk-bound. The single-user 0o700
 //     path does not need this and stays mkdir-only.
+//   - Bun 1.4.4 no longer strips the bit in `fs.chmod` (measured), but
+//     `fs.mkdir` still does; the shell-out is kept as-is.
 //   - If a future Bun release fixes its JS-layer mode stripping, the
 //     `workers-upload-dir-real-fs.test.ts` kernel-level probe will flag
 //     the change and the in-process chmod step can replace the shell-out.
