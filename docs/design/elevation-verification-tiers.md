@@ -38,7 +38,7 @@ The Architect's ruling (Issue #1701, 2026-09-14) is "container first, host only 
 
 `docker/Dockerfile.systemd` as measured (reproduced here because the branch is gone):
 
-- `FROM ubuntu:24.04`; `ARG BUN_VERSION=1.3.14`; `ENV container=docker`.
+- `FROM ubuntu:24.04`; `ARG BUN_VERSION=1.4.4`; `ENV container=docker`.
 - `apt-get install --no-install-recommends ubuntu-minimal systemd systemd-sysv dbus pamtester libpam-modules libpam-runtime login passwd git rsync curl unzip ca-certificates procps util-linux`.
 - bun pinned at the unified path: `curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v${BUN_VERSION}"` (so `/usr/local/bin/bun` exists before the setup script's step 7 asserts on it).
 - **Landed differently (Issue (a), PR #1711):** the shipped `docker/Dockerfile.systemd` does NOT use this installer. It copies the bun binary from a pinned, registry-published `FROM oven/bun:${BUN_VERSION} AS bun` stage instead (`COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun`, `docker/Dockerfile.systemd` line 75) — same pinned version, different provenance: a curl-to-root install was judged an unverified script run as root at build time (CodeRabbit review on the landing PR). The bullet above stays as measured; Task 0 ran the installer form.
