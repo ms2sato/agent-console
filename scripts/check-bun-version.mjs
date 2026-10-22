@@ -21,7 +21,9 @@
 // <script>` setting `npm_execpath` to the absolute path of the bun binary
 // that ran `run` itself. Re-verify this on a future bun bump via
 // `scripts/__tests__/start-script-execpath.test.mjs` -- it is the canary for
-// this specific behavior, not merely for the version floor above.
+// this specific behavior, not merely for the version floor above. It is also
+// the canary for Bun's auto node-shim PATH-prepend (`/tmp/bun-node-<uid>-<rev>`
+// on >= 1.4, triggered when no `node` is resolvable).
 
 const MIN_BUN_VERSION = "1.4.4";
 
