@@ -603,6 +603,31 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
   });
 });
 
+describe('findDefaultFiles — hidden directory under a wildcard root (dot: true detection power)', () => {
+  it('scans a dot-directory beneath docs/ that a dot-excluding scan of the same root would skip', async () => {
+    // Reach: reverting `dot: true` in findDefaultFiles drops docs/.hidden/b.md.
+    // Unlike a pattern that NAMES the dot-directory (`.claude/**`, matched
+    // without `dot: true` on Bun 1.4.4 but not on 1.3.14), a dot-directory
+    // below a wildcard root is skipped by both versions, so this pin holds
+    // on every Bun version.
+    const root = mkdtempSync(join(tmpdir(), 'lang-check-hidden-'));
+    try {
+      mkdirSync(join(root, 'docs/.hidden'), { recursive: true });
+      writeFileSync(join(root, 'docs/a.md'), '# a\n');
+      writeFileSync(join(root, 'docs/.hidden/b.md'), '# b\n');
+      const control = [];
+      for await (const f of new Glob('docs/**').scan({ cwd: root, onlyFiles: true })) {
+        control.push(f);
+      }
+      expect(control).toEqual(['docs/a.md']);
+      const files = await findDefaultFiles({ cwd: root });
+      expect(files).toContain('docs/.hidden/b.md');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('findDefaultFiles — live-tree scanned-file-count regression pin (R4, mirrors #1538 R2)', () => {
   it('scans strictly more files than a dot-excluding glob would, and finds a known .claude/ file', async () => {
     // Reach: reverting `dot: true` in findDefaultFiles makes this fail --
