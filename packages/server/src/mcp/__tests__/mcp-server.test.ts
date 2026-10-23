@@ -5331,6 +5331,51 @@ describe('MCP Server Tools', () => {
     });
 
     describe('create_timer', () => {
+      it('refuses a session that is pausing and creates no timer', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const pausingSpy = jest.spyOn(sessionManager, 'isPausing').mockReturnValue(true);
+        const createSpy = jest.spyOn(timerManager, 'createTimer');
+        try {
+          const response = await callTool(app, mcpSessionId, 'create_timer', {
+            sessionId, workerId, intervalSeconds: 60, action: 'x',
+          }, nextId++);
+          const data = parseToolResult(response) as { error: string };
+          expect(response.result?.isError).toBe(true);
+          expect(data.error).toContain('is pausing');
+          expect(createSpy).not.toHaveBeenCalled();
+          expect(timerManager.listTimers(sessionId)).toHaveLength(0);
+        } finally {
+          pausingSpy.mockRestore();
+          createSpy.mockRestore();
+        }
+      });
+
+      it('reset_timer during the pausing window leaves the suspended timer suspended', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const created = parseToolResult(await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x',
+        }, nextId++)) as { timerId: string };
+        timerManager.suspendTimersBySession(sessionId);
+        const pausingSpy = jest.spyOn(sessionManager, 'isPausing').mockReturnValue(true);
+        try {
+          const response = await callTool(app, mcpSessionId, 'reset_timer', { timerId: created.timerId }, nextId++);
+          expect(response.result?.isError).toBeUndefined();
+          expect(timerManager.listTimers(sessionId)[0]?.suspendedAt).toBeDefined();
+        } finally {
+          pausingSpy.mockRestore();
+        }
+      });
+
+      it('still creates a timer for a live non-pausing session (positive control)', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        expect(sessionManager.isPausing(sessionId)).toBe(false);
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x',
+        }, nextId++);
+        expect(response.result?.isError).toBeUndefined();
+        expect(timerManager.listTimers(sessionId)).toHaveLength(1);
+      });
+
       it('should create a timer and return timer details', async () => {
         const { sessionId, workerId } = await createSessionWithWorker();
 
@@ -5688,6 +5733,88 @@ describe('MCP Server Tools', () => {
 
   describe('conditional wakeup tools', () => {
     describe('create_conditional_wakeup', () => {
+      // The user lookup is a DEFERRED promise so the pause state can change
+      // while the handler is suspended inside `resolveRequestUsername`.
+      async function startWakeupWithDeferredLookup() {
+        const owner = await userRepository.upsertByOsUid(9501, 'wakeup-owner', '/home/wakeup-owner');
+        const session = await sessionManager.createSession(
+          { type: 'quick', locationPath: os.tmpdir(), agentId: 'claude-code' },
+          { createdBy: owner.id },
+        );
+        const workerId = session.workers.find((w) => w.type === 'agent')!.id;
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let entered!: () => void;
+        const lookupEntered = new Promise<void>((resolve) => { entered = resolve; });
+        const realFindById = userRepository.findById.bind(userRepository);
+        const findSpy = jest.spyOn(userRepository, 'findById').mockImplementation(async (id: string) => {
+          entered();
+          await gate;
+          return realFindById(id);
+        });
+        const createSpy = jest.spyOn(conditionalWakeupManager, 'createWakeup');
+        const pending = callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+          sessionId: session.id,
+          workerId,
+          intervalSeconds: 60,
+          conditionScript: 'true',
+          onTrueMessage: 'Condition met',
+        }, nextId++);
+        await lookupEntered;
+        return {
+          sessionId: session.id,
+          pending,
+          release,
+          createSpy,
+          restore: () => { findSpy.mockRestore(); createSpy.mockRestore(); },
+        };
+      }
+
+      it('refuses when the session starts pausing during the username lookup', async () => {
+        const h = await startWakeupWithDeferredLookup();
+        const pausingSpy = jest.spyOn(sessionManager, 'isPausing').mockReturnValue(true);
+        try {
+          h.release();
+          const response = await h.pending;
+          const data = parseToolResult(response) as { error: string };
+          expect(response.result?.isError).toBe(true);
+          expect(data.error).toContain('is pausing');
+          expect(h.createSpy).not.toHaveBeenCalled();
+          expect(conditionalWakeupManager.listWakeups(h.sessionId)).toHaveLength(0);
+        } finally {
+          pausingSpy.mockRestore();
+          h.restore();
+        }
+      });
+
+      it('refuses when the session leaves memory during the username lookup', async () => {
+        const h = await startWakeupWithDeferredLookup();
+        try {
+          await sessionManager.deleteSession(h.sessionId);
+          h.release();
+          const response = await h.pending;
+          const data = parseToolResult(response) as { error: string };
+          expect(response.result?.isError).toBe(true);
+          expect(data.error).toContain('not found');
+          expect(h.createSpy).not.toHaveBeenCalled();
+          expect(conditionalWakeupManager.listWakeups(h.sessionId)).toHaveLength(0);
+        } finally {
+          h.restore();
+        }
+      });
+
+      it('still creates a wakeup when the session stays live through the lookup (positive control)', async () => {
+        const h = await startWakeupWithDeferredLookup();
+        try {
+          h.release();
+          const response = await h.pending;
+          expect(response.result?.isError).toBeUndefined();
+          expect(conditionalWakeupManager.listWakeups(h.sessionId)).toHaveLength(1);
+        } finally {
+          h.restore();
+        }
+      });
+
       it('should return error when workerId targets a git-diff worker', async () => {
         const session = await sessionManager.createSession({
           type: 'quick',

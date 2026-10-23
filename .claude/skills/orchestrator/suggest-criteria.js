@@ -210,9 +210,9 @@ export const MATCHING_RULES = {
   },
   'I-9': {
     keywords: [
-      'onData',
-      'onExit',
-      'onMessage',
+      'ondata',
+      'onexit',
+      'onmessage',
       'listener',
       'event callback',
       'data callback',
@@ -242,8 +242,8 @@ export const MATCHING_RULES = {
       'partially constructed',
       'pending state',
       'concurrent reader',
-      'restoreWorker',
-      'getAvailableWorker',
+      'restoreworker',
+      'getavailableworker',
       'reachable',
       'reachability',
       'readiness',
@@ -255,11 +255,11 @@ export const MATCHING_RULES = {
   'I-11': {
     keywords: [
       'pause participant',
-      'registerPauseParticipant',
+      'registerpauseparticipant',
       'per-session',
       'cleanup callback',
-      'setTimeout',
-      'setInterval',
+      'settimeout',
+      'setinterval',
       'scheduler',
       'paused session',
       'suspend',

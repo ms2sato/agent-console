@@ -779,7 +779,7 @@ describe('ConditionalWakeupManager', () => {
         const result = originalFn(opts);
         const stuck = new Promise<number>(() => {});
         return toSpawnAsUserResult({
-          subprocess: { ...result.subprocess, exited: stuck, kill: () => {} } as unknown as FakeSubprocess,
+          subprocess: { ...result.subprocess, exited: stuck, kill: () => {} },
           stdin: result.stdin,
         });
       };
