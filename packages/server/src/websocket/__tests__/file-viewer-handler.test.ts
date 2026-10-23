@@ -113,7 +113,7 @@ describe('createFileViewerHandlers', () => {
     expect(unsubscribes[1]).toHaveBeenCalledTimes(1);
   });
 
-  // hono/bun mints a new WSContext per event; only `raw` is shared (Issue #2242). Mutation: activeConnections
+  // hono/bun mints a new WSContext per event; only `raw` is shared. Mutation: activeConnections
   // keyed by the context object again -> this test fails (the subscription stays and the count stays 1).
   it('a disconnection with another context object for the same connection unsubscribes once and leaves no connection', () => {
     const { handlers, unsubscribes } = createHarness();

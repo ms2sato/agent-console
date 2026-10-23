@@ -3,7 +3,7 @@ import type { WSContext } from 'hono/ws';
 /**
  * The identity of one WebSocket connection, stable across every callback of that connection.
  *
- * Measured 2026-10-24 (Issue #2242), hono 4.11.9, real `Bun.serve` + `hono/bun` `upgradeWebSocket`, one native
+ * Measured 2026-10-24, hono 4.11.9, real `Bun.serve` + `hono/bun` `upgradeWebSocket`, one native
  * client doing open, two messages, close: the adapter builds a NEW `WSContext` for each of `open`, `message`
  * and `close` (`createWSContext(ws)` in each handler), so the four contexts were 4 distinct objects. Their
  * `raw` (the Bun `ServerWebSocket`) was the same object every time. A `Map` or `Set` keyed by the `WSContext`

@@ -1,5 +1,5 @@
 /**
- * Pin (Issue #2242): no collection under packages/server/src is keyed by hono's per-event `WSContext`.
+ * Pin: no collection under packages/server/src is keyed by hono's per-event `WSContext`.
  * hono/bun builds a new WSContext for each of open / message / close, so such a collection never matches across
  * callbacks. Key by `socketKey(ws)` (socket-key.ts) and keep the context as the value.
  *

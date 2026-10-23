@@ -1,5 +1,5 @@
 /**
- * Shipping-path Boundary Test: closing a WebSocket releases every connection-tracking entry (Issue #2242).
+ * Shipping-path Boundary Test: closing a WebSocket releases every connection-tracking entry.
  *
  * Real: a Hono app with the real `setupWebSocketRoutes`, a real `Bun.serve` with Hono's Bun
  * `upgradeWebSocket` (which builds a NEW `WSContext` for each of open / message / close), real native
@@ -59,7 +59,7 @@ async function removeRealDirectory(dir: string): Promise<void> {
   Bun.spawnSync(['rmdir', dir]);
 }
 
-describe('Shipping path: closing a socket releases its connection entries (#2242)', () => {
+describe('Shipping path: closing a socket releases its connection entries', () => {
   let ctx: AppContext;
   let registry: WebSocketConnectionRegistry;
   let server: ReturnType<typeof Bun.serve>;

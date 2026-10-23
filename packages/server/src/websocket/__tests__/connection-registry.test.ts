@@ -38,7 +38,7 @@ describe('WebSocketConnectionRegistry', () => {
     });
   });
 
-  // hono/bun mints a new WSContext for each of open / message / close; only `raw` is shared (Issue #2242).
+  // hono/bun mints a new WSContext for each of open / message / close; only `raw` is shared.
   // Mutation: keying a collection by the context object again makes the matching test below fail.
   describe('removal with a different context object for the same connection', () => {
     it('removeAppClient empties the app collections', () => {

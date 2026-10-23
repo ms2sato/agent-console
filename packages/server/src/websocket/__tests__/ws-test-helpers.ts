@@ -36,7 +36,7 @@ export function asWSContext(stub: Partial<WSContext>): WSContext {
  * A NEW context object for the same connection: what hono/bun hands `onMessage` / `onClose` after `onOpen`
  * received the original (`createWSContext(ws)` runs for each event; only `raw` is shared). Use it wherever a
  * test calls a handler or the registry for a later event of a connection opened with `ws`, so a collection
- * keyed by the context object fails here instead of in production (Issue #2242).
+ * keyed by the context object fails here instead of in production.
  */
 export function anotherContextFor(ws: WSContext): WSContext {
   return { ...ws } as WSContext;

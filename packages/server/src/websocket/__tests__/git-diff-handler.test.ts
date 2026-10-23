@@ -352,10 +352,10 @@ describe('GitDiffHandler', () => {
     });
   });
 
-  // hono/bun mints a new WSContext for each of open / message / close; only `raw` is shared (Issue #2242).
+  // hono/bun mints a new WSContext for each of open / message / close; only `raw` is shared.
   // Reach (mutation: activeConnections keyed by the context object again, applied to git-diff-handler.ts):
   // the message test below answers 'No active connection for this worker' and the disconnect test leaves the
-  // watch subscribed. Measured, see the PR body.
+  // watch subscribed.
   describe('a later event of the same connection arrives with a different context object', () => {
     it('a refresh sent with another context for the connection is answered with diff-data, not "No active connection"', async () => {
       await handlers.handleConnection(mockWs, 'session-1', 'worker-1', '/repo/path', 'base-commit', null);
