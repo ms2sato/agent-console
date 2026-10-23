@@ -56,7 +56,7 @@ import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
-import { buildAgentConsoleEnv } from './agent-console-env.js';
+import { buildAgentConsoleEnv, buildAgentConsoleRuntimeEnv } from './agent-console-env.js';
 import { IdleEvictionTimers } from './embedded-agent-idle-eviction.js';
 import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
 import { resolveEffectiveModelParams } from './embedded-agent-model-params.js';
@@ -384,6 +384,12 @@ export interface EmbeddedAgentWorkerServiceDeps {
    */
   recordWindowObservation: (definitionId: string, observation: WindowObservation) => void;
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
+  /**
+   * Runtime (non-identity) env for the loop subprocess. Optional: defaults to
+   * `buildAgentConsoleRuntimeEnv` (the resolved outbound TLS CA file path).
+   * Tests inject it to pin the injection independent of the host's CA files.
+   */
+  buildRuntimeEnv?: () => Record<string, string>;
   mcpTokenRegistry: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>;
   /**
    * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5's
@@ -1328,7 +1334,9 @@ export class EmbeddedAgentWorkerService {
         command: `${shellEscape(this.bunPath)} ${shellEscape(this.entryPath)}`,
         cwd: session.locationPath,
         baseEnv: getCleanChildProcessEnv(),
-        env: agentConsoleEnv,
+        // Loop-only runtime config (the outbound TLS CA file path) rides the
+        // same env channel; never the `init` line (a schema boundary).
+        env: { ...agentConsoleEnv, ...(this.deps.buildRuntimeEnv ?? buildAgentConsoleRuntimeEnv)() },
       });
       spawned = subprocess;
       spawnedStdin = stdin;

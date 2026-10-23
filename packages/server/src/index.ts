@@ -16,6 +16,7 @@ import {
   shouldLogUnconfiguredPublicOrigin,
   shouldCheckEmbeddedAgentBunPath,
 } from './lib/server-config.js';
+import { initOutboundTls } from './lib/outbound-tls.js';
 import { assessEmbeddedAgentBunPath } from './lib/embedded-agent-bun-path-check.js';
 import { realpath, stat } from 'node:fs/promises';
 import { rootLogger, createLogger } from './lib/logger.js';
@@ -80,6 +81,16 @@ const PORT = Number(serverConfig.PORT);
 
 // Production mode: serve static files
 const isProduction = serverConfig.NODE_ENV === 'production';
+
+// Outbound TLS trust: a configured OUTBOUND_TLS_CA_FILE that cannot be read
+// refuses to start (fail closed). Unset falls back silently.
+try {
+  initOutboundTls();
+} catch (error) {
+  logger.fatal({ err: error }, 'Failed to initialize outbound TLS trust');
+  console.error(`\n${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+}
 
 // Initialize all services via AppContext BEFORE creating the Hono app
 // This ensures services are available when routes are registered

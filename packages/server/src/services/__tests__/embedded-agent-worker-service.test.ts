@@ -508,6 +508,9 @@ function setup(opts?: {
     getEmbeddedAgent: () => definition,
     recordWindowObservation: recordWindowObservation as never,
     resolveSpawnUsername: async () => USERNAME,
+    // Host-independent default: the production default would read this host's
+    // CA files. Tests that care override `deps.buildRuntimeEnv`.
+    buildRuntimeEnv: () => ({}),
     resolveDisableClaudeAiConnectors:
       (opts?.resolveDisableClaudeAiConnectorsFn as never) ??
       (async () => opts?.disableClaudeAiConnectors ?? false),
@@ -657,6 +660,27 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       expect(init.mcp.baseUrl).toBe(MCP_BASE_URL);
       // Never the terminal arm's token-file channel on this arm.
       expect('AGENT_CONSOLE_MCP_TOKEN_FILE' in (opts.env ?? {})).toBe(false);
+    });
+
+    it('injects the runtime environment (outbound TLS CA file path) next to the identity keys, never via the init line', async () => {
+      // Reach: dropping the runtime spread from the spawn environment fails
+      // the key assertion; putting the path in init instead fails the
+      // init-line assertion.
+      const h = setup();
+      h.deps.buildRuntimeEnv = () => ({ AGENT_CONSOLE_TLS_CA_FILE: '/etc/ssl/certs/ca-certificates.crt' });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const opts = h.fake.captured[0];
+      expect(opts.env?.AGENT_CONSOLE_TLS_CA_FILE).toBe('/etc/ssl/certs/ca-certificates.crt');
+      expect(opts.env?.AGENT_CONSOLE_SESSION_ID).toBe(h.sessionId);
+      expect(h.fake.stdinWrites[0]).not.toContain('ca-certificates.crt');
+    });
+
+    it('omits the TLS CA key when the runtime environment is empty (Bun bundled list)', async () => {
+      const h = setup();
+      h.deps.buildRuntimeEnv = () => ({});
+      await h.service.activate(h.sessionId, h.workerId);
+      expect('AGENT_CONSOLE_TLS_CA_FILE' in (h.fake.captured[0].env ?? {})).toBe(false);
     });
 
     it('C3: a quick session (no repository) omits REPOSITORY_ID rather than sending an empty value', async () => {
