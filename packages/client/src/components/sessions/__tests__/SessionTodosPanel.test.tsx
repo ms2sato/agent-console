@@ -380,6 +380,11 @@ describe('SessionTodosPanel', () => {
       await waitFor(() => expect(document.activeElement === button).toBe(true));
     });
 
+    // Reach (each mutation applied alone to SessionTodosPanel.tsx, src/components/todos + src/components/sessions run):
+    //   - the generation comparison removed (onCreated always calls setAddOpen(false))
+    //       fails only this test
+    //   - addGenerationRef never incremented in handleAddOpenChange
+    //       fails this test
     it('a create that finishes after Cancel and a reopen leaves the reopened dialog and its draft alone, but still refreshes the list', async () => {
       const { user } = await renderPanel();
       const button = await screen.findByRole('button', { name: 'New Todo' });
