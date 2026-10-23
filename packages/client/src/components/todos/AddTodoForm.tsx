@@ -57,15 +57,17 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
         sessionId: isPreset ? presetSessionId : sessionIdInput.trim() === '' ? undefined : sessionIdInput.trim(),
         assigneeUserId: canAssign && assigneeUserId !== UNASSIGNED_VALUE ? assigneeUserId : undefined,
       }),
-    onSuccess: () => {
+    onSuccess: async () => {
       setTitle('');
       setBody('');
       setSessionIdInput('');
       setScope(DEFAULT_SCOPE);
       setAssigneeUserId(UNASSIGNED_VALUE);
-      // Not awaited: it settles only after the active refetches do, and a slow one must not hold onCreated back.
-      void queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+      // Started first so a slow refetch cannot delay onCreated (the invalidation settles only after the
+      // active refetches do), awaited last so it is not fire-and-forget.
+      const invalidation = queryClient.invalidateQueries({ queryKey: todoKeys.root() });
       onCreated?.();
+      await invalidation;
     },
     onError: (err: Error) => onError('Failed to Add Todo', err.message),
   });

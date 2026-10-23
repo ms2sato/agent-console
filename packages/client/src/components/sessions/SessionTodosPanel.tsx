@@ -39,6 +39,15 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
   const panelRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
 
+  // Each opening of the New Todo dialog mounts a fresh form. A create started in an earlier opening can finish
+  // after that dialog was cancelled and reopened; its onCreated must not close the reopened dialog.
+  const addGenerationRef = useRef(0);
+  const formGeneration = addGenerationRef.current;
+  const handleAddOpenChange = (open: boolean) => {
+    if (open) addGenerationRef.current += 1;
+    setAddOpen(open);
+  };
+
   const handleOpenDetail = (todoId: string) => {
     openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setOpenTodoId(todoId);
@@ -119,7 +128,7 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
             </div>
           )}
           <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-700/50">
-            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+            <Dialog open={addOpen} onOpenChange={handleAddOpenChange}>
               <DialogTrigger
                 tabIndex={isExpanded ? undefined : -1}
                 aria-label="New Todo"
@@ -136,7 +145,9 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
                   sessionId={sessionId}
                   hideSessionField
                   onError={showError}
-                  onCreated={() => setAddOpen(false)}
+                  onCreated={() => {
+                    if (formGeneration === addGenerationRef.current) setAddOpen(false);
+                  }}
                 />
                 <DialogClose className="btn text-sm mt-2">Cancel</DialogClose>
               </DialogContent>

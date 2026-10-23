@@ -380,6 +380,36 @@ describe('SessionTodosPanel', () => {
       await waitFor(() => expect(document.activeElement === button).toBe(true));
     });
 
+    it('a create that finishes after Cancel and a reopen leaves the reopened dialog and its draft alone, but still refreshes the list', async () => {
+      const { user } = await renderPanel();
+      const button = await screen.findByRole('button', { name: 'New Todo' });
+      await user.click(button);
+      await user.type(await screen.findByLabelText('Title'), 'Late create');
+      // Hold the create POST until the test releases it.
+      let releaseCreate: () => void = () => {};
+      const createGate = new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      const original = api.fetchMock.getMockImplementation();
+      api.fetchMock.mockImplementation(async (input, init) => {
+        const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+        if (method === 'POST') await createGate;
+        return original!(input, init);
+      });
+      await user.click(screen.getByRole('button', { name: 'Add' }));
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitForAbsent(() => screen.queryByRole('dialog'));
+      await user.click(button);
+      await user.type(await screen.findByLabelText('Title'), 'Second draft');
+      const listFetchesBefore = api.listFetches().length;
+
+      releaseCreate();
+
+      await waitFor(() => expect(api.listFetches().length).toBeGreaterThan(listFetchesBefore));
+      expect(screen.getByRole('dialog')).toBeTruthy();
+      expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Second draft');
+    });
+
     it('Escape closes the dialog and returns focus to the button', async () => {
       const { user } = await renderPanel();
       const button = await screen.findByRole('button', { name: 'New Todo' });
