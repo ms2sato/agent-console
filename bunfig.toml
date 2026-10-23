@@ -16,3 +16,10 @@
 #
 # Reference: https://bun.com/docs/runtime/bunfig#install-minimumReleaseAge
 minimumReleaseAge = 604800
+
+# CA trust for `bun install` / `bunx` is intentionally NOT set here: this file is
+# read on every host (including macOS developer machines, where
+# /etc/ssl/certs/ca-certificates.crt does not exist and `bun install` would
+# fail). On the multi-user host, set `cafile` under `[install]` in the service
+# user's ~/.bunfig.toml instead (owner step; docs/multi-user-setup-guide.md,
+# "Outbound TLS trust"). Runtime outbound TLS is governed by OUTBOUND_TLS_CA_FILE.

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   AGENT_CONSOLE_ENV_PREFIX,
   AGENT_CONSOLE_IDENTITY_ENV_KEYS,
+  AGENT_CONSOLE_RUNTIME_ENV_KEYS,
   isAgentConsoleIdentityEnvKey,
 } from '../agent-console-env.js';
 
@@ -46,5 +47,18 @@ describe('isAgentConsoleIdentityEnvKey', () => {
     expect(isAgentConsoleIdentityEnvKey('AGENT_CONSOLE_SESSION_ID_X')).toBe(false);
     expect(isAgentConsoleIdentityEnvKey('agent_console_session_id')).toBe(false);
     expect(isAgentConsoleIdentityEnvKey('')).toBe(false);
+  });
+});
+
+describe('AGENT_CONSOLE_RUNTIME_ENV_KEYS', () => {
+  it('is exactly the TLS CA file key, shares the prefix, and is disjoint from the identity keys', () => {
+    // Disjointness is what keeps the Bash tool's identity allowlist from
+    // forwarding a runtime key. Reach: adding AGENT_CONSOLE_SESSION_ID here
+    // fails the literal and the disjointness assertions.
+    expect([...AGENT_CONSOLE_RUNTIME_ENV_KEYS]).toEqual(['AGENT_CONSOLE_TLS_CA_FILE']);
+    for (const key of AGENT_CONSOLE_RUNTIME_ENV_KEYS) {
+      expect(key.startsWith(AGENT_CONSOLE_ENV_PREFIX)).toBe(true);
+      expect(isAgentConsoleIdentityEnvKey(key)).toBe(false);
+    }
   });
 });

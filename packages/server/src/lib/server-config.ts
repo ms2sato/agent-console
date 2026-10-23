@@ -370,6 +370,27 @@ export const serverConfig = {
     30 * 60 * 1000,
   ),
   /**
+   * CA bundle (PEM file) the server's OWN outbound TLS `fetch` calls verify
+   * against, via `lib/outbound-tls.ts`. Lets CA updates follow the OS package
+   * manager instead of Bun releases (Bun's bundled list cannot be replaced
+   * process-wide).
+   *
+   * - unset / empty: `/etc/ssl/certs/ca-certificates.crt` when it exists,
+   *   otherwise Bun's bundled list, silently (no intent was expressed, so the
+   *   fallback is the default, not a degraded mode).
+   * - a path: that file. Missing or unreadable at boot refuses to start.
+   * - the literal `bundled`: Bun's bundled list, explicitly.
+   *
+   * Server-only like every key here (`env-filter` keeps it out of child
+   * processes); the embedded-agent loop receives the resolved path as
+   * `AGENT_CONSOLE_TLS_CA_FILE` instead. The file must be readable by every
+   * spawn user.
+   */
+  OUTBOUND_TLS_CA_FILE: (() => {
+    const raw = process.env.OUTBOUND_TLS_CA_FILE?.trim();
+    return raw || undefined;
+  })(),
+  /**
    * The origin the server believes it is reachable at by human viewers
    * (e.g. 'http://192.168.1.12:6340'). Used to mint absolute artifact-viewer
    * URLs (HTML Artifacts) -- there is no other viewer-facing

@@ -9,6 +9,7 @@
  */
 
 import { createLogger } from '../../lib/logger.js';
+import { outboundFetch } from '../../lib/outbound-tls.js';
 import type {
   OutboundServiceHandler,
   NotificationContext,
@@ -59,7 +60,10 @@ export class SlackHandler implements OutboundServiceHandler {
   /**
    * Initialize the Slack handler.
    */
-  constructor(private readonly repositorySlackIntegrationService: RepositorySlackIntegrationService) {
+  constructor(
+    private readonly repositorySlackIntegrationService: RepositorySlackIntegrationService,
+    private readonly fetchFn: typeof fetch = outboundFetch,
+  ) {
     logger.info('Slack handler initialized');
   }
 
@@ -164,7 +168,7 @@ export class SlackHandler implements OutboundServiceHandler {
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     try {
-      const response = await fetch(webhookUrl, {
+      const response = await this.fetchFn(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(message),

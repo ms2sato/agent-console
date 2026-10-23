@@ -23,7 +23,9 @@
 import {
   AGENT_CONSOLE_IDENTITY_ENV_KEYS,
   type AgentConsoleIdentityEnvKey,
+  type AgentConsoleRuntimeEnvKey,
 } from '@agent-console/shared';
+import { getOutboundCa } from '../lib/outbound-tls.js';
 
 /**
  * A worker's own identity as agent-console knows it: what the worker needs
@@ -68,4 +70,20 @@ export function buildAgentConsoleEnv(ctx: AgentConsoleContext): Record<string, s
     if (value !== undefined) result[key] = value;
   }
   return result;
+}
+
+/**
+ * Runtime configuration (not identity) the server hands to an embedded-agent
+ * loop subprocess: `AGENT_CONSOLE_RUNTIME_ENV_KEYS`. Today only the CA bundle
+ * path the loop's own outbound `fetch` verifies against; absent when the
+ * server resolved no CA file (Bun's bundled list applies). Loop-only -- the
+ * terminal arm does not receive it, and the loop's Bash tool strips it.
+ */
+export function buildAgentConsoleRuntimeEnv(
+  tlsCaFilePath: string | undefined = getOutboundCa()?.path,
+): Record<string, string> {
+  const env: Partial<Record<AgentConsoleRuntimeEnvKey, string>> = {
+    ...(tlsCaFilePath && { AGENT_CONSOLE_TLS_CA_FILE: tlsCaFilePath }),
+  };
+  return env as Record<string, string>;
 }

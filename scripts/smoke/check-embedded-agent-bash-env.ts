@@ -138,6 +138,17 @@ function sseEvent(obj: unknown): string {
   return `data: ${JSON.stringify(obj)}\n\n`;
 }
 
+/**
+ * Marker separating the Bash tool's own `env` dump from the dump of the LOOP
+ * process's environment. The tool's `sh -c` parent is the loop, so
+ * `/proc/$PPID/environ` (same OS user, readable) is the loop's own
+ * `process.env` -- the only place the loop-only `AGENT_CONSOLE_TLS_CA_FILE`
+ * is observable, since `buildBashEnv` strips it from the Bash env itself.
+ * Every existing env-leak assertion reads ONLY the text before the marker.
+ */
+const LOOP_ENV_MARKER = '---LOOP-PROCESS-ENV---';
+const BASH_COMMAND = `env; echo '${LOOP_ENV_MARKER}'; tr '\\0' '\\n' < /proc/$PPID/environ`;
+
 /** First provider turn (no role:'tool' message present yet): one Bash tool call. */
 function bashToolCallSse(): string {
   return (
@@ -150,7 +161,7 @@ function bashToolCallSse(): string {
               {
                 index: 0,
                 id: 'call_1',
-                function: { name: 'Bash', arguments: JSON.stringify({ command: 'env' }) },
+                function: { name: 'Bash', arguments: JSON.stringify({ command: BASH_COMMAND }) },
               },
             ],
           },
@@ -542,6 +553,14 @@ async function main(): Promise<void> {
     // checks.
     expect(bashResult !== undefined, 'observed the Bash tool-result event');
 
+    // The Bash tool's own env is the text before the marker; the loop
+    // process's env is the text after it (see LOOP_ENV_MARKER).
+    const markerIndex = bashResult === undefined ? -1 : bashResult.indexOf(LOOP_ENV_MARKER);
+    const loopEnvDump = bashResult !== undefined && markerIndex >= 0 ? bashResult.slice(markerIndex) : undefined;
+    if (bashResult !== undefined && markerIndex >= 0) {
+      bashResult = bashResult.slice(0, markerIndex);
+    }
+
     if (bashResult !== undefined) {
       console.log('==> Bash tool-result env-leak assertions');
 
@@ -603,6 +622,28 @@ async function main(): Promise<void> {
 
       // (c) Negative: the provider's fake API key does not leak either.
       expect(!bashResult.includes(fakeApiKey), 'provider API key does not appear in the Bash tool output');
+
+      // (d) Outbound TLS (Issue #2236): the LOOP's own process env carried
+      // AGENT_CONSOLE_TLS_CA_FILE (positive), while the Bash tool env above
+      // did not (that is already enforced by the exact-key-set assertion).
+      // The expected value is whatever the server resolved on this host: the
+      // OS bundle path when present, or no key at all when no CA file
+      // resolved (Bun's bundled list).
+      expect(loopEnvDump !== undefined, 'observed the loop process env dump after the marker');
+      if (loopEnvDump !== undefined) {
+        const { getOutboundCa } = await import('../../packages/server/src/lib/outbound-tls.js');
+        const expectedCa = getOutboundCa()?.path;
+        const loopHasKey = /(^|\n)AGENT_CONSOLE_TLS_CA_FILE=(.*)($|\n)/.exec(loopEnvDump);
+        if (expectedCa !== undefined) {
+          expect(
+            loopHasKey !== null && loopHasKey[2] === expectedCa,
+            `the loop process env carries AGENT_CONSOLE_TLS_CA_FILE=${expectedCa}`,
+            loopEnvDump.slice(0, 2000),
+          );
+        } else {
+          expect(loopHasKey === null, 'no CA file resolved on this host: the loop env carries no AGENT_CONSOLE_TLS_CA_FILE');
+        }
+      }
     }
 
     // --- Wait for the turn to fully settle (final assistant message / idle)

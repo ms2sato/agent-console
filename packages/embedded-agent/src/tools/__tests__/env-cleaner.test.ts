@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { AGENT_CONSOLE_IDENTITY_ENV_KEYS } from '@agent-console/shared';
+import { AGENT_CONSOLE_IDENTITY_ENV_KEYS, AGENT_CONSOLE_RUNTIME_ENV_KEYS } from '@agent-console/shared';
 import { buildBashEnv } from '../env-cleaner.js';
 
 // Issue #1694 (C4): buildBashEnv is a key ALLOWLIST for the AGENT_CONSOLE_*
@@ -62,5 +62,18 @@ describe('buildBashEnv', () => {
     const result = buildBashEnv({});
 
     expect(result).toEqual({});
+  });
+});
+
+describe('buildBashEnv and the loop-only runtime keys', () => {
+  it('strips every AGENT_CONSOLE_RUNTIME_ENV_KEYS key (the loop uses it; Bash children use OS roots)', () => {
+    // Reach: adding the runtime keys to the identity allowlist fails this.
+    const source: Record<string, string> = { PATH: '/usr/bin' };
+    for (const key of AGENT_CONSOLE_RUNTIME_ENV_KEYS) source[key] = '/etc/ssl/certs/ca-certificates.crt';
+    const result = buildBashEnv(source);
+    for (const key of AGENT_CONSOLE_RUNTIME_ENV_KEYS) {
+      expect(key in result).toBe(false);
+    }
+    expect(result.PATH).toBe('/usr/bin');
   });
 });
