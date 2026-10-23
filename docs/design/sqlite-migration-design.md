@@ -390,6 +390,10 @@ SQLite does not create an index on the child side of a foreign key. Without one,
 
 **Soft references.** A `*_id` column without `REFERENCES` is not enumerable from the schema and is out of the rule. Index it when a query predicate needs it, decided per query (for example `todos.assignee_user_id` and `todos.created_user_id`, used by the todo list filter and the agent-comment feed).
 
+### Datetime columns: ISO 8601 CHECK constraint
+
+Every datetime column created through `addDatetime` (`packages/server/src/database/schema-helpers.ts`) is TEXT with `CHECK (col IS NULL OR col GLOB ISO8601_GLOB_PATTERN)`. The pattern uses a `[0-9]` digit class in every numeric position, because SQLite GLOB `?` would accept any character (for example `2024-XX-01T00:00:00Z`). Existing tables keep the looser CHECK they were created with until their next rebuild; fresh databases and the v43 pre-flight query (`connection.ts`, same constant) use the tight one.
+
 ## Challenges and Considerations
 
 ### 1. Async Conversion

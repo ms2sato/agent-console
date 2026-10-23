@@ -3,12 +3,14 @@ import { sql, CreateTableBuilder, ColumnDefinitionBuilder } from 'kysely';
 /**
  * ISO 8601 datetime format pattern for SQLite CHECK constraint.
  * Matches: YYYY-MM-DDTHH:mm:ss.sssZ (with optional milliseconds)
+ * Every numeric position is a `[0-9]` digit class, because SQLite GLOB `?`
+ * matches any character (so `2024-XX-01T00:00:00Z` would otherwise pass).
  *
  * Exported so a table-rebuild migration (e.g. `migrateToV42`) that must
  * reproduce a live table's CHECK constraint verbatim in raw SQL can import
  * this constant instead of hand-copying the GLOB literal a second time.
  */
-export const ISO8601_GLOB_PATTERN = '????-??-??T??:??:??*Z';
+export const ISO8601_GLOB_PATTERN = '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z';
 
 /**
  * SQL expression for current UTC time in ISO 8601 format.

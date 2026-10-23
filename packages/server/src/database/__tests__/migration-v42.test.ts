@@ -24,6 +24,7 @@ import type { Database } from '../schema.js';
 import { closeDatabase, initializeDatabase, migrateToV42, backupDatabaseFile, LATEST_SCHEMA_VERSION } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { expectRebuiltTableDdl } from './helpers/ddl-pin.js';
+import { ISO8601_GLOB_PATTERN } from '../schema-helpers.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -263,7 +264,7 @@ describe('migration v42 (drop dead repositories.orchestrator_session_id)', () =>
         { cid: 9, name: 'default_agent_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
         { cid: 10, name: 'issue_trigger_labels', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
       ],
-      mustContain: ['repositories_created_at_iso8601', 'repositories_updated_at_iso8601', "GLOB '????-??-??T??:??:??*Z'"],
+      mustContain: ['repositories_created_at_iso8601', 'repositories_updated_at_iso8601', `GLOB '${ISO8601_GLOB_PATTERN}'`],
       mustNotContain: ['orchestrator_session_id'],
     });
 
