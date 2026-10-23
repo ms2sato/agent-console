@@ -54,7 +54,9 @@ describe('loop outbound TLS against a real endpoint (OUTBOUND_TLS_TEST_URL)', ()
 
   online('(a) the OS bundle connects', async () => {
     const res = await createOutboundFetch({ [TLS_CA_FILE_ENV_KEY]: OS_BUNDLE })(TEST_URL!, { method: 'HEAD' });
-    expect(res.status).toBeLessThan(400);
+    // Any HTTP response proves the TLS handshake verified; the status itself
+    // is the endpoint's business (e.g. 403 when rate limited).
+    expect(res.status).toBeGreaterThan(0);
   });
 
   online('(b) a valid but unrelated CA is rejected as an unknown issuer', async () => {
@@ -69,6 +71,8 @@ describe('loop outbound TLS against a real endpoint (OUTBOUND_TLS_TEST_URL)', ()
 
   online('(c) plain fetch connects (the network is up)', async () => {
     const res = await fetch(TEST_URL!, { method: 'HEAD' });
-    expect(res.status).toBeLessThan(400);
+    // Any HTTP response proves the TLS handshake verified; the status itself
+    // is the endpoint's business (e.g. 403 when rate limited).
+    expect(res.status).toBeGreaterThan(0);
   });
 });

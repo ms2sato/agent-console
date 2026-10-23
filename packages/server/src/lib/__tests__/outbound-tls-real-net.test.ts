@@ -95,7 +95,9 @@ describe('outbound TLS against a real endpoint (OUTBOUND_TLS_TEST_URL)', () => {
     const os = resolveOutboundCa({});
     expect(os?.path).toBe(OS_DEFAULT_CA_FILE);
     const res = await createOutboundFetch(os)(TEST_URL!, { method: 'HEAD' });
-    expect(res.status).toBeLessThan(400);
+    // Any HTTP response proves the TLS handshake verified; the status itself
+    // is the endpoint's business (e.g. 403 when rate limited).
+    expect(res.status).toBeGreaterThan(0);
   });
 
   online('(b) a valid but unrelated CA is rejected as an unknown issuer', async () => {
@@ -111,7 +113,9 @@ describe('outbound TLS against a real endpoint (OUTBOUND_TLS_TEST_URL)', () => {
 
   online('(c) plain fetch connects (the network is up)', async () => {
     const res = await fetch(TEST_URL!, { method: 'HEAD' });
-    expect(res.status).toBeLessThan(400);
+    // Any HTTP response proves the TLS handshake verified; the status itself
+    // is the endpoint's business (e.g. 403 when rate limited).
+    expect(res.status).toBeGreaterThan(0);
   });
 });
 

@@ -39,4 +39,17 @@ describe('embedded-agent createOutboundFetch', () => {
     await expect(f('https://example.test/')).rejects.toThrow('/ca/missing.crt');
     expect(inner).not.toHaveBeenCalled();
   });
+
+  it('an EACCES-coded read failure rejects the same way (no fallback for any error code), naming the path', async () => {
+    const inner = innerFetch();
+    const f = createOutboundFetch(
+      { [TLS_CA_FILE_ENV_KEY]: '/ca/locked.crt' },
+      () => {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      },
+      inner as unknown as typeof fetch,
+    );
+    await expect(f('https://example.test/')).rejects.toThrow('/ca/locked.crt');
+    expect(inner).not.toHaveBeenCalled();
+  });
 });

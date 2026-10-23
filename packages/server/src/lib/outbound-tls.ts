@@ -9,7 +9,8 @@
  *
  * Semantics of `OUTBOUND_TLS_CA_FILE` (owner ruling 2026-10-24):
  * - unset, OS bundle present  -> `os-default`
- * - unset, OS bundle absent   -> `null` (Bun's bundled list), SILENTLY
+ * - unset, OS bundle absent   -> `null` (Bun's bundled list), SILENTLY (ENOENT only;
+ *                                an existing-but-unreadable OS bundle throws)
  * - a path                    -> that file; missing/unreadable throws
  *                                `OutboundTlsConfigError` (boot refuses)
  * - literal `bundled`         -> `null`, no warning
@@ -42,11 +43,16 @@ export class OutboundTlsConfigError extends Error {
   constructor(
     readonly caFilePath: string,
     cause: unknown,
+    readonly source: 'configured' | 'os-default' = 'configured',
   ) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
     super(
-      `OUTBOUND_TLS_CA_FILE is set to '${caFilePath}' but the file cannot be read: ` +
-        `${cause instanceof Error ? cause.message : String(cause)}. ` +
-        `Fix the path, or set it to '${BUNDLED_CA_SENTINEL}' to use Bun's bundled CA list.`,
+      source === 'configured'
+        ? `OUTBOUND_TLS_CA_FILE is set to '${caFilePath}' but the file cannot be read: ${detail}. ` +
+            `Fix the path, or set it to '${BUNDLED_CA_SENTINEL}' to use Bun's bundled CA list.`
+        : `OS CA bundle '${caFilePath}' exists but cannot be read: ${detail}. ` +
+            `An unreadable OS bundle is a configuration error: fix its permissions, ` +
+            `or set OUTBOUND_TLS_CA_FILE to another file or to '${BUNDLED_CA_SENTINEL}' to use Bun's bundled CA list.`,
     );
     this.name = 'OutboundTlsConfigError';
   }
@@ -73,8 +79,12 @@ export function resolveOutboundCa(
   }
   try {
     return { ca: io.readFile(OS_DEFAULT_CA_FILE), path: OS_DEFAULT_CA_FILE, source: 'os-default' };
-  } catch {
-    return null;
+  } catch (error) {
+    // Only a missing OS bundle is the silent default. Any other failure
+    // (EACCES, ENOTDIR, EISDIR, ...) means a bundle is there but unusable:
+    // falling back to Bun's bundled list would hide that from the operator.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new OutboundTlsConfigError(OS_DEFAULT_CA_FILE, error, 'os-default');
   }
 }
 

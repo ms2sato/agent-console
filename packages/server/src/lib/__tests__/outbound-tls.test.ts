@@ -15,11 +15,15 @@ function fakeIo(files: Record<string, string | Error>): OutboundTlsIo {
   return {
     readFile(path) {
       const entry = files[path];
-      if (entry === undefined) throw new Error(`ENOENT: no such file '${path}'`);
+      if (entry === undefined) throw errnoError('ENOENT', `no such file '${path}'`);
       if (entry instanceof Error) throw entry;
       return entry;
     },
   };
+}
+
+function errnoError(code: string, message: string): Error {
+  return Object.assign(new Error(`${code}: ${message}`), { code });
 }
 
 describe('resolveOutboundCa', () => {
@@ -30,6 +34,18 @@ describe('resolveOutboundCa', () => {
 
   it('unset + OS bundle absent -> null (Bun bundled list), no throw', () => {
     expect(resolveOutboundCa({}, fakeIo({}))).toBeNull();
+  });
+
+  it('unset + OS bundle unreadable (EACCES) -> throws, naming the OS path and not claiming OUTBOUND_TLS_CA_FILE was set', () => {
+    const io = fakeIo({ [OS_DEFAULT_CA_FILE]: errnoError('EACCES', 'permission denied') });
+    expect(() => resolveOutboundCa({}, io)).toThrow(OutboundTlsConfigError);
+    expect(() => resolveOutboundCa({}, io)).toThrow(OS_DEFAULT_CA_FILE);
+    expect(() => resolveOutboundCa({}, io)).not.toThrow(/OUTBOUND_TLS_CA_FILE is set/);
+  });
+
+  it('unset + a path component of the OS bundle is not a directory (ENOTDIR) -> throws, naming the OS path', () => {
+    const io = fakeIo({ [OS_DEFAULT_CA_FILE]: errnoError('ENOTDIR', 'not a directory') });
+    expect(() => resolveOutboundCa({}, io)).toThrow(OS_DEFAULT_CA_FILE);
   });
 
   it('a configured path that exists -> configured, and wins over the OS bundle', () => {
@@ -67,6 +83,13 @@ describe('initOutboundTls (boot entry)', () => {
     expect(initOutboundTls({}, fakeIo({}), logger)).toBeNull();
     expect(logger.info).not.toHaveBeenCalled();
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('unset + OS bundle unreadable (EACCES): boot refuses with the OS path in the message, nothing logged', () => {
+    const logger = { info: mock(() => {}) };
+    const io = fakeIo({ [OS_DEFAULT_CA_FILE]: errnoError('EACCES', 'permission denied') });
+    expect(() => initOutboundTls({}, io, logger)).toThrow(OS_DEFAULT_CA_FILE);
+    expect(logger.info).not.toHaveBeenCalled();
   });
 
   it('`bundled`: returns null and the logger is NOT called', () => {
@@ -128,7 +151,8 @@ describe('server bootstrap wiring (src/index.ts)', () => {
   // precede createAppContext.
   it('calls initOutboundTls() before createAppContext()', async () => {
     const source = await Bun.file(join(import.meta.dir, '..', '..', 'index.ts')).text();
-    const initAt = source.indexOf('initOutboundTls();');
+    // Line-anchored so a commented-out call does not count.
+    const initAt = source.search(/^\s*initOutboundTls\(\);/m);
     const contextAt = source.indexOf('await createAppContext(');
     expect(initAt).toBeGreaterThan(-1);
     expect(contextAt).toBeGreaterThan(-1);
