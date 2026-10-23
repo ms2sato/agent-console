@@ -147,7 +147,30 @@ function sseEvent(obj: unknown): string {
  * Every existing env-leak assertion reads ONLY the text before the marker.
  */
 const LOOP_ENV_MARKER = '---LOOP-PROCESS-ENV---';
-const BASH_COMMAND = `env; echo '${LOOP_ENV_MARKER}'; tr '\\0' '\\n' < /proc/$PPID/environ`;
+const LOOP_WALK_MARKER = '---LOOP-PROCESS-WALK---';
+/**
+ * The Bash tool may run through intermediate shells, so the command does not
+ * assume `$PPID` is the loop: it walks up the parent chain via
+ * `/proc/<pid>/stat` (at most 8 hops) until it reaches a process whose argv0
+ * basename is `bun` and whose argv1 names the embedded-agent entry, printing
+ * one `WALK` line per hop. Only that process's environ is dumped, after
+ * LOOP_ENV_MARKER. If no such process is reached it prints `LOOP-NOT-FOUND`
+ * and NO environ dump, which the assertions below treat as a failure (never
+ * a vacuous pass).
+ */
+const BASH_COMMAND = [
+  'env',
+  `echo '${LOOP_WALK_MARKER}'`,
+  'p=$PPID; i=0; found=""',
+  'while [ "$i" -lt 8 ] && [ "$p" -gt 1 ]; do',
+  '  a0=$(tr "\\0" "\\n" < /proc/$p/cmdline | sed -n 1p)',
+  '  a1=$(tr "\\0" "\\n" < /proc/$p/cmdline | sed -n 2p)',
+  '  echo "WALK pid=$p argv0=$a0 argv1=$a1"',
+  '  case "$a0" in bun|*/bun) case "$a1" in *embedded-agent*) found=$p; break;; esac;; esac',
+  '  p=$(sed "s/^.*) //" /proc/$p/stat | cut -d" " -f2); i=$((i+1))',
+  'done',
+  'if [ -n "$found" ]; then echo "LOOP-FOUND pid=$found hops=$i"; echo \'' + LOOP_ENV_MARKER + '\'; tr "\\0" "\\n" < /proc/$found/environ; else echo LOOP-NOT-FOUND; fi',
+].join('\n');
 
 /** First provider turn (no role:'tool' message present yet): one Bash tool call. */
 function bashToolCallSse(): string {
@@ -553,12 +576,18 @@ async function main(): Promise<void> {
     // checks.
     expect(bashResult !== undefined, 'observed the Bash tool-result event');
 
-    // The Bash tool's own env is the text before the marker; the loop
-    // process's env is the text after it (see LOOP_ENV_MARKER).
-    const markerIndex = bashResult === undefined ? -1 : bashResult.indexOf(LOOP_ENV_MARKER);
-    const loopEnvDump = bashResult !== undefined && markerIndex >= 0 ? bashResult.slice(markerIndex) : undefined;
-    if (bashResult !== undefined && markerIndex >= 0) {
-      bashResult = bashResult.slice(0, markerIndex);
+    // The Bash tool's own env is the text before the first marker; the
+    // process walk sits between the markers and the loop process's env is the
+    // text after LOOP_ENV_MARKER (see the marker comments above).
+    const walkIndex = bashResult === undefined ? -1 : bashResult.indexOf(LOOP_WALK_MARKER);
+    const envIndex = bashResult === undefined ? -1 : bashResult.indexOf(LOOP_ENV_MARKER);
+    const loopWalk =
+      bashResult !== undefined && walkIndex >= 0
+        ? bashResult.slice(walkIndex, envIndex >= 0 ? envIndex : undefined)
+        : undefined;
+    const loopEnvDump = bashResult !== undefined && envIndex >= 0 ? bashResult.slice(envIndex) : undefined;
+    if (bashResult !== undefined && walkIndex >= 0) {
+      bashResult = bashResult.slice(0, walkIndex);
     }
 
     if (bashResult !== undefined) {
@@ -629,6 +658,26 @@ async function main(): Promise<void> {
       // The expected value is whatever the server resolved on this host: the
       // OS bundle path when present, or no key at all when no CA file
       // resolved (Bun's bundled list).
+      // The process whose environ was dumped must BE the embedded-agent loop:
+      // the walk reached a `bun <embedded-agent entry>` process (argv0
+      // basename bun, argv1 ending in the bundle or the source entry), or the
+      // env assertions below would be reading some other process.
+      const entryRe = /(embedded-agent\/src\/main\.ts|\/embedded-agent\.js)$/;
+      const foundLine = loopWalk?.match(/^LOOP-FOUND pid=(\d+) hops=(\d+)$/m) ?? null;
+      expect(foundLine !== null, 'the Bash tool process walk reached the loop process (LOOP-FOUND)', loopWalk?.slice(0, 2000));
+      if (foundLine !== null) {
+        const foundPid = foundLine[1];
+        const walkLines = (loopWalk ?? '').split('\n').filter((l) => l.startsWith('WALK '));
+        const loopLine = walkLines.find((l) => l.startsWith(`WALK pid=${foundPid} `));
+        const argv1 = loopLine?.match(/ argv1=(.*)$/)?.[1] ?? '';
+        const argv0 = loopLine?.match(/ argv0=(\S*) argv1=/)?.[1] ?? '';
+        expect(
+          /(^|\/)bun$/.test(argv0) && entryRe.test(argv1),
+          `the walked-to process (pid ${foundPid}) is the embedded-agent loop: argv0=${argv0} argv1=${argv1}`,
+          loopWalk?.slice(0, 2000),
+        );
+        console.log(`  loop process: pid=${foundPid} argv0=${argv0} argv1=${argv1} hops=${foundLine[2]}`);
+      }
       expect(loopEnvDump !== undefined, 'observed the loop process env dump after the marker');
       if (loopEnvDump !== undefined) {
         const { getOutboundCa } = await import('../../packages/server/src/lib/outbound-tls.js');
