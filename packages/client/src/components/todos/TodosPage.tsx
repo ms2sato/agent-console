@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { TODO_STATUSES, type Todo, type TodoStatus } from '@agent-console/shared';
+import type { Todo } from '@agent-console/shared';
 import { fetchUsers } from '../../lib/api';
 import { userKeys } from '../../lib/query-keys';
 import { useAuth } from '../../lib/auth';
@@ -11,15 +11,12 @@ import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { Spinner } from '../ui/Spinner';
 import { AddTodoForm } from './AddTodoForm';
 import { TodoRow } from './TodoRow';
-
-type StatusFilter = TodoStatus | 'all';
+import { DEFAULT_TODO_STATUS_FILTER, TodoStatusSelect, type TodoStatusFilter } from './TodoStatusSelect';
 
 /** Assignee filter values besides a user id. */
 const ANYONE = 'anyone';
 const UNASSIGNED = 'unassigned';
 const ALL_SESSIONS = 'all';
-
-const DEFAULT_STATUS_FILTER: StatusFilter = 'open';
 
 /** The View select (multi-user only): my own and shared-session items by default, or everyone's. */
 type ViewFilter = 'mine-and-shared' | 'everyone';
@@ -37,7 +34,7 @@ export function TodosPage() {
   const { errorDialogProps, showError } = useErrorDialog();
   const navigate = useNavigate();
   const { currentUser, isMultiUser } = useAuth();
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(DEFAULT_STATUS_FILTER);
+  const [statusFilter, setStatusFilter] = useState<TodoStatusFilter>(DEFAULT_TODO_STATUS_FILTER);
   const [assigneeFilter, setAssigneeFilter] = useState<string>(ANYONE);
   const [sessionFilter, setSessionFilter] = useState<string>(ALL_SESSIONS);
   // Not remembered across reloads: every load starts on the default view.
@@ -97,19 +94,7 @@ export function TodosPage() {
         )}
         <label className="flex items-center gap-1.5 text-gray-400">
           Status
-          <select
-            aria-label="Status filter"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-            className="input text-sm"
-          >
-            <option value="all">All</option>
-            {TODO_STATUSES.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
-          </select>
+          <TodoStatusSelect value={statusFilter} onChange={setStatusFilter} />
         </label>
         <label className="flex items-center gap-1.5 text-gray-400">
           Assignee
