@@ -10,7 +10,10 @@
 //     PTYs created via MCP `delegate_to_worktree` produce no output at all.
 //     Fixed upstream in Bun 1.3.14. Regression gate:
 //     `bun scripts/smoke/check-pty-als-data.ts`.
-// The higher floor wins: 1.3.14. Bun's `engines` enforcement is advisory
+//   - Security floor: Bun bundles its own root CA store, and releases before
+//     1.4.4 still accept certificate chains through a compromised
+//     intermediate CA (oven-sh/bun#46300, fixed in 1.4.4).
+// The higher floor wins: 1.4.4. Bun's `engines` enforcement is advisory
 // (warning only) as of Bun 1.3.x, so we need this explicit check.
 //
 // `npm_execpath` semantics: root package.json's "start" script invokes bun
@@ -18,9 +21,11 @@
 // <script>` setting `npm_execpath` to the absolute path of the bun binary
 // that ran `run` itself. Re-verify this on a future bun bump via
 // `scripts/__tests__/start-script-execpath.test.mjs` -- it is the canary for
-// this specific behavior, not merely for the version floor above.
+// this specific behavior, not merely for the version floor above. It is also
+// the canary for Bun's auto node-shim PATH-prepend (`/tmp/bun-node-<uid>-<rev>`
+// on >= 1.4, triggered when no `node` is resolvable).
 
-const MIN_BUN_VERSION = "1.3.14";
+const MIN_BUN_VERSION = "1.4.4";
 
 if (typeof Bun === "undefined") {
   console.error("This project must be installed with Bun (https://bun.com).");
@@ -39,7 +44,10 @@ if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
     "broken inside AsyncLocalStorage contexts on Bun 1.3.5-1.3.13, and the",
   );
   console.error(
-    "`minimumReleaseAge` supply-chain age gate needs Bun >= 1.3.0.",
+    "`minimumReleaseAge` supply-chain age gate needs Bun >= 1.3.0, and Bun",
+  );
+  console.error(
+    "before 1.4.4 accepts TLS chains through a compromised intermediate CA.",
   );
   console.error("Upgrade Bun: https://bun.com/docs/installation");
   process.exit(1);
