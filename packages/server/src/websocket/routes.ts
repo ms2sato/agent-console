@@ -60,6 +60,13 @@ export function extractMessageData(data: WSMessageReceive): string | ArrayBuffer
 // Initialized once in setupWebSocketRoutes() and shared by broadcastToApp/notifySessionDeleted.
 let registry = new WebSocketConnectionRegistry();
 
+/** A git-diff socket that is still resolving its spawn user: a worker-wide teardown marks it `invalidated`. */
+interface PendingGitDiffSetup {
+  invalidated: boolean;
+}
+const pendingGitDiffSetups = new Map<string, Set<PendingGitDiffSetup>>();
+const workerSetupKey = (sessionId: string, workerId: string): string => `${sessionId}\0${workerId}`;
+
 // Store the server PID at module load time for server restart detection
 const currentServerPid = getServerPid();
 
@@ -438,6 +445,13 @@ export async function setupWebSocketRoutes(
     broadcastToApp,
     // Service teardown (pause, final delete, worker delete) has no socket: it stops every connection of the worker.
     stopWorkerWatching: (sessionId, workerId) => {
+      // A git-diff socket still resolving its spawn user has registered nothing yet: invalidate it, so it
+      // does not start a watch after this teardown (see the git-diff onOpen branch).
+      const pendingSetups = pendingGitDiffSetups.get(workerSetupKey(sessionId, workerId));
+      if (pendingSetups) {
+        for (const setup of pendingSetups) setup.invalidated = true;
+        pendingGitDiffSetups.delete(workerSetupKey(sessionId, workerId));
+      }
       handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
         logger.error({ sessionId, workerId, err }, 'Error stopping git-diff watching');
       });
@@ -901,13 +915,28 @@ export async function setupWebSocketRoutes(
             // above guarantees the viewer is authenticated; the username
             // threaded to git is the worktree owner's, not the viewer's.
             (async () => {
-              const spawnUsername = await resolveSpawnUsername(
-                session.createdBy,
-                appContext.userRepository,
-              );
-              // The socket may have closed while the spawn user was being resolved: its cleanup already ran
-              // (and found nothing registered), so connecting now would leave a watch and a dead socket behind.
-              if (connectionClosed) return;
+              // Track this setup until it connects: a worker-wide teardown (stopWorkerWatching) that runs while
+              // the spawn user is being resolved cannot see the socket, so it invalidates the pending setup.
+              const setupKey = workerSetupKey(sessionId, workerId);
+              const setup: PendingGitDiffSetup = { invalidated: false };
+              const pending = pendingGitDiffSetups.get(setupKey) ?? new Set<PendingGitDiffSetup>();
+              pending.add(setup);
+              pendingGitDiffSetups.set(setupKey, pending);
+              let spawnUsername: string;
+              try {
+                spawnUsername = await resolveSpawnUsername(
+                  session.createdBy,
+                  appContext.userRepository,
+                );
+              } finally {
+                const current = pendingGitDiffSetups.get(setupKey);
+                current?.delete(setup);
+                if (current && current.size === 0) pendingGitDiffSetups.delete(setupKey);
+              }
+              // The socket may have closed while the spawn user was being resolved (its cleanup already ran and
+              // found nothing registered), or the worker may have been torn down: connecting now would leave a
+              // watch and a dead socket behind.
+              if (connectionClosed || setup.invalidated) return;
               await handleGitDiffConnection(
                 ws,
                 sessionId,

@@ -413,11 +413,38 @@ describe('SessionDeletionService', () => {
 
       expect(await service.deleteSession('session-1')).toBe(true);
 
-      expect(stopWorkerWatching).toHaveBeenCalledTimes(1);
+      // Once at the start (sockets already open) and once right before the memory removal (a socket that finished opening meanwhile).
+      expect(stopWorkerWatching).toHaveBeenCalledTimes(2);
       expect(stopWorkerWatching).toHaveBeenCalledWith('session-1', 'w-fv');
 
       expect(deps.workerManager.killWorker).not.toHaveBeenCalled();
       expect(deactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+    });
+
+    // A socket accepted before the deletion can finish opening during the awaited cleanup, while the session
+    // still exists. Polarity: without the second teardown right before the memory removal, the watch it starts
+    // is never released (after removal its socket's cleanup cannot find the worker).
+    it('repeats the worker-wide watch teardown right before the session leaves memory (git-diff and file-viewer)', async () => {
+      const session = buildInternalWorktreeSession([
+        buildInternalGitDiffWorker({ id: 'w-diff' }),
+        buildInternalFileViewerWorker({ id: 'w-fv' }),
+      ]);
+      const events: string[] = [];
+      const stopWorkerWatching = mock((_sessionId: string, workerId: string) => {
+        events.push(`stop:${workerId}`);
+      });
+      const deleteSessionFromMemory = mock((_id: string) => {
+        events.push('memory-removed');
+      });
+      const deps = createMockDeps({
+        getSession: () => session,
+        deleteSessionFromMemory,
+        getWebSocketCallbacks: () => ({ notifySessionDeleted: mock(() => {}), stopWorkerWatching }),
+      });
+
+      await new SessionDeletionService(deps).deleteSession('session-1');
+
+      expect(events).toEqual(['stop:w-diff', 'stop:w-fv', 'stop:w-diff', 'stop:w-fv', 'memory-removed']);
     });
 
     it('should stop no worker watch when the session has no git-diff or file-viewer worker (the empty case)', async () => {
@@ -447,7 +474,8 @@ describe('SessionDeletionService', () => {
 
       await service.deleteSession('session-1');
 
-      expect(stopWorkerWatching).toHaveBeenCalledTimes(1);
+      // Once at the start and once right before the memory removal (see the dedicated repeat-teardown test).
+      expect(stopWorkerWatching).toHaveBeenCalledTimes(2);
       expect(stopWorkerWatching).toHaveBeenCalledWith('session-1', 'w1');
       expect(deps.workerManager.killWorker).not.toHaveBeenCalled();
     });

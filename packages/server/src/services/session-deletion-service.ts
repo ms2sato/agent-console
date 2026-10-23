@@ -254,6 +254,16 @@ export class SessionDeletionService {
         logger.warn({ sessionId: id }, 'No resolver; skipping memo cleanup');
       }
 
+      // A socket accepted before the deletion can finish opening during the awaited cleanup above, while the
+      // session still exists, and start a diff or viewer watch. After the session leaves memory its socket's
+      // cleanup cannot find the worker, so release the worker-wide watches once more right before removal
+      // (idempotent; the first teardown above stays for sockets that were already open).
+      for (const worker of session.workers.values()) {
+        if (worker.type === 'git-diff' || worker.type === 'file-viewer') {
+          this.deps.getWebSocketCallbacks()?.stopWorkerWatching(id, worker.id);
+        }
+      }
+
       // 3. Remove from in-memory map
       this.deps.deleteSessionFromMemory(id);
 
