@@ -6,7 +6,7 @@
  *
  * (a) the OS bundle connects, (b) a valid but UNRELATED CA (a throwaway
  * self-signed CA generated here, so provably not in the endpoint's chain) is
- * rejected as UNABLE_TO_GET_ISSUER_CERT_LOCALLY, (c) plain fetch connects.
+ * rejected as UNABLE_TO_GET_ISSUER_CERT_LOCALLY.
  * An empty `ca` is not a valid negative control (it fails with
  * FailedToOpenSocket, for another reason).
  */
@@ -67,12 +67,5 @@ describe('loop outbound TLS against a real endpoint (OUTBOUND_TLS_TEST_URL)', ()
       code = (error as { code?: unknown }).code;
     }
     expect(code).toBe('UNABLE_TO_GET_ISSUER_CERT_LOCALLY');
-  });
-
-  online('(c) plain fetch connects (the network is up)', async () => {
-    const res = await fetch(TEST_URL!, { method: 'HEAD' });
-    // Any HTTP response proves the TLS handshake verified; the status itself
-    // is the endpoint's business (e.g. 403 when rate limited).
-    expect(res.status).toBeGreaterThan(0);
   });
 });

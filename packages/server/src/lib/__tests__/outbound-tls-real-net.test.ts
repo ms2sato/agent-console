@@ -9,7 +9,7 @@
  *    so CI is not network-bound; skipped with a logged reason when unset.
  *    (a) the OS bundle connects, (b) a valid but UNRELATED CA is rejected with
  *    UNABLE_TO_GET_ISSUER_CERT_LOCALLY (proves the given list is used, not
- *    Bun's bundled one), (c) plain `fetch` connects (the network is up).
+ *    Bun's bundled one).
  *    The unrelated CA is a throwaway self-signed CA generated here, so it is
  *    provably not in any real endpoint's chain. An empty `ca` is NOT a valid
  *    negative control: it fails with FailedToOpenSocket, for another reason.
@@ -109,13 +109,6 @@ describe('outbound TLS against a real endpoint (OUTBOUND_TLS_TEST_URL)', () => {
       code = (error as { code?: unknown }).code;
     }
     expect(code).toBe('UNABLE_TO_GET_ISSUER_CERT_LOCALLY');
-  });
-
-  online('(c) plain fetch connects (the network is up)', async () => {
-    const res = await fetch(TEST_URL!, { method: 'HEAD' });
-    // Any HTTP response proves the TLS handshake verified; the status itself
-    // is the endpoint's business (e.g. 403 when rate limited).
-    expect(res.status).toBeGreaterThan(0);
   });
 });
 

@@ -118,7 +118,7 @@ describe('createOutboundFetch', () => {
 
   it('passes tls.ca on every call when a CA resolved, preserving the caller init', async () => {
     const inner = mock(async (_i: unknown, _init?: unknown) => new Response('ok'));
-    const wrapped = createOutboundFetch(resolved, inner as unknown as typeof fetch);
+    const wrapped = createOutboundFetch(resolved, inner);
     await wrapped('https://example.test/', { method: 'POST', body: 'b' });
     const [url, init] = inner.mock.calls[0] as [string, { method: string; body: string; tls: { ca: string } }];
     expect(url).toBe('https://example.test/');
@@ -129,7 +129,7 @@ describe('createOutboundFetch', () => {
 
   it('keeps other caller tls options and overrides ca', async () => {
     const inner = mock(async (_i: unknown, _init?: unknown) => new Response('ok'));
-    const wrapped = createOutboundFetch(resolved, inner as unknown as typeof fetch);
+    const wrapped = createOutboundFetch(resolved, inner);
     await wrapped('https://example.test/', { tls: { ca: 'OTHER', rejectUnauthorized: true } } as RequestInit);
     const init = inner.mock.calls[0][1] as { tls: { ca: string; rejectUnauthorized: boolean } };
     expect(init.tls).toEqual({ ca: 'PEM-TEXT', rejectUnauthorized: true });
@@ -137,7 +137,7 @@ describe('createOutboundFetch', () => {
 
   it('adds no tls option when no CA resolved (Bun bundled list)', async () => {
     const inner = mock(async (_i: unknown, _init?: unknown) => new Response('ok'));
-    const wrapped = createOutboundFetch(null, inner as unknown as typeof fetch);
+    const wrapped = createOutboundFetch(null, inner);
     await wrapped('https://example.test/', { method: 'GET' });
     expect('tls' in (inner.mock.calls[0][1] as object)).toBe(false);
   });

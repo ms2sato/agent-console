@@ -5,6 +5,7 @@ import type { Database } from '../../../database/schema.js';
 import { createDatabaseForTest } from '../../../database/connection.js';
 import { RepositorySlackIntegrationService } from '../repository-slack-integration-service.js';
 import { SlackHandler } from '../slack-handler.js';
+import { createOutboundFetch } from '../../../lib/outbound-tls.js';
 
 describe('SlackHandler', () => {
   let handler: SlackHandler;
@@ -175,7 +176,7 @@ describe('SlackHandler', () => {
       // Reach: reverting postToSlack to a bare fetch(...) leaves the injected
       // function uncalled and the global spy called instead.
       const injected = mock(async (_url: unknown, _init?: unknown) => new Response('ok', { status: 200 }));
-      const custom = new SlackHandler(integrationService, injected as unknown as typeof fetch);
+      const custom = new SlackHandler(integrationService, createOutboundFetch(null, injected));
       await custom.sendToWebhook(createTestContext('agent:idle'), testWebhookUrl);
       expect(injected).toHaveBeenCalledTimes(1);
       expect(fetchSpy).not.toHaveBeenCalled();

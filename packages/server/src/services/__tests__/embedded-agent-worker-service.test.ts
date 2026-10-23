@@ -508,6 +508,9 @@ function setup(opts?: {
     getEmbeddedAgent: () => definition,
     recordWindowObservation: recordWindowObservation as never,
     resolveSpawnUsername: async () => USERNAME,
+    // Host-independent default: the production default would read this host's
+    // CA files. Tests that care override `deps.buildRuntimeEnv`.
+    buildRuntimeEnv: () => ({}),
     resolveDisableClaudeAiConnectors:
       (opts?.resolveDisableClaudeAiConnectorsFn as never) ??
       (async () => opts?.disableClaudeAiConnectors ?? false),

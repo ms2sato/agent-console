@@ -8,7 +8,7 @@ function innerFetch() {
 describe('embedded-agent createOutboundFetch', () => {
   it('env key unset -> the underlying fetch is used with no tls option (Bun bundled list)', async () => {
     const inner = innerFetch();
-    const f = createOutboundFetch({}, () => 'unused', inner as unknown as typeof fetch);
+    const f = createOutboundFetch({}, () => 'unused', inner);
     await f('https://example.test/', { method: 'POST' });
     expect('tls' in (inner.mock.calls[0][1] as object)).toBe(false);
   });
@@ -16,7 +16,7 @@ describe('embedded-agent createOutboundFetch', () => {
   it('env key set -> reads the file once and passes tls.ca on every call', async () => {
     const inner = innerFetch();
     const readFile = mock((_p: string) => 'PEM-TEXT');
-    const f = createOutboundFetch({ [TLS_CA_FILE_ENV_KEY]: '/ca/bundle.crt' }, readFile, inner as unknown as typeof fetch);
+    const f = createOutboundFetch({ [TLS_CA_FILE_ENV_KEY]: '/ca/bundle.crt' }, readFile, inner);
     await f('https://example.test/a', { method: 'POST', body: 'x' });
     await f('https://example.test/b');
     expect(readFile).toHaveBeenCalledTimes(1);
@@ -34,7 +34,7 @@ describe('embedded-agent createOutboundFetch', () => {
       () => {
         throw new Error('ENOENT');
       },
-      inner as unknown as typeof fetch,
+      inner,
     );
     await expect(f('https://example.test/')).rejects.toThrow('/ca/missing.crt');
     expect(inner).not.toHaveBeenCalled();
@@ -47,7 +47,7 @@ describe('embedded-agent createOutboundFetch', () => {
       () => {
         throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
       },
-      inner as unknown as typeof fetch,
+      inner,
     );
     await expect(f('https://example.test/')).rejects.toThrow('/ca/locked.crt');
     expect(inner).not.toHaveBeenCalled();
