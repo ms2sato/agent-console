@@ -1,4 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
+import { join } from 'node:path';
 import {
   BUNDLED_CA_SENTINEL,
   OS_DEFAULT_CA_FILE,
@@ -116,5 +117,21 @@ describe('createOutboundFetch', () => {
     const wrapped = createOutboundFetch(null, inner as unknown as typeof fetch);
     await wrapped('https://example.test/', { method: 'GET' });
     expect('tls' in (inner.mock.calls[0][1] as object)).toBe(false);
+  });
+});
+
+describe('server bootstrap wiring (src/index.ts)', () => {
+  // index.ts runs the whole server at import, so it cannot be imported by a
+  // test; this pins its source instead (same approach as the embedded-agent
+  // main.ts wiring pin). A configured-but-unreadable OUTBOUND_TLS_CA_FILE must
+  // refuse boot BEFORE any service is created, so the call must exist and
+  // precede createAppContext.
+  it('calls initOutboundTls() before createAppContext()', async () => {
+    const source = await Bun.file(join(import.meta.dir, '..', '..', 'index.ts')).text();
+    const initAt = source.indexOf('initOutboundTls();');
+    const contextAt = source.indexOf('await createAppContext(');
+    expect(initAt).toBeGreaterThan(-1);
+    expect(contextAt).toBeGreaterThan(-1);
+    expect(initAt).toBeLessThan(contextAt);
   });
 });

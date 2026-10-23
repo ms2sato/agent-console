@@ -6,6 +6,10 @@
  * here and names the file; the author either routes it through the helper or
  * records why it cannot take a `ca` by adding it to ALLOWLIST with a reason.
  *
+ * Reach limit: only call-position `fetch(` is matched. A value-position
+ * reference such as `opts.fetchFn ?? fetch` is outside this sweep and is
+ * covered by the embedded-agent main.ts wiring pin (main.test.ts).
+ *
  * Uses `grep` via `Bun.spawn`, never `fs` (memfs may be active in this
  * process; see real-fs-invocation.test.ts for the same rationale).
  *
@@ -25,7 +29,7 @@ const SCAN_DIRS = ['server/src', 'embedded-agent/src'];
 
 /** Calls that open an outbound TLS-capable connection from our own code. */
 const OUTBOUND_PATTERN =
-  "\\bfetch\\(|node:https|node:tls|from 'https'|from 'tls'|new WebSocket\\(|Bun\\.connect|StreamableHTTPClientTransport\\(|SSEClientTransport\\(|WebSocketClientTransport\\(";
+  "\\bfetch\\(|node:https|node:tls|from ['\"](node:)?(https|tls)['\"]|new WebSocket\\(|Bun\\.connect|StreamableHTTPClientTransport\\(|SSEClientTransport\\(|WebSocketClientTransport\\(";
 
 /** path (relative to packages/) -> why it may contain a match. */
 const ALLOWLIST: Record<string, string> = {

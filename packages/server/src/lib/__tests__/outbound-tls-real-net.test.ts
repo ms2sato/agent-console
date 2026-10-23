@@ -22,6 +22,7 @@
  * check iv).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, unlink, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -148,7 +149,21 @@ describe('Slack path against a local TLS endpoint with a self-signed cert (offli
     expect(received).toBe(before + 1);
   });
 
-  it('fails when the OS bundle is the CA (the cert is not publicly trusted)', async () => {
+  it('fails when an unrelated CA is the CA (host-independent negative)', async () => {
+    const handler = new SlackHandler(Object.create(null), createOutboundFetch(asResolved(unrelated)));
+    const before = received;
+    await expect(handler.sendToWebhook(context, `https://localhost:${server.port}/hook`)).rejects.toThrow();
+    expect(received).toBe(before);
+  });
+
+  // The OS-bundle variant needs the OS bundle to exist (absent on e.g. macOS
+  // developer machines), so it is gated and says why when skipped.
+  if (!existsSync(OS_DEFAULT_CA_FILE)) {
+    console.log(`SKIPPED: ${OS_DEFAULT_CA_FILE} does not exist on this host; the OS-bundle negative control does not run`);
+  }
+  const withOsBundle = existsSync(OS_DEFAULT_CA_FILE) ? it : it.skip;
+
+  withOsBundle('fails when the OS bundle is the CA (the cert is not publicly trusted)', async () => {
     const os = resolveOutboundCa({});
     expect(os).not.toBeNull();
     const handler = new SlackHandler(Object.create(null), createOutboundFetch(os));
