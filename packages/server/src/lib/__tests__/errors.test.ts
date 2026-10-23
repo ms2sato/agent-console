@@ -5,6 +5,7 @@ import {
   NotFoundError,
   ConflictError,
   InternalError,
+  SessionDeletingError,
   SessionPausingError,
 } from '../errors.js';
 
@@ -112,6 +113,18 @@ describe('Error Classes', () => {
       expect(error.code).toBe('session_pausing');
       expect(error.name).toBe('SessionPausingError');
       expect(error.message).toBe('Session s-1 is pausing');
+    });
+  });
+
+  describe('SessionDeletingError', () => {
+    it('is a 409 ApiError with the session_deleting code naming the session', () => {
+      const error = new SessionDeletingError('s-1');
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error.statusCode).toBe(409);
+      expect(error.code).toBe('session_deleting');
+      expect(error.name).toBe('SessionDeletingError');
+      expect(error.message).toBe('Session s-1 is being deleted');
     });
   });
 });

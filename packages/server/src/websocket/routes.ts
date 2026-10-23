@@ -24,7 +24,7 @@ import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
-import { ForbiddenError, SessionPausingError } from '../lib/errors.js';
+import { ForbiddenError, SessionDeletingError, SessionPausingError } from '../lib/errors.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { liveReadyState } from './socket-key.js';
@@ -817,6 +817,17 @@ export async function setupWebSocketRoutes(
       }
 
       /**
+       * Answer a socket that opened (or finished opening) while its session is being deleted. The socket was
+       * registered by onOpen after the deletion's one registry sweep, and the session's connection set is never
+       * swept again, so drop it here: identity-based removal on the close path cannot find it (Hono builds a new
+       * WSContext per event). Idempotent for a socket the sweep already removed.
+       */
+      function refuseSocketOfDeletedSession(ws: WSContext): void {
+        registry.removeWorkerConnection(sessionId, workerId, ws);
+        sendErrorAndClose(ws, 'Session has been deleted', 'SESSION_DELETED');
+      }
+
+      /**
        * Send a non-fatal error message to the client WITHOUT closing the
        * socket. Used for embedded-agent activation failures and message
        * rejections (turn-in-progress, unsupported PTY messages) — per the
@@ -895,6 +906,19 @@ export async function setupWebSocketRoutes(
             return;
           }
 
+          // A deleting session refuses every open before any branch can start an
+          // activation, a restore or a watch: the deletion's kill loop and socket
+          // notification have run or are about to, so a socket accepted now would
+          // never be notified or closed. Deletion is terminal, so it is checked
+          // before pausing. `addWorkerConnection` above is the first synchronous
+          // line of onOpen and the manager marks the session before the deletion's
+          // notification, so every socket is either registered when that notify
+          // runs or refused here.
+          if (sessionManager.isDeleting(sessionId)) {
+            refuseSocketOfDeletedSession(ws);
+            return;
+          }
+
           // A pausing session answers every open (git-diff, file-viewer, PTY or
           // embedded-agent) with the same terminal SESSION_PAUSED close, before any
           // branch can start an activation or a watch: the pause teardown has run or
@@ -936,7 +960,16 @@ export async function setupWebSocketRoutes(
               // The socket may have closed while the spawn user was being resolved (its cleanup already ran and
               // found nothing registered), or the worker may have been torn down: connecting now would leave a
               // watch and a dead socket behind.
-              if (connectionClosed || setup.invalidated) return;
+              if (connectionClosed) return;
+              if (setup.invalidated) {
+                // The worker-wide teardown (a deletion or a pause) ran while the spawn user was being resolved.
+                if (sessionManager.isDeleting(sessionId)) {
+                  refuseSocketOfDeletedSession(ws);
+                } else {
+                  sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+                }
+                return;
+              }
               await handleGitDiffConnection(
                 ws,
                 sessionId,
@@ -985,6 +1018,12 @@ export async function setupWebSocketRoutes(
               try {
                 await sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
               } catch (err) {
+                if (err instanceof SessionDeletingError) {
+                  if (!connectionClosed) {
+                    refuseSocketOfDeletedSession(ws);
+                  }
+                  return;
+                }
                 if (err instanceof SessionPausingError) {
                   // Same terminal answer a socket open at pause time gets.
                   if (!connectionClosed) {
@@ -1039,6 +1078,10 @@ export async function setupWebSocketRoutes(
 
             await setupStreamWorkerHandlers(ws, result.worker.type, connectionStartTime, result.wasRestored);
           }).catch((err) => {
+            if (err instanceof SessionDeletingError) {
+              refuseSocketOfDeletedSession(ws);
+              return;
+            }
             if (err instanceof SessionPausingError) {
               sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
               return;

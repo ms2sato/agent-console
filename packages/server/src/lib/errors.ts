@@ -98,3 +98,15 @@ export class SessionPausingError extends ApiError {
     this.name = 'SessionPausingError';
   }
 }
+
+/**
+ * 409 Conflict - The session is being deleted. Between the deletion's first
+ * notification and the session leaving memory it still exists, so any path
+ * that would activate or restore a worker is refused until the deletion ends.
+ */
+export class SessionDeletingError extends ApiError {
+  constructor(sessionId: string) {
+    super(`Session ${sessionId} is being deleted`, 409, 'session_deleting');
+    this.name = 'SessionDeletingError';
+  }
+}

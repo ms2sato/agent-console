@@ -11,7 +11,7 @@ import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { SingleUserMode } from '../user-mode.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
-import { SessionPausingError } from '../../lib/errors.js';
+import { SessionDeletingError, SessionPausingError } from '../../lib/errors.js';
 import type { PtyNotificationParams } from '../../lib/pty-notification.js';
 import type { ExecuteHookCommand, SessionManager } from '../session-manager.js';
 import type { PauseSessionOutcome } from '../session-pause-resume-service.js';
@@ -174,6 +174,34 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
 
     resolveHook({ success: true });
     await pause;
+  });
+
+  it('activateEmbeddedAgentWorker rejects with SessionDeletingError while the session is being deleted', async () => {
+    const { manager } = await setup();
+    const session = await createSession(manager, true);
+    const embedded = workerOfType(session, 'embedded-agent');
+    // A PTY worker whose kill is held keeps the deletion parked in its awaited cleanup.
+    await manager.createWorker(session.id, { type: 'terminal', name: 'Shell' });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let killStarted = false;
+    const killSpy = spyOn(manager['workerManager'], 'killWorker').mockImplementation(async () => {
+      killStarted = true;
+      await gate;
+    });
+    const deletion = manager.deleteSession(session.id);
+    for (let i = 0; i < 400 && !killStarted; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(manager.isDeleting(session.id)).toBe(true);
+
+    await expect(manager.activateEmbeddedAgentWorker(session.id, embedded.id)).rejects.toBeInstanceOf(SessionDeletingError);
+
+    release();
+    // This harness has no job queue, so the deletion itself fails after the window under test.
+    await deletion.catch(() => undefined);
+    killSpy.mockRestore();
+    expect(manager.isDeleting(session.id)).toBe(false);
   });
 
   it('a notification for an embedded worker reports a delivery failure instead of waking the worker', async () => {

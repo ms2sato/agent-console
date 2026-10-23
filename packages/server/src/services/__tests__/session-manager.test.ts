@@ -10,7 +10,7 @@ import { defaultRepositoryLookup, defaultRepositoryEnvLookup, makeRepositoryEnvL
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
-import { RepositoryNotFoundError, ValidationError } from '../../lib/errors.js';
+import { RepositoryNotFoundError, SessionDeletingError, ValidationError } from '../../lib/errors.js';
 import type { PersistedWorker } from '../../repositories/persisted-types.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
@@ -4700,6 +4700,68 @@ describe('SessionManager', () => {
       expect(await manager.deleteSession(session.id)).toBe(true);
 
       expect(sweepCalls).toEqual([{ sessionId: session.id, killedBeforeSweep: true }]);
+    });
+
+    describe('isDeleting marker', () => {
+      // The kill is the first awaited step of the deletion service, so holding it holds the whole window.
+      async function holdDeletion(method: 'deleteSession' | 'forceDeleteSession', outcome: 'resolve' | 'reject' = 'resolve') {
+        const manager = await getSessionManager();
+        const session = await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let started = false;
+        const killSpy = spyOn(manager['workerManager'], 'killWorker').mockImplementation(async () => {
+          started = true;
+          await gate;
+          if (outcome === 'reject') throw new Error('kill failed');
+        });
+        const deletion = manager[method](session.id);
+        for (let i = 0; i < 400 && !started; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(started).toBe(true);
+        return { manager, session, release, deletion, killSpy };
+      }
+
+      for (const method of ['deleteSession', 'forceDeleteSession'] as const) {
+        it(`${method}: isDeleting is true while the deletion is pending and false after it resolves`, async () => {
+          const { manager, session, release, deletion, killSpy } = await holdDeletion(method);
+          expect(manager.isDeleting(session.id)).toBe(true);
+          expect(manager.isDeleting('another-session')).toBe(false);
+
+          release();
+          expect(await deletion).toBe(true);
+
+          expect(manager.isDeleting(session.id)).toBe(false);
+          killSpy.mockRestore();
+        });
+
+        it(`${method}: isDeleting is false again after the deletion rejects`, async () => {
+          const { manager, session, release, deletion, killSpy } = await holdDeletion(method, 'reject');
+          expect(manager.isDeleting(session.id)).toBe(true);
+
+          release();
+          await expect(deletion).rejects.toThrow('kill failed');
+
+          expect(manager.isDeleting(session.id)).toBe(false);
+          killSpy.mockRestore();
+        });
+      }
+
+      it('getAvailableWorker, restoreWorker and createWorker reject with SessionDeletingError while the session is being deleted', async () => {
+        const { manager, session, release, deletion, killSpy } = await holdDeletion('deleteSession');
+        const agent = session.workers.find((w: Worker) => w.type === 'agent')!;
+        const spawnsBefore = ptyFactory.instances.length;
+
+        await expect(manager.getAvailableWorker(session.id, agent.id)).rejects.toBeInstanceOf(SessionDeletingError);
+        await expect(manager.restoreWorker(session.id, agent.id)).rejects.toBeInstanceOf(SessionDeletingError);
+        await expect(manager.createWorker(session.id, { type: 'terminal', name: 'Shell' })).rejects.toBeInstanceOf(SessionDeletingError);
+        expect(ptyFactory.instances.length).toBe(spawnsBefore);
+
+        release();
+        await deletion;
+        killSpy.mockRestore();
+      });
     });
   });
 

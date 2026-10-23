@@ -1,4 +1,4 @@
-import { SessionPausingError } from '../../lib/errors.js';
+import { SessionDeletingError, SessionPausingError } from '../../lib/errors.js';
 import { describe, it, expect, mock, setSystemTime, spyOn, afterAll, type Mock } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile, symlink, unlink, readFile } from 'node:fs/promises';
@@ -606,6 +606,19 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     h.deps.isSessionPausing = () => false;
     await h.service.activate(h.sessionId, h.workerId);
     expect(h.fake.captured.length).toBe(1);
+  });
+
+  it('refuses to activate while the session is being deleted and spawns nothing', async () => {
+    const h = setup();
+    h.deps.isSessionDeleting = (id) => id === h.sessionId;
+
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toBeInstanceOf(SessionDeletingError);
+    expect(h.fake.captured.length).toBe(0);
+
+    // Deletion is terminal: it wins over a simultaneous pause.
+    h.deps.isSessionPausing = (id) => id === h.sessionId;
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toBeInstanceOf(SessionDeletingError);
+    expect(h.fake.captured.length).toBe(0);
   });
 
   it('spawns once with a secret-free argv, a secret-free identity env, correct cwd and username', async () => {

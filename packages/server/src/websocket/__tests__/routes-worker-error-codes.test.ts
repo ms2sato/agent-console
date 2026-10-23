@@ -30,6 +30,7 @@ import { serverConfig } from '../../lib/server-config.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { triggerRefresh, isWatching } from '../../services/git-diff-service.js';
 import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
+import { SessionDeletingError } from '../../lib/errors.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
@@ -426,7 +427,7 @@ describe('Worker WebSocket connection error codes', () => {
   // A worker-wide teardown (pause, delete) cannot see a git-diff socket that is still resolving its spawn user,
   // because nothing is registered yet. Polarity: without the pending-setup invalidation the socket connects after
   // the teardown, the initial diff frame is sent and a watch is registered that outlives the session.
-  it('a worker-wide teardown during a pending git-diff setup prevents the connection: no frame, no watch', async () => {
+  it('a worker-wide teardown during a pending git-diff setup prevents the connection: the socket is closed (no diff frame), no watch', async () => {
     expect(capturedWorkerHandlerFactory).not.toBeNull();
     const session = await sessionManager.createSession({
       type: 'worktree',
@@ -450,7 +451,12 @@ describe('Worker WebSocket connection error codes', () => {
     triggerRefresh(session.locationPath);
     await Bun.sleep(300);
 
-    expect(ws.sentMessages).toEqual([]);
+    // The socket is answered and closed, not silently left open (only the refusal frames, never a diff frame).
+    expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual([
+      { type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' },
+      { type: 'exit', exitCode: 1, signal: null },
+    ]);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
     expect(isWatching(session.locationPath)).toBe(false);
     handlers.onClose({}, ws);
   });
@@ -578,6 +584,185 @@ describe('Worker WebSocket connection error codes', () => {
 
     resolveHook({ success: true });
     await pause;
+  });
+
+  // --- Sockets opened while a session deletion is in its awaited cleanup (the session is still in memory) ---
+
+  const DELETED_FRAMES = [
+    { type: 'error', message: 'Session has been deleted', code: 'SESSION_DELETED' },
+    { type: 'exit', exitCode: 1, signal: null },
+  ];
+
+  /** Park a deletion in its awaited worker teardown: the first PTY kill resolves only when released. */
+  async function holdDeletion(sessionId: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    const killSpy = spyOn(sessionManager['workerManager'], 'killWorker').mockImplementation(async () => {
+      started = true;
+      await gate;
+    });
+    const deletion = sessionManager.deleteSession(sessionId);
+    for (let i = 0; i < 400 && !started; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(sessionManager.isDeleting(sessionId)).toBe(true);
+    return {
+      finish: async () => {
+        release();
+        await deletion;
+        killSpy.mockRestore();
+      },
+    };
+  }
+
+  function openWorkerSocket(sessionId: string, workerId: string) {
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? sessionId : name === 'workerId' ? workerId : '') },
+    });
+    const ws = createMockWs();
+    handlers.onOpen({}, ws);
+    return { handlers, ws };
+  }
+
+  async function untilClosed(ws: { closeCalls: unknown[] }) {
+    for (let i = 0; i < 400 && ws.closeCalls.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  async function createWorktreeSession() {
+    return sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+  }
+
+  it('closes a PTY worker socket opened while the session is being deleted with SESSION_DELETED and spawns no PTY', async () => {
+    const session = await createWorktreeSession();
+    const agentWorker = session.workers.find((w) => w.type === 'agent')!;
+    const held = await holdDeletion(session.id);
+    const spawnsBefore = ptyFactory.instances.length;
+    const restore = spyOn(sessionManager, 'restoreWorker');
+
+    const { ws } = openWorkerSocket(session.id, agentWorker.id);
+    await untilClosed(ws);
+
+    expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual(DELETED_FRAMES);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
+    expect(restore).not.toHaveBeenCalled();
+    expect(ptyFactory.instances.length).toBe(spawnsBefore);
+    await held.finish();
+  });
+
+  it('closes an embedded-agent worker socket opened while the session is being deleted with SESSION_DELETED and never activates it', async () => {
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      'test-user-id',
+    );
+    const session = await createWorktreeSession();
+    const embeddedWorker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    const activate = spyOn(sessionManager, 'activateEmbeddedAgentWorker');
+    const held = await holdDeletion(session.id);
+
+    const { ws } = openWorkerSocket(session.id, embeddedWorker!.id);
+    await untilClosed(ws);
+
+    expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual(DELETED_FRAMES);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
+    expect(activate).not.toHaveBeenCalled();
+    await held.finish();
+  });
+
+  it('closes a git-diff socket opened while the session is being deleted with SESSION_DELETED and starts no watch', async () => {
+    const session = await createWorktreeSession();
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff')!;
+    const held = await holdDeletion(session.id);
+
+    const { ws } = openWorkerSocket(session.id, diffWorker.id);
+    await untilClosed(ws);
+
+    expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual(DELETED_FRAMES);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
+    expect(isWatching(session.locationPath)).toBe(false);
+    await held.finish();
+  });
+
+  it('closes a file-viewer socket opened while the session is being deleted with SESSION_DELETED', async () => {
+    const session = await createWorktreeSession();
+    const viewer = await sessionManager.createWorker(session.id, { type: 'file-viewer' });
+    const held = await holdDeletion(session.id);
+
+    const { ws } = openWorkerSocket(session.id, viewer!.id);
+    await untilClosed(ws);
+
+    expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual(DELETED_FRAMES);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
+    await held.finish();
+  });
+
+  it('a session that is pausing AND being deleted answers SESSION_DELETED, not SESSION_PAUSED', async () => {
+    const session = await createWorktreeSession();
+    const agentWorker = session.workers.find((w) => w.type === 'agent')!;
+    spyOn(sessionManager, 'isPausing').mockReturnValue(true);
+    spyOn(sessionManager, 'isDeleting').mockReturnValue(true);
+
+    const { ws } = openWorkerSocket(session.id, agentWorker.id);
+
+    expect(JSON.parse(ws.sentMessages[0])).toEqual(DELETED_FRAMES[0]);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
+  });
+
+  // The socket passed every check at open, then the deletion's worker-wide teardown ran while the spawn user was
+  // being resolved. Polarity: without the close in the invalidated branch the socket is dropped silently and stays open.
+  it('a git-diff socket whose setup is invalidated by the deletion teardown is closed with SESSION_DELETED', async () => {
+    const session = await createWorktreeSession();
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff')!;
+    const { ws } = openWorkerSocket(session.id, diffWorker.id);
+    spyOn(sessionManager, 'isDeleting').mockReturnValue(true);
+
+    // Runs synchronously after onOpen, i.e. inside the spawn-user await.
+    sessionManager['webSocketCallbacks']!.stopWorkerWatching(session.id, diffWorker.id);
+    await untilClosed(ws);
+
+    expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual(DELETED_FRAMES);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
+    expect(isWatching(session.locationPath)).toBe(false);
+  });
+
+  it('an embedded-agent activation rejected with SessionDeletingError closes the socket with SESSION_DELETED', async () => {
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      'test-user-id',
+    );
+    const session = await createWorktreeSession();
+    const embeddedWorker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    spyOn(sessionManager, 'activateEmbeddedAgentWorker').mockRejectedValue(new SessionDeletingError(session.id));
+
+    const { ws } = openWorkerSocket(session.id, embeddedWorker!.id);
+    await untilClosed(ws);
+
+    expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual(DELETED_FRAMES);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
+  });
+
+  it('a PTY restore rejected with SessionDeletingError closes the socket with SESSION_DELETED', async () => {
+    const session = await createWorktreeSession();
+    const agentWorker = session.workers.find((w) => w.type === 'agent')!;
+    spyOn(sessionManager, 'restoreWorker').mockRejectedValue(new SessionDeletingError(session.id));
+
+    const { ws } = openWorkerSocket(session.id, agentWorker.id);
+    await untilClosed(ws);
+
+    expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual(DELETED_FRAMES);
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
   });
 
   it('should send SESSION_PAUSED error code when notifySessionPaused is called', async () => {
