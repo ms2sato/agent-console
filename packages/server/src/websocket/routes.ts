@@ -905,6 +905,9 @@ export async function setupWebSocketRoutes(
                 session.createdBy,
                 appContext.userRepository,
               );
+              // The socket may have closed while the spawn user was being resolved: its cleanup already ran
+              // (and found nothing registered), so connecting now would leave a watch and a dead socket behind.
+              if (connectionClosed) return;
               await handleGitDiffConnection(
                 ws,
                 sessionId,

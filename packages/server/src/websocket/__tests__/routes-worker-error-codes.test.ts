@@ -28,7 +28,7 @@ import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { serverConfig } from '../../lib/server-config.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
-import { triggerRefresh } from '../../services/git-diff-service.js';
+import { triggerRefresh, isWatching } from '../../services/git-diff-service.js';
 import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
@@ -338,6 +338,35 @@ describe('Worker WebSocket connection error codes', () => {
     expect(tab1.ws.sentMessages).toEqual([]);
     expect(tab2.ws.sentMessages.length).toBeGreaterThan(0);
     tab2.handlers.onClose({}, tab2.ws);
+  });
+
+  // A git-diff socket that closes while the spawn user is still being resolved must not leave a watch or a
+  // registered dead socket behind. Polarity: without the `connectionClosed` check the connection is still made,
+  // the initial diff frame is sent to the closed socket and a refresh trigger reaches it.
+  it('a git-diff socket closed before its connection is made is never connected: no frame, no watch', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff');
+    expect(diffWorker).toBeDefined();
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? diffWorker!.id : '') },
+    });
+    const ws = createMockWs();
+
+    handlers.onOpen({}, ws);
+    handlers.onClose({}, ws); // before the awaited spawn-user lookup resumes
+    await Bun.sleep(150);
+    triggerRefresh(session.locationPath);
+    await Bun.sleep(300);
+
+    expect(ws.sentMessages).toEqual([]);
+    expect(isWatching(session.locationPath)).toBe(false);
   });
 
   it('notifySessionPaused sends SESSION_PAUSED and closes with 1000 on an open file-viewer socket', async () => {
