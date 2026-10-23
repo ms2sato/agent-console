@@ -374,6 +374,9 @@ describe('AppContext', () => {
     it('wires pause and resume of a session to timer and conditional wakeup suspension', async () => {
       appContext = await createTestContext();
       const { sessionManager, sessionRepository, timerManager, conditionalWakeupManager } = appContext;
+      // resumeSession checks locationPath on whichever fs binding is active
+      // (real, or a sibling file's memfs left over in this shared process).
+      await mkdir(os.tmpdir(), { recursive: true });
       await sessionRepository.save(
         buildPersistedWorktreeSession({
           id: 'sched-session',
