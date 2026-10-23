@@ -260,6 +260,53 @@ describe('Worker WebSocket connection error codes', () => {
     handlers.onClose({}, mockWs);
   });
 
+  // The pause hook can run for a long time, and the pause teardown has already stopped the worker's watches:
+  // a git-diff socket opened in that window must be refused, not connected (its watch would outlive the session).
+  // Polarity: with the git-diff branch above the pausing check the socket connects and is watched.
+  it('closes a git-diff socket opened while the session is pausing with SESSION_PAUSED and starts no watch', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    let resolveHook!: (result: Awaited<ReturnType<ExecuteHookCommand>>) => void;
+    const held = mock<ExecuteHookCommand>(
+      () =>
+        new Promise((resolve) => {
+          resolveHook = resolve;
+        }),
+    );
+    pauseHook = held;
+
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff');
+    expect(diffWorker).toBeDefined();
+    const pause = sessionManager.pauseSession(session.id);
+    for (let i = 0; i < 400 && held.mock.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(sessionManager.isPausing(session.id)).toBe(true);
+
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? diffWorker!.id : '') },
+    });
+    const mockWs = createMockWs();
+    handlers.onOpen({}, mockWs);
+    for (let i = 0; i < 400 && mockWs.closeCalls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(JSON.parse(mockWs.sentMessages[0])).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
+    expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
+    expect(isWatching(session.locationPath)).toBe(false);
+
+    resolveHook({ success: true });
+    await pause;
+  });
+
   it('closes a file-viewer socket opened while the session is pausing with SESSION_PAUSED (the viewer branch sits below the pausing check)', async () => {
     expect(capturedWorkerHandlerFactory).not.toBeNull();
 

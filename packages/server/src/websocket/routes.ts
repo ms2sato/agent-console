@@ -906,6 +906,17 @@ export async function setupWebSocketRoutes(
             return;
           }
 
+          // A pausing session answers every open (git-diff, file-viewer, PTY or
+          // embedded-agent) with the same terminal SESSION_PAUSED close, before any
+          // branch can start an activation or a watch: the pause teardown has run or
+          // is about to, and a watch started now would outlive the session. The
+          // manager-level guard and the per-branch SessionPausingError catches below
+          // remain as the second line of defence.
+          if (sessionManager.isPausing(sessionId)) {
+            sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+            return;
+          }
+
           if (worker.type === 'git-diff') {
             // Resolve the session's effective spawn user (the
             // worktree-owning OS user), NOT the authenticated viewer. For
@@ -955,16 +966,6 @@ export async function setupWebSocketRoutes(
                 // Ignore send/close errors (connection may already be closed)
               }
             });
-            return;
-          }
-
-          // A pausing session answers every stream-worker open (PTY or
-          // embedded-agent) with the same terminal SESSION_PAUSED close, before
-          // either branch can start an activation. The manager-level guard and
-          // the per-branch SessionPausingError catches below remain as the
-          // second line of defence.
-          if (sessionManager.isPausing(sessionId)) {
-            sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
             return;
           }
 
