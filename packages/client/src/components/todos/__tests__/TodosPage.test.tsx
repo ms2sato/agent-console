@@ -7,6 +7,7 @@ import { setCurrentUser, setAuthMode, _reset as resetAuth } from '../../../lib/a
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
+import { TODO_STATUSES } from '@agent-console/shared';
 import { TodosPage } from '../TodosPage';
 
 const ME = { id: 'user-me', username: 'me' };
@@ -96,6 +97,15 @@ describe('TodosPage', () => {
   });
 
   describe('filters', () => {
+    it('the status filter starts on the shared default (open) and lists "All" then every status in order', async () => {
+      await renderPage();
+
+      const select = (await screen.findByLabelText('Status filter')) as HTMLSelectElement;
+      expect(select.value).toBe('open');
+      const values = Array.from(select.querySelectorAll('option')).map((o) => o.getAttribute('value'));
+      expect(values).toEqual(['all', ...TODO_STATUSES]);
+    });
+
     it('the status filter refetches with the chosen status, and "All" sends none', async () => {
       const { user } = await renderPage();
       await waitFor(() => expect(api.listFetches().length).toBeGreaterThan(0));

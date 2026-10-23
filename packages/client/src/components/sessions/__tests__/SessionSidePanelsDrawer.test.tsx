@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { screen, cleanup, waitFor, act, fireEvent, renderHook, within } from '@testing-library/react';
+import { screen, cleanup, waitFor, act, fireEvent, renderHook } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionSidePanelsDrawer } from '../SessionSidePanelsDrawer';
@@ -96,9 +96,9 @@ function routeFetchByPanel(): void {
 function routeFetchEmpty(): void {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
     const url = urlToString(input);
-    // The Todo panel renders (its add form lives there) once its list settles.
+    // The Todo panel renders (its New Todo button and status select live there) once its list settles.
     // These tests pin Memo/Bookmarks focus order, and user-event does not
-    // model `inert`, so the add form's controls would become extra tab stops
+    // model `inert`, so the panel's controls would become extra tab stops
     // a real browser skips. Keeping the todo list pending keeps that panel
     // out of the tab order, as it was when an empty list rendered nothing.
     if (url.includes('/todos')) {
@@ -118,7 +118,7 @@ function routeFetchEmpty(): void {
 }
 
 // The settled-empty Todo state: the list answered with no items, so the panel
-// is rendered (header and add form) -- unlike routeFetchEmpty's pending list.
+// is rendered (header, New Todo button and status select) -- unlike routeFetchEmpty's pending list.
 function routeFetchSettledEmptyTodos(): void {
   routeFetchEmpty();
   const base = mockFetch.getMockImplementation()!;
@@ -526,7 +526,7 @@ describe('SessionSidePanelsDrawer', () => {
       expect(document.activeElement).toBe(bookmarksHeader);
     });
 
-    it('walks forward and wraps Tab through the Todo header and add form once the Todo list has settled empty', async () => {
+    it('walks forward and wraps Tab through the Todo header, New Todo button and status select once the Todo list has settled empty', async () => {
       routeFetchSettledEmptyTodos();
       localStorage.setItem(
         STORAGE_KEY,
@@ -536,16 +536,14 @@ describe('SessionSidePanelsDrawer', () => {
       const memoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
       const todoHeader = await waitFor(() => screen.getByLabelText('Collapse Todo'));
       const bookmarksHeader = screen.getByLabelText('Expand Bookmarks');
-      const form = screen.getByRole('form', { name: 'Add Todo' });
-      const kind = within(form).getByLabelText('Kind');
-      const title = within(form).getByLabelText('Title');
-      const body = within(form).getByLabelText('Body');
+      const newTodo = screen.getByRole('button', { name: 'New Todo' });
+      const statusFilter = screen.getByLabelText('Status filter');
       const user = userEvent.setup();
 
       act(() => {
         memoHeader.focus();
       });
-      for (const expected of [todoHeader, kind, title, body, bookmarksHeader, memoHeader]) {
+      for (const expected of [todoHeader, newTodo, statusFilter, bookmarksHeader, memoHeader]) {
         await user.tab();
         expect(document.activeElement).toBe(expected);
       }
@@ -553,7 +551,7 @@ describe('SessionSidePanelsDrawer', () => {
       await user.tab({ shift: true });
       expect(document.activeElement).toBe(bookmarksHeader);
       await user.tab({ shift: true });
-      expect(document.activeElement).toBe(body);
+      expect(document.activeElement).toBe(statusFilter);
     });
 
     it('tabs from the collapsed Memo header to the expanded Bookmarks header, and Memo\'s body stays inert throughout', async () => {
