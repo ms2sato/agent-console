@@ -357,6 +357,29 @@ describe('SessionTodosPanel', () => {
       await waitFor(() => expect(document.activeElement === button).toBe(true));
     });
 
+    it('a successful create closes the dialog and returns focus even when the list refetch never settles', async () => {
+      const { user } = await renderPanel();
+      const button = await screen.findByRole('button', { name: 'New Todo' });
+      await user.click(button);
+      await user.type(await screen.findByLabelText('Title'), 'Slow refetch');
+      // From here on the list endpoint never answers; the create itself still succeeds.
+      const original = api.fetchMock.getMockImplementation();
+      api.fetchMock.mockImplementation((input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
+        const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+        if (url.pathname === '/api/todos' && method === 'GET') {
+          return new Promise<Response>(() => {});
+        }
+        return original!(input, init);
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Add' }));
+
+      await waitForAbsent(() => screen.queryByRole('dialog'));
+      expect(api.writes()).toHaveLength(1);
+      await waitFor(() => expect(document.activeElement === button).toBe(true));
+    });
+
     it('Escape closes the dialog and returns focus to the button', async () => {
       const { user } = await renderPanel();
       const button = await screen.findByRole('button', { name: 'New Todo' });

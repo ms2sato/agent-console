@@ -9,7 +9,7 @@ interface AddTodoFormBaseProps {
   onError: (title: string, message: string) => void;
   /** False while the host is collapsed: every control leaves the tab order (fallback for engines without `inert`). */
   focusable?: boolean;
-  /** Called after a create succeeded, once the fields are cleared and the lists are invalidated. */
+  /** Called after a create succeeded, once the fields are cleared and the list invalidation has started (not finished). */
   onCreated?: () => void;
 }
 
@@ -57,13 +57,14 @@ export function AddTodoForm({ users, knownSessionIds = [], sessionId: presetSess
         sessionId: isPreset ? presetSessionId : sessionIdInput.trim() === '' ? undefined : sessionIdInput.trim(),
         assigneeUserId: canAssign && assigneeUserId !== UNASSIGNED_VALUE ? assigneeUserId : undefined,
       }),
-    onSuccess: async () => {
+    onSuccess: () => {
       setTitle('');
       setBody('');
       setSessionIdInput('');
       setScope(DEFAULT_SCOPE);
       setAssigneeUserId(UNASSIGNED_VALUE);
-      await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+      // Not awaited: it settles only after the active refetches do, and a slow one must not hold onCreated back.
+      void queryClient.invalidateQueries({ queryKey: todoKeys.root() });
       onCreated?.();
     },
     onError: (err: Error) => onError('Failed to Add Todo', err.message),
