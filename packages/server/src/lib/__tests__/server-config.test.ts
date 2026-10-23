@@ -324,6 +324,32 @@ describe('server-config', () => {
     });
   });
 
+  describe('OUTBOUND_TLS_CA_FILE', () => {
+    it('is undefined when not set', async () => {
+      delete process.env.OUTBOUND_TLS_CA_FILE;
+      const { serverConfig } = await importServerConfig();
+      expect(serverConfig.OUTBOUND_TLS_CA_FILE).toBeUndefined();
+    });
+
+    it('treats an empty or whitespace-only value as unset', async () => {
+      process.env.OUTBOUND_TLS_CA_FILE = '   ';
+      const { serverConfig } = await importServerConfig();
+      expect(serverConfig.OUTBOUND_TLS_CA_FILE).toBeUndefined();
+    });
+
+    it('exposes a configured path (trimmed) and passes the literal bundled through unchanged', async () => {
+      process.env.OUTBOUND_TLS_CA_FILE = '  /etc/pki/custom-ca.crt  ';
+      expect((await importServerConfig()).serverConfig.OUTBOUND_TLS_CA_FILE).toBe('/etc/pki/custom-ca.crt');
+      process.env.OUTBOUND_TLS_CA_FILE = 'bundled';
+      expect((await importServerConfig()).serverConfig.OUTBOUND_TLS_CA_FILE).toBe('bundled');
+    });
+
+    it('is listed in SERVER_ONLY_ENV_VARS so child processes never inherit it', async () => {
+      const { SERVER_ONLY_ENV_VARS } = await importServerConfig();
+      expect(SERVER_ONLY_ENV_VARS).toContain('OUTBOUND_TLS_CA_FILE');
+    });
+  });
+
   describe('resolveAuthCookieSecure', () => {
     it('unset + production -> true (preserves current behavior)', () => {
       expect(

@@ -13,7 +13,10 @@
  * worker and the model can source `fromSessionId` / `parentSessionId` from
  * it the way the message-callback instructions assume.
  *
- * Every OTHER `AGENT_CONSOLE_*` key is stripped. This is defence in depth
+ * Every OTHER `AGENT_CONSOLE_*` key is stripped. That deliberately includes
+ * the loop-only runtime keys (`AGENT_CONSOLE_RUNTIME_ENV_KEYS`, today
+ * `AGENT_CONSOLE_TLS_CA_FILE`): Bash-tool children use the OS trust store
+ * natively and have no use for the loop's CA configuration. This is defence in depth
  * for the non-elevated spawn branch: the server already layers the identity
  * over `getCleanChildProcessEnv()` (which strips its own inherited
  * `AGENT_CONSOLE_*` such as `AGENT_CONSOLE_HOME` or a terminal arm's

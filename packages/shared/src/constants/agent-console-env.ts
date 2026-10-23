@@ -25,6 +25,27 @@ export const AGENT_CONSOLE_IDENTITY_ENV_KEYS = [
 
 export type AgentConsoleIdentityEnvKey = (typeof AGENT_CONSOLE_IDENTITY_ENV_KEYS)[number];
 
+/**
+ * The `AGENT_CONSOLE_*` environment keys that carry RUNTIME configuration the
+ * server hands to an embedded-agent loop subprocess (not identity). Distinct
+ * from `AGENT_CONSOLE_IDENTITY_ENV_KEYS` on purpose: the loop's `Bash` tool
+ * (`buildBashEnv`) keeps only the identity keys and strips these, because
+ * Bash-tool children use the OS trust store natively and must not see
+ * loop-internal configuration.
+ *
+ * - `AGENT_CONSOLE_TLS_CA_FILE`: path of the CA bundle the loop's own
+ *   outbound `fetch` verifies against (docs/design/embedded-agent-worker.md).
+ *   Set only when the server resolved a CA file; absent means Bun's bundled
+ *   list.
+ *
+ * Deliberately not carried by the `init` NDJSON line: that is the
+ * `EmbeddedAgentCommandSchema` boundary, and a field there moves
+ * `SCHEMA_VERSION` for no gain.
+ */
+export const AGENT_CONSOLE_RUNTIME_ENV_KEYS = ['AGENT_CONSOLE_TLS_CA_FILE'] as const;
+
+export type AgentConsoleRuntimeEnvKey = (typeof AGENT_CONSOLE_RUNTIME_ENV_KEYS)[number];
+
 /** Prefix shared by every agent-console-owned environment variable. */
 export const AGENT_CONSOLE_ENV_PREFIX = 'AGENT_CONSOLE_';
 

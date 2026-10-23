@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import type { NotificationContext } from '@agent-console/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '../../../database/schema.js';
 import { createDatabaseForTest } from '../../../database/connection.js';
 import { RepositorySlackIntegrationService } from '../repository-slack-integration-service.js';
 import { SlackHandler } from '../slack-handler.js';
+import { createOutboundFetch } from '../../../lib/outbound-tls.js';
 
 describe('SlackHandler', () => {
   let handler: SlackHandler;
@@ -169,6 +170,16 @@ describe('SlackHandler', () => {
 
     afterEach(() => {
       fetchSpy.mockRestore();
+    });
+
+    it('posts through the injected fetch function (the outbound-TLS seam), not bare fetch', async () => {
+      // Reach: reverting postToSlack to a bare fetch(...) leaves the injected
+      // function uncalled and the global spy called instead.
+      const injected = mock(async (_url: unknown, _init?: unknown) => new Response('ok', { status: 200 }));
+      const custom = new SlackHandler(integrationService, createOutboundFetch(null, injected));
+      await custom.sendToWebhook(createTestContext('agent:idle'), testWebhookUrl);
+      expect(injected).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
 
     it('should format agent:waiting event correctly', async () => {

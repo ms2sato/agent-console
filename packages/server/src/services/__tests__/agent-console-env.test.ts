@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { AGENT_CONSOLE_IDENTITY_ENV_KEYS } from '@agent-console/shared';
-import { buildAgentConsoleEnv, type AgentConsoleContext } from '../agent-console-env.js';
+import { AGENT_CONSOLE_IDENTITY_ENV_KEYS, AGENT_CONSOLE_RUNTIME_ENV_KEYS } from '@agent-console/shared';
+import { buildAgentConsoleEnv, buildAgentConsoleRuntimeEnv, type AgentConsoleContext } from '../agent-console-env.js';
 
 // Issue #1694 (C2): the single writer of the AgentConsoleContext ->
 // AGENT_CONSOLE_* mapping. Reach measured per test in its own comment.
@@ -68,5 +68,25 @@ describe('buildAgentConsoleEnv', () => {
       expect(identityKeys).toContain(key);
     }
     expect(Object.keys(env).length).toBe(AGENT_CONSOLE_IDENTITY_ENV_KEYS.length);
+  });
+});
+
+describe('buildAgentConsoleRuntimeEnv', () => {
+  it('emits AGENT_CONSOLE_TLS_CA_FILE with the given CA path', () => {
+    expect(buildAgentConsoleRuntimeEnv('/etc/ssl/certs/ca-certificates.crt')).toEqual({
+      AGENT_CONSOLE_TLS_CA_FILE: '/etc/ssl/certs/ca-certificates.crt',
+    });
+  });
+
+  it('emits no key at all (not an empty value) when the CA path is empty', () => {
+    expect(Object.keys(buildAgentConsoleRuntimeEnv(''))).toEqual([]);
+  });
+
+  it('emits only keys from AGENT_CONSOLE_RUNTIME_ENV_KEYS and never an identity key', () => {
+    const runtimeKeys: readonly string[] = AGENT_CONSOLE_RUNTIME_ENV_KEYS;
+    for (const key of Object.keys(buildAgentConsoleRuntimeEnv('/x'))) {
+      expect(runtimeKeys).toContain(key);
+      expect((AGENT_CONSOLE_IDENTITY_ENV_KEYS as readonly string[]).includes(key)).toBe(false);
+    }
   });
 });

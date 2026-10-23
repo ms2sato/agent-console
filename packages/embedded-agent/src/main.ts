@@ -30,6 +30,7 @@ import {
 } from './mcp-discovery.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
+import { createOutboundFetch } from './outbound-tls.js';
 import type { ChatMessage, ProviderAdapter, ToolDefinition } from './providers/types.js';
 import { SdkEngine, type SdkEngineDeps } from './sdk-engine.js';
 import { probeSdkSession, type SdkSessionProbe } from './sdk-session-preflight.js';
@@ -893,7 +894,7 @@ if (import.meta.main) {
   };
   const factories: LoopFactories = {
     createMcpClient: () => new McpToolClient(),
-    createAdapter: (opts) => new OpenAIChatAdapter(opts),
+    createAdapter: (opts) => new OpenAIChatAdapter({ ...opts, fetchFn: createOutboundFetch() }),
     loadInstructions,
     loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
