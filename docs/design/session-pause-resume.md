@@ -272,6 +272,9 @@ async pauseSession(id: string): Promise<boolean> {
   const session = this.sessions.get(id);
   if (!session) return false;
 
+  // Freeze timers and conditional wakeups first (every pause participant, in registration order)
+  for (const p of this.pauseParticipants.values()) p.suspend(id);
+
   // Notify clients before killing workers
   notifySessionPaused(id);
 
@@ -333,6 +336,9 @@ async resumeSession(id: string): Promise<Session | null> {
 
   // Broadcast state change
   this.sessionLifecycleCallbacks?.onSessionResumed?.(this.toPublicSession(session));
+
+  // Re-arm suspended timers and wakeups with their remaining wait (same participant order)
+  for (const p of this.pauseParticipants.values()) p.resume(id);
 
   return this.toPublicSession(session);
 }
