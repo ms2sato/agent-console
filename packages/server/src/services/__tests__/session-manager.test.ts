@@ -9175,6 +9175,54 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('registerPauseParticipant', () => {
+    async function createWorktreeSession(manager: Awaited<ReturnType<typeof getSessionManager>>) {
+      return manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+    }
+
+    it('suspends on pause and resumes on resume with the session id, in registration order', async () => {
+      const manager = await getSessionManager();
+      const calls: string[] = [];
+      for (const name of ['first', 'second']) {
+        manager.registerPauseParticipant(name, {
+          suspend: (id) => { calls.push(`suspend:${name}:${id}`); },
+          resume: (id) => { calls.push(`resume:${name}:${id}`); },
+        });
+      }
+      expect(manager.listPauseParticipants()).toEqual(['first', 'second']);
+      const session = await createWorktreeSession(manager);
+
+      await manager.pauseSession(session.id);
+      expect(calls).toEqual([`suspend:first:${session.id}`, `suspend:second:${session.id}`]);
+
+      await manager.resumeSession(session.id);
+      expect(calls.slice(2)).toEqual([`resume:first:${session.id}`, `resume:second:${session.id}`]);
+    });
+
+    it('throws when a participant name is registered twice', async () => {
+      const manager = await getSessionManager();
+      const participant = { suspend: () => {}, resume: () => {} };
+      manager.registerPauseParticipant('timer', participant);
+
+      expect(() => manager.registerPauseParticipant('timer', participant)).toThrow(/already registered: timer/);
+      expect(manager.listPauseParticipants()).toEqual(['timer']);
+    });
+
+    it('pauses and resumes without participants registered', async () => {
+      const manager = await getSessionManager();
+      const session = await createWorktreeSession(manager);
+
+      await expect(manager.pauseSession(session.id)).resolves.toEqual({ paused: true });
+      await expect(manager.resumeSession(session.id)).resolves.not.toBeNull();
+    });
+  });
+
   describe('setConditionalWakeupCleanupCallback', () => {
     it('should set and invoke conditional wakeup cleanup callback', async () => {
       const manager = await getSessionManager();

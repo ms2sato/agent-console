@@ -553,7 +553,9 @@ export async function createAppContext(
   });
 
   // 6.6.1. Restore persisted timers
-  await timerManager.restoreTimers();
+  await timerManager.restoreTimers({
+    isSessionLive: (sessionId) => sessionManager.getSession(sessionId) !== undefined,
+  });
 
   // 6.6.2. Create conditional wakeup manager (in-memory, volatile)
   const conditionalWakeupManager = new ConditionalWakeupManagerClass((wakeup) => {
@@ -596,6 +598,16 @@ export async function createAppContext(
   // 6.6.3. Wire conditional wakeup cleanup into session lifecycle
   sessionManager.setConditionalWakeupCleanupCallback((sessionId) => {
     conditionalWakeupManager.deleteWakeupsBySession(sessionId);
+  });
+
+  // 6.6.4. Suspend / resume timers and wakeups around a session pause
+  sessionManager.registerPauseParticipant('timer', {
+    suspend: (sessionId) => timerManager.suspendTimersBySession(sessionId),
+    resume: (sessionId) => timerManager.resumeTimersBySession(sessionId),
+  });
+  sessionManager.registerPauseParticipant('conditional-wakeup', {
+    suspend: (sessionId) => conditionalWakeupManager.suspendWakeupsBySession(sessionId),
+    resume: (sessionId) => conditionalWakeupManager.resumeWakeupsBySession(sessionId),
   });
 
   // 6.7. Create interactive process manager (in-memory, volatile).
@@ -1037,6 +1049,14 @@ export async function createTestContext(
 
   // Create conditional wakeup manager (no-op callback for tests)
   const conditionalWakeupManager = new ConditionalWakeupManagerClass(() => {});
+  sessionManager.registerPauseParticipant('timer', {
+    suspend: (sessionId) => timerManager.suspendTimersBySession(sessionId),
+    resume: (sessionId) => timerManager.resumeTimersBySession(sessionId),
+  });
+  sessionManager.registerPauseParticipant('conditional-wakeup', {
+    suspend: (sessionId) => conditionalWakeupManager.suspendWakeupsBySession(sessionId),
+    resume: (sessionId) => conditionalWakeupManager.resumeWakeupsBySession(sessionId),
+  });
 
   // Create interactive process manager (no-op callbacks for tests, sessionManager for PTY message injection)
   const interactiveProcessManager = new InteractiveProcessManagerClass(() => {}, () => {}, sessionManager);

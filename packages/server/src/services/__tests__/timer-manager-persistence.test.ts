@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, jest } from 'bun:test';
 import type { Kysely } from 'kysely';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
@@ -130,7 +130,7 @@ describe('TimerManager with persistence', () => {
       const manager2 = new TimerManager(onTick2, repository);
 
       try {
-        const restoredCount = await manager2.restoreTimers();
+        const restoredCount = await manager2.restoreTimers({ isSessionLive: () => true });
         expect(restoredCount).toBe(1);
 
         const timers = manager2.listTimers();
@@ -160,7 +160,7 @@ describe('TimerManager with persistence', () => {
 
       const manager2 = new TimerManager(mock(() => {}), repository);
       try {
-        await manager2.restoreTimers();
+        await manager2.restoreTimers({ isSessionLive: () => true });
 
         const restored = manager2.getTimer(timer.id);
         expect(restored?.backoffFactor).toBe(2);
@@ -187,7 +187,7 @@ describe('TimerManager with persistence', () => {
 
       const manager2 = new TimerManager(mock(() => {}), repository);
       try {
-        await manager2.restoreTimers();
+        await manager2.restoreTimers({ isSessionLive: () => true });
 
         const restored = manager2.getTimer('legacy-timer');
         expect(restored?.backoffFactor).toBe(1);
@@ -196,6 +196,74 @@ describe('TimerManager with persistence', () => {
       } finally {
         manager2.disposeAll();
       }
+    });
+
+    describe('with an isSessionLive predicate', () => {
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      /** Persist one timer, drop the first manager, switch to fake timers. */
+      async function persistedTimerThenFakeTime(sessionId: string): Promise<string> {
+        const timer = manager.createTimer({
+          sessionId,
+          workerId: 'worker-1',
+          intervalSeconds: 60,
+          action: 'check status',
+        });
+        await flush();
+        manager.disposeAll();
+        jest.useFakeTimers();
+        return timer.id;
+      }
+
+      it('restores a timer of a non-live session suspended: no fire after a full interval', async () => {
+        const id = await persistedTimerThenFakeTime('paused-session');
+        const onTick2 = mock(() => {});
+        const manager2 = new TimerManager(onTick2, repository);
+        try {
+          await manager2.restoreTimers({ isSessionLive: () => false });
+
+          expect(manager2.getTimer(id)?.suspendedAt).toBeDefined();
+          jest.advanceTimersByTime(10 * 60000);
+          expect(onTick2).not.toHaveBeenCalled();
+        } finally {
+          manager2.disposeAll();
+        }
+      });
+
+      it('fires one base interval after the session is resumed', async () => {
+        await persistedTimerThenFakeTime('paused-session');
+        const onTick2 = mock(() => {});
+        const manager2 = new TimerManager(onTick2, repository);
+        try {
+          await manager2.restoreTimers({ isSessionLive: () => false });
+          jest.advanceTimersByTime(10 * 60000);
+
+          manager2.resumeTimersBySession('paused-session');
+          jest.advanceTimersByTime(59999);
+          expect(onTick2).not.toHaveBeenCalled();
+          jest.advanceTimersByTime(1);
+          expect(onTick2).toHaveBeenCalledTimes(1);
+        } finally {
+          manager2.disposeAll();
+        }
+      });
+
+      it('arms a timer of a live session as before', async () => {
+        const id = await persistedTimerThenFakeTime('live-session');
+        const onTick2 = mock(() => {});
+        const manager2 = new TimerManager(onTick2, repository);
+        try {
+          await manager2.restoreTimers({ isSessionLive: (sessionId) => sessionId === 'live-session' });
+
+          expect(manager2.getTimer(id)?.suspendedAt).toBeUndefined();
+          jest.advanceTimersByTime(60000);
+          expect(onTick2).toHaveBeenCalledTimes(1);
+        } finally {
+          manager2.disposeAll();
+        }
+      });
     });
 
     it('should return count of restored timers', async () => {
@@ -220,7 +288,7 @@ describe('TimerManager with persistence', () => {
       const manager2 = new TimerManager(onTick2, repository);
 
       try {
-        const restoredCount = await manager2.restoreTimers();
+        const restoredCount = await manager2.restoreTimers({ isSessionLive: () => true });
         expect(restoredCount).toBe(2);
       } finally {
         manager2.disposeAll();
@@ -232,7 +300,7 @@ describe('TimerManager with persistence', () => {
       const manager2 = new TimerManager(onTick2, repository);
 
       try {
-        const restoredCount = await manager2.restoreTimers();
+        const restoredCount = await manager2.restoreTimers({ isSessionLive: () => true });
         expect(restoredCount).toBe(0);
       } finally {
         manager2.disposeAll();
@@ -269,7 +337,7 @@ describe('TimerManager with persistence', () => {
       const noRepoManager = new TimerManager(onTick);
 
       try {
-        const count = await noRepoManager.restoreTimers();
+        const count = await noRepoManager.restoreTimers({ isSessionLive: () => true });
         expect(count).toBe(0);
       } finally {
         noRepoManager.disposeAll();

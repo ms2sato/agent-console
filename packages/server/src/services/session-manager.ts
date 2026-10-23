@@ -72,7 +72,7 @@ import {
   isBareRepositoryRoot,
   resolveGitDir,
 } from '../lib/git.js';
-import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
+import type { SessionLifecycleCallbacks, PauseParticipant } from './session-lifecycle-types.js';
 import { MessageService } from './message-service.js';
 import { InterSessionMessageService } from './inter-session-message-service.js';
 import { AnnotationService } from './annotation-service.js';
@@ -146,7 +146,7 @@ const BARE_SOURCE_REPOSITORY_MESSAGE =
 // Re-export worker types for consumers that need them
 export type { InternalWorker, InternalPtyWorker } from './worker-types.js';
 
-export type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
+export type { SessionLifecycleCallbacks, PauseParticipant } from './session-lifecycle-types.js';
 
 export type { RestoreWorkerResult } from './worker-lifecycle-manager.js';
 
@@ -453,6 +453,7 @@ export class SessionManager {
   private usernameLookup: UsernameLookup;
   private sharedAccountLookup: SharedAccountLookup;
   private timerCleanupCallback?: (sessionId: string) => void;
+  private pauseParticipants = new Map<string, PauseParticipant>();
   private conditionalWakeupCleanupCallback?: (sessionId: string) => void;
   private processCleanupCallback?: (sessionId: string) => void;
   private branchWatcherCallbacks?: {
@@ -727,6 +728,7 @@ export class SessionManager {
       startBranchWatching: (sessionId, locationPath, currentBranch) =>
         this.branchWatcherCallbacks?.startWatching(sessionId, locationPath, currentBranch) ?? Promise.resolve(),
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
+      getPauseParticipants: () => [...this.pauseParticipants],
       getServerPid,
       hasSessionHookCommand: (kind, session) => this.configuredHookCommand(kind, session) !== undefined,
       runSessionHookCommand: (kind, session, username) => this.runSessionHookCommand(kind, session, username),
@@ -1333,6 +1335,23 @@ export class SessionManager {
    */
   setTimerCleanupCallback(callback: (sessionId: string) => void): void {
     this.timerCleanupCallback = callback;
+  }
+
+  /**
+   * Register a named participant that suspends / resumes its per-session
+   * scheduled work around a session pause. Wired in app-context. Participants
+   * run in registration order; registering the same name twice throws.
+   */
+  registerPauseParticipant(name: string, participant: PauseParticipant): void {
+    if (this.pauseParticipants.has(name)) {
+      throw new Error(`Pause participant already registered: ${name}`);
+    }
+    this.pauseParticipants.set(name, participant);
+  }
+
+  /** Names of registered pause participants, in registration order. */
+  listPauseParticipants(): string[] {
+    return [...this.pauseParticipants.keys()];
   }
 
   /**

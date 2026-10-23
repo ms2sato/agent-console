@@ -54,6 +54,16 @@ interface StoredWakeup {
   };
   checking: boolean;
   /**
+   * Bumped on every suspend. A check that began in an earlier epoch is stale:
+   * it must not complete the wakeup nor touch `checking` / `currentProcess`,
+   * which now belong to the current epoch.
+   */
+  epoch: number;
+  /** Absolute deadline (ms since epoch) of the timeout, when one is armed. */
+  timeoutDeadlineMs?: number;
+  /** Set while the owning session is paused. */
+  suspended?: { at: string; timeoutRemainingMs?: number };
+  /**
    * OS username under which `conditionScript` should be spawned in
    * multi-user mode. `null` / `undefined` (or `AUTH_MODE !== 'multi-user'`,
    * or same-as-server-user) bypasses elevation -- single-user behaviour
@@ -122,11 +132,11 @@ export class ConditionalWakeupManager {
     }
 
     const sessionWakeupCount = this.listWakeups(sessionId).filter(
-      w => w.status === 'running'
+      w => w.status === 'running' || w.status === 'suspended'
     ).length;
     if (sessionWakeupCount >= MAX_WAKEUPS_PER_SESSION) {
       throw new Error(
-        `Session ${sessionId} already has ${sessionWakeupCount} running wakeups (max ${MAX_WAKEUPS_PER_SESSION})`
+        `Session ${sessionId} already has ${sessionWakeupCount} running or suspended wakeups (max ${MAX_WAKEUPS_PER_SESSION})`
       );
     }
 
@@ -150,7 +160,7 @@ export class ConditionalWakeupManager {
       this.checkCondition(id);
     }, intervalSeconds * 1000);
 
-    const stored: StoredWakeup = { info, handle, checking: false, requestUsername };
+    const stored: StoredWakeup = { info, handle, checking: false, epoch: 0, requestUsername };
 
     // Set up timeout if specified
     if (timeoutSeconds) {
@@ -158,6 +168,7 @@ export class ConditionalWakeupManager {
         this.handleTimeout(id);
       }, timeoutSeconds * 1000);
       stored.timeoutHandle = timeoutHandle;
+      stored.timeoutDeadlineMs = Date.now() + timeoutSeconds * 1000;
     }
 
     this.wakeups.set(id, stored);
@@ -217,6 +228,92 @@ export class ConditionalWakeupManager {
     logger.info({ count }, 'All wakeups disposed');
   }
 
+  /**
+   * Freeze every running wakeup of a session: stop polling, cancel the timeout
+   * (remembering its remaining wait) and kill an in-flight check, but keep the
+   * record. Idempotent.
+   */
+  suspendWakeupsBySession(sessionId: string): number {
+    let count = 0;
+    const now = Date.now();
+    for (const [wakeupId, stored] of this.wakeups) {
+      if (stored.info.sessionId !== sessionId || stored.info.status !== 'running') {
+        continue;
+      }
+      clearInterval(stored.handle);
+      let timeoutRemainingMs: number | undefined;
+      if (stored.timeoutHandle) {
+        clearTimeout(stored.timeoutHandle);
+        stored.timeoutHandle = undefined;
+        timeoutRemainingMs = Math.max(0, (stored.timeoutDeadlineMs ?? now) - now);
+      }
+      stored.timeoutDeadlineMs = undefined;
+      this.killCurrentProcess(wakeupId, stored);
+      stored.epoch += 1;
+      stored.checking = false;
+      const at = new Date(now).toISOString();
+      stored.suspended = { at, timeoutRemainingMs };
+      stored.info.status = 'suspended';
+      stored.info.suspendedAt = at;
+      count += 1;
+    }
+    if (count > 0) {
+      logger.info({ sessionId, count }, 'Suspended wakeups for session');
+    }
+    return count;
+  }
+
+  /**
+   * Re-arm every suspended wakeup of a session: polling restarts, the timeout
+   * continues with its remaining wait, and one check runs immediately so a
+   * condition that became true during the pause is reported without waiting
+   * an interval. Idempotent.
+   */
+  resumeWakeupsBySession(sessionId: string): number {
+    const resumedIds: string[] = [];
+    for (const [wakeupId, stored] of this.wakeups) {
+      if (stored.info.sessionId !== sessionId || stored.info.status !== 'suspended') {
+        continue;
+      }
+      const timeoutRemainingMs = stored.suspended?.timeoutRemainingMs;
+      stored.suspended = undefined;
+      delete stored.info.suspendedAt;
+      stored.info.status = 'running';
+      stored.handle = setInterval(() => {
+        this.checkCondition(wakeupId);
+      }, stored.info.intervalSeconds * 1000);
+      if (timeoutRemainingMs !== undefined) {
+        stored.timeoutDeadlineMs = Date.now() + timeoutRemainingMs;
+        stored.timeoutHandle = setTimeout(() => {
+          this.handleTimeout(wakeupId);
+        }, timeoutRemainingMs);
+      }
+      resumedIds.push(wakeupId);
+    }
+    if (resumedIds.length > 0) {
+      logger.info({ sessionId, count: resumedIds.length }, 'Resumed wakeups for session');
+    }
+    for (const wakeupId of resumedIds) {
+      void this.checkCondition(wakeupId);
+    }
+    return resumedIds.length;
+  }
+
+  private killCurrentProcess(wakeupId: string, stored: StoredWakeup): void {
+    if (!stored.currentProcess) {
+      return;
+    }
+    try {
+      stored.currentProcess.kill();
+    } catch (error) {
+      logger.warn(
+        { wakeupId, error: error instanceof Error ? error.message : 'Unknown error' },
+        'Error killing condition check process'
+      );
+    }
+    stored.currentProcess = undefined;
+  }
+
   private async checkCondition(wakeupId: string): Promise<void> {
     const stored = this.wakeups.get(wakeupId);
     if (!stored || stored.info.status !== 'running') {
@@ -229,6 +326,7 @@ export class ConditionalWakeupManager {
     }
 
     stored.checking = true;
+    const epoch = stored.epoch;
 
     try {
       // Cancel any existing process
@@ -286,6 +384,12 @@ export class ConditionalWakeupManager {
         drainStderr,
       ]);
 
+      // A suspend happened while this check was in flight: its process was
+      // killed and the result (even exit 0 from a race) is not a verdict.
+      if (stored.epoch !== epoch) {
+        return;
+      }
+
       // Clear the current process reference since it's complete
       stored.currentProcess = undefined;
 
@@ -302,7 +406,7 @@ export class ConditionalWakeupManager {
     } finally {
       // Reset checking flag regardless of success or failure
       const stored = this.wakeups.get(wakeupId);
-      if (stored) {
+      if (stored && stored.epoch === epoch) {
         stored.checking = false;
       }
     }
@@ -379,16 +483,6 @@ export class ConditionalWakeupManager {
     }
 
     // Kill any running process
-    if (stored.currentProcess) {
-      try {
-        stored.currentProcess.kill();
-      } catch (error) {
-        logger.warn(
-          { wakeupId, error: error instanceof Error ? error.message : 'Unknown error' },
-          'Error killing condition check process'
-        );
-      }
-      stored.currentProcess = undefined;
-    }
+    this.killCurrentProcess(wakeupId, stored);
   }
 }

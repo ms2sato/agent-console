@@ -39,6 +39,7 @@ import type { InterSessionMessageService } from '../services/inter-session-messa
 import { buildReplyInstructions, stripControlChars } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { SessionPausingError } from '../lib/errors.js';
 import { PROCESS_WAKES_ITSELF, TIMER_REFUSED_PROCESS_RUNNING } from '../services/process-output-router.js';
 import {
   emitArtifactCreated,
@@ -504,6 +505,18 @@ export interface McpDependencies {
  */
 export function createMcpApp(deps: McpDependencies): Hono {
   const { sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, bookmarkRepository, todoRepository, broadcastToApp, findOpenPullRequest } = deps;
+
+  /**
+   * Message when no scheduler entry may be created for the session now: the
+   * pausing flag is set before participants suspend and the session stays in
+   * memory until the pause completes, so an entry created in that window (or
+   * after the session left memory) would never be suspended or removed.
+   */
+  const unschedulableSessionError = (sessionId: string): string | null => {
+    if (sessionManager.isPausing(sessionId)) return new SessionPausingError(sessionId).message;
+    if (!sessionManager.getSession(sessionId)) return `Session ${sessionId} not found`;
+    return null;
+  };
 
   // MCP caller identity (spec: docs/design/embedded-agent-worker.md § "MCP
   // caller identity"). The registry defaults to empty and the mode resolves
@@ -1730,6 +1743,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       `Refused while this session has a running run_process and intervalSeconds is under ${RUN_PROCESS_WAKEUP_REFUSAL_BELOW_SECONDS} and no backoffFactor above 1: that process wakes you itself. ` +
       'One standing timer per delegate; call `list_timers` first. ' +
       'Timers persist across server restarts (fireCount and backoff restart from the base interval). ' +
+      'Suspended while the session is paused; resumed with the remaining wait. ' +
       'When waiting on a human decision or anything whose expected time-to-change grows with the time already waited, ' +
       'set backoffFactor (e.g. 2) so the interval stretches up to maxIntervalSeconds, and call reset_timer when the situation changes.',
     {
@@ -1816,6 +1830,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
           logger.info({ sessionId, workerId, intervalSeconds }, 'create_timer refused: live run_process');
           return errorResult(TIMER_REFUSED_PROCESS_RUNNING);
         }
+
+        const unschedulable = unschedulableSessionError(sessionId);
+        if (unschedulable) return errorResult(unschedulable);
 
         const timer = timerManager.createTimer({
           sessionId,
@@ -1904,7 +1921,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'Create a conditional wakeup that checks a shell command at intervals and sends notification only when the condition becomes true (exit 0) or timeout is reached. ' +
       'Silent polling preserves LLM context windows by avoiding unnecessary notifications. ' +
       'The worker can be an agent, terminal, or embedded-agent worker. ' +
-      'Returns a wakeup ID for cancellation. The wakeup auto-stops after sending one notification.',
+      'Returns a wakeup ID for cancellation. The wakeup auto-stops after sending one notification. ' +
+      'Suspended while the session is paused; resumed with the remaining wait.',
     {
       sessionId: z.string().optional().describe(
         'The session to receive wakeup notifications. ' +
@@ -1991,6 +2009,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
           userRepository,
           { toolName: 'create_conditional_wakeup', sessionId },
         );
+
+        // Checked after the await and with nothing awaited before the create:
+        // a pause can start or complete during the username lookup, and a
+        // wakeup created afterwards would never be suspended or removed.
+        const unschedulable = unschedulableSessionError(sessionId);
+        if (unschedulable) return errorResult(unschedulable);
 
         const wakeup = conditionalWakeupManager.createWakeup({
           sessionId,
