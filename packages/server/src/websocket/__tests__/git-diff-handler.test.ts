@@ -3,7 +3,7 @@ import type { WSContext } from 'hono/ws';
 import type { GitDiffData, GitDiffServerMessage } from '@agent-console/shared';
 import { createGitDiffHandlers, type GitDiffHandlerDependencies } from '../git-diff-handler.js';
 import { AnnotationService } from '../../services/annotation-service.js';
-import { startWatching as realStartWatching, stopWatching as realStopWatching } from '../../services/git-diff-service.js';
+import { startWatching as realStartWatching } from '../../services/git-diff-service.js';
 import { asWSContext } from './ws-test-helpers.js';
 
 
@@ -14,7 +14,7 @@ describe('GitDiffHandler', () => {
   let mockResolveRef: ReturnType<typeof mock>;
   let mockResolveBaseSpec: ReturnType<typeof mock>;
   let mockStartWatching: ReturnType<typeof mock>;
-  let mockStopWatching: ReturnType<typeof mock>;
+  let unsubscribes: Array<ReturnType<typeof mock>>;
   let handlers: ReturnType<typeof createGitDiffHandlers>;
 
   const mockDiffData: GitDiffData = {
@@ -66,15 +66,18 @@ describe('GitDiffHandler', () => {
       }
       return spec;
     });
-    mockStartWatching = mock(() => {});
-    mockStopWatching = mock(() => {});
+    unsubscribes = [];
+    mockStartWatching = mock(() => {
+      const unsubscribe = mock(() => {});
+      unsubscribes.push(unsubscribe);
+      return unsubscribe;
+    });
 
     const deps: GitDiffHandlerDependencies = {
       getDiffData: mockGetDiffData,
       resolveRef: mockResolveRef,
       resolveBaseSpec: mockResolveBaseSpec,
       startWatching: mockStartWatching,
-      stopWatching: mockStopWatching,
       getFileLines: mock(() => Promise.resolve([])),
       annotationService: new AnnotationService(),
     };
@@ -146,7 +149,6 @@ describe('GitDiffHandler', () => {
         resolveRef: mockResolveRef,
         resolveBaseSpec: mockResolveBaseSpec,
         startWatching: realStartWatching,
-        stopWatching: realStopWatching,
         getFileLines: mock(() => Promise.resolve([])),
         annotationService: new AnnotationService(),
       });
@@ -216,21 +218,137 @@ describe('GitDiffHandler', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('should stop file watching on disconnection after connection', async () => {
-      // First connect
-      await handlers.handleConnection(
-        mockWs,
-        'session-1',
-        'worker-1',
-        '/repo/path',
-        'base-commit',
-        null
-      );
+    it('should stop that connection\'s file watching on disconnection', async () => {
+      await handlers.handleConnection(mockWs, 'session-1', 'worker-1', '/repo/path', 'base-commit', null);
 
-      // Then disconnect
-      await handlers.handleDisconnection('session-1', 'worker-1');
+      await handlers.handleDisconnection('session-1', 'worker-1', mockWs);
 
-      expect(mockStopWatching).toHaveBeenCalledWith('/repo/path');
+      expect(unsubscribes).toHaveLength(1);
+      expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
+    });
+
+    it('a disconnection for a socket that is not registered is a no-op', async () => {
+      await handlers.handleConnection(mockWs, 'session-1', 'worker-1', '/repo/path', 'base-commit', null);
+      const stranger = asWSContext({ send: mock(() => {}), close: mock(), readyState: 1 });
+
+      await handlers.handleDisconnection('session-1', 'worker-1', stranger);
+
+      expect(unsubscribes[0]).not.toHaveBeenCalled();
+    });
+  });
+
+  // Two tabs on one worker. Reach (each mutation applied alone to git-diff-handler.ts, this file re-run):
+  //   a connection map keyed by workerId again -> 'two sockets ... both receive' and 'disconnecting ws1 leaves ws2'
+  //   handleDisconnection ignoring `ws` (removing by worker) -> 'disconnecting ws1 leaves ws2' and the stale-close test
+  //   updateBaseCommit/sendAnnotationsToClient reaching only one connection -> the two broadcast tests
+  describe('two sockets on one worker', () => {
+    function makeSocket() {
+      const sent: string[] = [];
+      const ws = asWSContext({
+        send: (msg: string) => {
+          sent.push(msg);
+        },
+        close: mock(),
+        readyState: 1,
+      });
+      return { ws, sent };
+    }
+
+    async function connectTwo() {
+      const a = makeSocket();
+      const b = makeSocket();
+      await handlers.handleConnection(a.ws, 'session-1', 'worker-two', '/repo/path', 'base-commit', null);
+      await handlers.handleConnection(b.ws, 'session-1', 'worker-two', '/repo/path', 'base-commit', null);
+      a.sent.length = 0;
+      b.sent.length = 0;
+      return { a, b };
+    }
+
+    const types = (sent: string[]) => sent.map((m) => (JSON.parse(m) as GitDiffServerMessage).type);
+
+    it('each connection holds its own watch, and a file change reaches both', async () => {
+      const { a, b } = await connectTwo();
+      expect(mockStartWatching).toHaveBeenCalledTimes(2);
+
+      const onChange = (mockStartWatching.mock.calls as unknown as Array<[string, () => void]>).map((call) => call[1]);
+      onChange[0]();
+      onChange[1]();
+      await Bun.sleep(20);
+
+      expect(types(a.sent)).toEqual(['diff-data']);
+      expect(types(b.sent)).toEqual(['diff-data']);
+    });
+
+    it('updateBaseCommit reaches every connection of the worker', async () => {
+      const { a, b } = await connectTwo();
+
+      await handlers.updateBaseCommit('worker-two', 'main');
+
+      expect(types(a.sent)).toEqual(['diff-data']);
+      expect(types(b.sent)).toEqual(['diff-data']);
+    });
+
+    it('sendAnnotationsToClient reaches every connection of the worker', async () => {
+      const { a, b } = await connectTwo();
+
+      handlers.sendAnnotationsToClient('worker-two', null);
+
+      expect(types(a.sent)).toEqual(['annotations-updated']);
+      expect(types(b.sent)).toEqual(['annotations-updated']);
+    });
+
+    it('disconnecting ws1 leaves ws2 watching and receiving; a late close of ws1 changes nothing', async () => {
+      const { a, b } = await connectTwo();
+
+      await handlers.handleDisconnection('session-1', 'worker-two', a.ws);
+      expect(unsubscribes[unsubscribes.length - 2]).toHaveBeenCalledTimes(1);
+      expect(unsubscribes[unsubscribes.length - 1]).not.toHaveBeenCalled();
+
+      // the stale-close race: the same socket's close arrives again after it was removed
+      await handlers.handleDisconnection('session-1', 'worker-two', a.ws);
+      expect(unsubscribes[unsubscribes.length - 1]).not.toHaveBeenCalled();
+
+      await handlers.updateBaseCommit('worker-two', 'main');
+      expect(types(a.sent)).toEqual([]);
+      expect(types(b.sent)).toEqual(['diff-data']);
+    });
+
+    it('a disconnection without a socket (service teardown) stops every connection of the worker', async () => {
+      await connectTwo();
+
+      await handlers.handleDisconnection('session-1', 'worker-two');
+
+      expect(unsubscribes[unsubscribes.length - 2]).toHaveBeenCalledTimes(1);
+      expect(unsubscribes[unsubscribes.length - 1]).toHaveBeenCalledTimes(1);
+    });
+
+    it('a teardown of one worker leaves the connections of another worker on the same path alone', async () => {
+      const one = makeSocket();
+      const other = makeSocket();
+      await handlers.handleConnection(one.ws, 's1', 'worker-x', '/repo/path', 'base-commit', null);
+      await handlers.handleConnection(other.ws, 's2', 'worker-y', '/repo/path', 'base-commit', null);
+      const [unsubX, unsubY] = unsubscribes.slice(-2);
+
+      await handlers.handleDisconnection('s1', 'worker-x');
+
+      expect(unsubX).toHaveBeenCalledTimes(1);
+      expect(unsubY).not.toHaveBeenCalled();
+    });
+
+    it('a set-target-commit on ws1 does not change what ws2 shows (state is per connection)', async () => {
+      const { a, b } = await connectTwo();
+
+      await handlers.handleMessage(a.ws, 'session-1', 'worker-two', '/repo/path', JSON.stringify({ type: 'set-target-commit', ref: 'main' }));
+      const watchChange = (mockStartWatching.mock.calls as unknown as Array<[string, () => void]>).map((call) => call[1]);
+      a.sent.length = 0;
+      b.sent.length = 0;
+      watchChange[0]();
+      watchChange[1]();
+      await Bun.sleep(20);
+
+      // ws2 is still on the working directory, so its watch refreshes; ws1 moved to a fixed commit, which does not.
+      expect(types(a.sent)).toEqual([]);
+      expect(types(b.sent)).toEqual(['diff-data']);
     });
   });
 
@@ -420,7 +538,6 @@ describe('GitDiffHandler', () => {
           resolveRef: mockResolveRef,
           resolveBaseSpec: mockResolveBaseSpec,
           startWatching: mockStartWatching,
-          stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.resolve(['line1', 'line2', 'line3'])),
           annotationService: new AnnotationService(),
         } satisfies GitDiffHandlerDependencies;
@@ -470,7 +587,6 @@ describe('GitDiffHandler', () => {
           resolveRef: mockResolveRef,
           resolveBaseSpec: mockResolveBaseSpec,
           startWatching: mockStartWatching,
-          stopWatching: mockStopWatching,
           getFileLines: getFileLinesMock,
           annotationService: new AnnotationService(),
         };
@@ -503,7 +619,6 @@ describe('GitDiffHandler', () => {
           resolveRef: mockResolveRef,
           resolveBaseSpec: mockResolveBaseSpec,
           startWatching: mockStartWatching,
-          stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.reject(new Error('Invalid file path: ../etc/passwd'))),
           annotationService: new AnnotationService(),
         };
@@ -547,7 +662,6 @@ describe('GitDiffHandler', () => {
           resolveRef: mockResolveRef,
           resolveBaseSpec: mockResolveBaseSpec,
           startWatching: mockStartWatching,
-          stopWatching: mockStopWatching,
           getFileLines: mock(() => Promise.reject(new Error('File not found'))),
           annotationService: new AnnotationService(),
         };

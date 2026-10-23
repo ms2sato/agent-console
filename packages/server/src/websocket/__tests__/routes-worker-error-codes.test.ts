@@ -28,6 +28,7 @@ import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { serverConfig } from '../../lib/server-config.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
+import { triggerRefresh, isWatching } from '../../services/git-diff-service.js';
 import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
@@ -259,6 +260,53 @@ describe('Worker WebSocket connection error codes', () => {
     handlers.onClose({}, mockWs);
   });
 
+  // The pause hook can run for a long time, and the pause teardown has already stopped the worker's watches:
+  // a git-diff socket opened in that window must be refused, not connected (its watch would outlive the session).
+  // Polarity: with the git-diff branch above the pausing check the socket connects and is watched.
+  it('closes a git-diff socket opened while the session is pausing with SESSION_PAUSED and starts no watch', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+
+    let resolveHook!: (result: Awaited<ReturnType<ExecuteHookCommand>>) => void;
+    const held = mock<ExecuteHookCommand>(
+      () =>
+        new Promise((resolve) => {
+          resolveHook = resolve;
+        }),
+    );
+    pauseHook = held;
+
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff');
+    expect(diffWorker).toBeDefined();
+    const pause = sessionManager.pauseSession(session.id);
+    for (let i = 0; i < 400 && held.mock.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(sessionManager.isPausing(session.id)).toBe(true);
+
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? diffWorker!.id : '') },
+    });
+    const mockWs = createMockWs();
+    handlers.onOpen({}, mockWs);
+    for (let i = 0; i < 400 && mockWs.closeCalls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(JSON.parse(mockWs.sentMessages[0])).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
+    expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
+    expect(isWatching(session.locationPath)).toBe(false);
+
+    resolveHook({ success: true });
+    await pause;
+  });
+
   it('closes a file-viewer socket opened while the session is pausing with SESSION_PAUSED (the viewer branch sits below the pausing check)', async () => {
     expect(capturedWorkerHandlerFactory).not.toBeNull();
 
@@ -300,6 +348,111 @@ describe('Worker WebSocket connection error codes', () => {
 
     resolveHook({ success: true });
     await pause;
+  });
+
+  // Two tabs on one git-diff worker: the socket's own close must release only its own watch (the socket is
+  // passed to the handler). Polarity: with cleanupWorkerConnection calling handleGitDiffDisconnection without
+  // the socket, the close of ws1 stops every connection of the worker and ws2 receives nothing.
+  it('closing one git-diff socket leaves the other tab receiving diff frames on a refresh trigger', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff');
+    expect(diffWorker).toBeDefined();
+    const openSocket = () => {
+      const handlers = capturedWorkerHandlerFactory!({
+        req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? diffWorker!.id : '') },
+      });
+      const ws = createMockWs();
+      handlers.onOpen({}, ws);
+      return { handlers, ws };
+    };
+    const tab1 = openSocket();
+    const tab2 = openSocket();
+    // Wait for BOTH initial diff frames (data or error: the diff source is not under test) so a late initial
+    // frame cannot satisfy the refresh assertion below.
+    for (let i = 0; i < 200 && (tab1.ws.sentMessages.length === 0 || tab2.ws.sentMessages.length === 0); i++) {
+      await Bun.sleep(10);
+    }
+    expect(tab1.ws.sentMessages.length).toBeGreaterThan(0);
+    expect(tab2.ws.sentMessages.length).toBeGreaterThan(0);
+    await Bun.sleep(50); // let any further initial work settle
+    tab1.ws.sentMessages.length = 0;
+    tab2.ws.sentMessages.length = 0;
+
+    tab1.handlers.onClose({}, tab1.ws);
+    triggerRefresh(session.locationPath);
+    await Bun.sleep(300);
+
+    expect(tab1.ws.sentMessages).toEqual([]);
+    expect(tab2.ws.sentMessages.length).toBeGreaterThan(0);
+    tab2.handlers.onClose({}, tab2.ws);
+  });
+
+  // A git-diff socket that closes while the spawn user is still being resolved must not leave a watch or a
+  // registered dead socket behind. Polarity: without the `connectionClosed` check the connection is still made,
+  // the initial diff frame is sent to the closed socket and a refresh trigger reaches it.
+  it('a git-diff socket closed before its connection is made is never connected: no frame, no watch', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff');
+    expect(diffWorker).toBeDefined();
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? diffWorker!.id : '') },
+    });
+    const ws = createMockWs();
+
+    handlers.onOpen({}, ws);
+    handlers.onClose({}, ws); // before the awaited spawn-user lookup resumes
+    await Bun.sleep(150);
+    triggerRefresh(session.locationPath);
+    await Bun.sleep(300);
+
+    expect(ws.sentMessages).toEqual([]);
+    expect(isWatching(session.locationPath)).toBe(false);
+  });
+
+  // A worker-wide teardown (pause, delete) cannot see a git-diff socket that is still resolving its spawn user,
+  // because nothing is registered yet. Polarity: without the pending-setup invalidation the socket connects after
+  // the teardown, the initial diff frame is sent and a watch is registered that outlives the session.
+  it('a worker-wide teardown during a pending git-diff setup prevents the connection: no frame, no watch', async () => {
+    expect(capturedWorkerHandlerFactory).not.toBeNull();
+    const session = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: '/test/path',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      agentId: 'claude-code',
+    });
+    const diffWorker = session.workers.find((w) => w.type === 'git-diff');
+    expect(diffWorker).toBeDefined();
+    const handlers = capturedWorkerHandlerFactory!({
+      req: { param: (name: string) => (name === 'sessionId' ? session.id : name === 'workerId' ? diffWorker!.id : '') },
+    });
+    const ws = createMockWs();
+
+    handlers.onOpen({}, ws);
+    // Synchronously, before the awaited spawn-user lookup resumes: the same call the pause and delete flows make.
+    // (No public accessor: reach the registered callbacks the way routes/__tests__/workers.test.ts reaches private state.)
+    sessionManager['webSocketCallbacks']!.stopWorkerWatching(session.id, diffWorker!.id);
+    await Bun.sleep(150);
+    triggerRefresh(session.locationPath);
+    await Bun.sleep(300);
+
+    expect(ws.sentMessages).toEqual([]);
+    expect(isWatching(session.locationPath)).toBe(false);
+    handlers.onClose({}, ws);
   });
 
   it('notifySessionPaused sends SESSION_PAUSED and closes with 1000 on an open file-viewer socket', async () => {

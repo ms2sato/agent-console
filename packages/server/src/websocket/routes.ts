@@ -60,6 +60,13 @@ export function extractMessageData(data: WSMessageReceive): string | ArrayBuffer
 // Initialized once in setupWebSocketRoutes() and shared by broadcastToApp/notifySessionDeleted.
 let registry = new WebSocketConnectionRegistry();
 
+/** A git-diff socket that is still resolving its spawn user: a worker-wide teardown marks it `invalidated`. */
+interface PendingGitDiffSetup {
+  invalidated: boolean;
+}
+const pendingGitDiffSetups = new Map<string, Set<PendingGitDiffSetup>>();
+const workerSetupKey = (sessionId: string, workerId: string): string => `${sessionId}\0${workerId}`;
+
 // Store the server PID at module load time for server restart detection
 const currentServerPid = getServerPid();
 
@@ -305,13 +312,12 @@ export async function setupWebSocketRoutes(
   const { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, annotationService } = appContext;
 
   // Initialize git-diff handlers with injected dependencies
-  const { getDiffData, getFileLines, resolveRef, resolveBaseSpec, startWatching, stopWatching } = await import('../services/git-diff-service.js');
+  const { getDiffData, getFileLines, resolveRef, resolveBaseSpec, startWatching } = await import('../services/git-diff-service.js');
   initializeGitDiffHandlers({
     getDiffData,
     resolveRef,
     resolveBaseSpec,
     startWatching,
-    stopWatching,
     getFileLines,
     annotationService,
   });
@@ -437,8 +443,20 @@ export async function setupWebSocketRoutes(
     notifySessionDeleted,
     notifySessionPaused,
     broadcastToApp,
-    // Service teardown has no socket: it unsubscribes regardless of which socket is current.
-    stopFileViewerWatching: (sessionId, workerId) => handleFileViewerDisconnection(sessionId, workerId),
+    // Service teardown (pause, final delete, worker delete) has no socket: it stops every connection of the worker.
+    stopWorkerWatching: (sessionId, workerId) => {
+      // A git-diff socket still resolving its spawn user has registered nothing yet: invalidate it, so it
+      // does not start a watch after this teardown (see the git-diff onOpen branch).
+      const pendingSetups = pendingGitDiffSetups.get(workerSetupKey(sessionId, workerId));
+      if (pendingSetups) {
+        for (const setup of pendingSetups) setup.invalidated = true;
+        pendingGitDiffSetups.delete(workerSetupKey(sessionId, workerId));
+      }
+      handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
+        logger.error({ sessionId, workerId, err }, 'Error stopping git-diff watching');
+      });
+      handleFileViewerDisconnection(sessionId, workerId);
+    },
   });
   completedSteps.add('setWebSocketCallbacks');
 
@@ -851,7 +869,7 @@ export async function setupWebSocketRoutes(
         const worker = session?.workers.find(w => w.id === wid);
 
         if (worker?.type === 'git-diff') {
-          handleGitDiffDisconnection(sid, wid).catch((err) => {
+          handleGitDiffDisconnection(sid, wid, ws).catch((err) => {
             logger.error({ sessionId: sid, workerId: wid, err }, 'Error cleaning up git-diff on WebSocket close/error');
           });
         } else if (worker?.type === 'file-viewer') {
@@ -888,6 +906,17 @@ export async function setupWebSocketRoutes(
             return;
           }
 
+          // A pausing session answers every open (git-diff, file-viewer, PTY or
+          // embedded-agent) with the same terminal SESSION_PAUSED close, before any
+          // branch can start an activation or a watch: the pause teardown has run or
+          // is about to, and a watch started now would outlive the session. The
+          // manager-level guard and the per-branch SessionPausingError catches below
+          // remain as the second line of defence.
+          if (sessionManager.isPausing(sessionId)) {
+            sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+            return;
+          }
+
           if (worker.type === 'git-diff') {
             // Resolve the session's effective spawn user (the
             // worktree-owning OS user), NOT the authenticated viewer. For
@@ -897,10 +926,28 @@ export async function setupWebSocketRoutes(
             // above guarantees the viewer is authenticated; the username
             // threaded to git is the worktree owner's, not the viewer's.
             (async () => {
-              const spawnUsername = await resolveSpawnUsername(
-                session.createdBy,
-                appContext.userRepository,
-              );
+              // Track this setup until it connects: a worker-wide teardown (stopWorkerWatching) that runs while
+              // the spawn user is being resolved cannot see the socket, so it invalidates the pending setup.
+              const setupKey = workerSetupKey(sessionId, workerId);
+              const setup: PendingGitDiffSetup = { invalidated: false };
+              const pending = pendingGitDiffSetups.get(setupKey) ?? new Set<PendingGitDiffSetup>();
+              pending.add(setup);
+              pendingGitDiffSetups.set(setupKey, pending);
+              let spawnUsername: string;
+              try {
+                spawnUsername = await resolveSpawnUsername(
+                  session.createdBy,
+                  appContext.userRepository,
+                );
+              } finally {
+                const current = pendingGitDiffSetups.get(setupKey);
+                current?.delete(setup);
+                if (current && current.size === 0) pendingGitDiffSetups.delete(setupKey);
+              }
+              // The socket may have closed while the spawn user was being resolved (its cleanup already ran and
+              // found nothing registered), or the worker may have been torn down: connecting now would leave a
+              // watch and a dead socket behind.
+              if (connectionClosed || setup.invalidated) return;
               await handleGitDiffConnection(
                 ws,
                 sessionId,
@@ -919,16 +966,6 @@ export async function setupWebSocketRoutes(
                 // Ignore send/close errors (connection may already be closed)
               }
             });
-            return;
-          }
-
-          // A pausing session answers every stream-worker open (PTY or
-          // embedded-agent) with the same terminal SESSION_PAUSED close, before
-          // either branch can start an activation. The manager-level guard and
-          // the per-branch SessionPausingError catches below remain as the
-          // second line of defence.
-          if (sessionManager.isPausing(sessionId)) {
-            sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
             return;
           }
 

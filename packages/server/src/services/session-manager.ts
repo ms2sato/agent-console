@@ -53,7 +53,6 @@ import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
-import { stopWatching } from './git-diff-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import {
   writePtyNotification,
@@ -135,8 +134,8 @@ export interface WebSocketCallbacks {
   notifySessionPaused: (sessionId: string) => void;
   /** Broadcast a message to all connected app clients */
   broadcastToApp: (msg: AppServerMessage) => void;
-  /** Stop a file-viewer worker's watch subscription (idempotent) */
-  stopFileViewerWatching: (sessionId: string, workerId: string) => void;
+  /** Stop a git-diff or file-viewer worker's watch subscriptions, every socket of it (idempotent) */
+  stopWorkerWatching: (sessionId: string, workerId: string) => void;
 }
 
 const logger = createLogger('session-manager');
@@ -697,7 +696,6 @@ export class SessionManager {
       getTimerCleanupCallback: () => this.timerCleanupCallback,
       getConditionalWakeupCleanupCallback: () => this.conditionalWakeupCleanupCallback,
       getProcessCleanupCallback: () => this.processCleanupCallback,
-      stopWatching,
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
       sweepOrphanProcessesImpl: options.sweepOrphanProcessesImpl,
@@ -726,7 +724,6 @@ export class SessionManager {
       messageService: this.messageService,
       userRepository: this.userRepository,
       resolveSpawnUsername,
-      stopWatching,
       startBranchWatching: (sessionId, locationPath, currentBranch) =>
         this.branchWatcherCallbacks?.startWatching(sessionId, locationPath, currentBranch) ?? Promise.resolve(),
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),

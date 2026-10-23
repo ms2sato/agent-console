@@ -91,7 +91,6 @@ export interface SessionPauseResumeDeps {
   messageService: MessageService;
   userRepository: UserRepository | null;
   resolveSpawnUsername: (createdBy: string | undefined, userRepo: UserRepository | null) => Promise<string>;
-  stopWatching: (locationPath: string) => void;
   startBranchWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
   stopBranchWatching: (sessionId: string) => void;
   getServerPid: () => number;
@@ -157,13 +156,10 @@ export class SessionPauseResumeService {
     // killWorker awaits PTY exit and calls detachPty, ensuring PIDs are saved as null.
     const killPromises: Promise<void>[] = [];
     for (const worker of session.workers.values()) {
-      if (worker.type === 'git-diff') {
-        // Stop file watcher for git-diff workers
-        this.deps.stopWatching(session.locationPath);
-      } else if (worker.type === 'file-viewer') {
-        // Close the viewer's watch subscription now (idempotent): the socket close
+      if (worker.type === 'git-diff' || worker.type === 'file-viewer') {
+        // Close the worker's watch subscriptions now (idempotent): the socket close
         // issued by notifySessionPaused reaches the connection cleanup asynchronously.
-        this.deps.getWebSocketCallbacks()?.stopFileViewerWatching(id, worker.id);
+        this.deps.getWebSocketCallbacks()?.stopWorkerWatching(id, worker.id);
       } else if (worker.type === 'embedded-agent') {
         // Tear down the loop subprocess (killWorker no-ops on non-PTY workers).
         killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));

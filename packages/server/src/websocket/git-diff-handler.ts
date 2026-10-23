@@ -19,8 +19,8 @@ export interface GitDiffHandlerDependencies {
   resolveRef: (ref: string, repoPath: string, requestUser: string | null) => Promise<string | null>;
   /** Resolve a persisted base *spec* to a concrete commit hash at diff time. */
   resolveBaseSpec: (spec: string, repoPath: string, requestUser: string | null) => Promise<string | null>;
-  startWatching: (repoPath: string, onChange: () => void) => void;
-  stopWatching: (repoPath: string) => void;
+  /** Returns this connection's own unsubscribe; other connections on the same path are unaffected by it. */
+  startWatching: (repoPath: string, onChange: () => void) => () => void;
   getFileLines: (repoPath: string, filePath: string, startLine: number, endLine: number, ref: GitDiffTarget, requestUser: string | null) => Promise<string[]>;
   annotationService: AnnotationService;
 }
@@ -31,6 +31,9 @@ export interface GitDiffHandlerDependencies {
 
 interface ConnectionState {
   ws: WSContext;
+  workerId: string;
+  /** Stops THIS connection's file watching (the unsubscribe `startWatching` returned). */
+  unsubscribe: () => void;
   locationPath: string;
   /** Persisted base *spec* (intent), re-resolved to a hash on every diff. */
   baseSpec: string;
@@ -43,15 +46,18 @@ interface ConnectionState {
   requestUser: string | null;
 }
 
-// Track active connections by workerId
-const activeConnections = new Map<string, ConnectionState>();
 
 // ============================================================
 // Factory Function for Dependency Injection (Testing)
 // ============================================================
 
 export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
-  const { getDiffData, resolveRef, resolveBaseSpec, startWatching, stopWatching, getFileLines, annotationService } = deps;
+  const { getDiffData, resolveRef, resolveBaseSpec, startWatching, getFileLines, annotationService } = deps;
+
+  // Active connections by socket: several tabs can hold one worker, each with its own subscription, base
+  // spec and target ref. The same WSContext object reaches onOpen, onMessage and onClose (the socket
+  // registry and the viewer handler rely on that identity too).
+  const activeConnections = new Map<WSContext, ConnectionState>();
 
   /**
    * Send diff data to the client.
@@ -118,15 +124,14 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
   ): Promise<void> {
     log.info({ sessionId, workerId, locationPath }, 'Git diff WebSocket connected');
 
-    // Store connection state (default target is working-dir)
-    const connectionKey = workerId;
+    // Store connection state (default target is working-dir). A second connection ADDS to the worker's
+    // connections; it never replaces the first.
     const targetRef: GitDiffTarget = 'working-dir';
-    activeConnections.set(connectionKey, { ws, locationPath, baseSpec, targetRef, requestUser });
 
     // Start file watching - when files change, send updated diff data
     // Note: File watching only makes sense for working-dir target
-    startWatching(locationPath, () => {
-      const state = activeConnections.get(connectionKey);
+    const unsubscribe = startWatching(locationPath, () => {
+      const state = activeConnections.get(ws);
       if (state && state.targetRef === 'working-dir') {
         log.debug({ locationPath }, 'File change detected, sending updated diff');
         sendDiffData(state.ws, state.locationPath, state.baseSpec, state.requestUser, state.targetRef).catch((err) => {
@@ -134,28 +139,37 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
         });
       }
     });
+    activeConnections.set(ws, { ws, workerId, unsubscribe, locationPath, baseSpec, targetRef, requestUser });
 
     // Send initial diff data
     await sendDiffData(ws, locationPath, baseSpec, requestUser, targetRef);
   }
 
   /**
-   * Handle git-diff WebSocket disconnection.
-   * Stops file watching.
+   * Handle git-diff WebSocket disconnection. With `ws` (a socket's own close) only that connection's
+   * watch is stopped, and a socket that is not registered (an already-removed one) is a no-op, so a
+   * late close can never tear down another connection. Without `ws` (a service tearing the worker down:
+   * pause, delete) every connection of the worker is stopped.
    */
   async function handleDisconnection(
     sessionId: string,
-    workerId: string
+    workerId: string,
+    ws?: WSContext
   ): Promise<void> {
     log.info({ sessionId, workerId }, 'Git diff WebSocket disconnected');
 
-    const connectionKey = workerId;
-    const state = activeConnections.get(connectionKey);
-
-    if (state) {
-      // Stop file watching
-      stopWatching(state.locationPath);
-      activeConnections.delete(connectionKey);
+    if (ws !== undefined) {
+      const state = activeConnections.get(ws);
+      if (state) {
+        activeConnections.delete(ws);
+        state.unsubscribe();
+      }
+      return;
+    }
+    for (const [socket, state] of [...activeConnections]) {
+      if (state.workerId !== workerId) continue;
+      activeConnections.delete(socket);
+      state.unsubscribe();
     }
   }
 
@@ -171,8 +185,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
   ): Promise<void> {
     try {
       const parsed: GitDiffClientMessage = JSON.parse(message);
-      const connectionKey = workerId;
-      const state = activeConnections.get(connectionKey);
+      const state = activeConnections.get(ws);
       if (!state) {
         sendError(ws, 'No active connection for this worker');
         return;
@@ -256,39 +269,40 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
     }
   }
 
+  /** Every open connection of a worker (one per tab). */
+  function connectionsOf(workerId: string): ConnectionState[] {
+    return [...activeConnections.values()].filter((state) => state.workerId === workerId);
+  }
+
   /**
-   * Update the base spec for an active connection and send fresh diff data.
-   * If no active connection exists for the workerId, silently returns.
+   * Update the base spec for every active connection of the worker and send each fresh diff data.
+   * If the worker has no active connection, silently returns.
    *
-   * Validate-before-replace: the new spec is committed to `state.baseSpec` only
+   * Validate-before-replace: the new spec is committed to a connection's `baseSpec` only
    * after a successful send, so a server-pushed spec that points at a
    * deleted/invalid ref does not clobber the last good spec.
    */
   async function updateBaseCommit(workerId: string, newBaseSpec: string): Promise<void> {
-    const state = activeConnections.get(workerId);
-    if (!state) {
-      return;
-    }
-
-    const ok = await sendDiffData(state.ws, state.locationPath, newBaseSpec, state.requestUser, state.targetRef);
-    if (ok) state.baseSpec = newBaseSpec;
+    await Promise.all(
+      connectionsOf(workerId).map(async (state) => {
+        const ok = await sendDiffData(state.ws, state.locationPath, newBaseSpec, state.requestUser, state.targetRef);
+        if (ok) state.baseSpec = newBaseSpec;
+      }),
+    );
   }
 
   /**
-   * Send annotations to the client connected for a given workerId.
+   * Send annotations to every client connected for a given workerId.
    * Silently returns if no active connection exists.
    */
   function sendAnnotationsToClient(workerId: string, annotations: ReviewAnnotationSet | null): void {
-    const state = activeConnections.get(workerId);
-    if (!state) {
-      return;
-    }
-
     const msg: GitDiffServerMessage = {
       type: 'annotations-updated',
       annotations,
     };
-    state.ws.send(JSON.stringify(msg));
+    for (const state of connectionsOf(workerId)) {
+      state.ws.send(JSON.stringify(msg));
+    }
   }
 
   return {

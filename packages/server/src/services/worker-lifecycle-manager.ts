@@ -51,7 +51,6 @@ import { resolveStartupIntent, type StartupIntentPreference } from './startup-in
 import type { NotificationManager } from './notifications/notification-manager.js';
 import type { InterSessionMessageService } from './inter-session-message-service.js';
 import type { AnnotationService } from './annotation-service.js';
-import { stopWatching } from './git-diff-service.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
@@ -125,8 +124,8 @@ export interface WorkerLifecycleDeps {
    * doc comment).
    */
   activateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
-  /** The WebSocket-side teardown hook; deleting a file-viewer worker stops its watch subscription through it. */
-  getWebSocketCallbacks: () => Pick<WebSocketCallbacks, 'stopFileViewerWatching'> | null;
+  /** The WebSocket-side teardown hook; deleting a git-diff or file-viewer worker stops its watch subscriptions through it. */
+  getWebSocketCallbacks: () => Pick<WebSocketCallbacks, 'stopWorkerWatching'> | null;
   notificationManager: NotificationManager | null;
   pathExists: (path: string) => Promise<boolean>;
   getSession: (sessionId: string) => InternalSession | undefined;
@@ -570,12 +569,10 @@ export class WorkerLifecycleManager {
     if (worker.type === 'agent' || worker.type === 'terminal') {
       await this.deps.workerManager.killWorker(worker, sessionId);
       cleanupPayload = this.resolveWorkerOutputCleanup(sessionId, workerId, session);
-    } else if (worker.type === 'git-diff') {
-      // git-diff worker: stop file watcher (synchronous operation)
-      stopWatching(session.locationPath);
-    } else if (worker.type === 'file-viewer') {
-      // file-viewer worker: no process or output stream; close its watch subscription (idempotent).
-      this.deps.getWebSocketCallbacks()?.stopFileViewerWatching(sessionId, workerId);
+    } else if (worker.type === 'git-diff' || worker.type === 'file-viewer') {
+      // git-diff and file-viewer workers: no process or output stream; close this worker's watch
+      // subscriptions (idempotent). Other workers watching the same directory are untouched.
+      this.deps.getWebSocketCallbacks()?.stopWorkerWatching(sessionId, workerId);
     } else {
       // embedded-agent worker: gracefully tear down the loop subprocess (and
       // revoke its MCP token) BEFORE cleaning the output stream. Cleanup must
