@@ -2918,3 +2918,20 @@ describe('runLoop — memory layer: memoryDir at every loader call site, memoryR
     await expect(readFile(target, 'utf-8')).resolves.toBe('# Memory Index\n');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Outbound TLS wiring (Issue #2236). The production factories live inside the
+// `import.meta.main` bootstrap, which a unit test cannot call, so this pins the
+// bootstrap's source: the production `createAdapter` must hand the adapter the
+// outbound fetch (OS CA bundle) rather than leave it on the default bare fetch.
+// The wrapper's behaviour is covered in outbound-tls.test.ts; this pin covers
+// only that it is wired in.
+// ---------------------------------------------------------------------------
+describe('main bootstrap — outbound TLS wiring', () => {
+  it('createAdapter passes fetchFn: createOutboundFetch() to OpenAIChatAdapter and imports it from ./outbound-tls.js', async () => {
+    const source = await readFile(mainPath, 'utf8');
+    const bootstrap = source.slice(source.indexOf('if (import.meta.main)'));
+    expect(bootstrap).toMatch(/createAdapter:\s*\(opts\)\s*=>\s*new OpenAIChatAdapter\(\{[^}]*fetchFn:\s*createOutboundFetch\(\)[^}]*\}\)/);
+    expect(source).toMatch(/import \{ createOutboundFetch \} from '\.\/outbound-tls\.js';/);
+  });
+});
