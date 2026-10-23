@@ -371,6 +371,12 @@ describe('AppContext', () => {
       expect(Array.isArray(sessions)).toBe(true);
     });
 
+    it('registers the timer then conditional-wakeup pause participants', async () => {
+      appContext = await createTestContext();
+
+      expect(appContext.sessionManager.listPauseParticipants()).toEqual(['timer', 'conditional-wakeup']);
+    });
+
     it('wires pause and resume of a session to timer and conditional wakeup suspension', async () => {
       appContext = await createTestContext();
       const { sessionManager, sessionRepository, timerManager, conditionalWakeupManager } = appContext;

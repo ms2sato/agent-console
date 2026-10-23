@@ -252,6 +252,23 @@ export const MATCHING_RULES = {
     relevance:
       'a value is inserted into a shared map / registry / collection before its construction completes — every reader of that collection must be able to recognize the pending state and skip or await it, or the insert must be deferred until the value is complete',
   },
+  'I-11': {
+    keywords: [
+      'pause participant',
+      'registerPauseParticipant',
+      'per-session',
+      'cleanup callback',
+      'setTimeout',
+      'setInterval',
+      'scheduler',
+      'paused session',
+      'suspend',
+      'lifecycle transition',
+    ],
+    pathFragments: ['session-manager', 'session-pause-resume-service', 'timer-manager', 'conditional-wakeup-manager', 'interactive-process-manager'],
+    relevance:
+      'a component holds per-session runtime state or schedules per-session work — declare its delete / pause / resume / restart behavior; the pause row is either a registered pause participant or a documented keep-running with its notification disposition',
+  },
 };
 
 function usage() {

@@ -601,15 +601,13 @@ export async function createAppContext(
   });
 
   // 6.6.4. Suspend / resume timers and wakeups around a session pause
-  sessionManager.setSchedulePauseCallbacks({
-    suspend: (sessionId) => {
-      timerManager.suspendTimersBySession(sessionId);
-      conditionalWakeupManager.suspendWakeupsBySession(sessionId);
-    },
-    resume: (sessionId) => {
-      timerManager.resumeTimersBySession(sessionId);
-      conditionalWakeupManager.resumeWakeupsBySession(sessionId);
-    },
+  sessionManager.registerPauseParticipant('timer', {
+    suspend: (sessionId) => timerManager.suspendTimersBySession(sessionId),
+    resume: (sessionId) => timerManager.resumeTimersBySession(sessionId),
+  });
+  sessionManager.registerPauseParticipant('conditional-wakeup', {
+    suspend: (sessionId) => conditionalWakeupManager.suspendWakeupsBySession(sessionId),
+    resume: (sessionId) => conditionalWakeupManager.resumeWakeupsBySession(sessionId),
   });
 
   // 6.7. Create interactive process manager (in-memory, volatile).
@@ -1051,15 +1049,13 @@ export async function createTestContext(
 
   // Create conditional wakeup manager (no-op callback for tests)
   const conditionalWakeupManager = new ConditionalWakeupManagerClass(() => {});
-  sessionManager.setSchedulePauseCallbacks({
-    suspend: (sessionId) => {
-      timerManager.suspendTimersBySession(sessionId);
-      conditionalWakeupManager.suspendWakeupsBySession(sessionId);
-    },
-    resume: (sessionId) => {
-      timerManager.resumeTimersBySession(sessionId);
-      conditionalWakeupManager.resumeWakeupsBySession(sessionId);
-    },
+  sessionManager.registerPauseParticipant('timer', {
+    suspend: (sessionId) => timerManager.suspendTimersBySession(sessionId),
+    resume: (sessionId) => timerManager.resumeTimersBySession(sessionId),
+  });
+  sessionManager.registerPauseParticipant('conditional-wakeup', {
+    suspend: (sessionId) => conditionalWakeupManager.suspendWakeupsBySession(sessionId),
+    resume: (sessionId) => conditionalWakeupManager.resumeWakeupsBySession(sessionId),
   });
 
   // Create interactive process manager (no-op callbacks for tests, sessionManager for PTY message injection)
