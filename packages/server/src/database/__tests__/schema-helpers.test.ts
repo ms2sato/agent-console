@@ -11,15 +11,17 @@ import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { addDatetime, ISO8601_GLOB_PATTERN } from '../schema-helpers.js';
 
+interface ProbeDatabase {
+  probe: { id: string; at: string | null };
+}
+
 describe('schema-helpers', () => {
   let bunDb: BunDatabase;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let db: Kysely<any>;
+  let db: Kysely<ProbeDatabase>;
 
   beforeEach(async () => {
     bunDb = new BunDatabase(':memory:');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    db = new Kysely<any>({ dialect: new BunSqliteDialect({ database: bunDb }) });
+    db = new Kysely<ProbeDatabase>({ dialect: new BunSqliteDialect({ database: bunDb }) });
     await addDatetime(
       db.schema.createTable('probe').addColumn('id', 'text', (c) => c.primaryKey()),
       'probe',
