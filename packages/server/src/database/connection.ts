@@ -2632,7 +2632,7 @@ export async function migrateToV42(
  * Every table built with the `addDatetime()` helper (`sessions`, `workers`,
  * `repositories`, `agents`, `repository_slack_integrations`, `worktrees`)
  * gets, per datetime column, a `DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ',
- * 'now'))` plus a `CHECK (<col> IS NULL OR <col> GLOB '????-??-??T??:??:??*Z')`
+ * 'now'))` plus a `CHECK (<col> IS NULL OR <col> GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')`
  * constraint. `sessions` is the one exception: migration v19's hand-written
  * `CREATE TABLE sessions_new` (needed to add the `created_by` FK constraint,
  * since SQLite has no `ALTER TABLE ADD CONSTRAINT`) reproduced every column

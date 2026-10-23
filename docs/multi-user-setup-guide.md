@@ -1312,8 +1312,8 @@ run at any time, while the server is stopped):
 
 ```sql
 SELECT id, created_at, updated_at FROM sessions
-WHERE (created_at IS NOT NULL AND created_at NOT GLOB '????-??-??T??:??:??*Z')
-   OR (updated_at IS NOT NULL AND updated_at NOT GLOB '????-??-??T??:??:??*Z');
+WHERE (created_at IS NOT NULL AND created_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
+   OR (updated_at IS NOT NULL AND updated_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z');
 ```
 
 Run it against the data directory's `data.db` with the `sqlite3` CLI (or
