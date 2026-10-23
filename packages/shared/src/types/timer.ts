@@ -25,4 +25,9 @@ export interface TimerInfo {
   currentIntervalSeconds: number;
   /** ISO timestamp of the next fire */
   nextFireAt: string;
+  /**
+   * Set while the owning session is paused; `nextFireAt` is then the fire that
+   * was pending when the pause began, re-armed with its remaining wait on resume.
+   */
+  suspendedAt?: string;
 }

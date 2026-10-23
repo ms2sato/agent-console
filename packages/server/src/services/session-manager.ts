@@ -453,6 +453,10 @@ export class SessionManager {
   private usernameLookup: UsernameLookup;
   private sharedAccountLookup: SharedAccountLookup;
   private timerCleanupCallback?: (sessionId: string) => void;
+  private schedulePauseCallbacks?: {
+    suspend: (sessionId: string) => void;
+    resume: (sessionId: string) => void;
+  };
   private conditionalWakeupCleanupCallback?: (sessionId: string) => void;
   private processCleanupCallback?: (sessionId: string) => void;
   private branchWatcherCallbacks?: {
@@ -727,6 +731,8 @@ export class SessionManager {
       startBranchWatching: (sessionId, locationPath, currentBranch) =>
         this.branchWatcherCallbacks?.startWatching(sessionId, locationPath, currentBranch) ?? Promise.resolve(),
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
+      suspendSchedules: (sessionId) => this.schedulePauseCallbacks?.suspend(sessionId),
+      resumeSchedules: (sessionId) => this.schedulePauseCallbacks?.resume(sessionId),
       getServerPid,
       hasSessionHookCommand: (kind, session) => this.configuredHookCommand(kind, session) !== undefined,
       runSessionHookCommand: (kind, session, username) => this.runSessionHookCommand(kind, session, username),
@@ -1333,6 +1339,17 @@ export class SessionManager {
    */
   setTimerCleanupCallback(callback: (sessionId: string) => void): void {
     this.timerCleanupCallback = callback;
+  }
+
+  /**
+   * Set the callbacks that suspend / resume timers and conditional wakeups
+   * around a session pause. Wired in app-context; no-ops while unset.
+   */
+  setSchedulePauseCallbacks(callbacks: {
+    suspend: (sessionId: string) => void;
+    resume: (sessionId: string) => void;
+  }): void {
+    this.schedulePauseCallbacks = callbacks;
   }
 
   /**

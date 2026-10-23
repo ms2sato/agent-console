@@ -5592,6 +5592,24 @@ describe('MCP Server Tools', () => {
         expect(data.timers[0].backoffFactor).toBe(2);
         expect(Number.isNaN(Date.parse(data.timers[0].nextFireAt))).toBe(false);
       });
+
+      it('should show suspendedAt only while the session is paused', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId, workerId, intervalSeconds: 60, action: 'x',
+        }, nextId++);
+        type Listed = { timers: Array<{ suspendedAt?: string }> };
+        const list = async () =>
+          parseToolResult(await callTool(app, mcpSessionId, 'list_timers', {}, nextId++)) as Listed;
+
+        expect((await list()).timers[0].suspendedAt).toBeUndefined();
+
+        timerManager.suspendTimersBySession(sessionId);
+        expect(typeof (await list()).timers[0].suspendedAt).toBe('string');
+
+        timerManager.resumeTimersBySession(sessionId);
+        expect((await list()).timers[0].suspendedAt).toBeUndefined();
+      });
     });
 
     describe('delete_timer', () => {

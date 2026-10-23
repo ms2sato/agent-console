@@ -15,6 +15,8 @@ interface StoredTimer {
   handle: ReturnType<typeof setTimeout> | undefined;
   /** Fires since creation, restore or the last reset; runtime state, never persisted. */
   step: number;
+  /** Set while the owning session is paused; the pending fire's remaining wait. */
+  suspended?: { at: string; remainingMs: number };
 }
 
 /**
@@ -167,6 +169,16 @@ export class TimerManager {
     }
 
     clearTimeout(stored.handle);
+    if (stored.suspended) {
+      stored.step = 0;
+      stored.info.currentIntervalSeconds = stored.info.intervalSeconds;
+      stored.suspended.remainingMs = stored.info.intervalSeconds * 1000;
+      stored.info.nextFireAt = new Date(
+        Date.now() + stored.suspended.remainingMs,
+      ).toISOString();
+      logger.info({ timerId }, 'Suspended timer reset to base interval');
+      return { ...stored.info };
+    }
     const restarted = this.startChain(stored.info);
     this.timers.set(timerId, restarted);
     logger.info({ timerId }, 'Timer reset to base interval');
@@ -206,6 +218,53 @@ export class TimerManager {
     return count;
   }
 
+  /**
+   * Freeze every armed timer of a session: the pending fire is cancelled and
+   * its remaining wait remembered. Backoff state is untouched. Idempotent.
+   */
+  suspendTimersBySession(sessionId: string): number {
+    let count = 0;
+    const now = Date.now();
+    for (const stored of this.timers.values()) {
+      if (stored.info.sessionId !== sessionId || stored.suspended) {
+        continue;
+      }
+      clearTimeout(stored.handle);
+      stored.handle = undefined;
+      const remainingMs = Math.max(0, Date.parse(stored.info.nextFireAt) - now);
+      const at = new Date(now).toISOString();
+      stored.suspended = { at, remainingMs };
+      stored.info.suspendedAt = at;
+      count += 1;
+    }
+    if (count > 0) {
+      logger.info({ sessionId, count }, 'Suspended timers for session');
+    }
+    return count;
+  }
+
+  /**
+   * Re-arm every suspended timer of a session with its remaining wait,
+   * continuing the same chain (same step). Idempotent.
+   */
+  resumeTimersBySession(sessionId: string): number {
+    let count = 0;
+    for (const stored of this.timers.values()) {
+      if (stored.info.sessionId !== sessionId || !stored.suspended) {
+        continue;
+      }
+      const { remainingMs } = stored.suspended;
+      stored.suspended = undefined;
+      delete stored.info.suspendedAt;
+      this.armFire(stored, remainingMs);
+      count += 1;
+    }
+    if (count > 0) {
+      logger.info({ sessionId, count }, 'Resumed timers for session');
+    }
+    return count;
+  }
+
   disposeAll(): void {
     for (const stored of this.timers.values()) {
       clearTimeout(stored.handle);
@@ -215,7 +274,7 @@ export class TimerManager {
     logger.info({ count }, 'All timers disposed');
   }
 
-  async restoreTimers(): Promise<number> {
+  async restoreTimers(options: { isSessionLive: (sessionId: string) => boolean }): Promise<number> {
     if (!this.repository) {
       return 0;
     }
@@ -244,7 +303,21 @@ export class TimerManager {
         nextFireAt: '',
       };
 
-      this.timers.set(record.id, this.startChain(info));
+      if (options.isSessionLive(record.sessionId)) {
+        this.timers.set(record.id, this.startChain(info));
+      } else {
+        const now = Date.now();
+        const remainingMs = record.intervalSeconds * 1000;
+        const at = new Date(now).toISOString();
+        info.nextFireAt = new Date(now + remainingMs).toISOString();
+        info.suspendedAt = at;
+        this.timers.set(record.id, {
+          info,
+          step: 0,
+          handle: undefined,
+          suspended: { at, remainingMs },
+        });
+      }
       restored += 1;
     }
 
@@ -269,8 +342,13 @@ export class TimerManager {
   }
 
   private scheduleNext(stored: StoredTimer): void {
+    this.armFire(stored, stored.info.currentIntervalSeconds * 1000);
+  }
+
+  /** Arm the pending fire of a chain to run after `delayMs`. */
+  private armFire(stored: StoredTimer, delayMs: number): void {
     const { info } = stored;
-    info.nextFireAt = new Date(Date.now() + info.currentIntervalSeconds * 1000).toISOString();
+    info.nextFireAt = new Date(Date.now() + delayMs).toISOString();
     stored.handle = setTimeout(() => {
       stored.step += 1;
       info.lastFiredAt = new Date().toISOString();
@@ -284,6 +362,6 @@ export class TimerManager {
       this.scheduleNext(stored);
       logger.debug({ timerId: info.id, fireCount: info.fireCount }, 'Timer fired');
       this.onTick({ ...info });
-    }, info.currentIntervalSeconds * 1000);
+    }, delayMs);
   }
 }

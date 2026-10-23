@@ -9175,6 +9175,42 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setSchedulePauseCallbacks', () => {
+    async function createWorktreeSession(manager: Awaited<ReturnType<typeof getSessionManager>>) {
+      return manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+    }
+
+    it('suspends on pause and resumes on resume with the session id', async () => {
+      const manager = await getSessionManager();
+      const calls: string[] = [];
+      manager.setSchedulePauseCallbacks({
+        suspend: (id) => { calls.push(`suspend:${id}`); },
+        resume: (id) => { calls.push(`resume:${id}`); },
+      });
+      const session = await createWorktreeSession(manager);
+
+      await manager.pauseSession(session.id);
+      expect(calls).toEqual([`suspend:${session.id}`]);
+
+      await manager.resumeSession(session.id);
+      expect(calls).toEqual([`suspend:${session.id}`, `resume:${session.id}`]);
+    });
+
+    it('pauses and resumes without callbacks set', async () => {
+      const manager = await getSessionManager();
+      const session = await createWorktreeSession(manager);
+
+      await expect(manager.pauseSession(session.id)).resolves.toEqual({ paused: true });
+      await expect(manager.resumeSession(session.id)).resolves.not.toBeNull();
+    });
+  });
+
   describe('setConditionalWakeupCleanupCallback', () => {
     it('should set and invoke conditional wakeup cleanup callback', async () => {
       const manager = await getSessionManager();

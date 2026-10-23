@@ -146,6 +146,8 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     resolveSpawnUsername: mock(async () => 'testuser'),
     startBranchWatching: async () => {},
     stopBranchWatching: () => {},
+    suspendSchedules: mock((_sessionId: string) => {}),
+    resumeSchedules: mock((_sessionId: string) => {}),
     getServerPid: () => 99999,
     hasSessionHookCommand: mock(() => false),
     runSessionHookCommand: mock(async () => undefined),
@@ -326,6 +328,96 @@ describe('SessionPauseResumeService', () => {
       // Without this branch the subprocess leaks (killWorker no-ops on it).
       expect(deactivateEmbeddedAgentWorker).toHaveBeenCalledWith('session-1', 'w-emb');
       expect(deps.workerManager.killWorker).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('schedule suspension on pause', () => {
+    it('suspends schedules before notifying, stopping watchers, or killing any worker', async () => {
+      const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+      const calls: string[] = [];
+      const deps = createMockDeps({
+        getSession: () => session,
+        suspendSchedules: mock((_id: string) => { calls.push('suspendSchedules'); }),
+        stopBranchWatching: () => { calls.push('stopBranchWatching'); },
+        getWebSocketCallbacks: () => ({
+          notifySessionPaused: mock(() => { calls.push('notifySessionPaused'); }),
+          notifySessionDeleted: mock(() => {}),
+          broadcastToApp: mock(() => {}),
+          stopWorkerWatching: mock(() => {}),
+        }),
+        workerManager: {
+          killWorker: mock(async () => { calls.push('killWorker'); }),
+          restoreWorkersFromPersistence: mock(() => new Map()),
+          activateAgentWorkerPty: mock(async () => {}),
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.pauseSession('session-1');
+
+      expect(deps.suspendSchedules).toHaveBeenCalledWith('session-1');
+      expect(calls[0]).toBe('suspendSchedules');
+      expect(calls.indexOf('suspendSchedules')).toBeLessThan(calls.indexOf('killWorker'));
+      expect(calls.indexOf('suspendSchedules')).toBeLessThan(calls.indexOf('notifySessionPaused'));
+      expect(calls.indexOf('suspendSchedules')).toBeLessThan(calls.indexOf('stopBranchWatching'));
+    });
+
+    it('does not re-arm on a successful pause', async () => {
+      const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+      const deps = createMockDeps({ getSession: () => session });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.pauseSession('session-1');
+
+      expect(deps.resumeSchedules).not.toHaveBeenCalled();
+    });
+
+    it('re-arms once and rethrows when the save rejects and the session stays live', async () => {
+      const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+      const base = createMockDeps();
+      const deps = createMockDeps({
+        getSession: () => session,
+        sessionRepository: {
+          ...base.sessionRepository,
+          save: mock(async () => { throw new Error('DB write failed'); }),
+        },
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await expect(service.pauseSession('session-1')).rejects.toThrow('DB write failed');
+
+      expect(deps.suspendSchedules).toHaveBeenCalledTimes(1);
+      expect(deps.resumeSchedules).toHaveBeenCalledTimes(1);
+      expect(deps.resumeSchedules).toHaveBeenCalledWith('session-1');
+    });
+
+    it('does not re-arm when a failure happens after the session has left memory', async () => {
+      const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+      let inMemory = true;
+      const deps = createMockDeps({
+        getSession: () => (inMemory ? session : undefined),
+        deleteSession: mock(() => { inMemory = false; }),
+        getSessionLifecycleCallbacks: () => ({
+          onSessionPaused: () => { throw new Error('callback failed'); },
+        }),
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await expect(service.pauseSession('session-1')).rejects.toThrow('callback failed');
+
+      expect(deps.resumeSchedules).not.toHaveBeenCalled();
+    });
+
+    it('does not suspend schedules for a quick session or an unknown session', async () => {
+      const quick = buildInternalQuickSession();
+      const quickDeps = createMockDeps({ getSession: () => quick });
+      await new SessionPauseResumeService(quickDeps).pauseSession('session-2');
+      const missingDeps = createMockDeps();
+      await new SessionPauseResumeService(missingDeps).pauseSession('nope');
+
+      expect(quickDeps.suspendSchedules).not.toHaveBeenCalled();
+      expect(missingDeps.suspendSchedules).not.toHaveBeenCalled();
     });
   });
 
@@ -860,6 +952,86 @@ describe('SessionPauseResumeService', () => {
       // Unblock first resume
       resolveResume!();
       await resume1;
+    });
+
+    describe('schedule re-arm on resume', () => {
+      function resumableDeps(overrides?: Partial<SessionPauseResumeDeps>) {
+        const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+        });
+        const base = createMockDeps();
+        return createMockDeps({
+          sessionRepository: {
+            ...base.sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => new Map([['w1', agentWorker]])),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+          ...overrides,
+        });
+      }
+
+      it('re-arms once, after onSessionResumed', async () => {
+        const calls: string[] = [];
+        const deps = resumableDeps({
+          getSessionLifecycleCallbacks: () => ({ onSessionResumed: () => { calls.push('onSessionResumed'); } }),
+          resumeSchedules: mock((_id: string) => { calls.push('resumeSchedules'); }),
+        });
+
+        const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+
+        expect(result).not.toBeNull();
+        expect(calls).toEqual(['onSessionResumed', 'resumeSchedules']);
+        expect(deps.resumeSchedules).toHaveBeenCalledWith('session-1');
+      });
+
+      it('never re-arms when PTY activation fails', async () => {
+        const deps = resumableDeps({
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => new Map([['w1', buildInternalAgentWorker({ id: 'w1' })]])),
+            activateAgentWorkerPty: mock(async () => { throw new Error('PTY activation failed'); }),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+        });
+
+        const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+
+        expect(result).toBeNull();
+        expect(deps.resumeSchedules).not.toHaveBeenCalled();
+      });
+
+      it('never re-arms when persistence fails after activation (rollback)', async () => {
+        const base = resumableDeps();
+        const deps = resumableDeps({
+          sessionRepository: {
+            ...base.sessionRepository,
+            save: mock(async () => { throw new Error('DB write failed'); }),
+          },
+        });
+
+        const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+
+        expect(result).toBeNull();
+        expect(deps.resumeSchedules).not.toHaveBeenCalled();
+      });
+
+      it('does not re-arm when the session was already active', async () => {
+        const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+        const deps = createMockDeps({ getSession: () => session });
+
+        await new SessionPauseResumeService(deps).resumeSession('session-1');
+
+        expect(deps.resumeSchedules).not.toHaveBeenCalled();
+      });
     });
 
     it('should roll back on PTY activation failure', async () => {

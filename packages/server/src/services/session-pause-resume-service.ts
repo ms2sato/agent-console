@@ -93,6 +93,10 @@ export interface SessionPauseResumeDeps {
   resolveSpawnUsername: (createdBy: string | undefined, userRepo: UserRepository | null) => Promise<string>;
   startBranchWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
   stopBranchWatching: (sessionId: string) => void;
+  /** Freeze the session's timers and conditional wakeups (synchronous, idempotent). */
+  suspendSchedules: (sessionId: string) => void;
+  /** Re-arm the session's suspended timers and conditional wakeups (synchronous, idempotent). */
+  resumeSchedules: (sessionId: string) => void;
   getServerPid: () => number;
   /** Whether the session's repository has a non-blank pause or resume command configured. */
   hasSessionHookCommand: (kind: 'pause' | 'resume', session: InternalSession) => boolean;
@@ -145,59 +149,73 @@ export class SessionPauseResumeService {
       return { paused: false };
     }
 
-    // Stop branch watcher before pausing
-    this.deps.stopBranchWatching(id);
+    // Freeze timers and conditional wakeups first (synchronous): once this
+    // returns no scheduled fire can be dispatched while the session goes down.
+    this.deps.suspendSchedules(id);
 
-    // Notify all active Worker WebSocket connections that session is being paused
-    // This must happen BEFORE killing workers so clients receive the notification
-    this.deps.getWebSocketCallbacks()?.notifySessionPaused(id);
+    try {
+      // Stop branch watcher before pausing
+      this.deps.stopBranchWatching(id);
 
-    // Kill all PTY workers (preserve output files) and clear PTY references.
-    // killWorker awaits PTY exit and calls detachPty, ensuring PIDs are saved as null.
-    const killPromises: Promise<void>[] = [];
-    for (const worker of session.workers.values()) {
-      if (worker.type === 'git-diff' || worker.type === 'file-viewer') {
-        // Close the worker's watch subscriptions now (idempotent): the socket close
-        // issued by notifySessionPaused reaches the connection cleanup asynchronously.
-        this.deps.getWebSocketCallbacks()?.stopWorkerWatching(id, worker.id);
-      } else if (worker.type === 'embedded-agent') {
-        // Tear down the loop subprocess (killWorker no-ops on non-PTY workers).
-        killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));
-      } else {
-        // Kill PTY for agent/terminal workers (don't delete output files)
-        killPromises.push(this.deps.workerManager.killWorker(worker, id));
+      // Notify all active Worker WebSocket connections that session is being paused
+      // This must happen BEFORE killing workers so clients receive the notification
+      this.deps.getWebSocketCallbacks()?.notifySessionPaused(id);
+
+      // Kill all PTY workers (preserve output files) and clear PTY references.
+      // killWorker awaits PTY exit and calls detachPty, ensuring PIDs are saved as null.
+      const killPromises: Promise<void>[] = [];
+      for (const worker of session.workers.values()) {
+        if (worker.type === 'git-diff' || worker.type === 'file-viewer') {
+          // Close the worker's watch subscriptions now (idempotent): the socket close
+          // issued by notifySessionPaused reaches the connection cleanup asynchronously.
+          this.deps.getWebSocketCallbacks()?.stopWorkerWatching(id, worker.id);
+        } else if (worker.type === 'embedded-agent') {
+          // Tear down the loop subprocess (killWorker no-ops on non-PTY workers).
+          killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));
+        } else {
+          // Kill PTY for agent/terminal workers (don't delete output files)
+          killPromises.push(this.deps.workerManager.killWorker(worker, id));
+        }
       }
+      await Promise.all(killPromises);
+
+      // Workers are down: run the repository's pause command. It never blocks the
+      // pause; a failure travels back to the caller in the result.
+      const pauseCommandResult = await this.runHookCommand('pause', session);
+
+      // Clean up notification state (throttle timers, debounce timers)
+      this.deps.notificationManager?.cleanupSession(id);
+
+      // Clean up inter-worker message history
+      this.deps.messageService.clearSession(id);
+
+      // Save session with serverPid = null, worker PIDs cleared, and pausedAt timestamp
+      // Using save() instead of update() to persist the full session state including worker PID changes
+      const persistedSession = this.deps.toPersistedSessionWithServerPid(session, null);
+      const pausedAt = new Date().toISOString();
+      persistedSession.pausedAt = pausedAt;
+      await this.deps.sessionRepository.save(persistedSession);
+
+      // Remove from in-memory sessions Map (after successful persistence)
+      this.deps.deleteSession(id);
+
+      logger.info({ sessionId: id }, 'Session paused');
+
+      // Call lifecycle callback with full public Session (includes activationState: 'hibernated')
+      // persistedToPublicSession always returns hibernated state for persisted sessions
+      const pausedPublicSession = this.deps.persistedToPublicSession(persistedSession) as PausedSession;
+      this.deps.getSessionLifecycleCallbacks()?.onSessionPaused?.(pausedPublicSession);
+
+      return pauseCommandResult ? { paused: true, pauseCommandResult } : { paused: true };
+    } catch (error) {
+      // The session stays live when the pause fails before it is removed from
+      // memory: re-arm what was just suspended. If it is already gone the
+      // schedules stay suspended (the session is paused).
+      if (this.deps.getSession(id)) {
+        this.deps.resumeSchedules(id);
+      }
+      throw error;
     }
-    await Promise.all(killPromises);
-
-    // Workers are down: run the repository's pause command. It never blocks the
-    // pause; a failure travels back to the caller in the result.
-    const pauseCommandResult = await this.runHookCommand('pause', session);
-
-    // Clean up notification state (throttle timers, debounce timers)
-    this.deps.notificationManager?.cleanupSession(id);
-
-    // Clean up inter-worker message history
-    this.deps.messageService.clearSession(id);
-
-    // Save session with serverPid = null, worker PIDs cleared, and pausedAt timestamp
-    // Using save() instead of update() to persist the full session state including worker PID changes
-    const persistedSession = this.deps.toPersistedSessionWithServerPid(session, null);
-    const pausedAt = new Date().toISOString();
-    persistedSession.pausedAt = pausedAt;
-    await this.deps.sessionRepository.save(persistedSession);
-
-    // Remove from in-memory sessions Map (after successful persistence)
-    this.deps.deleteSession(id);
-
-    logger.info({ sessionId: id }, 'Session paused');
-
-    // Call lifecycle callback with full public Session (includes activationState: 'hibernated')
-    // persistedToPublicSession always returns hibernated state for persisted sessions
-    const pausedPublicSession = this.deps.persistedToPublicSession(persistedSession) as PausedSession;
-    this.deps.getSessionLifecycleCallbacks()?.onSessionPaused?.(pausedPublicSession);
-
-    return pauseCommandResult ? { paused: true, pauseCommandResult } : { paused: true };
   }
 
   /**
@@ -471,6 +489,10 @@ export class SessionPauseResumeService {
     // Call lifecycle callback with activity states
     // After resume, session is always in running state
     this.deps.getSessionLifecycleCallbacks()?.onSessionResumed?.(publicSession as RunningSession, activityStates);
+
+    // Re-arm timers and wakeups suspended by the pause, continuing with their
+    // remaining wait. Reached only after activation and persistence succeeded.
+    this.deps.resumeSchedules(id);
 
     return resumeCommandResult
       ? { session: publicSession, resumeCommandResult }

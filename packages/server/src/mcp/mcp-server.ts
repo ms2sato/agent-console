@@ -1730,6 +1730,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       `Refused while this session has a running run_process and intervalSeconds is under ${RUN_PROCESS_WAKEUP_REFUSAL_BELOW_SECONDS} and no backoffFactor above 1: that process wakes you itself. ` +
       'One standing timer per delegate; call `list_timers` first. ' +
       'Timers persist across server restarts (fireCount and backoff restart from the base interval). ' +
+      'Suspended while the session is paused; resumed with the remaining wait. ' +
       'When waiting on a human decision or anything whose expected time-to-change grows with the time already waited, ' +
       'set backoffFactor (e.g. 2) so the interval stretches up to maxIntervalSeconds, and call reset_timer when the situation changes.',
     {
@@ -1904,7 +1905,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'Create a conditional wakeup that checks a shell command at intervals and sends notification only when the condition becomes true (exit 0) or timeout is reached. ' +
       'Silent polling preserves LLM context windows by avoiding unnecessary notifications. ' +
       'The worker can be an agent, terminal, or embedded-agent worker. ' +
-      'Returns a wakeup ID for cancellation. The wakeup auto-stops after sending one notification.',
+      'Returns a wakeup ID for cancellation. The wakeup auto-stops after sending one notification. ' +
+      'Suspended while the session is paused; resumed with the remaining wait.',
     {
       sessionId: z.string().optional().describe(
         'The session to receive wakeup notifications. ' +

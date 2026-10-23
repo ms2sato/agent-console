@@ -371,6 +371,41 @@ describe('AppContext', () => {
       expect(Array.isArray(sessions)).toBe(true);
     });
 
+    it('wires pause and resume of a session to timer and conditional wakeup suspension', async () => {
+      appContext = await createTestContext();
+      const { sessionManager, sessionRepository, timerManager, conditionalWakeupManager } = appContext;
+      await sessionRepository.save(
+        buildPersistedWorktreeSession({
+          id: 'sched-session',
+          locationPath: os.tmpdir(),
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          workers: [],
+          dataScope: 'repository',
+          dataScopeSlug: 'sched-repo',
+        }),
+      );
+      expect(await sessionManager.resumeSession('sched-session')).not.toBeNull();
+      timerManager.createTimer({ sessionId: 'sched-session', workerId: 'w1', intervalSeconds: 60, action: 'x' });
+      conditionalWakeupManager.createWakeup({
+        sessionId: 'sched-session',
+        workerId: 'w1',
+        intervalSeconds: 30,
+        conditionScript: 'exit 1',
+        onTrueMessage: 'done',
+      });
+
+      await sessionManager.pauseSession('sched-session');
+
+      expect(timerManager.listTimers('sched-session')[0]?.suspendedAt).toBeDefined();
+      expect(conditionalWakeupManager.listWakeups('sched-session')[0]?.status).toBe('suspended');
+
+      expect(await sessionManager.resumeSession('sched-session')).not.toBeNull();
+
+      expect(timerManager.listTimers('sched-session')[0]?.suspendedAt).toBeUndefined();
+      expect(conditionalWakeupManager.listWakeups('sched-session')[0]?.status).toBe('running');
+    });
+
     it('should wire notification manager callbacks', async () => {
       appContext = await createTestContext();
 
