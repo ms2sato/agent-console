@@ -4,7 +4,7 @@ import type { GitDiffData, GitDiffServerMessage } from '@agent-console/shared';
 import { createGitDiffHandlers, type GitDiffHandlerDependencies } from '../git-diff-handler.js';
 import { AnnotationService } from '../../services/annotation-service.js';
 import { startWatching as realStartWatching } from '../../services/git-diff-service.js';
-import { asWSContext } from './ws-test-helpers.js';
+import { anotherContextFor, asWSContext } from './ws-test-helpers.js';
 
 
 describe('GitDiffHandler', () => {
@@ -349,6 +349,32 @@ describe('GitDiffHandler', () => {
       // ws2 is still on the working directory, so its watch refreshes; ws1 moved to a fixed commit, which does not.
       expect(types(a.sent)).toEqual([]);
       expect(types(b.sent)).toEqual(['diff-data']);
+    });
+  });
+
+  // hono/bun mints a new WSContext for each of open / message / close; only `raw` is shared (Issue #2242).
+  // Reach (mutation: activeConnections keyed by the context object again, applied to git-diff-handler.ts):
+  // the message test below answers 'No active connection for this worker' and the disconnect test leaves the
+  // watch subscribed. Measured, see the PR body.
+  describe('a later event of the same connection arrives with a different context object', () => {
+    it('a refresh sent with another context for the connection is answered with diff-data, not "No active connection"', async () => {
+      await handlers.handleConnection(mockWs, 'session-1', 'worker-1', '/repo/path', 'base-commit', null);
+      sentMessages = [];
+
+      await handlers.handleMessage(anotherContextFor(mockWs), 'session-1', 'worker-1', '/repo/path', JSON.stringify({ type: 'refresh' }));
+
+      const types = sentMessages.map((m) => (JSON.parse(m) as GitDiffServerMessage).type);
+      expect(types).toEqual(['diff-data']);
+    });
+
+    it('a disconnection with another context for the connection unsubscribes once and leaves no connection', async () => {
+      await handlers.handleConnection(mockWs, 'session-1', 'worker-1', '/repo/path', 'base-commit', null);
+      expect(handlers.activeConnectionCount()).toBe(1);
+
+      await handlers.handleDisconnection('session-1', 'worker-1', anotherContextFor(mockWs));
+
+      expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
+      expect(handlers.activeConnectionCount()).toBe(0);
     });
   });
 

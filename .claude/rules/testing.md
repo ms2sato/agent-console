@@ -43,6 +43,14 @@ Missing client-server boundary tests for forms. Must catch: `null` vs `undefined
 ### 5. Form Testing Gaps
 Schema unit tests alone are insufficient. Required: actual form interaction tests, conditional field tests (hidden fields don't block submission), empty default value handling, validation error message verification, explicit "cannot submit" cases.
 
+### 6. Fixture identity as a hidden premise
+
+A fixture that hands ONE mock object to every callback (`onOpen`, `onMessage`, `onClose` all receive the same `mockWs`) asserts that the framework keeps object identity across callbacks. Production code that keys a `Map` or `Set` by that object then passes every unit test and fails on the real adapter if the premise is false. hono/bun's `WSContext` is minted per event (`createWSContext(ws)` in `open`, `message`, `close`); only `ws.raw` is stable. Measured 2026-10-24 (Issue #2242): every `WSContext`-keyed collection leaked one entry per close, and the git-diff client messages failed on every send, while 100% of the unit tests were green on the same code.
+
+**Rule.** When production keys a collection by a framework-provided object, (1) measure the identity on the real adapter once, in a test that boots it (here `Bun.serve` + `hono/bun`), and record the result in the key helper's header; (2) build the fixture to mint a FRESH object per callback that shares the stable part (`anotherContextFor(ws)` with a common `raw`), so the unit layer can see the class; (3) key by the measured stable part through one helper (`socketKey`), and pin with a grep that the framework type never reappears in a `Map`/`Set` type position.
+
+**Boundary.** This is not "never share a mock between callbacks". Sharing is fine when nothing is keyed by the object. The trigger is the key position: a `Map<T, ...>` or `Set<T>` where `T` is a type the framework constructs, not one we construct.
+
 ## Test Strategy: Unit vs Integration
 
 - **Unit tests**: Exhaustively cover all patterns defined in the spec (all event types, all handler cases)

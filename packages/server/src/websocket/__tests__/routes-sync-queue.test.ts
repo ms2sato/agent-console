@@ -253,4 +253,20 @@ describe('App WebSocket sync-queue handling', () => {
     expect(testRegistry.appClientCount).toBe(0);
     expect(deadWs.sentMessages).toHaveLength(0);
   });
+
+  // The adapter snapshots readyState into a context when it is created, so the stored open-time context says
+  // OPEN forever; the live state is on `raw` (Issue #2242). Mutation: broadcastToApp reading the context's own
+  // readyState again makes this test fail (the dead client is sent to and kept).
+  it('treats a client whose live raw socket is no longer OPEN as dead even though its stored context says OPEN', () => {
+    const staleOpenWs = asWSContext({
+      send: () => {},
+      readyState: 1,
+      raw: { readyState: 3 },
+    });
+    testRegistry.addAppClient(staleOpenWs);
+
+    broadcastToApp({ type: 'session-deleted', sessionId: 'sess-1' });
+
+    expect(testRegistry.appClientCount).toBe(0);
+  });
 });

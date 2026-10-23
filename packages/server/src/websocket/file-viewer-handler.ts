@@ -2,6 +2,7 @@ import type { WSContext } from 'hono/ws';
 import type { FileViewerServerMessage, WorkerServerMessage } from '@agent-console/shared';
 import type { subscribeToFileChanges } from '../services/file-watch-service.js';
 import { createLogger } from '../lib/logger.js';
+import { socketKey, type SocketKey } from './socket-key.js';
 
 const log = createLogger('file-viewer-handler');
 
@@ -32,8 +33,8 @@ export function createFileViewerHandlers(deps: FileViewerHandlerDependencies) {
   const { subscribe } = deps;
 
   // The open viewer connections, keyed by socket (several tabs can hold one worker, each with its own
-  // watch subscription). The same WSContext object reaches onOpen and onClose.
-  const activeConnections = new Map<WSContext, { workerId: string; unsubscribe: () => void }>();
+  // watch subscription). Keyed by the stable socket (socketKey): hono/bun builds a new WSContext per event.
+  const activeConnections = new Map<SocketKey, { workerId: string; unsubscribe: () => void }>();
 
   function send(ws: WSContext, message: FileViewerServerMessage | WorkerServerMessage): void {
     try {
@@ -65,7 +66,7 @@ export function createFileViewerHandlers(deps: FileViewerHandlerDependencies) {
         send(ws, { type: 'watch-unavailable', reason });
       },
     });
-    activeConnections.set(ws, { workerId, unsubscribe });
+    activeConnections.set(socketKey(ws), { workerId, unsubscribe });
   }
 
   /**
@@ -76,10 +77,10 @@ export function createFileViewerHandlers(deps: FileViewerHandlerDependencies) {
    */
   function handleDisconnection(sessionId: string, workerId: string, ws?: WSContext): void {
     if (ws !== undefined) {
-      const connection = activeConnections.get(ws);
+      const connection = activeConnections.get(socketKey(ws));
       if (!connection) return;
       log.info({ sessionId, workerId }, 'File viewer WebSocket disconnected');
-      activeConnections.delete(ws);
+      activeConnections.delete(socketKey(ws));
       connection.unsubscribe();
       return;
     }
@@ -96,7 +97,12 @@ export function createFileViewerHandlers(deps: FileViewerHandlerDependencies) {
     send(ws, { type: 'error', message: 'The file viewer accepts no client messages', code: 'UNSUPPORTED_OPERATION' });
   }
 
-  return { handleConnection, handleDisconnection, handleMessage };
+  /** @internal Exported for testing: the number of open viewer connections. */
+  function activeConnectionCount(): number {
+    return activeConnections.size;
+  }
+
+  return { handleConnection, handleDisconnection, handleMessage, activeConnectionCount };
 }
 
 // ============================================================
@@ -136,4 +142,9 @@ export function handleFileViewerMessage(
   ...args: Parameters<ReturnType<typeof createFileViewerHandlers>['handleMessage']>
 ): void {
   return getHandlers().handleMessage(...args);
+}
+
+/** @internal Exported for testing: the number of open viewer connections. */
+export function getFileViewerActiveConnectionCount(): number {
+  return getHandlers().activeConnectionCount();
 }

@@ -2,6 +2,7 @@ import type { WSContext } from 'hono/ws';
 import type { GitDiffClientMessage, GitDiffServerMessage, GitDiffData, GitDiffTarget, ReviewAnnotationSet } from '@agent-console/shared';
 import type { AnnotationService } from '../services/annotation-service.js';
 import { createLogger } from '../lib/logger.js';
+import { socketKey, type SocketKey } from './socket-key.js';
 
 const log = createLogger('git-diff-handler');
 
@@ -55,9 +56,9 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
   const { getDiffData, resolveRef, resolveBaseSpec, startWatching, getFileLines, annotationService } = deps;
 
   // Active connections by socket: several tabs can hold one worker, each with its own subscription, base
-  // spec and target ref. The same WSContext object reaches onOpen, onMessage and onClose (the socket
-  // registry and the viewer handler rely on that identity too).
-  const activeConnections = new Map<WSContext, ConnectionState>();
+  // spec and target ref. Keyed by the stable socket (socketKey): hono/bun hands onOpen, onMessage and onClose
+  // a different WSContext object each time. `state.ws` is the open-time context, used for pushes.
+  const activeConnections = new Map<SocketKey, ConnectionState>();
 
   /**
    * Send diff data to the client.
@@ -131,7 +132,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
     // Start file watching - when files change, send updated diff data
     // Note: File watching only makes sense for working-dir target
     const unsubscribe = startWatching(locationPath, () => {
-      const state = activeConnections.get(ws);
+      const state = activeConnections.get(socketKey(ws));
       if (state && state.targetRef === 'working-dir') {
         log.debug({ locationPath }, 'File change detected, sending updated diff');
         sendDiffData(state.ws, state.locationPath, state.baseSpec, state.requestUser, state.targetRef).catch((err) => {
@@ -139,7 +140,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
         });
       }
     });
-    activeConnections.set(ws, { ws, workerId, unsubscribe, locationPath, baseSpec, targetRef, requestUser });
+    activeConnections.set(socketKey(ws), { ws, workerId, unsubscribe, locationPath, baseSpec, targetRef, requestUser });
 
     // Send initial diff data
     await sendDiffData(ws, locationPath, baseSpec, requestUser, targetRef);
@@ -159,9 +160,9 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
     log.info({ sessionId, workerId }, 'Git diff WebSocket disconnected');
 
     if (ws !== undefined) {
-      const state = activeConnections.get(ws);
+      const state = activeConnections.get(socketKey(ws));
       if (state) {
-        activeConnections.delete(ws);
+        activeConnections.delete(socketKey(ws));
         state.unsubscribe();
       }
       return;
@@ -185,7 +186,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
   ): Promise<void> {
     try {
       const parsed: GitDiffClientMessage = JSON.parse(message);
-      const state = activeConnections.get(ws);
+      const state = activeConnections.get(socketKey(ws));
       if (!state) {
         sendError(ws, 'No active connection for this worker');
         return;
@@ -305,12 +306,18 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
     }
   }
 
+  /** @internal Exported for testing: the number of open git-diff connections. */
+  function activeConnectionCount(): number {
+    return activeConnections.size;
+  }
+
   return {
     handleConnection,
     handleDisconnection,
     handleMessage,
     updateBaseCommit,
     sendAnnotationsToClient,
+    activeConnectionCount,
   };
 }
 
@@ -363,4 +370,9 @@ export function sendAnnotationsToClient(
   ...args: Parameters<ReturnType<typeof createGitDiffHandlers>['sendAnnotationsToClient']>
 ): void {
   return getHandlers().sendAnnotationsToClient(...args);
+}
+
+/** @internal Exported for testing: the number of open git-diff connections. */
+export function getGitDiffActiveConnectionCount(): number {
+  return getHandlers().activeConnectionCount();
 }

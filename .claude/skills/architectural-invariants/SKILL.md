@@ -129,6 +129,7 @@ The answer at the time was "no" — and that single question surfaces the same c
 1. **Identifier computed from mutable state.** If `id = f(configRoot, userName, timestamp)` and any input can change, the identifier is not stable.
 2. **Identifier derived from volatile runtime state.** Uptime, process PID, random number without persistence → not stable.
 3. **Re-keying on rename.** Renaming a repository, user, or file should not change the identifier of things that reference it.
+4. **A framework-constructed object used as a collection key.** `Map<WSContext, ...>`, `Set<Request>`, `WeakMap<Context, ...>`: the framework decides whether the same object arrives at each callback, and that decision is a volatile-runtime fact in the sense of heuristic 2. Measure it on the real adapter and key by the stable handle it exposes (`ws.raw` for hono/bun). Issue #2242 is the instance; `testing.md` Anti-Pattern 6 is the fixture-side half.
 
 ### Resolution patterns
 
