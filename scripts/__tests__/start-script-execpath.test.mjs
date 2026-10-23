@@ -101,12 +101,23 @@ function runProbe(startScript) {
     );
     writeFileSync(join(scratch, 'probe.mjs'), 'console.log(process.execPath);\n');
 
+    // Bun's auto node-shim (triggered when no `node` is resolvable) prepends a
+    // self-referential dir ahead of PATH, defeating this control's premise on
+    // bun >=1.4 -- a stub `node` removes the trigger, deterministically,
+    // independent of host state. It is never invoked (the script form is
+    // `bun probe.mjs`); it only has to exist on PATH.
+    const dirStub = join(scratch, 'stub');
+    mkdirSync(dirStub, { recursive: true });
+    const stubNode = join(dirStub, 'node');
+    writeFileSync(stubNode, '#!/bin/sh\nexit 1\n');
+    chmodSync(stubNode, 0o755);
+
     const minimalSystemPath = ['/usr/bin', '/bin'].join(':');
     const result = spawnSync(bunA, ['run', 'start'], {
       cwd: scratch,
       encoding: 'utf8',
       env: {
-        PATH: `${dirB}:${minimalSystemPath}`,
+        PATH: `${dirB}:${dirStub}:${minimalSystemPath}`,
         HOME: process.env.HOME ?? scratch,
       },
     });
@@ -144,6 +155,11 @@ describe('root package.json "start" script resolves bun by construction, not PAT
   // must ALWAYS resolve the PATH-first copy B. If this control ever
   // started printing copy A instead, the harness itself -- not the
   // production script -- would be broken.
+  //
+  // The harness puts a stub `node` on PATH (see runProbe) so Bun's auto
+  // node-shim trigger never fires here; measured on bun 1.4.4, WITHOUT it the
+  // child's PATH starts with a `/tmp/bun-node-<uid>-<rev>` shim dir and bare
+  // `bun` resolves to the invoking copy A on hosts with no `node` reachable.
   //
   // What this control does NOT cover: `bun run` can prepend a per-machine
   // temp dir (`/tmp/bun-node-<bun-revision>`, containing `bun`/`node`

@@ -165,11 +165,14 @@ describe('Upload directory real-fs contract (#830 regression)', () => {
         // Bun 1.3.10 strips setgid → result is 0o750.
         expect(st.stdout.trim()).toBe('750');
 
-        // Also assert that Bun's fs.chmod does the same.
+        // Bun 1.4.4 (measured) passes the bit through `fs.chmod`, unlike
+        // 1.3.x where it was stripped to 750. `fs.mkdir` still strips it,
+        // so the spawn-chmod workaround in `workers.ts` stays valid; this
+        // assertion flags the day `fs.mkdir` changes too.
         await fsp.chmod(target, 0o2750);
         const st2 = await spawnCheck(['stat', '-c', '%a', target]);
         expect(st2.exitCode).toBe(0);
-        expect(st2.stdout.trim()).toBe('750');
+        expect(st2.stdout.trim()).toBe('2750');
       } finally {
         await spawnCheck(['rmdir', target]);
         await spawnCheck(['rmdir', parent]);

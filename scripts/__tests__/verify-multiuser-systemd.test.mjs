@@ -874,7 +874,8 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
     // what names the temp dir (measured: a first attempt using the full
     // string targeted a directory that never existed).
     expect(a).toContain('bun_rev="${bun_full_rev#*+}"');
-    expect(a).toContain('bun_node_dir="/tmp/bun-node-${bun_rev}"');
+    expect(a).toContain('bun_node_dir="/tmp/bun-node-${agentconsole_uid}-${bun_rev}"');
+    expect(a).toContain('agentconsole_uid="$(cexec --user agentconsole "$SERVICE" id -u');
     expect(a).toContain('if [ -z "$bun_rev" ] || [ "$bun_rev" = "$bun_full_rev" ]; then');
     expect(a).toContain('install -D -m 0755 -o alice -g alice "$UNIFIED_BUN" /home/alice/.bun/bin/bun');
     expect(a).toContain('cexec --user root "$SERVICE" chmod 750 /home/alice');

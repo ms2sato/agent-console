@@ -123,7 +123,7 @@
 #      production shape the dogfood host has and this container did not
 #      until now). A first run of this arm (no further setup) did NOT
 #      reproduce the defect: `bun run` prepends a per-machine temp dir
-#      `/tmp/bun-node-<bun-revision>` (containing `bun`/`node` symlinks)
+#      `/tmp/bun-node-<uid>-<bun-revision>` on bun >= 1.4 (`/tmp/bun-node-<bun-revision>` on 1.3.x; containing `bun`/`node` symlinks)
 #      ahead of the inherited PATH, and this container's own copy -- first
 #      created by deploy #1's own `bun install`/`bun run build`, long
 #      before this arm plants anything -- already pointed at the unified
@@ -937,7 +937,7 @@ commit_source_edit() {
 # anything itself -- it exists so a run's own output settles which
 # mechanism explains the reading, rather than guessing. That run's own
 # environ read settled it: the child's PATH began with a per-machine temp
-# dir `/tmp/bun-node-<bun-revision>` (containing `bun`/`node` symlinks)
+# dir `/tmp/bun-node-<uid>-<bun-revision>` on bun >= 1.4 (`/tmp/bun-node-<bun-revision>` on 1.3.x; containing `bun`/`node` symlinks)
 # ahead of node_modules/.bin and the inherited PATH -- see the bun-node
 # temp-dir shim setup below, which is what this diagnostic confirms stayed
 # in place. Kept:
@@ -1032,8 +1032,18 @@ path_first_bun_arm() {
   # directory that never existed, `ls: cannot access
   # '/tmp/bun-node-1.3.14+0d9b296af': No such file or directory`).
   bun_rev="${bun_full_rev#*+}"
-  bun_node_dir="/tmp/bun-node-${bun_rev}"
-  echo "  bun --revision = ${bun_full_rev} -> build hash ${bun_rev} -> ${bun_node_dir}"
+  # Bun >= 1.4 puts the INVOKING process's uid in the dir name
+  # (`/tmp/bun-node-<uid>-<hash>`, measured on 1.4.4); 1.3.x had no uid.
+  # The threat model this arm reproduces therefore narrowed from "any local
+  # user's leftover shim" to "a privileged pre-planter that names
+  # agentconsole's uid before agentconsole's own bun creates its dir" --
+  # /tmp is still world-writable and `id -u agentconsole` is a one-command
+  # discovery, so root plants the dir here, before agentconsole's first bun
+  # invocation in this arm. The rename is not a weakening.
+  local agentconsole_uid
+  agentconsole_uid="$(cexec --user agentconsole "$SERVICE" id -u | tr -d '\r')"
+  bun_node_dir="/tmp/bun-node-${agentconsole_uid}-${bun_rev}"
+  echo "  bun --revision = ${bun_full_rev} -> build hash ${bun_rev}, agentconsole uid ${agentconsole_uid} -> ${bun_node_dir}"
   # Fails LOUDLY, with a clear message, rather than silently targeting a
   # wrong path, if a future `bun --revision` format ever drops the `+`
   # separator (the exact bug this guard replaces: the first attempt used
@@ -1044,7 +1054,7 @@ path_first_bun_arm() {
     exit 2
   fi
   echo "  --- before (this dir may not exist yet -- nothing has necessarily run under conditions that create it before this arm) ---"
-  cexec --user root "$SERVICE" sh -c "ls -la '${bun_node_dir}' 2>&1; readlink -f '${bun_node_dir}/bun' 2>&1" | sed 's/^/  /'
+  cexec --user root "$SERVICE" sh -c "ls -la '${bun_node_dir}' 2>&1; readlink -f '${bun_node_dir}/bun' 2>&1" | sed 's/^/  /' || true
   # ${bun_node_dir} is a predictable path under the world-writable /tmp
   # (CodeRabbit, PR #1789): if it already existed as a SYMLINK (planted by
   # anything other than a legitimate prior bun invocation), `install -d`'s
