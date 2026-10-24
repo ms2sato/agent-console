@@ -1005,9 +1005,12 @@ async function main(): Promise<void> {
       'SCENARIO 4b: the paused D2 got NO PTY write of the notification (no [inbound:...] text appended to its worker output file; deferred, not delivered)',
       afterD24b.slice(beforeD24b.length).slice(-500),
     );
-    // Not a byte-equality check: a paused session's own PTY keeps emitting
-    // TUI chrome (e.g. a window-title escape) unrelated to any notification,
-    // which failed a strict "unchanged" assertion on a real run. The
+    // Not a byte-equality check: a paused session has no PTY or TUI (pause kills
+    // every PTY), but the output file is written by a late flush. bufferOutput
+    // schedules each write-out about WORKER_OUTPUT_FLUSH_INTERVAL (~100 ms) later
+    // and killWorker does not flush before it returns, so the TUI's exit-time output
+    // (the window-title reset it prints on SIGTERM) lands after the byte-length
+    // baseline. That failed a strict "unchanged" assertion on a real run. The
     // notification's own tag is the signal.
     const afterT4b = readOutputFileSafe(outputPathT);
     expect(
