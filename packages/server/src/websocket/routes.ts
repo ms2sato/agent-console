@@ -983,7 +983,7 @@ export async function setupWebSocketRoutes(
                     refuseSocketOfDeletedSession(ws);
                     break;
                   case 'pause':
-                    sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+                    refuseOpenedSocket(ws, 'Session is pausing', 'SESSION_PAUSED');
                     break;
                   case 'worker-deletion':
                     refuseOpenedSocket(ws, 'Worker not found', 'WORKER_NOT_FOUND');
@@ -1052,7 +1052,7 @@ export async function setupWebSocketRoutes(
                 if (err instanceof SessionPausingError) {
                   // Same terminal answer a socket open at pause time gets.
                   if (!connectionClosed) {
-                    sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+                    refuseOpenedSocket(ws, 'Session is pausing', 'SESSION_PAUSED');
                   }
                   return;
                 }
@@ -1108,7 +1108,7 @@ export async function setupWebSocketRoutes(
               return;
             }
             if (err instanceof SessionPausingError) {
-              sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+              refuseOpenedSocket(ws, 'Session is pausing', 'SESSION_PAUSED');
               return;
             }
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');

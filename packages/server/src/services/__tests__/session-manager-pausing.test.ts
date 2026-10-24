@@ -16,6 +16,9 @@ import type { PtyNotificationParams } from '../../lib/pty-notification.js';
 import type { ExecuteHookCommand, SessionManager } from '../session-manager.js';
 import type { JobQueue } from '../../jobs/index.js';
 import type { PauseSessionOutcome } from '../session-pause-resume-service.js';
+import type { UserRepository } from '../../repositories/user-repository.js';
+import type { LookupOsUserFn } from '../os-user-lookup.js';
+import type { runAsUser } from '../privilege-elevation.js';
 
 type HookResult = Awaited<ReturnType<ExecuteHookCommand>>;
 
@@ -70,7 +73,39 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     delete process.env.AGENT_CONSOLE_HOME;
   });
 
-  async function setup(hookOverride?: ExecuteHookCommand, jobQueue?: JobQueue) {
+  // A session owned by this user resolves to an OS username other than the test process's, so the agent PTY
+  // activation takes the multi-user branch that mints an MCP token (it also needs AUTH_MODE=multi-user).
+  const OWNER_ID = 'user-alice-uuid';
+  const ownerRepository: UserRepository = {
+    async upsertByOsUid() {
+      throw new Error('not used');
+    },
+    async findById(id: string) {
+      return id === OWNER_ID ? { id, username: 'alice', homeDir: '/home/alice' } : null;
+    },
+    async findByUsername() {
+      return null;
+    },
+    async findAll() {
+      return [];
+    },
+    async getOsUidById() {
+      throw new Error('not used');
+    },
+    async refreshOsIdentity() {
+      throw new Error('not used');
+    },
+    async getPreferences() {
+      return null;
+    },
+    async setPreferences() {
+      return true;
+    },
+  };
+  const okRunAsUser: typeof runAsUser = async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false });
+  const lookupAlice: LookupOsUserFn = async () => ({ uid: 4242, homeDir: '/home/alice' });
+
+  async function setup(hookOverride?: ExecuteHookCommand, jobQueue?: JobQueue, tokenMinting = false) {
     let resolveHook!: (result: HookResult) => void;
     let rejectHook!: (reason: unknown) => void;
     const executeHookCommand = mock<ExecuteHookCommand>(
@@ -98,6 +133,9 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
       }),
       executeHookCommand: hookOverride ?? executeHookCommand,
       ...(jobQueue ? { jobQueue } : {}),
+      ...(tokenMinting
+        ? { userRepository: ownerRepository, runAsUserImpl: okRunAsUser, lookupOsUserFn: lookupAlice, assertSpawnCwdFn: async () => {} }
+        : {}),
     });
     return {
       manager,
@@ -313,11 +351,10 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
           (err: unknown) => err,
         );
 
-    it(`a ${kind} activation parked before its spawn across a COMPLETED pause spawns nothing, revokes its token and rejects with SessionPausingError`, async () => {
-      const { manager, mcpTokenRegistry, executeHookCommand, resolveHook } = await setup();
+    it(`a ${kind} activation parked before its spawn across a COMPLETED pause spawns nothing and rejects with SessionPausingError`, async () => {
+      const { manager, executeHookCommand, resolveHook } = await setup();
       const session = await createSession(manager);
       const held = holdFirstSpawnCwdCheck(manager);
-      const tokensBefore = mcpTokenRegistry['tokens'].size;
       const creation = create(manager, session.id);
       await held.reached();
 
@@ -333,8 +370,6 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
 
       expect(await creation).toBeInstanceOf(SessionPausingError);
       expect(ptyFactory.instances.length).toBe(spawnsBefore);
-      // Pause tears down the initial worker's token; the parked one must not survive either.
-      expect(mcpTokenRegistry['tokens'].size).toBeLessThanOrEqual(tokensBefore);
     });
 
     it(`a ${kind} activation parked before its spawn across a COMPLETED deletion spawns nothing and rejects with SessionDeletingError`, async () => {
@@ -354,6 +389,61 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
 
       expect(await creation).toBeInstanceOf(SessionDeletingError);
       expect(ptyFactory.instances.length).toBe(spawnsBefore);
+    });
+  }
+
+  // Only an agent PTY activation under AUTH_MODE=multi-user mints an MCP token, and only for a session with an owner,
+  // so the token claim needs that setup; the minted tokens are then checked through the registry's public verify().
+  for (const ending of ['pause', 'delete'] as const) {
+    it(`an agent activation parked before its spawn across a COMPLETED ${ending} revokes the token it minted`, async () => {
+      const originalAuthMode = process.env.AUTH_MODE;
+      process.env.AUTH_MODE = 'multi-user';
+      try {
+        const { manager, mcpTokenRegistry, executeHookCommand, resolveHook } = await setup(undefined, undefined, true);
+        const mint = spyOn(mcpTokenRegistry, 'mint');
+        const session = await manager.createSession(
+          { type: 'worktree', locationPath: '/test/path', repositoryId: 'repo-1', worktreeId: 'feature-branch', agentId: 'claude-code' },
+          { createdBy: OWNER_ID },
+        );
+        const mintedBeforePark = mint.mock.results.length;
+        const held = holdFirstSpawnCwdCheck(manager);
+        const creation = manager
+          .createWorker(session.id, { type: 'agent', agentId: 'claude-code', name: 'Second agent' })
+          .then(
+            () => null,
+            (err: unknown) => err,
+          );
+        await held.reached();
+
+        // The parked activation has minted its own token and it is live: the revoke below has something to revoke.
+        expect(mint.mock.results.length).toBe(mintedBeforePark + 1);
+        const parkedToken = mint.mock.results[mintedBeforePark]!.value as string;
+        expect(mcpTokenRegistry.verify(parkedToken)).not.toBeNull();
+
+        let expected: typeof SessionPausingError | typeof SessionDeletingError;
+        if (ending === 'pause') {
+          const pause = manager.pauseSession(session.id);
+          await hookStarted(executeHookCommand);
+          resolveHook({ success: true });
+          await pause;
+          expected = SessionPausingError;
+        } else {
+          const internal = manager['sessions'].get(session.id)!;
+          manager['sessions'].delete(session.id);
+          internal.endedBy = 'delete';
+          expected = SessionDeletingError;
+        }
+        const spawnsBefore = ptyFactory.instances.length;
+        held.release();
+
+        expect(await creation).toBeInstanceOf(expected);
+        expect(ptyFactory.instances.length).toBe(spawnsBefore);
+        expect(mcpTokenRegistry.verify(parkedToken)).toBeNull();
+        mint.mockRestore();
+      } finally {
+        if (originalAuthMode === undefined) delete process.env.AUTH_MODE;
+        else process.env.AUTH_MODE = originalAuthMode;
+      }
     });
   }
 

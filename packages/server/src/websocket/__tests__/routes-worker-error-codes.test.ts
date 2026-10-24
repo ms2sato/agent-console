@@ -813,11 +813,14 @@ describe('Worker WebSocket connection error codes', () => {
     spyOn(sessionManager, 'isPausing').mockReturnValue(true);
 
     sessionManager['webSocketCallbacks']!.stopWorkerWatching(session.id, diffWorker.id);
+    // Positive control: onOpen registered the socket and the teardown does not remove it, so the refusal must.
+    expect(isRegistered(session.id, diffWorker.id, ws)).toBe(true);
     release();
     await untilClosed(ws);
 
     expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
     expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
+    expect(isRegistered(session.id, diffWorker.id, ws)).toBe(false);
     expect(isWatching(session.locationPath)).toBe(false);
   });
 
@@ -907,6 +910,27 @@ describe('Worker WebSocket connection error codes', () => {
 
     expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
     expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
+    expect(isRegistered(session.id, agentWorker.id, ws)).toBe(false);
+  });
+
+  it('an embedded-agent activation rejected with SessionPausingError closes the socket with SESSION_PAUSED and unregisters it', async () => {
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      'test-user-id',
+    );
+    const session = await createWorktreeSession();
+    const embeddedWorker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    spyOn(sessionManager, 'activateEmbeddedAgentWorker').mockRejectedValue(new SessionPausingError(session.id));
+
+    const { ws } = openWorkerSocket(session.id, embeddedWorker!.id);
+    await untilClosed(ws);
+
+    expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
+    expect(isRegistered(session.id, embeddedWorker!.id, ws)).toBe(false);
   });
 
   it('should send SESSION_PAUSED error code when notifySessionPaused is called', async () => {
