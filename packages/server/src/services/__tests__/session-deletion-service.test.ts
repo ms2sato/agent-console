@@ -447,6 +447,46 @@ describe('SessionDeletionService', () => {
       expect(events).toEqual(['stop:w-diff', 'stop:w-fv', 'stop:w-diff', 'stop:w-fv', 'memory-removed']);
     });
 
+    // The open-time refusal marker lives in SessionManager, so the service's sequence must not have changed:
+    // notify first, then the teardown/kill loop (workers in map order), then the second watch teardown, then memory removal.
+    it('keeps the deletion sequence: notify, kill, second watch teardown, memory removal (no extra notify)', async () => {
+      const session = buildInternalWorktreeSession([
+        buildInternalAgentWorker({ id: 'w-agent' }),
+        buildInternalGitDiffWorker({ id: 'w-diff' }),
+      ]);
+      const events: string[] = [];
+      const notifySessionDeleted = mock((id: string) => {
+        events.push(`notify:${id}`);
+      });
+      const stopWorkerWatching = mock((_sessionId: string, workerId: string) => {
+        events.push(`stop:${workerId}`);
+      });
+      const deps = createMockDeps({
+        getSession: () => session,
+        deleteSessionFromMemory: (id) => {
+          events.push(`memory-removed:${id}`);
+          return true;
+        },
+        workerManager: asWorkerManager({
+          killWorker: mock(async (worker: { id: string }) => {
+            events.push(`kill:${worker.id}`);
+          }),
+        }),
+        getWebSocketCallbacks: () => ({ notifySessionDeleted, stopWorkerWatching }),
+      });
+
+      await new SessionDeletionService(deps).deleteSession('session-1');
+
+      expect(events).toEqual([
+        'notify:session-1',
+        'kill:w-agent',
+        'stop:w-diff',
+        'stop:w-diff',
+        'memory-removed:session-1',
+      ]);
+      expect(notifySessionDeleted).toHaveBeenCalledTimes(1);
+    });
+
     it('should stop no worker watch when the session has no git-diff or file-viewer worker (the empty case)', async () => {
       const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
       const stopWorkerWatching = mock((_sessionId: string, _workerId: string) => {});

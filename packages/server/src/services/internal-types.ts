@@ -91,6 +91,14 @@ export interface InternalSessionBase {
    * SSH_AUTH_SOCK=...` works as before).
    */
   sshAuthSockFallback?: string;
+  /**
+   * Tombstone written once by the pause service after it removes this object from the in-memory registry. A
+   * completed pause and a completed deletion both leave the session absent from the registry with both in-flight
+   * markers clear; the flag is what tells an activation that captured the object that it was a pause. A paused
+   * object is never re-inserted (resume builds a new one), so the flag cannot go stale. In-memory only; the public
+   * converter builds its object field by field and never copies it.
+   */
+  endedBy?: 'pause';
 }
 
 export interface InternalWorktreeSession extends InternalSessionBase {

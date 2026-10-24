@@ -47,7 +47,7 @@ import type {
   WorkerCallbacks,
   Disposable,
 } from './worker-types.js';
-import type { SessionCreationContext } from './internal-types.js';
+import type { InternalSession, SessionCreationContext } from './internal-types.js';
 import type { StartupIntent } from './startup-intent.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { UserMode } from './user-mode.js';
@@ -115,6 +115,11 @@ function formatIsoWithLocalOffset(date: Date): string {
  */
 export interface WorkerContext {
   sessionId: string;
+  /**
+   * The session object the caller captured before activating. It is only compared by identity, right before the
+   * spawn, to learn whether the session was deleted or replaced while activation was parked on an await.
+   */
+  session: InternalSession;
   locationPath: string;
   repositoryEnvVars: Record<string, string>;
   /** OS username for PTY process ownership. Used by MultiUserMode for sudo -u. */
@@ -340,6 +345,12 @@ export class WorkerManager {
     private getEmbeddedAgentFn: (id: string) => EmbeddedAgentDefinition | undefined = () => undefined,
     /** Test seam for the pre-spawn cwd existence check. Defaults to the real implementation. */
     private assertSpawnCwdFn: typeof assertSpawnCwdExists = assertSpawnCwdExists,
+    /**
+     * The error to refuse a spawn with when the captured session was deleted, is pausing or was replaced while
+     * activation was parked on its awaits (null when the spawn may proceed). Read synchronously right before
+     * `spawnPty`.
+     */
+    private getSpawnRefusal?: (sessionId: string, session: InternalSession) => Error | null,
   ) {
     this.userMode = userMode;
     this.agentManager = agentManager;
@@ -839,6 +850,12 @@ export class WorkerManager {
 
       await this.assertSpawnCwdFn(locationPath, params.username);
 
+      // Activation can be parked on the awaits above while a deletion or pause starts and finishes, clearing its
+      // marker: re-check synchronously (no await before the spawn) so no PTY outlives the session. Thrown inside
+      // the try, so the catch below revokes the token and deletes the prompt file.
+      const spawnRefusal = this.getSpawnRefusal?.(sessionId, params.session);
+      if (spawnRefusal) throw spawnRefusal;
+
       const ptyProcess = this.userMode.spawnPty({
         type: 'agent',
         username: params.username,
@@ -948,6 +965,10 @@ export class WorkerManager {
     // Base env (getCleanChildProcessEnv), shell detection, and unset prefix
     // are handled internally by UserMode.spawnPty()
     await this.assertSpawnCwdFn(locationPath, params.username);
+
+    // No await between this check and the spawn (see activateAgentWorkerPty).
+    const spawnRefusal = this.getSpawnRefusal?.(sessionId, params.session);
+    if (spawnRefusal) throw spawnRefusal;
 
     const ptyProcess = this.userMode.spawnPty({
       type: 'terminal',

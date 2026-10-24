@@ -51,7 +51,7 @@ import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
 import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../lib/mcp-server-permissions.js';
 import { serverConfig } from '../lib/server-config.js';
-import { SessionPausingError } from '../lib/errors.js';
+import { SessionDeletingError, SessionPausingError } from '../lib/errors.js';
 import { canOperateSession } from '../lib/session-access.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
@@ -434,6 +434,12 @@ export function composeEmbeddedAgentDeliveryText(
   return content.length > 0 ? `${content}\n\n${block}` : block;
 }
 
+/** A deletion run in flight for a session; `force` covers everything `delete` does. */
+interface DeletionInFlight {
+  kind: 'delete' | 'force';
+  promise: Promise<boolean>;
+}
+
 /**
  * A persisted session no server owns and that is not orphaned. The row mappers
  * read a NULL `server_pid` back as `undefined`, so "no owner" is nullish here.
@@ -477,6 +483,8 @@ export class SessionManager {
    * in memory with its PTYs cleared.
    */
   private readonly pausing = new Map<string, Promise<PauseSessionOutcome>>();
+  /** Sessions whose deletion is in flight (set before the deletion service's first statement). */
+  private readonly deleting = new Map<string, DeletionInFlight>();
   private webSocketCallbacks: WebSocketCallbacks | null = null;
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
@@ -593,6 +601,19 @@ export class SessionManager {
       undefined,
       (id) => embeddedAgentManager.getEmbeddedAgent(id),
       options.assertSpawnCwdFn,
+      (id, session) => {
+        if (this.isDeleting(id)) return new SessionDeletingError(id);
+        if (this.isPausing(id)) return new SessionPausingError(id);
+        // Neither marker is set, so the captured session can only have changed by a run that has already finished:
+        // a completed pause and a completed deletion both empty the map; the pause leaves this flag, so a map miss
+        // without it is a deletion. The object is replaced only by a pause followed by a resume. (Worker membership
+        // is no signal: a worker joins the session only after its first activation returns.)
+        if (session.endedBy === 'pause') return new SessionPausingError(id);
+        const current = this.sessions.get(id);
+        if (current === undefined) return new SessionDeletingError(id);
+        if (current !== session) return new SessionPausingError(id);
+        return null;
+      },
     );
     this.workerManager.setOnInitialPromptInjected((sessionId, workerId) => {
       // Fire-and-forget: this callback is invoked synchronously from a PTY
@@ -631,6 +652,7 @@ export class SessionManager {
     this.embeddedAgentWorkerService = new EmbeddedAgentWorkerService({
       getSession: (id) => this.sessions.get(id),
       isSessionPausing: (id) => this.isPausing(id),
+      isSessionDeleting: (id) => this.isDeleting(id),
       persistSession: (session) => this.persistSession(session),
       getPathResolver: (session) => this.getPathResolverForSession(session),
       getEmbeddedAgent: (id) => embeddedAgentManager.getEmbeddedAgent(id),
@@ -1377,7 +1399,8 @@ export class SessionManager {
     // stale one must not read or delete rows. The identity check is sound because the
     // sessions map has exactly three writers: createSession (inserts a new object), resume
     // (inserts a freshly built object) and the deletion rollback (puts back the SAME object);
-    // pause deletes the entry and never re-inserts it, so identity changes on resume only.
+    // pause deletes the entry and never re-inserts it, so identity changes on resume only. (A
+    // completed pause also empties the map entry, which the identity check below treats as stale.)
     if (this.isPausing(sessionId) || this.sessions.get(sessionId) !== live) return;
 
     const rows = await repository.listBySession(sessionId);
@@ -1997,7 +2020,47 @@ export class SessionManager {
   }
 
   async deleteSession(id: string): Promise<boolean> {
-    return this.sessionDeletionService.deleteSession(id);
+    // Any run in flight (a force is a superset of a delete) already covers this request: join it.
+    const inFlight = this.deleting.get(id);
+    if (inFlight) return inFlight.promise;
+    return this.runDeletion(id, 'delete', () => this.sessionDeletionService.deleteSession(id));
+  }
+
+  /** True while a deletion for the session is in flight (see {@link deleting}). */
+  isDeleting(id: string): boolean {
+    return this.deleting.has(id);
+  }
+
+  /**
+   * Installs the deletion marker for the duration of `run`. The entry is set synchronously before the service's
+   * first statement (so it precedes the deletion's socket notification) and removed once `run` settles, so a
+   * failed delete that restores the session accepts sockets again. A force that replaces a delete installs its
+   * own entry before awaiting the delete (`after`), so the marker never drops in between.
+   */
+  private runDeletion(
+    id: string,
+    kind: DeletionInFlight['kind'],
+    run: () => Promise<boolean>,
+    after?: Promise<boolean>,
+  ): Promise<boolean> {
+    const entry: DeletionInFlight = { kind, promise: Promise.resolve(false) };
+    this.deleting.set(id, entry);
+    entry.promise = (async () => {
+      try {
+        if (after) {
+          try {
+            await after;
+          } catch (err) {
+            logger.debug({ sessionId: id, err }, 'Delete run replaced by a force failed; running the force');
+          }
+        }
+        return await run();
+      } finally {
+        // Only the call that installed the entry may remove it: an earlier call's settle must not drop a replacement.
+        if (this.deleting.get(id) === entry) this.deleting.delete(id);
+      }
+    })();
+    return entry.promise;
   }
 
   getAllSessions(): Session[] {
@@ -2124,7 +2187,10 @@ export class SessionManager {
     return this.pausing.has(id);
   }
 
-  private assertNotPausing(sessionId: string): void {
+  private assertNotPausingOrDeleting(sessionId: string): void {
+    if (this.isDeleting(sessionId)) {
+      throw new SessionDeletingError(sessionId);
+    }
     if (this.isPausing(sessionId)) {
       throw new SessionPausingError(sessionId);
     }
@@ -2150,7 +2216,10 @@ export class SessionManager {
    * @returns true if session was deleted, false if not found
    */
   async forceDeleteSession(id: string): Promise<boolean> {
-    return this.sessionDeletionService.forceDeleteSession(id);
+    const inFlight = this.deleting.get(id);
+    if (inFlight?.kind === 'force') return inFlight.promise;
+    // A delete in flight does not cover a force (the orphaned-row cleanup): replace its entry, then run after it.
+    return this.runDeletion(id, 'force', () => this.sessionDeletionService.forceDeleteSession(id), inFlight?.promise);
   }
 
   /**
@@ -2223,7 +2292,7 @@ export class SessionManager {
     initialPrompt?: string,
     templateVars?: Record<string, string>
   ): Promise<Worker | null> {
-    this.assertNotPausing(sessionId);
+    this.assertNotPausingOrDeleting(sessionId);
     return this.workerLifecycleManager.createWorker(sessionId, request, startupPreference, initialPrompt, templateVars);
   }
 
@@ -2237,7 +2306,7 @@ export class SessionManager {
    * Activates PTY if needed (after server restart).
    */
   async getAvailableWorker(sessionId: string, workerId: string): Promise<InternalPtyWorker | null> {
-    this.assertNotPausing(sessionId);
+    this.assertNotPausingOrDeleting(sessionId);
     return this.workerLifecycleManager.getAvailableWorker(sessionId, workerId);
   }
 
@@ -2325,7 +2394,7 @@ export class SessionManager {
     agentId?: string,
     branch?: string
   ): Promise<Worker | null> {
-    this.assertNotPausing(sessionId);
+    this.assertNotPausingOrDeleting(sessionId);
     return this.workerLifecycleManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
   }
 
@@ -2341,13 +2410,13 @@ export class SessionManager {
     embeddedAgentId: string,
     branch?: string
   ): Promise<Worker | null> {
-    this.assertNotPausing(sessionId);
+    this.assertNotPausingOrDeleting(sessionId);
     return this.workerLifecycleManager.restartAgentWorkerAsEmbedded(sessionId, workerId, embeddedAgentId, branch);
   }
 
   /** Restore a PTY worker, activating its PTY if needed after server restart. */
   async restoreWorker(sessionId: string, workerId: string): Promise<RestoreWorkerResult> {
-    this.assertNotPausing(sessionId);
+    this.assertNotPausingOrDeleting(sessionId);
     return this.workerLifecycleManager.restoreWorker(sessionId, workerId);
   }
 

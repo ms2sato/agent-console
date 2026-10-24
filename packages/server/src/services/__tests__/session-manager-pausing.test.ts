@@ -11,10 +11,14 @@ import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { SingleUserMode } from '../user-mode.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
-import { SessionPausingError } from '../../lib/errors.js';
+import { SessionDeletingError, SessionPausingError } from '../../lib/errors.js';
 import type { PtyNotificationParams } from '../../lib/pty-notification.js';
 import type { ExecuteHookCommand, SessionManager } from '../session-manager.js';
+import type { JobQueue } from '../../jobs/index.js';
 import type { PauseSessionOutcome } from '../session-pause-resume-service.js';
+import type { UserRepository } from '../../repositories/user-repository.js';
+import type { LookupOsUserFn } from '../os-user-lookup.js';
+import type { runAsUser } from '../privilege-elevation.js';
 
 type HookResult = Awaited<ReturnType<ExecuteHookCommand>>;
 
@@ -69,7 +73,39 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     delete process.env.AGENT_CONSOLE_HOME;
   });
 
-  async function setup(hookOverride?: ExecuteHookCommand) {
+  // A session owned by this user resolves to an OS username other than the test process's, so the agent PTY
+  // activation takes the multi-user branch that mints an MCP token (it also needs AUTH_MODE=multi-user).
+  const OWNER_ID = 'user-alice-uuid';
+  const ownerRepository: UserRepository = {
+    async upsertByOsUid() {
+      throw new Error('not used');
+    },
+    async findById(id: string) {
+      return id === OWNER_ID ? { id, username: 'alice', homeDir: '/home/alice' } : null;
+    },
+    async findByUsername() {
+      return null;
+    },
+    async findAll() {
+      return [];
+    },
+    async getOsUidById() {
+      throw new Error('not used');
+    },
+    async refreshOsIdentity() {
+      throw new Error('not used');
+    },
+    async getPreferences() {
+      return null;
+    },
+    async setPreferences() {
+      return true;
+    },
+  };
+  const okRunAsUser: typeof runAsUser = async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false, cwdFailed: false });
+  const lookupAlice: LookupOsUserFn = async () => ({ uid: 4242, homeDir: '/home/alice' });
+
+  async function setup(hookOverride?: ExecuteHookCommand, jobQueue?: JobQueue, tokenMinting = false) {
     let resolveHook!: (result: HookResult) => void;
     let rejectHook!: (reason: unknown) => void;
     const executeHookCommand = mock<ExecuteHookCommand>(
@@ -79,13 +115,14 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
           rejectHook = reject;
         }),
     );
+    const mcpTokenRegistry = new McpTokenRegistry();
     const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
     const manager: SessionManager = await module.SessionManager.create({
       sessionRepository: await createTestSessionRepository(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
       agentManager,
-      mcpTokenRegistry: new McpTokenRegistry(),
+      mcpTokenRegistry,
       embeddedAgentManager: {
         getEmbeddedAgent: (id: string) => (id === EMBEDDED_DEF.id ? EMBEDDED_DEF : undefined),
       },
@@ -95,9 +132,14 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
         getWorktreeIndexNumber: async () => 5,
       }),
       executeHookCommand: hookOverride ?? executeHookCommand,
+      ...(jobQueue ? { jobQueue } : {}),
+      ...(tokenMinting
+        ? { userRepository: ownerRepository, runAsUserImpl: okRunAsUser, lookupOsUserFn: lookupAlice, assertSpawnCwdFn: async () => {} }
+        : {}),
     });
     return {
       manager,
+      mcpTokenRegistry,
       executeHookCommand,
       resolveHook: (result: HookResult) => resolveHook(result),
       rejectHook: (reason: unknown) => rejectHook(reason),
@@ -174,6 +216,279 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
 
     resolveHook({ success: true });
     await pause;
+  });
+
+  it('activateEmbeddedAgentWorker rejects with SessionDeletingError while the session is being deleted', async () => {
+    const { manager } = await setup();
+    const session = await createSession(manager, true);
+    const embedded = workerOfType(session, 'embedded-agent');
+    // A PTY worker whose kill is held keeps the deletion parked in its awaited cleanup.
+    await manager.createWorker(session.id, { type: 'terminal', name: 'Shell' });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let killStarted = false;
+    const killSpy = spyOn(manager['workerManager'], 'killWorker').mockImplementation(async () => {
+      killStarted = true;
+      await gate;
+    });
+    const deletion = manager.deleteSession(session.id);
+    for (let i = 0; i < 400 && !killStarted; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(manager.isDeleting(session.id)).toBe(true);
+
+    await expect(manager.activateEmbeddedAgentWorker(session.id, embedded.id)).rejects.toBeInstanceOf(SessionDeletingError);
+
+    release();
+    // The default setup passes no job queue, so the deletion itself fails after the window under test.
+    await deletion.catch(() => undefined);
+    killSpy.mockRestore();
+    expect(manager.isDeleting(session.id)).toBe(false);
+  });
+
+  // A terminal worker's PTY activation is parked before its spawn (first cwd check held) while the session is
+  // deleted, or paused and resumed (a new session object), by the time it resumes. Each ends with no marker set.
+  function holdFirstSpawnCwdCheck(manager: SessionManager) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    manager['workerManager']['assertSpawnCwdFn'] = async () => {
+      calls++;
+      if (calls === 1) await gate;
+    };
+    return {
+      release,
+      reached: async () => {
+        for (let i = 0; i < 400 && calls === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(calls).toBeGreaterThan(0);
+      },
+    };
+  }
+
+  it('a worker activation parked before its spawn when the session is deleted spawns nothing and rejects with SessionDeletingError', async () => {
+    const { manager } = await setup();
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' }).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await held.reached();
+
+    // This test uses the default setup (no job queue), where a real deletion fails and restores the session; its
+    // observable end state (marker cleared, session gone from the registry) is set directly. The completed-deletion
+    // arms below run a real deleteSession through a completing job queue instead.
+    manager['sessions'].delete(session.id);
+    expect(manager['sessions'].has(session.id)).toBe(false);
+    expect(manager.isDeleting(session.id)).toBe(false);
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    expect(await creation).toBeInstanceOf(SessionDeletingError);
+    expect(ptyFactory.instances.length).toBe(spawnsBefore);
+  });
+
+  it('a worker activation parked before its spawn when the session is paused and resumed spawns nothing and rejects with SessionPausingError', async () => {
+    const { manager, executeHookCommand, resolveHook } = await setup();
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' }).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await held.reached();
+
+    const pause = manager.pauseSession(session.id);
+    await hookStarted(executeHookCommand);
+    resolveHook({ success: true });
+    await pause;
+    const resumed = await manager.resumeSession(session.id);
+    expect(resumed?.session.id).toBe(session.id);
+    expect(manager.isPausing(session.id)).toBe(false);
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    expect(await creation).toBeInstanceOf(SessionPausingError);
+    expect(ptyFactory.instances.length).toBe(spawnsBefore);
+  });
+
+  it('a worker activation parked before its spawn while a pause is still in flight spawns nothing and rejects with SessionPausingError', async () => {
+    const { manager, executeHookCommand, resolveHook } = await setup();
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' }).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await held.reached();
+
+    const pause = manager.pauseSession(session.id);
+    await hookStarted(executeHookCommand);
+    expect(manager.isPausing(session.id)).toBe(true);
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    expect(await creation).toBeInstanceOf(SessionPausingError);
+    expect(ptyFactory.instances.length).toBe(spawnsBefore);
+    resolveHook({ success: true });
+    await pause;
+  });
+
+  // Lets a real deleteSession run to completion: the cleanup-job enqueue resolves and the wake is a no-op.
+  const completingJobQueue = { enqueue: async () => 'job-id', wake: () => {} } as unknown as JobQueue;
+
+  // A completed pause and a completed deletion both leave the registry with both markers clear; the pause tombstone
+  // on the captured session object tells them apart (a map miss without it is a deletion). Each case parks an activation, ends the session, then releases.
+  for (const kind of ['agent', 'terminal'] as const) {
+    const create = (manager: SessionManager, sessionId: string) =>
+      manager
+        .createWorker(
+          sessionId,
+          kind === 'agent'
+            ? { type: 'agent', agentId: 'claude-code', name: 'Second agent' }
+            : { type: 'terminal', name: 'Shell' },
+        )
+        .then(
+          () => null,
+          (err: unknown) => err,
+        );
+
+    it(`a ${kind} activation parked before its spawn across a COMPLETED pause spawns nothing and rejects with SessionPausingError`, async () => {
+      const { manager, executeHookCommand, resolveHook } = await setup();
+      const session = await createSession(manager);
+      const held = holdFirstSpawnCwdCheck(manager);
+      const creation = create(manager, session.id);
+      await held.reached();
+
+      const pause = manager.pauseSession(session.id);
+      await hookStarted(executeHookCommand);
+      resolveHook({ success: true });
+      await pause;
+      expect(manager['sessions'].has(session.id)).toBe(false);
+      expect(manager.isPausing(session.id)).toBe(false);
+      expect(manager.isDeleting(session.id)).toBe(false);
+      const spawnsBefore = ptyFactory.instances.length;
+      held.release();
+
+      expect(await creation).toBeInstanceOf(SessionPausingError);
+      expect(ptyFactory.instances.length).toBe(spawnsBefore);
+    });
+
+    it(`a ${kind} activation parked before its spawn across a COMPLETED deletion spawns nothing and rejects with SessionDeletingError`, async () => {
+      const { manager } = await setup(undefined, completingJobQueue);
+      const session = await createSession(manager);
+      const held = holdFirstSpawnCwdCheck(manager);
+      const creation = create(manager, session.id);
+      await held.reached();
+
+      // A real deletion runs to completion while the activation is parked: out of the registry, marker cleared,
+      // no tombstone, so the recheck reads the map miss as a deletion.
+      expect(await manager.deleteSession(session.id)).toBe(true);
+      expect(manager['sessions'].has(session.id)).toBe(false);
+      expect(manager.isDeleting(session.id)).toBe(false);
+      const spawnsBefore = ptyFactory.instances.length;
+      held.release();
+
+      expect(await creation).toBeInstanceOf(SessionDeletingError);
+      expect(ptyFactory.instances.length).toBe(spawnsBefore);
+    });
+  }
+
+  // Only an agent PTY activation under AUTH_MODE=multi-user mints an MCP token, and only for a session with an owner,
+  // so the token claim needs that setup; the minted tokens are then checked through the registry's public verify().
+  for (const ending of ['pause', 'delete'] as const) {
+    it(`an agent activation parked before its spawn across a COMPLETED ${ending} revokes the token it minted`, async () => {
+      const originalAuthMode = process.env.AUTH_MODE;
+      process.env.AUTH_MODE = 'multi-user';
+      try {
+        const { manager, mcpTokenRegistry, executeHookCommand, resolveHook } = await setup(undefined, ending === 'delete' ? completingJobQueue : undefined, true);
+        const mint = spyOn(mcpTokenRegistry, 'mint');
+        const session = await manager.createSession(
+          { type: 'worktree', locationPath: '/test/path', repositoryId: 'repo-1', worktreeId: 'feature-branch', agentId: 'claude-code' },
+          { createdBy: OWNER_ID },
+        );
+        const mintedBeforePark = mint.mock.results.length;
+        const held = holdFirstSpawnCwdCheck(manager);
+        const creation = manager
+          .createWorker(session.id, { type: 'agent', agentId: 'claude-code', name: 'Second agent' })
+          .then(
+            () => null,
+            (err: unknown) => err,
+          );
+        await held.reached();
+
+        // The parked activation has minted its own token and it is live: the revoke below has something to revoke.
+        expect(mint.mock.results.length).toBe(mintedBeforePark + 1);
+        const parkedToken = mint.mock.results[mintedBeforePark]!.value as string;
+        expect(mcpTokenRegistry.verify(parkedToken)).not.toBeNull();
+
+        let expected: typeof SessionPausingError | typeof SessionDeletingError;
+        if (ending === 'pause') {
+          const pause = manager.pauseSession(session.id);
+          await hookStarted(executeHookCommand);
+          resolveHook({ success: true });
+          await pause;
+          expected = SessionPausingError;
+        } else {
+          expect(await manager.deleteSession(session.id)).toBe(true);
+          expected = SessionDeletingError;
+        }
+        const spawnsBefore = ptyFactory.instances.length;
+        held.release();
+
+        expect(await creation).toBeInstanceOf(expected);
+        expect(ptyFactory.instances.length).toBe(spawnsBefore);
+        expect(mcpTokenRegistry.verify(parkedToken)).toBeNull();
+        mint.mockRestore();
+      } finally {
+        if (originalAuthMode === undefined) delete process.env.AUTH_MODE;
+        else process.env.AUTH_MODE = originalAuthMode;
+      }
+    });
+  }
+
+  it('a terminal activation parked across a deletion that FAILED and rolled back spawns normally', async () => {
+    // The cleanup-job enqueue fails after the session has left memory, so the deletion rolls back.
+    const failingJobQueue: Partial<JobQueue> = {
+      enqueue: async () => {
+        throw new Error('enqueue failed');
+      },
+    };
+    const { manager } = await setup(undefined, failingJobQueue as JobQueue);
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' }).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await held.reached();
+
+    // The deletion removes the session from memory, fails, and puts the same object back.
+    await manager.deleteSession(session.id).catch(() => undefined);
+    const restored = manager['sessions'].get(session.id);
+    expect(restored).toBeDefined();
+    expect(restored?.endedBy).toBeUndefined();
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    expect(await creation).toBeNull();
+    expect(ptyFactory.instances.length).toBe(spawnsBefore + 1);
+  });
+
+  it('a worker activation with nothing happening to the session during the gate spawns as before', async () => {
+    const { manager } = await setup();
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' });
+    await held.reached();
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    const worker = await creation;
+    expect(worker?.type).toBe('terminal');
+    expect(ptyFactory.instances.length).toBe(spawnsBefore + 1);
   });
 
   it('a notification for an embedded worker reports a delivery failure instead of waking the worker', async () => {

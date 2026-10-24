@@ -70,7 +70,7 @@ import {
 import { createLogger } from '../lib/logger.js';
 import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { serverConfig } from '../lib/server-config.js';
-import { SessionPausingError } from '../lib/errors.js';
+import { SessionDeletingError, SessionPausingError } from '../lib/errors.js';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
 import type { WindowObservation } from './embedded-agent-window-observations.js';
@@ -362,6 +362,13 @@ export interface EmbeddedAgentWorkerServiceDeps {
    * callers that never pause sessions omit it.
    */
   isSessionPausing?: (sessionId: string) => boolean;
+  /**
+   * True while the session is being deleted. `activate` refuses (rejects with
+   * `SessionDeletingError`) so a socket accepted during the deletion's awaited
+   * cleanup cannot spawn a subprocess after the kill loop ran. Optional like
+   * {@link isSessionPausing}.
+   */
+  isSessionDeleting?: (sessionId: string) => boolean;
   persistSession: (session: InternalSession) => Promise<void>;
   /**
    * Broadcasts the app-wide `session-updated` event whenever this service
@@ -888,6 +895,9 @@ export class EmbeddedAgentWorkerService {
    * callers (so `activate() === activate()` while in flight).
    */
   activate(sessionId: string, workerId: string): Promise<void> {
+    if (this.deps.isSessionDeleting?.(sessionId)) {
+      return Promise.reject(new SessionDeletingError(sessionId));
+    }
     if (this.deps.isSessionPausing?.(sessionId)) {
       return Promise.reject(new SessionPausingError(sessionId));
     }
@@ -1329,6 +1339,17 @@ export class EmbeddedAgentWorkerService {
         ...(session.parentSessionId !== undefined ? { parentSessionId: session.parentSessionId } : {}),
         ...(session.parentWorkerId !== undefined ? { parentWorkerId: session.parentWorkerId } : {}),
       });
+      // Activation can be parked on the awaits above while a deletion or pause starts and finishes, clearing its
+      // marker: re-check synchronously (no await before the spawn) so no subprocess outlives the session. With no
+      // marker set, a completed pause and a completed deletion both empty the map; the pause leaves this flag, so a
+      // map miss without it is a deletion. The object is replaced only by a pause followed by a resume. Thrown
+      // inside the try, so the catch below revokes the token.
+      if (this.deps.isSessionDeleting?.(sessionId)) throw new SessionDeletingError(sessionId);
+      if (this.deps.isSessionPausing?.(sessionId)) throw new SessionPausingError(sessionId);
+      if (session.endedBy === 'pause') throw new SessionPausingError(sessionId);
+      const currentSession = this.deps.getSession(sessionId);
+      if (currentSession === undefined) throw new SessionDeletingError(sessionId);
+      if (currentSession !== session) throw new SessionPausingError(sessionId);
       const { subprocess, stdin } = this.spawnAsUserFn({
         username,
         command: `${shellEscape(this.bunPath)} ${shellEscape(this.entryPath)}`,
