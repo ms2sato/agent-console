@@ -908,8 +908,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
       const fromSessionId = self.sessionId;
 
       try {
-        // 1. Validate target session
-        const targetSession = sessionManager.getSession(toSessionId);
+        // 1. Validate target session. A paused session is not in memory but is
+        //    still a valid target: its notification is stored for the resume digest.
+        const liveTargetSession = sessionManager.getSession(toSessionId);
+        const pausedTarget = liveTargetSession
+          ? null
+          : await sessionManager.resolvePausedMessageTarget(toSessionId);
+        const targetSession = liveTargetSession ?? pausedTarget?.session;
         if (!targetSession) {
           return errorResult(`Session ${toSessionId} not found`);
         }
@@ -975,7 +980,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
         // 4. Resolve the path via SessionManager so we use the canonical
         //    persisted slug — the in-memory `repositoryName` is a display
         //    name that may differ from the on-disk slug.
-        const resolver = sessionManager.getPathResolverForSessionId(toSessionId);
+        const resolver = pausedTarget?.resolver ?? sessionManager.getPathResolverForSessionId(toSessionId);
         if (!resolver) {
           return errorResult(`Cannot resolve data path for target session ${toSessionId}`);
         }
@@ -1017,7 +1022,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
             toSessionId,
             resolvedWorkerId,
             notificationParams,
-            { replyToSessionId: fromSessionId },
+            { replyToSessionId: fromSessionId, sourceId: result.path },
           );
           if (!deliveryResult.ok) {
             logger.warn(
@@ -1036,17 +1041,21 @@ export function createMcpApp(deps: McpDependencies): Hono {
           // the notification itself was delivered successfully (mirroring
           // the pre-seam behavior, where a failed notification write never
           // reached the reply-instructions write either).
+          // A deferred result (paused target) is success: the message file is the
+          // record and the resume digest carries its own reply hint, so the
+          // reply-instructions write below is skipped.
           const deliveryResult = await sessionManager.deliverWorkerNotification(
             toSessionId,
             resolvedWorkerId,
             notificationParams,
+            { replyToSessionId: fromSessionId, sourceId: result.path },
           );
           if (!deliveryResult.ok) {
             logger.warn(
               { toSessionId, toWorkerId: resolvedWorkerId, error: deliveryResult.error },
               'PTY notification failed (message file was written successfully)',
             );
-          } else {
+          } else if (!deliveryResult.deferred) {
             try {
               sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, buildReplyInstructions(fromSessionId));
             } catch (notifyErr) {

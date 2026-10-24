@@ -30,6 +30,11 @@ export class SessionDataPathResolver {
     return path.join(this.baseDir, 'messages');
   }
 
+  /** Read-more files listing what was deferred while the session was paused (one `<resumedAt>.md` per resume). */
+  getDeferredDir(): string {
+    return path.join(this.baseDir, 'deferred');
+  }
+
   getMemosDir(): string {
     return path.join(this.baseDir, 'memos');
   }

@@ -891,6 +891,168 @@ describe('WorkerManager', () => {
     });
   });
 
+  describe('command injection signal (commandInjection)', () => {
+    afterEach(() => {
+      ptyFactory.setAutoEmitSentinel(true);
+    });
+
+    async function settled(p: Promise<void>): Promise<boolean> {
+      let done = false;
+      void p.then(() => { done = true; });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return done;
+    }
+
+    it('is created at activation and resolves at the post-sentinel injection write, not before', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      const mockPty = ptyFactory.instances[0];
+
+      expect(worker.commandInjection).toBeDefined();
+      expect(await settled(worker.commandInjection!.promise)).toBe(false);
+      expect(mockPty.writtenData.some((d) => d.endsWith('\r'))).toBe(false);
+
+      mockPty.emitRaw(mockPty.loginShellSentinel! + '\r\n');
+
+      expect(mockPty.writtenData.some((d) => d.endsWith('\r'))).toBe(true);
+      expect(await settled(worker.commandInjection!.promise)).toBe(true);
+    });
+
+    it('resolves when the PTY exits before the sentinel, so a waiter never hangs', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      const mockPty = ptyFactory.instances[0];
+      expect(await settled(worker.commandInjection!.promise)).toBe(false);
+
+      mockPty.simulateExit(1);
+
+      expect(await settled(worker.commandInjection!.promise)).toBe(true);
+    });
+
+    it('resolve is idempotent and a re-activation gets a fresh, unresolved deferred', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      const first = worker.commandInjection!;
+      first.resolve();
+      first.resolve();
+
+      ptyFactory.instances[0].simulateExit(0);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      expect(worker.commandInjection).not.toBe(first);
+      expect(await settled(worker.commandInjection!.promise)).toBe(false);
+    });
+  });
+
+  describe('post-injection output (readiness input)', () => {
+    afterEach(() => {
+      ptyFactory.setAutoEmitSentinel(true);
+    });
+
+    it('counts nothing before the sentinel, starts at the injection, and notifies waiters per chunk', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      const mockPty = ptyFactory.instances[0];
+      let notified = 0;
+      worker.postInjectionOutputWaiters.add(() => { notified++; });
+
+      mockPty.emitRaw('x'.repeat(500)); // shell banner before the sentinel
+      expect(worker.postInjectionOutputBytes).toBe(0);
+      expect(worker.lastOutputAt).toBeNull();
+      expect(notified).toBe(0);
+
+      mockPty.emitRaw(mockPty.loginShellSentinel! + '\r\n'); // the injection write; nothing after the sentinel
+      expect(worker.postInjectionOutputBytes).toBe(0);
+
+      const before = Date.now();
+      mockPty.emitRaw('echo of the typed command'); // 25 bytes
+      mockPty.emitRaw('y'.repeat(100));
+      expect(worker.postInjectionOutputBytes).toBe(125);
+      expect(worker.lastOutputAt).toBeGreaterThanOrEqual(before);
+      expect(notified).toBe(2);
+    });
+
+    it('counts output that follows the sentinel in the same chunk', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      const mockPty = ptyFactory.instances[0];
+
+      mockPty.emitRaw('pre' + mockPty.loginShellSentinel! + '\r\nhello');
+
+      expect(worker.postInjectionOutputBytes).toBe(5);
+    });
+
+    it('counts UTF-8 bytes, not UTF-16 code units: box-drawing output is 3 bytes per character', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      const mockPty = ptyFactory.instances[0];
+      mockPty.emitRaw(mockPty.loginShellSentinel! + '\r\n');
+
+      mockPty.emitRaw('\u2500'.repeat(100));
+
+      expect(worker.postInjectionOutputBytes).toBe(300);
+      expect(worker.outputOffset).toBeGreaterThanOrEqual(300);
+    });
+
+    it('resets the counters on re-activation', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      ptyFactory.instances[0].emitRaw('z'.repeat(300));
+      expect(worker.postInjectionOutputBytes).toBe(300);
+      ptyFactory.instances[0].simulateExit(0);
+
+      ptyFactory.setAutoEmitSentinel(false);
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      expect(worker.postInjectionOutputBytes).toBe(0);
+      expect(worker.lastOutputAt).toBeNull();
+    });
+
+    it('notifies waiters when the PTY exits, so a waiter can see the worker is gone', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      let sawPty: unknown = 'unset';
+      worker.postInjectionOutputWaiters.add(() => { sawPty = worker.pty; });
+
+      ptyFactory.instances[0].simulateExit(0);
+
+      expect(sawPty).toBeNull();
+    });
+  });
+
+  describe('managed kill settles the readiness inputs', () => {
+    afterEach(() => {
+      ptyFactory.setAutoEmitSentinel(true);
+    });
+
+    it('killWorker resolves a pending commandInjection and notifies every post-injection waiter, without waiting for a cap', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      let injected = false;
+      void worker.commandInjection!.promise.then(() => { injected = true; });
+      const sawPty: unknown[] = [];
+      worker.postInjectionOutputWaiters.add(() => { sawPty.push(worker.pty); });
+      worker.postInjectionOutputWaiters.add(() => { sawPty.push(worker.pty); });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(injected).toBe(false);
+      expect(sawPty).toEqual([]);
+
+      await workerManager.killWorker(worker, 'test-session');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      expect(injected).toBe(true);
+      // Both waiters ran, and after the PTY was detached (so a waiter's `!worker.pty` check sees it gone).
+      expect(sawPty).toEqual([null, null]);
+    });
+  });
+
   describe('sentinel watchdog (Issue #1242)', () => {
     const WATCHDOG_MESSAGE =
       'Login-shell sentinel not detected within timeout; agent worker PTY output may be stuck or lost';

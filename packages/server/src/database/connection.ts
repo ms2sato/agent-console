@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 54;
+export const LATEST_SCHEMA_VERSION = 55;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -479,6 +479,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 54) {
     await migrateToV54(database);
+  }
+
+  if (currentVersion < 55) {
+    await migrateToV55(database);
   }
 }
 
@@ -3810,4 +3814,68 @@ async function migrateWorktreeIndexesFromJson(database: Kysely<Database>): Promi
       logger.error({ err: error, repositoryId: repo.id }, 'Failed to migrate worktree indexes for repository, continuing with others');
     }
   }
+}
+
+/**
+ * Migration v55: Create `deferred_worker_notifications`.
+ *
+ * Holds notifications addressed to a worker of a paused (or pausing) session
+ * until the session resumes, when one digest per worker replaces them.
+ * `kind` is constrained by the TypeScript type at write time, never by a CHECK
+ * (no table rebuild per new kind). `source_id` is polymorphic provenance with no
+ * foreign key. `params_json` is the notification seam's `PtyNotificationParams`
+ * serialised as-is.
+ *
+ * Owner-approved DDL (the `created_at` GLOB literal below is what
+ * `ISO8601_GLOB_PATTERN` renders; the migration emits it from the constant):
+ * ```sql
+ * CREATE TABLE IF NOT EXISTS deferred_worker_notifications (
+ *   id                  TEXT PRIMARY KEY,
+ *   session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ *   worker_id           TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
+ *   kind                TEXT NOT NULL,
+ *   source_id           TEXT,
+ *   params_json         TEXT NOT NULL,
+ *   reply_to_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+ *   created_at          TEXT NOT NULL,
+ *   CONSTRAINT dwn_kind_check       CHECK (length(kind) > 0),
+ *   CONSTRAINT dwn_params_check     CHECK (json_valid(params_json)),
+ *   CONSTRAINT dwn_created_at_check CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
+ * );
+ * CREATE INDEX IF NOT EXISTS idx_dwn_session_created ON deferred_worker_notifications (session_id, created_at, id);
+ * CREATE INDEX IF NOT EXISTS idx_dwn_worker ON deferred_worker_notifications (worker_id);
+ * CREATE INDEX IF NOT EXISTS idx_dwn_reply_to ON deferred_worker_notifications (reply_to_session_id);
+ * PRAGMA user_version = 55;
+ * ```
+ *
+ * Arrival order within a millisecond is the implicit rowid; do not add WITHOUT ROWID,
+ * and a VACUUM would renumber it.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV55(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v55: Creating deferred_worker_notifications table');
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS deferred_worker_notifications (
+      id                  TEXT PRIMARY KEY,
+      session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      worker_id           TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
+      kind                TEXT NOT NULL,
+      source_id           TEXT,
+      params_json         TEXT NOT NULL,
+      reply_to_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+      created_at          TEXT NOT NULL,
+      CONSTRAINT dwn_kind_check       CHECK (length(kind) > 0),
+      CONSTRAINT dwn_params_check     CHECK (json_valid(params_json)),
+      CONSTRAINT dwn_created_at_check CHECK (created_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
+    )
+  `.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_dwn_session_created ON deferred_worker_notifications (session_id, created_at, id)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_dwn_worker ON deferred_worker_notifications (worker_id)`.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_dwn_reply_to ON deferred_worker_notifications (reply_to_session_id)`.execute(database);
+
+  await sql`PRAGMA user_version = 55`.execute(database);
+
+  logger.info('Migration to v55 completed');
 }

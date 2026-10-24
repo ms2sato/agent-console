@@ -173,6 +173,8 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     startBranchWatching: async () => {},
     stopBranchWatching: () => {},
     getPauseParticipants: () => [],
+    isPausing: () => false,
+    flushDeferredNotifications: mock(async () => {}),
     getServerPid: () => 99999,
     hasSessionHookCommand: mock(() => false),
     runSessionHookCommand: mock(async () => undefined),
@@ -1045,21 +1047,102 @@ describe('SessionPauseResumeService', () => {
         });
       }
 
-      it('resumes every participant in registration order, after onSessionResumed', async () => {
+      // The flush is void-forwarded: the resume request returns before it settles,
+      // and the re-arm runs in its `finally`. Let those microtasks run.
+      const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      it('resumes every participant in registration order, after onSessionResumed and the flush', async () => {
         const calls: string[] = [];
         const deps = resumableDeps({
           getSessionLifecycleCallbacks: () => ({ onSessionResumed: () => { calls.push('onSessionResumed'); } }),
           getPauseParticipants: recordingParticipants(calls),
+          flushDeferredNotifications: mock(async (id: string) => { calls.push(`flush:${id}`); }),
         });
 
         const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
 
         expect(result).not.toBeNull();
         expect(calls).toEqual([
           'onSessionResumed',
+          'flush:session-1',
           'resume:timer:session-1',
           'resume:conditional-wakeup:session-1',
         ]);
+      });
+
+      it('hands the flush the pause time the persisted row carried', async () => {
+        const flush = mock(async (_id: string, _pausedAt?: string | null) => {});
+        const deps = resumableDeps({ flushDeferredNotifications: flush });
+
+        await new SessionPauseResumeService(deps).resumeSession('session-1');
+
+        expect(flush).toHaveBeenCalledTimes(1);
+        expect(flush.mock.calls[0]).toEqual(['session-1', '2026-01-01T00:00:00.000Z']);
+      });
+
+      it('does not re-arm participants until the flush has settled, and does not make the resume wait for it', async () => {
+        const calls: string[] = [];
+        let finishFlush!: () => void;
+        const deps = resumableDeps({
+          getPauseParticipants: recordingParticipants(calls),
+          flushDeferredNotifications: mock(() => new Promise<void>((resolve) => { finishFlush = resolve; })),
+        });
+
+        const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
+
+        expect(result).not.toBeNull();
+        expect(calls).toEqual([]);
+
+        finishFlush();
+        await settle();
+        expect(calls).toEqual(['resume:timer:session-1', 'resume:conditional-wakeup:session-1']);
+      });
+
+      it('re-arms participants even when the flush rejects', async () => {
+        const calls: string[] = [];
+        const deps = resumableDeps({
+          getPauseParticipants: recordingParticipants(calls),
+          flushDeferredNotifications: mock(async () => { throw new Error('flush failed'); }),
+        });
+
+        const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
+
+        expect(result).not.toBeNull();
+        expect(calls).toEqual(['resume:timer:session-1', 'resume:conditional-wakeup:session-1']);
+      });
+
+      it('does not re-arm participants when a pause began during the flush', async () => {
+        const calls: string[] = [];
+        let pausing = false;
+        const deps = resumableDeps({
+          getPauseParticipants: recordingParticipants(calls),
+          isPausing: () => pausing,
+          flushDeferredNotifications: mock(async () => { pausing = true; }),
+        });
+
+        await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
+
+        expect(calls).toEqual([]);
+      });
+
+      it('does not re-arm participants when the session left memory during the flush', async () => {
+        const calls: string[] = [];
+        let live = true;
+        const deps = resumableDeps({
+          getPauseParticipants: recordingParticipants(calls),
+          flushDeferredNotifications: mock(async () => { live = false; }),
+        });
+        const getSession = deps.getSession;
+        deps.getSession = (id) => (live ? getSession(id) : undefined);
+
+        await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
+
+        expect(calls).toEqual([]);
       });
 
       it('returns the resumed session and still runs the others when a participant resume throws', async () => {
@@ -1069,6 +1152,7 @@ describe('SessionPauseResumeService', () => {
         });
 
         const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
 
         expect(result).not.toBeNull();
         expect(calls).toEqual(['resume:timer:session-1', 'resume:conditional-wakeup:session-1']);
@@ -1087,9 +1171,11 @@ describe('SessionPauseResumeService', () => {
         });
 
         const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
 
         expect(result).toBeNull();
         expect(calls).toEqual([]);
+        expect(deps.flushDeferredNotifications).not.toHaveBeenCalled();
       });
 
       it('never resumes participants when persistence fails after activation (rollback)', async () => {
@@ -1104,9 +1190,11 @@ describe('SessionPauseResumeService', () => {
         });
 
         const result = await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
 
         expect(result).toBeNull();
         expect(calls).toEqual([]);
+        expect(deps.flushDeferredNotifications).not.toHaveBeenCalled();
       });
 
       it('does not resume participants when the session was already active', async () => {
@@ -1115,8 +1203,10 @@ describe('SessionPauseResumeService', () => {
         const deps = createMockDeps({ getSession: () => session, getPauseParticipants: recordingParticipants(calls) });
 
         await new SessionPauseResumeService(deps).resumeSession('session-1');
+        await settle();
 
         expect(calls).toEqual([]);
+        expect(deps.flushDeferredNotifications).not.toHaveBeenCalled();
       });
     });
 

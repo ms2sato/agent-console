@@ -401,13 +401,13 @@ PR [#1904](https://github.com/ms2sato/agent-console/pull/1904), fixing Issue #18
 | Component | delete | pause | resume | server restart |
 |---|---|---|---|---|
 | Timers and conditional wakeups (`TimerManager`, `ConditionalWakeupManager`) | cleanup callbacks | participants `timer` and `conditional-wakeup`: suspend | re-arm with the remaining wait | timers restore at the base interval; wakeups are lost |
-| Interactive process manager | cleanup callback (a delete-only participant) | keep running: the process is the agent's own command, bounded by its timeout and `MAX_PROCESSES_PER_SESSION`; its output notifications are dropped today while the session is paused | not applicable | the processes die with the server |
+| Interactive process manager | cleanup callback (a delete-only participant) | keep running: the process is the agent's own command, bounded by its timeout and `MAX_PROCESSES_PER_SESSION`; its output and exit notifications are deferred into the resume digest (`internal-process` is `defer`) | not applicable | the processes die with the server |
 
 ### Detection heuristics
 
 1. **A `Map<sessionId, ...>`, or a `setTimeout` / `setInterval` / subprocess keyed by session, in a service.** Ask what each lifecycle transition does to it.
 2. **A new `set*CleanupCallback`.** Cleanup on delete is one row of four; the other three are still undecided.
-3. **A new `kind` in `PTY_NOTIFICATION_KINDS`.** Once the pause-disposition table exists, its pause disposition row is this invariant's per-kind form.
+3. **A new `kind` in `PTY_NOTIFICATION_KINDS`.** Its row in `PAUSE_DISPOSITION` (`packages/server/src/services/pause-disposition.ts`, which does not compile until every kind has one) is this invariant's per-kind form: `defer`, `suspended-at-source` or `live-only`.
 
 ### Resolution patterns
 

@@ -574,3 +574,72 @@ describe('buildReplyInstructions', () => {
     expect(text).not.toContain('Session ID stated in your system prompt');
   });
 });
+
+describe('buildPtyNotificationText -- body and timestamp override', () => {
+  const messageParams = {
+    kind: 'internal-message' as const,
+    tag: 'internal:message' as const,
+    fields: { source: 'session', from: 'sender-1', summary: 'hello world', path: '/tmp/msg' },
+    intent: 'triage' as const,
+  };
+
+  it('is byte-identical to the pre-change output when neither body nor timestamp is present', () => {
+    // Recorded from the implementation BEFORE `body` / `timestamp` existed (clock frozen).
+    const RECORDED =
+      '\n[internal:message] timestamp=2026-01-01T00:00:00.000Z source=session from=sender-1 summary="hello world" path=/tmp/msg intent=triage';
+    setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    try {
+      expect(buildPtyNotificationText(messageParams)).toBe(RECORDED);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it('replaces the auto timestamp field with the override, keeping it first', () => {
+    const result = buildPtyNotificationText({ ...messageParams, timestamp: '2026-10-01T09:00:00.000Z' });
+    expect(result).toBe(
+      '\n[internal:message] timestamp=2026-10-01T09:00:00.000Z source=session from=sender-1 summary="hello world" path=/tmp/msg intent=triage',
+    );
+  });
+
+  it('appends the body after the k=v line, LF-separated, with line breaks preserved', () => {
+    setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    try {
+      const result = buildPtyNotificationText({ ...messageParams, body: 'line one\nline two' });
+      expect(result).toBe(
+        '\n[internal:message] timestamp=2026-01-01T00:00:00.000Z source=session from=sender-1 summary="hello world" path=/tmp/msg intent=triage\nline one\nline two',
+      );
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it('removes CR and terminal control characters from the body so only the delayed CR submits', () => {
+    const result = buildPtyNotificationText({ ...messageParams, body: 'a\r\nb\x1b[31mc\x9b' });
+    expect(result.endsWith('\na\nb[31mc')).toBe(true);
+    expect(result).not.toContain('\r');
+    expect(result).not.toContain('\x1b');
+  });
+
+  it('extractNotificationSummary still reads fields.summary when a body is present', () => {
+    expect(extractNotificationSummary({ ...messageParams, body: 'ignored' })).toBe('hello world');
+  });
+
+  it('renders the internal-paused-digest header fields as strings', () => {
+    const result = buildPtyNotificationText({
+      kind: 'internal-paused-digest',
+      tag: 'internal:paused-digest',
+      fields: {
+        pausedAt: '2026-10-24T01:00:00.000Z',
+        resumedAt: '2026-10-24T02:00:00.000Z',
+        count: '3',
+        omitted: '0',
+        path: '/data/deferred/x.md',
+        summary: '3 notifications arrived while paused',
+      },
+      intent: 'triage',
+    });
+    expect(result).toContain('[internal:paused-digest] ');
+    expect(result).toContain('count=3 omitted=0 path=/data/deferred/x.md summary="3 notifications arrived while paused" intent=triage');
+  });
+});
