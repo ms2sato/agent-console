@@ -847,6 +847,55 @@ describe('SessionPauseResumeService', () => {
       expect('templateVars' in options.context).toBe(false);
     });
 
+    // The activation context carries the session object that resume put in the
+    // registry (the one handed to setSession), so activation can recheck at spawn
+    // time that the session is still that object. Identity (toBe), not equality.
+    it('hands the registered session object to both PTY activations on resume', async () => {
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const terminalWorker = buildInternalTerminalWorker({ id: 'w2' });
+      const restoredWorkers = new Map<string, InternalWorker>([
+        ['w1', agentWorker],
+        ['w2', terminalWorker],
+      ]);
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        workers: [
+          buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent' }),
+          buildPersistedTerminalWorker({ id: 'w2' }),
+        ],
+      });
+
+      const activateAgent = mock(async (_worker: unknown, _params: { session: InternalSession }) => {});
+      const activateTerminal = mock(async (_worker: unknown, _params: { session: InternalSession }) => {});
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => restoredWorkers),
+          activateAgentWorkerPty: activateAgent,
+          activateTerminalWorkerPty: activateTerminal,
+        } satisfies SessionPauseResumeDeps['workerManager'],
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.resumeSession('session-1');
+
+      const setSessionMock = deps.setSession as ReturnType<typeof mock>;
+      expect(setSessionMock).toHaveBeenCalledTimes(1);
+      const registered = setSessionMock.mock.calls[0][1];
+      expect(deps.getSession('session-1')).toBe(registered);
+      expect(activateAgent).toHaveBeenCalledTimes(1);
+      expect(activateAgent.mock.calls[0][1].session).toBe(registered);
+      expect(activateTerminal).toHaveBeenCalledTimes(1);
+      expect(activateTerminal.mock.calls[0][1].session).toBe(registered);
+    });
+
     it('should resume a paused session successfully', async () => {
       const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', agentWorker]]);
