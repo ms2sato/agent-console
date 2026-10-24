@@ -134,14 +134,24 @@ interface InboundEventHandler {
 
   /**
    * Handle the event for a specific target.
-   * Returns true if handled successfully.
+   * `opts.jobId` is the inbound job that produced the event.
+   * Returns `'handled'` if the handler performed an action, `'not-applicable'`
+   * if it had nothing to do, `'delivery-failed'` if it should have delivered
+   * but the delivery itself failed.
    */
-  handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean>;
+  handle(event: InboundSystemEvent, target: EventTarget, opts: InboundHandleOptions): Promise<HandlerOutcome>;
+}
+
+type HandlerOutcome = 'handled' | 'not-applicable' | 'delivery-failed';
+
+interface InboundHandleOptions {
+  jobId: string;
 }
 
 interface EventTarget {
   sessionId: string;
   workerId?: string;  // If specified, target specific worker
+  provenance: 'match' | 'parent' | 'fallback';  // How the target was resolved
 }
 ```
 
@@ -159,32 +169,63 @@ class AgentWorkerHandler implements InboundEventHandler {
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 
-  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
-    const session = this.sessionManager.getSession(target.sessionId);
-    if (!session) return false;
-    if (!target.workerId && !canDeliverToAgentWorker(session)) return false;
+  async handle(event: InboundSystemEvent, target: EventTarget, opts: InboundHandleOptions): Promise<HandlerOutcome> {
+    // A paused session is not in memory; resolve it from persistence so the
+    // delivery seam can defer to it (the resolver returns null for a live,
+    // deleted or orphaned session).
+    // The resolver reads persistence and can reject; the handler's contract
+    // is "an outcome, never a rejection", so a failed lookup is a failed
+    // delivery attempt.
+    let session: Session | undefined;
+    try {
+      session =
+        this.sessionManager.getSession(target.sessionId) ??
+        (await this.sessionManager.resolvePausedMessageTarget(target.sessionId))?.session;
+    } catch (err) {
+      logger.error({ err, sessionId: target.sessionId, eventType: event.type }, 'Could not resolve the target session from persistence for inbound event');
+      return 'delivery-failed';
+    }
+    if (!session) return 'not-applicable';
+    if (!target.workerId && !canDeliverToAgentWorker(session)) return 'not-applicable';
+
     // First agent-shaped worker in session.workers order (deterministic).
     const workerId = target.workerId ?? session.workers.find(canReceiveSessionMessages)?.id;
-    if (!workerId) return false;
+    if (!workerId) return 'not-applicable';
 
     // Format: structured tag + key/value fields for reliable parsing. The PTY
     // branch renders `\n[inbound:<type>] timestamp=... type=... source=... repo=...
     // branch=... url=... summary="..." intent=...`; the embedded branch delivers
     // the same text as a system-notification turn (notification.kind = 'inbound-event').
-    const result = await this.sessionManager.deliverWorkerNotification(target.sessionId, workerId, {
-      kind: 'inbound-event',
-      tag: `inbound:${event.type}`,
-      fields: {
-        type: event.type,
-        source: event.source,
-        repo: event.metadata.repositoryName ?? 'unknown',
-        branch: event.metadata.branch ?? 'unknown',
-        url: event.metadata.url ?? 'N/A',
-        summary: event.summary,
-      },
-      intent: this.resolveIntent(event.type),
-    });
-    return result.ok;
+
+    // The PTY branch of the seam never throws, but the embedded-agent branch
+    // can reject (e.g. an activation failure). The handler's contract is
+    // "an outcome, never a rejection", so both failure shapes end up as
+    // 'delivery-failed'.
+    let result;
+    try {
+      result = await this.sessionManager.deliverWorkerNotification(target.sessionId, workerId, {
+        kind: 'inbound-event',
+        tag: `inbound:${event.type}`,
+        fields: {
+          type: event.type,
+          source: event.source,
+          repo: event.metadata.repositoryName ?? 'unknown',
+          branch: event.metadata.branch ?? 'unknown',
+          url: event.metadata.url ?? 'N/A',
+          summary: event.summary,
+        },
+        intent: this.resolveIntent(event.type),
+      }, { sourceId: opts.jobId });
+    } catch (err) {
+      logger.warn({ err, sessionId: target.sessionId, workerId, eventType: event.type }, 'notification delivery failed for inbound event');
+      return 'delivery-failed';
+    }
+    if (!result.ok) return 'delivery-failed';
+
+    // `deferred: true` means the session is paused and the notification is
+    // stored for its resume digest; the obligation is met, so this is
+    // 'handled' exactly as for a live delivery.
+    return 'handled';
   }
 
   /**
@@ -211,21 +252,25 @@ class AgentWorkerHandler implements InboundEventHandler {
 
 #### 2. DiffWorkerHandler (Refresh)
 
-Triggers DiffWorker to refresh its diff view.
+Triggers DiffWorker to refresh its diff view. It acts only on a direct `match` target whose session is live and has a `git-diff` worker. A paused target returns `'not-applicable'`: `getSession()` has no in-memory session for it, so there is nothing to refresh.
 
 ```typescript
 class DiffWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'diff-worker';
   readonly supportedEvents: InboundEventType[] = ['ci:completed', 'pr:merged'];
 
-  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
-    const workers = this.sessionManager.getWorkersByType(target.sessionId, 'git-diff');
-    if (workers.length === 0) return false;
+  async handle(_event: InboundSystemEvent, target: EventTarget, _opts: InboundHandleOptions): Promise<HandlerOutcome> {
+    if (target.provenance !== 'match') return 'not-applicable';
 
-    for (const worker of workers) {
-      await this.diffService.refresh(worker.id);
-    }
-    return true;
+    // A paused session is not in memory, so this is undefined for it.
+    const session = this.sessionManager.getSession(target.sessionId);
+    if (!session) return 'not-applicable';
+
+    const hasDiffWorker = session.workers.some((worker) => worker.type === 'git-diff');
+    if (!hasDiffWorker) return 'not-applicable';
+
+    triggerRefresh(session.locationPath);
+    return 'handled';
   }
 }
 ```
@@ -238,22 +283,23 @@ Sends notification to connected clients via WebSocket.
 class UINotificationHandler implements InboundEventHandler {
   readonly handlerId = 'ui-notification';
   readonly supportedEvents: InboundEventType[] = [
-    'ci:failed', 'issue:closed', 'pr:merged',
+    'ci:failed', 'issue:closed', 'issue:labeled', 'pr:merged',
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 
-  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget, _opts: InboundHandleOptions): Promise<HandlerOutcome> {
     // Broadcast to all clients viewing this session
-    this.appWebSocket.broadcast({
+    this.broadcastToApp({
       type: 'inbound-event',
       sessionId: target.sessionId,
       event: {
         type: event.type,
         source: event.source,
         summary: event.summary,
+        metadata: event.metadata,
       },
     });
-    return true;
+    return 'handled';
   }
 }
 ```
@@ -486,7 +532,21 @@ Sessions are matched to webhooks by comparing repository identifiers.
 1. **Runtime resolution** (current approach):
    ```typescript
    async function resolveTargets(event: InboundSystemEvent): Promise<EventTarget[]> {
-     const sessions = await sessionRepository.findAll();
+     // collectRoutableSessions: live sessions first, then paused ones
+     // (de-duplicated by id; orphaned sessions are excluded). Read once per call.
+     const live = sessionManager.getSessions();
+     let paused: Session[] = [];
+     try {
+       paused = await sessionManager.getAllPausedSessions();
+     } catch (err) {
+       // Logged at error level; routing continues with live sessions only.
+       logger.error({ err }, 'Failed to load paused sessions for inbound routing');
+     }
+     const liveIds = new Set(live.map((s) => s.id));
+     const sessions = [
+       ...live,
+       ...paused.filter((s) => !liveIds.has(s.id) && s.recoveryState !== 'orphaned'),
+     ];
      const targets: EventTarget[] = [];
 
      for (const session of sessions) {
@@ -507,7 +567,7 @@ Sessions are matched to webhooks by comparing repository identifiers.
        if (repoOrgRepo?.toLowerCase() === eventRepoName.toLowerCase()) {
          // Optionally match branch via worktreeId
          if (!event.metadata.branch || session.worktreeId === event.metadata.branch) {
-           targets.push({ sessionId: session.id });
+           targets.push({ sessionId: session.id, provenance: 'match' });
          }
        }
      }
@@ -536,9 +596,12 @@ A Repository row holds a SET of designated Orchestrator sessions (`repository_or
 
 | The designated session… | Skipped, logged as |
 |---|---|
-| is not in `getSessions()` (deleted, or paused — a paused session's DB row survives but it is absent from the live session manager) | not a live session |
-| has `activationState !== 'running'` (hibernated: all its PTY workers have exited) | not running |
+| is neither live nor paused: deleted, or orphaned (a paused session's DB row survives and `getPausedSessions()` returns it; an orphaned row is excluded) | not a live session |
+| is paused (persisted, no owning server, not orphaned) | NOT skipped: a deferred target. The event is stored for the session's resume digest (`session-pause-resume.md`) and the ledger row becomes `delivered`. A paused session is recognised by membership in `getPausedSessions()`, never by `activationState`, which reads `hibernated` for a paused session AND for a live session whose workers have all exited |
+| is live with `activationState !== 'running'` (hibernated: all its PTY workers have exited) | not running |
 | fails `canDeliverToAgentWorker` (no agent-shaped worker: neither a PTY `agent` nor an `embedded-agent` — e.g. a worktree session whose only worker is `git-diff`, which computes `running` vacuously) | no agent worker to deliver to |
+
+**Paused sessions are targets on every path (Issue [#2204](https://github.com/ms2sato/agent-console/issues/2204), PR-2).** `TargetResolverDependencies.getPausedSessions()` (`SessionManager.getAllPausedSessions()`) supplies the paused sessions; the per-session loop iterates live sessions first, then paused ones (de-duplicated by id), so a paused session whose worktree matches the event is a `match` target, a paused parent with an agent-shaped worker counts as a live parent for `hasLiveParentTarget`, and a paused designated session is eligible on both the `issue:labeled` path and the #1661 fallback. Each routing decision to a paused session logs one info line naming `paused`. `InboundEventHandler.handle(event, target, { jobId })` receives the inbound job id; `AgentWorkerHandler` resolves a paused session through `SessionManager.resolvePausedMessageTarget`, passes the job id as `sourceId` to `deliverWorkerNotification`, and maps `{ ok: true, deferred: true }` to `'handled'`, so the ledger row is `delivered` exactly as for a live delivery. `DiffWorkerHandler` is a no-op for a paused target (a paused session is not in `getSession()`). A failure to load paused sessions is logged at error level and routing continues with live sessions only: `SessionManager.getAllPausedSessions()` skips (and warns about) a single malformed persisted row so the others are still returned, and `resolveTargets` catches a whole-provider failure (for example a database error) at its boundary.
 
 Targets are collected into a `Set` keyed by session id, so a session designated on two same-remote rows is delivered to once. There is no precedence among designated sessions and no ordering guarantee beyond the deduplication; each recipient decides for itself whether the event is its responsibility, and recipients coordinate through `send_session_message` when they act.
 
@@ -832,7 +895,7 @@ class SessionActionHandler implements InboundEventHandler {
   readonly handlerId = 'session-action';
   readonly supportedEvents: InboundEventType[] = ['issue:closed', 'pr:merged'];
 
-  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget, _opts: InboundHandleOptions): Promise<HandlerOutcome> {
     // Example: Show dialog suggesting to close session
     if (event.type === 'issue:closed' || event.type === 'pr:merged') {
       this.appWebSocket.broadcast({
@@ -841,8 +904,9 @@ class SessionActionHandler implements InboundEventHandler {
         action: 'archive',
         reason: event.summary,
       });
+      return 'handled';
     }
-    return true;
+    return 'not-applicable';
   }
 }
 ```

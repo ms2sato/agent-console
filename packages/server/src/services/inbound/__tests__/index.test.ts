@@ -211,4 +211,39 @@ describe('initializeInboundIntegration', () => {
 
     expect(broadcastToApp).not.toHaveBeenCalled();
   });
+
+  it('routes a labeled-Issue webhook to a PAUSED designated Orchestrator session via the real getPausedSessions wiring', async () => {
+    const orchestratorSession = await sessionManager.createSession({
+      type: 'worktree',
+      locationPath: TEST_REPO_PATH,
+      repositoryId: TEST_REPO_ID,
+      worktreeId: 'main',
+    });
+    await repositoryManager.addOrchestratorSession(TEST_REPO_ID, orchestratorSession.id);
+    await repositoryManager.updateRepository(TEST_REPO_ID, { issueTriggerLabels: 'orchestrator-trigger' });
+    const paused = await sessionManager.pauseSession(orchestratorSession.id);
+    expect(paused.paused).toBe(true);
+    // Positive control: the session really left memory, so the only way it can
+    // be resolved is the paused-session list the wiring passes to resolveTargets.
+    expect(sessionManager.getSession(orchestratorSession.id)).toBeUndefined();
+
+    const broadcastToApp = mock(() => {});
+    initializeInboundIntegration({
+      db: getDatabase(),
+      jobQueue: createFakeJobQueue(),
+      sessionManager,
+      repositoryManager,
+      broadcastToApp,
+    });
+
+    await capturedHandler!(buildLabeledIssuePayload());
+
+    expect(broadcastToApp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'inbound-event',
+        sessionId: orchestratorSession.id,
+        event: expect.objectContaining({ type: 'issue:labeled' }),
+      }),
+    );
+  });
 });

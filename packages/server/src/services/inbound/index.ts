@@ -53,6 +53,7 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
   const resolveTargets = (event: Parameters<typeof resolveTargetsImpl>[0]) =>
     resolveTargetsImpl(event, {
       getSessions: () => options.sessionManager.getAllSessions(),
+      getPausedSessions: () => options.sessionManager.getAllPausedSessions(),
       getRepository: (repositoryId) => options.repositoryManager.getRepository(repositoryId),
       getAllRepositories: () => options.repositoryManager.getAllRepositories(),
     });

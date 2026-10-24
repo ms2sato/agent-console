@@ -1612,4 +1612,56 @@ describe('createInboundEventJobHandler', () => {
       }
     });
   });
+
+  describe('job id and deferred outcome (PR-2 of #2204)', () => {
+    const parser: ServiceParser = {
+      serviceId: 'github',
+      authenticate: async () => true,
+      parse: async () => ({
+        type: 'ci:completed',
+        source: 'github',
+        timestamp: '2024-01-01T00:00:00Z',
+        metadata: { repositoryName: 'owner/repo' },
+        payload: { ok: true },
+        summary: 'CI success',
+      }),
+    };
+
+    it('passes the job id to handler.handle and records a delivered ledger row for a deferred-style outcome', async () => {
+      const db = await createDatabaseForTest();
+      try {
+        const repo = new InboundEventNotificationRepository(db);
+        await createTestSession(db, 'paused-session');
+        const handlerMock = mock(async (..._args: Parameters<InboundEventHandler['handle']>) => 'handled' as const);
+        const handler: InboundEventHandler = {
+          handlerId: 'test-handler',
+          supportedEvents: ['ci:completed'],
+          handle: handlerMock,
+        };
+        const jobHandler = createInboundEventJobHandler({
+          getServiceParser: () => parser,
+          resolveTargets: async () => [{ sessionId: 'paused-session', provenance: 'match' }],
+          handlers: [handler],
+          notificationRepository: repo,
+        });
+
+        await jobHandler({
+          jobId: 'job-deferred-1',
+          service: 'github',
+          rawPayload: '{}',
+          headers: {},
+          receivedAt: '2024-01-01T00:00:00Z',
+        });
+
+        expect(handlerMock).toHaveBeenCalledTimes(1);
+        expect(handlerMock.mock.calls[0][2]).toEqual({ jobId: 'job-deferred-1' });
+        const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rows).toHaveLength(1);
+        expect(rows[0].job_id).toBe('job-deferred-1');
+        expect(rows[0].status).toBe('delivered');
+      } finally {
+        await db.destroy();
+      }
+    });
+  });
 });
