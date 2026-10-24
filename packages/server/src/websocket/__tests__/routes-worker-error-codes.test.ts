@@ -25,6 +25,7 @@ import { SingleUserMode } from '../../services/user-mode.js';
 import type { UserMode, LoginResult, PtySpawnRequest } from '../../services/user-mode.js';
 import type { PtyInstance } from '../../lib/pty-provider.js';
 import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
+import { WebSocketConnectionRegistry } from '../connection-registry.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { serverConfig } from '../../lib/server-config.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
@@ -78,6 +79,15 @@ describe('Worker WebSocket connection error codes', () => {
   let capturedWorkerHandlerFactory: WebSocketHandlerFactory | null = null;
   // The repository pause command's runner; a test replaces it to hold a pause open.
   let pauseHook: ExecuteHookCommand;
+  let testRegistry: WebSocketConnectionRegistry;
+
+  /** Whether the registry still tracks `ws` for the session (by session set and by worker set). */
+  function isRegistered(sessionId: string, workerId: string, ws: WSContext): boolean {
+    return (
+      (testRegistry.getWorkerConnectionsBySession(sessionId)?.has(ws) ?? false) ||
+      (testRegistry.getWorkerConnections(sessionId, workerId)?.has(ws) ?? false)
+    );
+  }
 
   beforeEach(async () => {
     await closeDatabase();
@@ -89,6 +99,7 @@ describe('Worker WebSocket connection error codes', () => {
 
     ptyFactory.reset();
     capturedWorkerHandlerFactory = null;
+    testRegistry = new WebSocketConnectionRegistry();
     pauseHook = mock<ExecuteHookCommand>(async () => ({ success: true }));
 
     resetProcessMock();
@@ -127,7 +138,7 @@ describe('Worker WebSocket connection error codes', () => {
       capturedWorkerHandlerFactory = handlerFactory;
       return handlerFactory;
     };
-    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext);
+    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext, testRegistry);
   });
 
   afterEach(async () => {
@@ -175,6 +186,9 @@ describe('Worker WebSocket connection error codes', () => {
 
     // Verify connection was closed
     expect(mockWs.closeCalls.length).toBe(1);
+
+    // A refused socket must not stay tracked in the registry
+    expect(isRegistered('non-existent-session', 'some-worker', mockWs)).toBe(false);
   });
 
   it('should send WORKER_NOT_FOUND error code when worker does not exist in session', async () => {
@@ -219,6 +233,9 @@ describe('Worker WebSocket connection error codes', () => {
 
     // Verify connection was closed
     expect(mockWs.closeCalls.length).toBe(1);
+
+    // A refused socket must not stay tracked in the registry
+    expect(isRegistered(session.id, 'non-existent-worker', mockWs)).toBe(false);
   });
 
   it('accepts a worker WebSocket for a file-viewer worker: no error or exit frame, no close, no PTY; a client frame is answered with UNSUPPORTED_OPERATION and the socket stays open', async () => {
@@ -526,6 +543,7 @@ describe('Worker WebSocket connection error codes', () => {
     expect(errorMessage).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
     expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
     expect(ptyFactory.instances.length).toBe(spawnsBefore);
+    expect(isRegistered(session.id, agentWorker.id, mockWs)).toBe(false);
 
     resolveHook({ success: true });
     await pause;
@@ -581,6 +599,7 @@ describe('Worker WebSocket connection error codes', () => {
     expect(mockWs.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
     expect(activate).not.toHaveBeenCalled();
     expect(restore).not.toHaveBeenCalled();
+    expect(isRegistered(session.id, embeddedWorker!.id, mockWs)).toBe(false);
 
     resolveHook({ success: true });
     await pause;
@@ -653,6 +672,7 @@ describe('Worker WebSocket connection error codes', () => {
     expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
     expect(restore).not.toHaveBeenCalled();
     expect(ptyFactory.instances.length).toBe(spawnsBefore);
+    expect(isRegistered(session.id, agentWorker.id, ws)).toBe(false);
     await held.finish();
   });
 

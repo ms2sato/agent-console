@@ -817,14 +817,18 @@ export async function setupWebSocketRoutes(
       }
 
       /**
-       * Answer a socket that opened (or finished opening) while its session is being deleted. The socket was
-       * registered by onOpen after the deletion's one registry sweep, and the session's connection set is never
-       * swept again, so drop it here: identity-based removal on the close path cannot find it (Hono builds a new
-       * WSContext per event). Idempotent for a socket the sweep already removed.
+       * Refuse a socket that onOpen has already registered. onOpen registers the socket before its checks run,
+       * and a refused socket must not stay in the session's connection set: the deletion or pause sweep has
+       * already run or will not run again, so nothing else would remove it. Idempotent for a socket the sweep
+       * already removed.
        */
-      function refuseSocketOfDeletedSession(ws: WSContext): void {
+      function refuseOpenedSocket(ws: WSContext, message: string, code: WorkerErrorCode): void {
         registry.removeWorkerConnection(sessionId, workerId, ws);
-        sendErrorAndClose(ws, 'Session has been deleted', 'SESSION_DELETED');
+        sendErrorAndClose(ws, message, code);
+      }
+
+      function refuseSocketOfDeletedSession(ws: WSContext): void {
+        refuseOpenedSocket(ws, 'Session has been deleted', 'SESSION_DELETED');
       }
 
       /**
@@ -896,13 +900,13 @@ export async function setupWebSocketRoutes(
 
           const session = sessionManager.getSession(sessionId);
           if (!session) {
-            sendErrorAndClose(ws, 'Session not found', 'SESSION_DELETED');
+            refuseOpenedSocket(ws, 'Session not found', 'SESSION_DELETED');
             return;
           }
 
           const worker = session.workers.find(w => w.id === workerId);
           if (!worker) {
-            sendErrorAndClose(ws, 'Worker not found', 'WORKER_NOT_FOUND');
+            refuseOpenedSocket(ws, 'Worker not found', 'WORKER_NOT_FOUND');
             return;
           }
 
@@ -926,7 +930,7 @@ export async function setupWebSocketRoutes(
           // manager-level guard and the per-branch SessionPausingError catches below
           // remain as the second line of defence.
           if (sessionManager.isPausing(sessionId)) {
-            sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+            refuseOpenedSocket(ws, 'Session is pausing', 'SESSION_PAUSED');
             return;
           }
 
