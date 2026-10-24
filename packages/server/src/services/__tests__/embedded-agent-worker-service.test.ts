@@ -693,11 +693,11 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     });
   }
 
-  // A completed pause and a completed deletion both leave the registry with both markers clear. The tombstone on
-  // the captured session object tells them apart.
+  // A completed pause and a completed deletion both leave the registry with both markers clear. The pause tombstone
+  // on the captured session object tells them apart (a map miss without it is a deletion).
   for (const [label, endedBy, expected] of [
     ['a completed pause', 'pause', SessionPausingError],
-    ['a completed deletion', 'delete', SessionDeletingError],
+    ['a completed deletion', undefined, SessionDeletingError],
   ] as const) {
     it(`does not spawn when ${label} removed the session from the registry during activation`, async () => {
       let release!: () => void;
@@ -719,7 +719,7 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       );
       for (let i = 0; i < 400 && !reached; i++) await new Promise((resolve) => setTimeout(resolve, 5));
       expect(reached).toBe(true);
-      h.session.endedBy = endedBy;
+      if (endedBy !== undefined) h.session.endedBy = endedBy;
       h.deps.getSession = () => undefined;
       release();
 

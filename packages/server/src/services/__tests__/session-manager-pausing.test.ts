@@ -339,8 +339,8 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
   // Lets a real deleteSession run to completion: the cleanup-job enqueue resolves and the wake is a no-op.
   const completingJobQueue = { enqueue: async () => 'job-id', wake: () => {} } as unknown as JobQueue;
 
-  // A completed pause and a completed deletion both leave the registry with both markers clear; the tombstone on
-  // the captured session object tells them apart. Each case parks an activation, ends the session, then releases.
+  // A completed pause and a completed deletion both leave the registry with both markers clear; the pause tombstone
+  // on the captured session object tells them apart (a map miss without it is a deletion). Each case parks an activation, ends the session, then releases.
   for (const kind of ['agent', 'terminal'] as const) {
     const create = (manager: SessionManager, sessionId: string) =>
       manager
@@ -383,10 +383,8 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
       const creation = create(manager, session.id);
       await held.reached();
 
-      // A real deletion runs to completion while the activation is parked: out of the registry, tombstoned by the
-      // deletion service, marker cleared. Reach (measured): the recheck has two independent signals for this end
-      // state, the tombstone and the map miss. Dropping only one leaves these arms green; dropping both fails them
-      // (both COMPLETED deletion cases here and the token case's delete arm).
+      // A real deletion runs to completion while the activation is parked: out of the registry, marker cleared,
+      // no tombstone, so the recheck reads the map miss as a deletion.
       expect(await manager.deleteSession(session.id)).toBe(true);
       expect(manager['sessions'].has(session.id)).toBe(false);
       expect(manager.isDeleting(session.id)).toBe(false);

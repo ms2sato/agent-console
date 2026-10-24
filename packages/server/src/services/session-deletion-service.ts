@@ -266,7 +266,6 @@ export class SessionDeletionService {
 
       // 3. Remove from in-memory map
       this.deps.deleteSessionFromMemory(id);
-      session.endedBy = 'delete';
 
       // 4. Delete from persistence (this is the critical operation), together
       // with the cleanup-job enqueue so the output files are only scheduled for
@@ -286,7 +285,6 @@ export class SessionDeletionService {
     } catch (err) {
       // Restore in-memory session if it was removed
       // This ensures UI and server state remain consistent
-      session.endedBy = undefined;
       this.deps.setSession(id, session);
       logger.error({ sessionId: id, err }, 'Failed to delete session, restored in-memory state');
       throw err;

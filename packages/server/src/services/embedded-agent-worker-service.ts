@@ -1341,16 +1341,12 @@ export class EmbeddedAgentWorkerService {
       });
       // Activation can be parked on the awaits above while a deletion or pause starts and finishes, clearing its
       // marker: re-check synchronously (no await before the spawn) so no subprocess outlives the session. With no
-      // marker set, both a completed pause and a completed deletion have removed the session from the registry;
-      // the tombstone on the captured object tells them apart (the deletion rollback clears it when it puts the
-      // same object back). A map miss with no tombstone is a deletion; the object is replaced only by a pause
-      // followed by a resume. The tombstone is deliberately read BEFORE the registry lookup, as in the PTY guard:
-      // only that order makes a missing reset after a deletion rollback observable. Thrown inside the try, so the
-      // catch below revokes the token.
+      // marker set, a completed pause and a completed deletion both empty the map; the pause leaves this flag, so a
+      // map miss without it is a deletion. The object is replaced only by a pause followed by a resume. Thrown
+      // inside the try, so the catch below revokes the token.
       if (this.deps.isSessionDeleting?.(sessionId)) throw new SessionDeletingError(sessionId);
       if (this.deps.isSessionPausing?.(sessionId)) throw new SessionPausingError(sessionId);
       if (session.endedBy === 'pause') throw new SessionPausingError(sessionId);
-      if (session.endedBy === 'delete') throw new SessionDeletingError(sessionId);
       const currentSession = this.deps.getSession(sessionId);
       if (currentSession === undefined) throw new SessionDeletingError(sessionId);
       if (currentSession !== session) throw new SessionPausingError(sessionId);

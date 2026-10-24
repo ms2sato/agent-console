@@ -604,16 +604,11 @@ export class SessionManager {
       (id, session) => {
         if (this.isDeleting(id)) return new SessionDeletingError(id);
         if (this.isPausing(id)) return new SessionPausingError(id);
-        // Neither marker is set, so the captured session can only have changed by a run that has already finished.
-        // Both a completed pause and a completed deletion remove the session from the map with both markers clear;
-        // the tombstone on the captured object tells them apart (the deletion rollback clears it when it puts the
-        // same object back). A map miss with no tombstone is a deletion; the object is replaced only by a pause
-        // followed by a resume. (Worker membership is no signal: a worker joins the session only after its first
-        // activation returns.) The tombstone is deliberately read BEFORE the map lookup: the outcomes are the same
-        // either way, but after a rollback the same object is back in the map, so a stale tombstone (a missing reset)
-        // is observable only in this order.
+        // Neither marker is set, so the captured session can only have changed by a run that has already finished:
+        // a completed pause and a completed deletion both empty the map; the pause leaves this flag, so a map miss
+        // without it is a deletion. The object is replaced only by a pause followed by a resume. (Worker membership
+        // is no signal: a worker joins the session only after its first activation returns.)
         if (session.endedBy === 'pause') return new SessionPausingError(id);
-        if (session.endedBy === 'delete') return new SessionDeletingError(id);
         const current = this.sessions.get(id);
         if (current === undefined) return new SessionDeletingError(id);
         if (current !== session) return new SessionPausingError(id);

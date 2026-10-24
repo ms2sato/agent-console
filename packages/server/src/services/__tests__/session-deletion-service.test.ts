@@ -327,8 +327,6 @@ describe('SessionDeletionService', () => {
       expect(deps.sessionRepository.delete).toHaveBeenCalledWith('session-1');
       // Lifecycle callback
       expect(onSessionDeleted).toHaveBeenCalledWith('session-1');
-      // The captured object is tombstoned so a parked activation can tell a deletion from a pause.
-      expect(session.endedBy).toBe('delete');
     });
 
     it('should throw if jobQueue is not available', async () => {
@@ -370,8 +368,6 @@ describe('SessionDeletionService', () => {
 
       await expect(service.deleteSession('session-1')).rejects.toThrow('Persistence failure');
       expect(setSession).toHaveBeenCalledWith('session-1', session);
-      // The restored object is live again: the tombstone is cleared before it goes back.
-      expect(session.endedBy).toBeUndefined();
     });
 
     it('should call timer cleanup callback if set', async () => {
