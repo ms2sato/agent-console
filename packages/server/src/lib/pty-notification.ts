@@ -44,6 +44,19 @@ interface BasePtyNotificationParams {
    * callers must inspect this rather than assume success.
    */
   writeInput: (data: string) => boolean;
+  /**
+   * Free-form text appended after the `[tag] k=v` line, separated by LF (a soft
+   * newline for a TUI; only the delayed CR that {@link writePtyNotification}
+   * sends submits). Used by the paused-session digest, whose entries do not fit
+   * the key=value shape. Absent for every other kind.
+   */
+  body?: string;
+  /**
+   * Overrides the auto-generated `timestamp=` field. Used when rendering a
+   * deferred notification inside a digest, so each entry carries its ORIGINAL
+   * time instead of the time the digest was built.
+   */
+  timestamp?: string;
 }
 
 export interface InboundEventPtyNotification extends BasePtyNotificationParams {
@@ -187,6 +200,21 @@ export interface InternalTodoCommentPtyNotification extends BasePtyNotificationP
   intent: PtyNotificationIntent;
 }
 
+export interface InternalPausedDigestPtyNotification extends BasePtyNotificationParams {
+  kind: Extract<PtyNotificationKind, 'internal-paused-digest'>;
+  tag: 'internal:paused-digest';
+  fields: {
+    pausedAt: string;
+    resumedAt: string;
+    count: string;
+    omitted: string;
+    /** Absolute path of the read-more file listing every deferred entry. */
+    path: string;
+    summary: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
   | InternalMessagePtyNotification
@@ -198,7 +226,8 @@ export type WritePtyNotificationParams =
   | InternalAgentSpawnFailedPtyNotification
   | InternalWorkerInterruptedPtyNotification
   | InternalTodoResolvedPtyNotification
-  | InternalTodoCommentPtyNotification;
+  | InternalTodoCommentPtyNotification
+  | InternalPausedDigestPtyNotification;
 
 /**
  * Structured PTY-notification params, without the PTY-only `writeInput`
@@ -217,14 +246,17 @@ export type PtyNotificationParams = Omit<WritePtyNotificationParams, 'writeInput
  * notification template instead of duplicating it.
  */
 export function buildPtyNotificationText(params: PtyNotificationParams): string {
-  const { tag, fields, intent } = params;
-  const allFields: Record<string, string> = { timestamp: new Date().toISOString(), ...fields, intent };
+  const { tag, fields, intent, body, timestamp } = params;
+  const allFields: Record<string, string> = { timestamp: timestamp ?? new Date().toISOString(), ...fields, intent };
 
   const fieldString = Object.entries(allFields)
     .map(([key, value]) => `${key}=${formatFieldValue(value)}`)
     .join(' ');
 
-  return `\n[${tag}] ${fieldString}`;
+  const header = `\n[${tag}] ${fieldString}`;
+  if (body === undefined) return header;
+  // A CR inside the body would submit the input early; only the delayed CR may.
+  return `${header}\n${stripControlChars(body).replace(/\r/g, '')}`;
 }
 
 /**

@@ -1139,6 +1139,7 @@ const NOTIFICATION_KIND_LABELS = {
   'internal-worker-interrupted': 'Worker Interrupted',
   'internal-todo-resolved': 'Todo Resolved',
   'internal-todo-comment': 'Todo Comment',
+  'internal-paused-digest': 'Paused Digest',
 } satisfies Record<PtyNotificationKind, string>;
 
 /** Cap (in characters) for the fallback preview derived from a notification's raw text -- see notificationPreviewText. */

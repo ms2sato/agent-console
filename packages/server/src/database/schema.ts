@@ -28,6 +28,7 @@ export interface Database {
   mcp_server_permissions: McpServerPermissionsTable;
   mcp_server_path_permissions: McpServerPathPermissionsTable;
   shared_accounts: SharedAccountsTable;
+  deferred_worker_notifications: DeferredWorkerNotificationsTable;
 }
 
 /**
@@ -906,3 +907,31 @@ export interface SharedAccountsTable {
 export type SharedAccountRow = Selectable<SharedAccountsTable>;
 /** Shared-account data for INSERT queries */
 export type NewSharedAccount = Insertable<SharedAccountsTable>;
+
+/**
+ * Deferred Worker Notifications table schema.
+ * Notifications addressed to a worker of a paused (or pausing) session, held
+ * until resume, when one digest per worker replaces them. See
+ * docs/design/session-pause-resume.md.
+ */
+export interface DeferredWorkerNotificationsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Owning session (rows cascade with it) */
+  session_id: string;
+  /** Target worker (rows cascade with it) */
+  worker_id: string;
+  /** PtyNotificationKind at write time; constrained by the TypeScript type, not by a CHECK */
+  kind: string;
+  /** Polymorphic provenance (no FK): inbound job id, message file path, process id, digest file path; NULL for todo rows */
+  source_id: string | null;
+  /** The notification seam's PtyNotificationParams serialised as JSON */
+  params_json: string;
+  /** Sender session of an inter-session message (set NULL when the sender is deleted) */
+  reply_to_session_id: string | null;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: string;
+}
+
+/** Deferred worker notification row as returned from SELECT queries */
+export type DeferredWorkerNotificationRow = Selectable<DeferredWorkerNotificationsTable>;

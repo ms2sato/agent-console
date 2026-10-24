@@ -203,4 +203,54 @@ describe('Client-Server Boundary: deliverWorkerNotification, embedded-agent targ
     expect(event.text).toContain('turnId=turn-1');
     expect(event.text).toContain('cause=exit');
   });
+  it('an internal-paused-digest notification (header fields plus a multi-line body) delivered via the seam persists a schema-valid user-message row', async () => {
+    const userRepository = new SqliteUserRepository(getDatabase());
+    const owner = await userRepository.upsertByOsUid(97533, 'digest-owner', '/home/digest-owner');
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+    const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path' }, { createdBy: owner.id });
+    const worker = await sessionManager.createWorker(session.id, { type: 'embedded-agent', embeddedAgentId: definition.id });
+    expect(worker).not.toBeNull();
+
+    const summary = '2 notifications arrived while paused';
+    const result = await sessionManager.deliverWorkerNotification(session.id, worker!.id, {
+      kind: 'internal-paused-digest',
+      tag: 'internal:paused-digest',
+      fields: {
+        pausedAt: '2026-10-24T01:00:00.000Z',
+        resumedAt: '2026-10-24T02:00:00.000Z',
+        count: '2',
+        omitted: '0',
+        path: '/data/deferred/2026-10-24T02:00:00.000Z.md',
+        summary,
+      },
+      intent: 'triage',
+      body: 'First framing line.\n[internal:message] timestamp=2026-10-24T01:00:01.000Z source=session from=s1 summary=hi path=/m/1.md intent=triage',
+    });
+    expect(result).toEqual({ ok: true });
+
+    await waitFor(async () => {
+      const hist = await sessionManager.getWorkerOutputHistory(session.id, worker!.id, 0);
+      return !!hist && hist.data.includes('user-message');
+    });
+    const history = await sessionManager.getWorkerOutputHistory(session.id, worker!.id, 0);
+    const userMessageLine = (history!.data as string)
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as unknown)
+      .find((parsed) => (parsed as { type?: string }).type === 'user-message');
+
+    // Polarity: without the 'internal-paused-digest' picklist value this safeParse fails.
+    const parsed = v.safeParse(EmbeddedAgentServerEventSchema, userMessageLine);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const event = parsed.output as EmbeddedAgentServerEvent;
+    if (event.type !== 'user-message') throw new Error('expected a user-message event');
+    expect(event.notification).toEqual({ kind: 'internal-paused-digest', summary });
+    expect(event.text).toContain('[internal:paused-digest]');
+    expect(event.text).toContain('count=2');
+    expect(event.text).toContain('\nFirst framing line.\n[internal:message]');
+  });
 });

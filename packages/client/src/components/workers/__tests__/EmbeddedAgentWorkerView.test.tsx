@@ -598,6 +598,29 @@ describe('EmbeddedAgentWorkerView', () => {
 
       expect(screen.getByText('Todo Comment')).toBeTruthy();
     });
+
+    it('renders the "Paused Digest" label for a notification kind of internal-paused-digest', async () => {
+      renderView({ sessionId: 's-notif-7', workerId: 'w-notif-7' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text:
+          '[internal:paused-digest] timestamp=2026-10-24T02:00:00.000Z pausedAt=2026-10-24T01:00:00.000Z resumedAt=2026-10-24T02:00:00.000Z count=2 omitted=0 path=/data/deferred/x.md summary="2 notifications arrived while paused" intent=triage',
+        notification: { kind: 'internal-paused-digest', summary: '2 notifications arrived while paused' },
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Paused Digest')).toBeTruthy();
+    });
   });
 
   it('renders an ACTIVATION_FAILED error with a Retry action instead of Dismiss', async () => {
