@@ -31,12 +31,11 @@ function row(over: Partial<NewDeferredWorkerNotification> & { id: string }): New
 }
 
 // Reach (measured by mutation; "fails" = test names that fail):
-//  - evictions skipped -> the three `cap` cases; evict newest-first -> the same three; evict tie-break
-//    by id desc -> only 'breaks a created_at tie by id when choosing the row to drop'.
-//  - list id tie-break flipped to desc -> 'orders by created_at, falling back to id', 'persists two
-//    internal-process rows...', 'breaks a created_at tie...'. Dropping the id tie-break from
-//    listBySession is NOT caught: idx_dwn_session_created (session_id, created_at, id) already yields id
-//    order, so that mutation is behaviourally equivalent while the index exists.
+//  - evictions skipped -> the three `cap` cases; evict newest-first -> the same three.
+//  - eviction tie-break back to `id` -> 'breaks a created_at tie by insertion order when choosing the row
+//    to drop', 'the 101st insert evicts the earliest-inserted among rows that all share one created_at'.
+//  - list tie-break back to `id` -> 'orders by created_at, then by insertion order (not by id)...' plus
+//    those two cap cases (they read the result through listBySession).
 //  - worker FK cascade removed -> 'cascades when the worker row is deleted'; SET NULL removed ->
 //    'sets reply_to_session_id NULL...'. The session-level cascade is shadowed at row level by the worker
 //    cascade (workers cascade from the session), so it is pinned by migration-v55.test.ts's DDL case.
@@ -93,13 +92,14 @@ describe('SqliteDeferredWorkerNotificationRepository', () => {
       ]);
     });
 
-    it('orders by created_at, falling back to id when created_at is equal', async () => {
+    it('orders by created_at, then by insertion order (not by id) when created_at is equal', async () => {
       await repo.insert(row({ id: 'c', createdAt: '2026-10-24T00:00:02.000Z' }), CAP);
-      await repo.insert(row({ id: 'b', createdAt: '2026-10-24T00:00:01.000Z' }), CAP);
       await repo.insert(row({ id: 'z', createdAt: '2026-10-24T00:00:01.000Z' }), CAP);
+      await repo.insert(row({ id: 'b', createdAt: '2026-10-24T00:00:01.000Z' }), CAP);
       await repo.insert(row({ id: 'a', createdAt: '2026-10-24T00:00:01.000Z' }), CAP);
 
-      expect((await repo.listBySession(SESSION)).map((r) => r.id)).toEqual(['a', 'b', 'z', 'c']);
+      // ids z, b, a are in the OPPOSITE order of their insertion's id order
+      expect((await repo.listBySession(SESSION)).map((r) => r.id)).toEqual(['z', 'b', 'a', 'c']);
     });
 
     it('scopes listBySession and countBySession to the session', async () => {
@@ -138,7 +138,7 @@ describe('SqliteDeferredWorkerNotificationRepository', () => {
   });
 
   describe('cap', () => {
-    it('keeps exactly 100 rows, then the 101st insert deletes the oldest (by created_at, id)', async () => {
+    it('keeps exactly 100 rows, then the 101st insert deletes the oldest (by created_at, then arrival)', async () => {
       for (let i = 0; i < CAP; i++) {
         await repo.insert(
           row({ id: `r${String(i).padStart(3, '0')}`, createdAt: `2026-10-24T00:00:${String(i % 60).padStart(2, '0')}.${String(Math.floor(i / 60)).padStart(3, '0')}Z` }),
@@ -157,11 +157,25 @@ describe('SqliteDeferredWorkerNotificationRepository', () => {
       expect(after[after.length - 1]!.id).toBe('newest');
     });
 
-    it('breaks a created_at tie by id when choosing the row to drop', async () => {
-      await repo.insert(row({ id: 'b' }), 2);
+    it('breaks a created_at tie by insertion order when choosing the row to drop: the earliest-inserted goes, even with the largest id', async () => {
+      await repo.insert(row({ id: 'z' }), 2);
+      await repo.insert(row({ id: 'm' }), 2);
       await repo.insert(row({ id: 'a' }), 2);
-      await repo.insert(row({ id: 'c' }), 2);
-      expect((await repo.listBySession(SESSION)).map((r) => r.id)).toEqual(['b', 'c']);
+      expect((await repo.listBySession(SESSION)).map((r) => r.id)).toEqual(['m', 'a']);
+    });
+
+    it('the 101st insert evicts the earliest-inserted among rows that all share one created_at', async () => {
+      // Descending ids: insertion order is the reverse of id order.
+      for (let i = 0; i < CAP; i++) {
+        await repo.insert(row({ id: `r${String(CAP - i).padStart(3, '0')}` }), CAP);
+      }
+      await repo.insert(row({ id: 'r000' }), CAP);
+
+      const ids = (await repo.listBySession(SESSION)).map((r) => r.id);
+      expect(ids).toHaveLength(CAP);
+      expect(ids).not.toContain('r100'); // the first one inserted
+      expect(ids[0]).toBe('r099');
+      expect(ids[ids.length - 1]).toBe('r000');
     });
 
     it('counts per session: another session at the cap does not evict this one', async () => {

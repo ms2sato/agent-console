@@ -1372,8 +1372,10 @@ export class SessionManager {
     // Readiness gate, even with nothing stored: only a PTY agent has a prompt to wait for
     // (waitForWorkerReady resolves at once for every other type).
     await Promise.all(capableWorkerIds.map((id) => this.waitForWorkerReady(sessionId, id)));
-    // A pause can begin while waiting: the rows stay for the next resume.
-    if (this.isPausing(sessionId) || !this.sessions.has(sessionId)) return;
+    // A pause can begin while waiting: the rows stay for the next resume. A pause + resume
+    // cycle replaces the in-memory session object; that resume owns its own flush, so this
+    // stale one must not read or delete rows.
+    if (this.isPausing(sessionId) || this.sessions.get(sessionId) !== live) return;
 
     const rows = await repository.listBySession(sessionId);
     if (rows.length === 0) return;

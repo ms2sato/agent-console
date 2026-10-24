@@ -48,10 +48,13 @@ const FRAMING =
   'Some may need action, some may be stale by now, and some may need confirming with the sender before you act on them. ' +
   'Timers and wakeups were suspended while paused and resume after this digest.';
 
+/**
+ * Oldest first by `createdAt` ONLY. The sort is stable, so entries sharing a
+ * millisecond keep the order they were given in, which is the repository's
+ * arrival order; `id` is a random UUID and must not break ties.
+ */
 function oldestFirst(entries: readonly PausedDigestEntry[]): PausedDigestEntry[] {
-  return [...entries].sort((a, b) =>
-    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
-  );
+  return [...entries].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
 }
 
 /**

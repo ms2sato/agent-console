@@ -15,7 +15,7 @@ export interface NewDeferredWorkerNotification {
   paramsJson: string;
   /** Sender session of an inter-session message; the database sets it NULL when that session is deleted. */
   replyToSessionId: string | null;
-  /** ISO 8601 UTC (`...Z`); rows are ordered by this, then by `id`. */
+  /** ISO 8601 UTC (`...Z`); rows are ordered by this, then by arrival (the table's implicit rowid); `id` is a random UUID and never orders. */
   createdAt: string;
 }
 
@@ -31,12 +31,12 @@ export interface DeferredWorkerNotificationRecord extends Omit<NewDeferredWorker
 export interface DeferredWorkerNotificationRepository {
   /**
    * Insert one row and, in the SAME transaction, delete the oldest rows of the
-   * session beyond `cap` (ordered by `created_at`, then `id`). A dropped row is
+   * session beyond `cap` (ordered by `created_at`, then arrival order). A dropped row is
    * logged at warn with its kind.
    */
   insert(row: NewDeferredWorkerNotification, cap: number): Promise<void>;
 
-  /** All rows of a session, oldest first (`created_at`, then `id`). */
+  /** All rows of a session, oldest first (`created_at`, then arrival order). */
   listBySession(sessionId: string): Promise<DeferredWorkerNotificationRecord[]>;
 
   /** Delete rows by id; returns the number deleted. An empty list is a no-op. */

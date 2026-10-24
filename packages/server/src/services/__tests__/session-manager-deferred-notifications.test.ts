@@ -579,6 +579,26 @@ describe('SessionManager: notifications deferred while a session is paused or pa
       expect(isReady()).toBe(true);
     });
 
+    it('resolves promptly, without the cap warn, when the worker is killed while it waits for the injection', async () => {
+      const { manager } = await setup({ readiness: { capMs: 3000 } });
+      const { session, agent, isReady, track } = await pendingInjectionAgent(manager);
+      const waiting = track(manager.waitForWorkerReady(session.id, agent.id));
+      await wait(10);
+      expect(isReady()).toBe(false);
+      const warnSpy = spyOn(rootLogger, 'warn');
+      warnSpy.mockClear();
+      try {
+        const startedAt = Date.now();
+        await manager.deleteWorker(session.id, agent.id);
+        await waiting;
+
+        expect(Date.now() - startedAt).toBeLessThan(1500);
+        expect(warnSpy.mock.calls.some((c) => String(c[1]).startsWith('Agent worker was not ready'))).toBe(false);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
     it('resolves immediately for a terminal worker and for an embedded-agent worker', async () => {
       const { manager } = await setup();
       const session = await createSession(manager);
@@ -831,6 +851,38 @@ describe('SessionManager: notifications deferred while a session is paused or pa
       expect(await rowsOf(session.id)).toHaveLength(1);
       resolveHook();
       await pause;
+    });
+
+    it('a flush made stale by a pause + resume during its readiness wait delivers nothing and leaves the rows to the resume flush', async () => {
+      const { manager } = await setup();
+      const session = await createSession(manager);
+      const agent = workerOfType(session, 'agent');
+      await store(session.id, agent.id, '2026-01-01T00:00:02.000Z');
+      // The first readiness wait (the soon-stale flush) and the second (the resume's own flush) are held by hand.
+      const gates: Array<() => void> = [];
+      spyOn(manager, 'waitForWorkerReady').mockImplementation(
+        () => new Promise<void>((resolve) => { gates.push(resolve); }),
+      );
+      const { calls } = fakeSeam(manager);
+      const liveBefore = manager.getWorker(session.id, agent.id);
+      const staleFlush = manager.flushDeferredNotifications(session.id);
+      await until(() => gates.length === 1);
+
+      await manager.pauseSession(session.id);
+      await manager.resumeSession(session.id);
+      await until(() => gates.length === 2);
+      // Positive control: the cycle really replaced the in-memory session object.
+      expect(manager.getWorker(session.id, agent.id)).not.toBe(liveBefore);
+
+      gates[0]();
+      await staleFlush;
+      expect(calls).toHaveLength(0);
+      expect(await rowsOf(session.id)).toHaveLength(1);
+
+      gates[1]();
+      await until(() => calls.length === 1);
+      await until(async () => (await rowsOf(session.id)).length === 0);
+      expect(calls).toHaveLength(1);
     });
 
     it('a corrupt row is skipped with a warn but still deleted; the valid ones are delivered', async () => {

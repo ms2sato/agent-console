@@ -1077,14 +1077,15 @@ export class WorkerManager {
         worker.outputBuffer = worker.outputBuffer.slice(-maxBufferSize);
       }
 
-      worker.outputOffset += Buffer.byteLength(data, 'utf-8');
+      const dataBytes = Buffer.byteLength(data, 'utf-8');
+      worker.outputOffset += dataBytes;
 
       // Readiness input: count output only once the command has been typed (the echo
       // of the typed command is the first such chunk; pre-sentinel bytes never get here).
       // The sentinel/pendingCommand condition is defence in depth: the sentinel gate above
       // already returns for every pre-sentinel chunk, so no test can reach it on its own.
       if (worker.type === 'agent' && !worker.loginShellSentinel && !worker.pendingCommand) {
-        worker.postInjectionOutputBytes += data.length;
+        worker.postInjectionOutputBytes += dataBytes;
         worker.lastOutputAt = Date.now();
         for (const notify of [...worker.postInjectionOutputWaiters]) notify();
       }
@@ -1187,8 +1188,7 @@ export class WorkerManager {
       if (worker.type === 'agent') {
         worker.loginShellSentinel = undefined;
         worker.pendingCommand = undefined;
-        worker.commandInjection?.resolve();
-        for (const notify of [...worker.postInjectionOutputWaiters]) notify();
+        this.settleReadinessInputs(worker);
         // Fire-and-forget: this callback is a synchronous PTY event listener
         // and cannot be awaited by its caller. Failures are logged inside
         // revokeAndDeleteMcpToken itself.
@@ -1724,6 +1724,17 @@ export class WorkerManager {
   }
 
   /**
+   * Release everything waiting on an agent worker's readiness inputs: the
+   * pending command injection and every post-injection output waiter. Called
+   * from both ways a PTY ends (unexpected exit and managed kill) so a pending
+   * `waitForWorkerReady` never has to wait for its cap.
+   */
+  private settleReadinessInputs(worker: InternalAgentWorker): void {
+    worker.commandInjection?.resolve();
+    for (const notify of [...worker.postInjectionOutputWaiters]) notify();
+  }
+
+  /**
    * Kill a worker's PTY process and clean up resources.
    * Awaits PTY process exit to ensure directory handles are released
    * before callers proceed (e.g., git worktree remove).
@@ -1843,6 +1854,8 @@ export class WorkerManager {
         this.globalPtyExitCallback?.(sessionId, worker.id, 'managed');
 
         this.detachPty(worker);
+        // The exit handler that normally settles readiness was disposed above.
+        if (worker.type === 'agent') this.settleReadinessInputs(worker);
       } else {
         // No PTY, just clean up disposables
         if (worker.disposables) {

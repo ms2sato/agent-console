@@ -987,6 +987,19 @@ describe('WorkerManager', () => {
       expect(worker.postInjectionOutputBytes).toBe(5);
     });
 
+    it('counts UTF-8 bytes, not UTF-16 code units: box-drawing output is 3 bytes per character', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      const mockPty = ptyFactory.instances[0];
+      mockPty.emitRaw(mockPty.loginShellSentinel! + '\r\n');
+
+      mockPty.emitRaw('\u2500'.repeat(100));
+
+      expect(worker.postInjectionOutputBytes).toBe(300);
+      expect(worker.outputOffset).toBeGreaterThanOrEqual(300);
+    });
+
     it('resets the counters on re-activation', async () => {
       const worker = createTestAgentWorker();
       await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
@@ -1010,6 +1023,33 @@ describe('WorkerManager', () => {
       ptyFactory.instances[0].simulateExit(0);
 
       expect(sawPty).toBeNull();
+    });
+  });
+
+  describe('managed kill settles the readiness inputs', () => {
+    afterEach(() => {
+      ptyFactory.setAutoEmitSentinel(true);
+    });
+
+    it('killWorker resolves a pending commandInjection and notifies every post-injection waiter, without waiting for a cap', async () => {
+      ptyFactory.setAutoEmitSentinel(false);
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+      let injected = false;
+      void worker.commandInjection!.promise.then(() => { injected = true; });
+      const sawPty: unknown[] = [];
+      worker.postInjectionOutputWaiters.add(() => { sawPty.push(worker.pty); });
+      worker.postInjectionOutputWaiters.add(() => { sawPty.push(worker.pty); });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(injected).toBe(false);
+      expect(sawPty).toEqual([]);
+
+      await workerManager.killWorker(worker, 'test-session');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      expect(injected).toBe(true);
+      // Both waiters ran, and after the PTY was detached (so a waiter's `!worker.pty` check sees it gone).
+      expect(sawPty).toEqual([null, null]);
     });
   });
 

@@ -73,9 +73,12 @@ describe('composePausedDigest', () => {
     expect(entryLines(digest.body).map((l) => /summary="msg (\w)"/.exec(l)![1])).toEqual(['a', 'b', 'c']);
   });
 
-  it('breaks a created_at tie by id', () => {
-    const digest = composePausedDigest([message('b', at(1)), message('a', at(1))], OPTIONS)!;
-    expect(entryLines(digest.body).map((l) => /summary="msg (\w)"/.exec(l)![1])).toEqual(['a', 'b']);
+  it('keeps the input (arrival) order for equal timestamps; the id never breaks a tie', () => {
+    const digest = composePausedDigest(
+      [message('b', at(1)), message('a', at(1)), message('c', at(0))],
+      OPTIONS,
+    )!;
+    expect(entryLines(digest.body).map((l) => /summary="msg (\w)"/.exec(l)![1])).toEqual(['c', 'b', 'a']);
   });
 
   it('renders each entry with its ORIGINAL timestamp, not the digest time', () => {

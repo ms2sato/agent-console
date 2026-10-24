@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type {
   DeferredWorkerNotificationRecord,
   DeferredWorkerNotificationRepository,
@@ -54,7 +54,7 @@ export class SqliteDeferredWorkerNotificationRepository implements DeferredWorke
         .select(['id', 'kind'])
         .where('session_id', '=', row.sessionId)
         .orderBy('created_at', 'asc')
-        .orderBy('id', 'asc')
+        .orderBy(sql`rowid`, 'asc')
         .limit(excess)
         .execute();
       await trx
@@ -79,7 +79,7 @@ export class SqliteDeferredWorkerNotificationRepository implements DeferredWorke
       .selectAll()
       .where('session_id', '=', sessionId)
       .orderBy('created_at', 'asc')
-      .orderBy('id', 'asc')
+      .orderBy(sql`rowid`, 'asc')
       .execute();
     return rows.map(toRecord);
   }
