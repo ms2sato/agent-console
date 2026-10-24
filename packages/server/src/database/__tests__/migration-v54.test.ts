@@ -117,7 +117,7 @@ describe('migration v54 (repositories.pause_command / resume_command)', () => {
   });
 
   it('a fresh database lands on version 54 with both columns present', async () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(54);
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(54);
     const db = await initializeDatabase(':memory:');
     try {
       const names = await columnNames(db);

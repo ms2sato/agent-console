@@ -166,6 +166,24 @@ export interface InternalAgentWorker extends InternalPtyWorkerBase {
   loginShellSentinel?: string;
   pendingCommand?: string;
   /**
+   * Settles when the command has been typed into the shell (the post-sentinel
+   * injection write), or when the PTY exits before that happens, so a waiter
+   * never hangs on a dead worker. Created at activation next to
+   * `pendingCommand`; `resolve` is idempotent. Absent on a worker that was
+   * never activated.
+   */
+  commandInjection?: { promise: Promise<void>; resolve: () => void };
+  /**
+   * Bytes of PTY output received since the command was typed (the shell's echo of
+   * the typed command counts; everything before the login-shell sentinel does
+   * not). Reset on each activation. Read by `SessionManager.waitForWorkerReady`.
+   */
+  postInjectionOutputBytes: number;
+  /** `Date.now()` of the latest post-injection output chunk; null until one arrives. */
+  lastOutputAt: number | null;
+  /** Called after each post-injection chunk and when the PTY exits; fed to readiness waiters. */
+  postInjectionOutputWaiters: Set<() => void>;
+  /**
    * MCP token file delivered to this worker (multi-user mode only); null when
    * no token was minted (single-user, or session lacked createdBy). Used to
    * delete the file on exit/kill/delete alongside the in-memory token revoke.

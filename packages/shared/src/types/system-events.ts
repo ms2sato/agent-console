@@ -83,6 +83,7 @@ export const PTY_NOTIFICATION_KINDS = [
   'internal-worker-interrupted',
   'internal-todo-resolved',
   'internal-todo-comment',
+  'internal-paused-digest',
 ] as const;
 export type PtyNotificationKind = (typeof PTY_NOTIFICATION_KINDS)[number];
 

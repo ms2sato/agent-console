@@ -9371,6 +9371,8 @@ describe('SessionManager', () => {
       expect(calls).toEqual([`suspend:first:${session.id}`, `suspend:second:${session.id}`]);
 
       await manager.resumeSession(session.id);
+      // The re-arm runs behind the (void-forwarded) deferred-notification flush.
+      await new Promise((resolve) => setTimeout(resolve, 20));
       expect(calls.slice(2)).toEqual([`resume:first:${session.id}`, `resume:second:${session.id}`]);
     });
 

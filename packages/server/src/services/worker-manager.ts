@@ -412,6 +412,9 @@ export class WorkerManager {
       epoch: Date.now(),
       activityState: 'unknown',
       activityDetector: null,
+      postInjectionOutputBytes: 0,
+      lastOutputAt: null,
+      postInjectionOutputWaiters: new Set(),
       connectionCallbacks: new Map(),
       mcpToken: null,
       promptFile: null,
@@ -886,6 +889,13 @@ export class WorkerManager {
       worker.agentId = agent.id;
       worker.loginShellSentinel = sentinel;
       worker.pendingCommand = command;
+      // A re-activation replaces the deferred; settle the old one so no waiter is stranded.
+      worker.commandInjection?.resolve();
+      let resolveInjection: () => void = () => {};
+      const injected = new Promise<void>((resolve) => { resolveInjection = resolve; });
+      worker.commandInjection = { promise: injected, resolve: resolveInjection };
+      worker.postInjectionOutputBytes = 0;
+      worker.lastOutputAt = null;
 
       // Set initial activity state to match ActivityDetector's initial state ('idle').
       // The onStateChange callback only fires on state *changes*, not on initialization,
@@ -1061,6 +1071,7 @@ export class WorkerManager {
         if (worker.pendingCommand && worker.pty) {
           worker.pty.write(worker.pendingCommand + '\r');
           worker.pendingCommand = undefined;
+          worker.commandInjection?.resolve();
           // "Delivered" for a terminal-agent worker means this injection write
           // occurred while a prompt file was attached to the command. This is
           // delivered=injected, not delivered=received: if the agent binary
@@ -1071,6 +1082,9 @@ export class WorkerManager {
           if (worker.promptFile !== null) {
             this.onInitialPromptInjectedCallback?.(sessionId, worker.id);
           }
+        } else {
+          // Nothing to type (empty command or no PTY): the injection step is trivially done.
+          worker.commandInjection?.resolve();
         }
         const afterSentinel = haystack.slice(idx + sentinel.length).replace(/^[\r\n]+/, '');
         worker.loginShellSentinel = undefined;
@@ -1084,7 +1098,18 @@ export class WorkerManager {
         worker.outputBuffer = worker.outputBuffer.slice(-maxBufferSize);
       }
 
-      worker.outputOffset += Buffer.byteLength(data, 'utf-8');
+      const dataBytes = Buffer.byteLength(data, 'utf-8');
+      worker.outputOffset += dataBytes;
+
+      // Readiness input: count output only once the command has been typed (the echo
+      // of the typed command is the first such chunk; pre-sentinel bytes never get here).
+      // The sentinel/pendingCommand condition is defence in depth: the sentinel gate above
+      // already returns for every pre-sentinel chunk, so no test can reach it on its own.
+      if (worker.type === 'agent' && !worker.loginShellSentinel && !worker.pendingCommand) {
+        worker.postInjectionOutputBytes += dataBytes;
+        worker.lastOutputAt = Date.now();
+        for (const notify of [...worker.postInjectionOutputWaiters]) notify();
+      }
 
       this.workerOutputFileManager.bufferOutput(sessionId, worker.id, data, resolver, worker.epoch);
 
@@ -1184,6 +1209,7 @@ export class WorkerManager {
       if (worker.type === 'agent') {
         worker.loginShellSentinel = undefined;
         worker.pendingCommand = undefined;
+        this.settleReadinessInputs(worker);
         // Fire-and-forget: this callback is a synchronous PTY event listener
         // and cannot be awaited by its caller. Failures are logged inside
         // revokeAndDeleteMcpToken itself.
@@ -1458,6 +1484,9 @@ export class WorkerManager {
             agentId: pw.agentId,
             activityState: 'unknown',
             activityDetector: null,
+            postInjectionOutputBytes: 0,
+            lastOutputAt: null,
+            postInjectionOutputWaiters: new Set(),
             mcpToken: null,
             promptFile: null,
             // Round-trips from PersistedAgentWorker.deliverInitialPromptOnActivation,
@@ -1716,6 +1745,17 @@ export class WorkerManager {
   }
 
   /**
+   * Release everything waiting on an agent worker's readiness inputs: the
+   * pending command injection and every post-injection output waiter. Called
+   * from both ways a PTY ends (unexpected exit and managed kill) so a pending
+   * `waitForWorkerReady` never has to wait for its cap.
+   */
+  private settleReadinessInputs(worker: InternalAgentWorker): void {
+    worker.commandInjection?.resolve();
+    for (const notify of [...worker.postInjectionOutputWaiters]) notify();
+  }
+
+  /**
    * Kill a worker's PTY process and clean up resources.
    * Awaits PTY process exit to ensure directory handles are released
    * before callers proceed (e.g., git worktree remove).
@@ -1835,6 +1875,8 @@ export class WorkerManager {
         this.globalPtyExitCallback?.(sessionId, worker.id, 'managed');
 
         this.detachPty(worker);
+        // The exit handler that normally settles readiness was disposed above.
+        if (worker.type === 'agent') this.settleReadinessInputs(worker);
       } else {
         // No PTY, just clean up disposables
         if (worker.disposables) {

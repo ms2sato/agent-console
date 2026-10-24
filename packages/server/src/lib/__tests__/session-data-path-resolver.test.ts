@@ -22,6 +22,12 @@ describe('SessionDataPathResolver', () => {
     expect(resolver.getMessagesDir()).toBe(`${BASE_DIR}/messages`);
   });
 
+  it('resolves deferred dir under baseDir, beside messages', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR, TRUSTED_ROOT);
+    expect(resolver.getDeferredDir()).toBe(`${BASE_DIR}/deferred`);
+    expect(resolver.getDeferredDir()).not.toBe(resolver.getMessagesDir());
+  });
+
   it('resolves memos dir under baseDir', () => {
     const resolver = new SessionDataPathResolver(BASE_DIR, TRUSTED_ROOT);
     expect(resolver.getMemosDir()).toBe(`${BASE_DIR}/memos`);
