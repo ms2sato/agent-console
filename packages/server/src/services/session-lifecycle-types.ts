@@ -7,6 +7,15 @@
 
 import type { Session, PausedSession, RunningSession, WorkerActivityInfo, AgentActivityState } from '@agent-console/shared';
 
+/**
+ * A component that holds per-session scheduled work and must freeze it while
+ * the session is paused. Both operations are synchronous and idempotent.
+ */
+export interface PauseParticipant {
+  suspend(sessionId: string): void;
+  resume(sessionId: string): void;
+}
+
 export interface SessionLifecycleCallbacks {
   onSessionCreated?: (session: Session) => void;
   onSessionUpdated?: (session: Session) => void;

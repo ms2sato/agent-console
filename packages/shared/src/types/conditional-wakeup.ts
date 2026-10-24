@@ -23,5 +23,7 @@ export interface ConditionalWakeupInfo {
   lastCheckedAt?: string;
   checkCount: number;
   /** Current status of the wakeup */
-  status: 'running' | 'completed_true' | 'completed_timeout' | 'cancelled';
+  status: 'running' | 'suspended' | 'completed_true' | 'completed_timeout' | 'cancelled';
+  /** Set while the owning session is paused (status is then 'suspended'). */
+  suspendedAt?: string;
 }

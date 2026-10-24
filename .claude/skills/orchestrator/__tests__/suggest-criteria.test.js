@@ -133,6 +133,18 @@ describe('matchInvariants', () => {
     expect(matches).toEqual([]);
   });
 
+  it('matches I-11 on camelCase identifiers written in the issue body', () => {
+    const analysis = analyzeIssue({
+      title: 'feat: suspend schedules on pause',
+      body: 'Call registerPauseParticipant so setInterval timers stop while paused.',
+    });
+    const i11 = matchInvariants(analysis, realCatalog).find(m => m.id === 'I-11');
+    expect(i11).toBeTruthy();
+    expect(i11.hitKeywords).toEqual(
+      expect.arrayContaining(['registerpauseparticipant', 'setinterval']),
+    );
+  });
+
   it('matches I-5 when localStorage is mentioned', () => {
     const analysis = analyzeIssue({
       title: 'feat: remember last tab',
@@ -238,6 +250,16 @@ describe('formatReport', () => {
 // --- MATCHING_RULES sanity ---
 
 describe('MATCHING_RULES', () => {
+  it('keeps every keyword lowercase (matching runs against lowercased text)', () => {
+    const offenders = [];
+    for (const [id, rule] of Object.entries(MATCHING_RULES)) {
+      for (const k of rule.keywords) {
+        if (k !== k.toLowerCase()) offenders.push(`${id}:${k}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('has a rule for every shipped invariant that has a template', () => {
     const catalog = parseCatalog(loadCatalog()).filter(e => e.template);
     for (const entry of catalog) {

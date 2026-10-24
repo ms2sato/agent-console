@@ -390,6 +390,36 @@ PR [#1904](https://github.com/ms2sato/agent-console/pull/1904), fixing Issue #18
 
 ---
 
+## I-11. Session Lifecycle Participation
+
+**Rule.** Every component that holds per-session runtime state or schedules per-session work must declare what happens to that state on each lifecycle transition the session has: **delete** (today: the three cleanup callbacks), **pause** (participant `suspend`), **resume** (participant `resume`), and **server restart** (restore, or a documented loss).
+
+**Why it matters.** A lifecycle hook that only has one shape makes every other transition an unowned case. Pause used to have only a delete-shaped hook, so a component with per-session state either cleaned up on delete or did nothing, and "nothing" is a decision nobody made. The failure is silent: the state keeps running against a session that has left memory, and the symptom appears far from the cause. Lesson: Issue [#2204](https://github.com/ms2sato/agent-console/issues/2204), where timers and conditional wakeups fired into `not-found` for every paused session because pause only ever had a delete-shaped hook.
+
+### Domains where this applies
+
+| Component | delete | pause | resume | server restart |
+|---|---|---|---|---|
+| Timers and conditional wakeups (`TimerManager`, `ConditionalWakeupManager`) | cleanup callbacks | participants `timer` and `conditional-wakeup`: suspend | re-arm with the remaining wait | timers restore at the base interval; wakeups are lost |
+| Interactive process manager | cleanup callback (a delete-only participant) | keep running: the process is the agent's own command, bounded by its timeout and `MAX_PROCESSES_PER_SESSION`; its output notifications are dropped today while the session is paused | not applicable | the processes die with the server |
+
+### Detection heuristics
+
+1. **A `Map<sessionId, ...>`, or a `setTimeout` / `setInterval` / subprocess keyed by session, in a service.** Ask what each lifecycle transition does to it.
+2. **A new `set*CleanupCallback`.** Cleanup on delete is one row of four; the other three are still undecided.
+3. **A new `kind` in `PTY_NOTIFICATION_KINDS`.** Once the pause-disposition table exists, its pause disposition row is this invariant's per-kind form.
+
+### Resolution patterns
+
+- **Register as a pause participant** (`SessionManager.registerPauseParticipant(name, { suspend, resume })`; both operations synchronous and idempotent, called in registration order, a throwing participant isolated from the others).
+- **Or record in the design doc why the state survives a pause unchanged**, including what happens to its notifications meanwhile (the process-manager row above is that record).
+
+### Suggested acceptance criterion template
+
+- [ ] For each per-session resource this change adds, the delete / pause / resume / restart rows are filled in, and the pause row is either a registered participant or a documented keep-running with its notification disposition
+
+---
+
 ## How to Add New Invariants
 
 A new entry to this catalog should satisfy all of:

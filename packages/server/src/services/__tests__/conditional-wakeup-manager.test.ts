@@ -649,6 +649,281 @@ describe('ConditionalWakeupManager', () => {
   // resolved by the MCP `create_conditional_wakeup` tool. This tests the
   // contract at the helper boundary (the elevation argv shape itself is
   // covered by privilege-elevation.test.ts).
+  describe('suspend and resume by session', () => {
+    interface FakeSpawn {
+      command: string;
+      killed: boolean;
+      exit: (code: number) => void;
+    }
+
+    /**
+     * Spawn fake whose processes stay "running" until the test calls `exit`.
+     * `killExitCode` is what `exited` resolves to when the manager kills the
+     * process (a real killed process exits non-zero; 0 models the race where
+     * the script finished just as it was killed).
+     */
+    function makeControllableSpawn(killExitCode = 137): { fn: SpawnAsUserFn; spawns: FakeSpawn[] } {
+      const spawns: FakeSpawn[] = [];
+      const fn: SpawnAsUserFn = (opts) => {
+        let resolveExit!: (code: number) => void;
+        const exited = new Promise<number>((resolve) => {
+          resolveExit = resolve;
+        });
+        const spawn: FakeSpawn = {
+          command: opts.command,
+          killed: false,
+          exit: (code) => resolveExit(code),
+        };
+        spawns.push(spawn);
+        const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => Promise.resolve(0) };
+        const closedStream = () =>
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.close();
+            },
+          });
+        const subprocess: FakeSubprocess = {
+          exited,
+          stdin,
+          stdout: closedStream(),
+          stderr: closedStream(),
+          kill: () => {
+            spawn.killed = true;
+            resolveExit(killExitCode);
+          },
+        };
+        return toSpawnAsUserResult({ subprocess, stdin });
+      };
+      return { fn, spawns };
+    }
+
+    const settle = async () => {
+      for (let i = 0; i < 20; i++) {
+        await Promise.resolve();
+      }
+    };
+
+    let fake: ReturnType<typeof makeControllableSpawn>;
+    let suspendManager: ConditionalWakeupManager;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      fake = makeControllableSpawn();
+      suspendManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+    });
+
+    afterEach(() => {
+      suspendManager.disposeAll();
+      jest.useRealTimers();
+    });
+
+    const create = (overrides: Partial<Parameters<ConditionalWakeupManager['createWakeup']>[0]> = {}) =>
+      suspendManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'check',
+        onTrueMessage: 'true!',
+        ...overrides,
+      });
+
+    it('stops spawning checks while suspended', async () => {
+      create();
+      jest.advanceTimersByTime(30000);
+      await settle();
+      fake.spawns[0]?.exit(1);
+      await settle();
+      expect(fake.spawns).toHaveLength(1);
+
+      suspendManager.suspendWakeupsBySession('session-1');
+      jest.advanceTimersByTime(10 * 30000);
+      await settle();
+
+      expect(fake.spawns).toHaveLength(1);
+    });
+
+    it('reports status suspended with suspendedAt, and clears both on resume', () => {
+      const wakeup = create();
+
+      suspendManager.suspendWakeupsBySession('session-1');
+      expect(suspendManager.getWakeup(wakeup.id)?.status).toBe('suspended');
+      expect(suspendManager.getWakeup(wakeup.id)?.suspendedAt).toBe(new Date().toISOString());
+
+      suspendManager.resumeWakeupsBySession('session-1');
+      expect(suspendManager.getWakeup(wakeup.id)?.status).toBe('running');
+      expect(suspendManager.getWakeup(wakeup.id)).not.toHaveProperty('suspendedAt');
+    });
+
+    it('kills an in-flight check and ignores its result even when it exits 0', async () => {
+      const racing = makeControllableSpawn(0);
+      suspendManager.disposeAll();
+      suspendManager = new ConditionalWakeupManager(onWakeup, racing.fn);
+      create();
+      jest.advanceTimersByTime(30000);
+      await settle();
+      expect(racing.spawns).toHaveLength(1);
+
+      suspendManager.suspendWakeupsBySession('session-1');
+      await settle();
+
+      expect(racing.spawns[0]?.killed).toBe(true);
+      expect(onWakeup).not.toHaveBeenCalled();
+      expect(suspendManager.listWakeups('session-1')[0]?.status).toBe('suspended');
+    });
+
+    it('still runs the immediate check on resume while the killed check is unresolved', async () => {
+      // exited never resolves on kill: the old awaiting check is still pending at resume.
+      const hanging = makeControllableSpawn();
+      const originalFn = hanging.fn;
+      const stuckFn: SpawnAsUserFn = (opts) => {
+        const result = originalFn(opts);
+        const stuck = new Promise<number>(() => {});
+        return toSpawnAsUserResult({
+          subprocess: { ...result.subprocess, exited: stuck, kill: () => {} },
+          stdin: result.stdin,
+        });
+      };
+      suspendManager.disposeAll();
+      suspendManager = new ConditionalWakeupManager(onWakeup, stuckFn);
+      create();
+      jest.advanceTimersByTime(30000);
+      await settle();
+      expect(hanging.spawns).toHaveLength(1);
+
+      suspendManager.suspendWakeupsBySession('session-1');
+      suspendManager.resumeWakeupsBySession('session-1');
+      await settle();
+
+      expect(hanging.spawns).toHaveLength(2);
+    });
+
+    it('freezes the timeout: 100 s timeout, suspend at 30 s, resume at 1000 s -> times out at resume + 70 s', async () => {
+      create({ timeoutSeconds: 100, intervalSeconds: 3600, onTimeoutMessage: 'timed out' });
+      jest.advanceTimersByTime(30000);
+      suspendManager.suspendWakeupsBySession('session-1');
+
+      jest.advanceTimersByTime(970000);
+      expect(onWakeup).not.toHaveBeenCalled();
+
+      suspendManager.resumeWakeupsBySession('session-1');
+      await settle();
+      fake.spawns[0]?.exit(1);
+      await settle();
+      jest.advanceTimersByTime(69999);
+      expect(onWakeup).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+
+      expect(onWakeup).toHaveBeenCalledTimes(1);
+      expect(onWakeup.mock.calls[0]?.[0].status).toBe('completed_timeout');
+    });
+
+    it('times out on the next tick when no timeout wait remained', () => {
+      create({ timeoutSeconds: 100, intervalSeconds: 3600 });
+      jest.setSystemTime(Date.now() + 200000);
+      suspendManager.suspendWakeupsBySession('session-1');
+
+      suspendManager.resumeWakeupsBySession('session-1');
+      expect(onWakeup).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+
+      expect(onWakeup.mock.calls[0]?.[0].status).toBe('completed_timeout');
+    });
+
+    it('runs one check immediately on resume, then at the interval', async () => {
+      create();
+      suspendManager.suspendWakeupsBySession('session-1');
+      jest.advanceTimersByTime(5 * 30000);
+
+      suspendManager.resumeWakeupsBySession('session-1');
+      await settle();
+      expect(fake.spawns).toHaveLength(1);
+      fake.spawns[0]?.exit(1);
+      await settle();
+
+      jest.advanceTimersByTime(29999);
+      await settle();
+      expect(fake.spawns).toHaveLength(1);
+      jest.advanceTimersByTime(1);
+      await settle();
+      expect(fake.spawns).toHaveLength(2);
+    });
+
+    it('reports a condition that became true during the pause on the immediate check', async () => {
+      create();
+      suspendManager.suspendWakeupsBySession('session-1');
+      jest.advanceTimersByTime(5 * 30000);
+
+      suspendManager.resumeWakeupsBySession('session-1');
+      await settle();
+      fake.spawns[0]?.exit(0);
+      await settle();
+
+      expect(onWakeup).toHaveBeenCalledTimes(1);
+      expect(onWakeup.mock.calls[0]?.[0].status).toBe('completed_true');
+    });
+
+    it('does not report a condition that is still false on the immediate check', async () => {
+      create();
+      suspendManager.suspendWakeupsBySession('session-1');
+
+      suspendManager.resumeWakeupsBySession('session-1');
+      await settle();
+      fake.spawns[0]?.exit(1);
+      await settle();
+
+      expect(onWakeup).not.toHaveBeenCalled();
+      expect(suspendManager.listWakeups('session-1')[0]?.status).toBe('running');
+    });
+
+    it('counts suspended wakeups toward the per-session cap', () => {
+      for (let i = 0; i < MAX_WAKEUPS_PER_SESSION; i++) {
+        create({ conditionScript: `check-${i}` });
+      }
+      suspendManager.suspendWakeupsBySession('session-1');
+
+      expect(() => create({ conditionScript: 'overflow' })).toThrow();
+    });
+
+    it('is idempotent: suspending twice keeps the first timeout measurement; resuming a running wakeup is a no-op', async () => {
+      create({ timeoutSeconds: 100, intervalSeconds: 3600 });
+      jest.advanceTimersByTime(30000);
+      suspendManager.suspendWakeupsBySession('session-1');
+      jest.advanceTimersByTime(50000);
+      expect(suspendManager.suspendWakeupsBySession('session-1')).toBe(0);
+
+      suspendManager.resumeWakeupsBySession('session-1');
+      expect(suspendManager.resumeWakeupsBySession('session-1')).toBe(0);
+      await settle();
+      expect(fake.spawns).toHaveLength(1);
+      fake.spawns[0]?.exit(1);
+      await settle();
+      jest.advanceTimersByTime(69999);
+      expect(onWakeup).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(onWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves other sessions untouched', async () => {
+      create({ sessionId: 'session-2' });
+      create();
+
+      suspendManager.suspendWakeupsBySession('session-1');
+      jest.advanceTimersByTime(30000);
+      await settle();
+
+      expect(suspendManager.listWakeups('session-2')[0]?.status).toBe('running');
+      expect(fake.spawns).toHaveLength(1);
+    });
+
+    it('deleteWakeupsBySession removes suspended wakeups', () => {
+      create();
+      suspendManager.suspendWakeupsBySession('session-1');
+
+      expect(suspendManager.deleteWakeupsBySession('session-1')).toBe(1);
+      expect(suspendManager.listWakeups()).toEqual([]);
+    });
+  });
+
   describe('checkCondition (Issue #886: requestUsername plumbing via spawnAsUser)', () => {
     interface CapturedSpawn {
       opts: SpawnAsUserOpts;

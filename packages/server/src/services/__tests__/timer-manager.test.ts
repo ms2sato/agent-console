@@ -403,10 +403,186 @@ describe('TimerManager', () => {
 
   describe('restoreTimers (without repository)', () => {
     it('should return 0 when no repository is provided', async () => {
-      const count = await manager.restoreTimers();
+      const count = await manager.restoreTimers({ isSessionLive: () => true });
       expect(count).toBe(0);
     });
   });
+  describe('suspend and resume by session', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      manager.disposeAll();
+      jest.useRealTimers();
+    });
+
+    const base = { sessionId: 'session-1', workerId: 'worker-1', action: 'x' };
+
+    it('cancels the pending fire', () => {
+      manager.createTimer({ ...base, intervalSeconds: 60 });
+
+      manager.suspendTimersBySession('session-1');
+      jest.advanceTimersByTime(10 * 60000);
+
+      expect(onTick).not.toHaveBeenCalled();
+    });
+
+    it('re-arms with the remaining wait, not the full interval', () => {
+      manager.createTimer({ ...base, intervalSeconds: 100 });
+      jest.advanceTimersByTime(30000);
+      manager.suspendTimersBySession('session-1');
+
+      jest.advanceTimersByTime(970000); // t=1000 s, paused
+      manager.resumeTimersBySession('session-1');
+
+      jest.advanceTimersByTime(69999);
+      expect(onTick).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports the re-armed nextFireAt', () => {
+      const timer = manager.createTimer({ ...base, intervalSeconds: 100 });
+      jest.advanceTimersByTime(30000);
+      manager.suspendTimersBySession('session-1');
+      jest.advanceTimersByTime(970000);
+
+      manager.resumeTimersBySession('session-1');
+
+      expect(manager.getTimer(timer.id)?.nextFireAt).toBe(new Date(Date.now() + 70000).toISOString());
+    });
+
+    it('keeps fireCount and the backoff step across suspend and resume', () => {
+      const timer = manager.createTimer({ ...base, intervalSeconds: 10, backoffFactor: 2 });
+      jest.advanceTimersByTime(10000); // fire 1, next wait 20 s
+      jest.advanceTimersByTime(20000); // fire 2, next wait 40 s
+      expect(onTick).toHaveBeenCalledTimes(2);
+
+      manager.suspendTimersBySession('session-1');
+      jest.advanceTimersByTime(500000);
+      manager.resumeTimersBySession('session-1');
+
+      expect(manager.getTimer(timer.id)?.fireCount).toBe(2);
+      jest.advanceTimersByTime(39999);
+      expect(onTick).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(3);
+      // The chain continued at step 3: the following wait is 80 s, not a restarted 10 s.
+      expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(80);
+      expect(manager.getTimer(timer.id)?.fireCount).toBe(3);
+    });
+
+    it('fires exactly once on the next tick when no wait remained', () => {
+      manager.createTimer({ ...base, intervalSeconds: 60 });
+      // Move the clock past the pending fire without running timers.
+      jest.setSystemTime(Date.now() + 10 * 60000);
+      manager.suspendTimersBySession('session-1');
+
+      manager.resumeTimersBySession('session-1');
+      expect(onTick).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+
+      expect(onTick).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(59000);
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+
+    it('is idempotent when suspended twice', () => {
+      manager.createTimer({ ...base, intervalSeconds: 100 });
+      jest.advanceTimersByTime(30000);
+      manager.suspendTimersBySession('session-1');
+      jest.advanceTimersByTime(50000);
+      manager.suspendTimersBySession('session-1'); // must not re-measure from a later now
+
+      manager.resumeTimersBySession('session-1');
+      jest.advanceTimersByTime(69999);
+      expect(onTick).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing when resuming a session that was never suspended', () => {
+      manager.createTimer({ ...base, intervalSeconds: 100 });
+      jest.advanceTimersByTime(30000);
+
+      expect(manager.resumeTimersBySession('session-1')).toBe(0);
+
+      jest.advanceTimersByTime(69999);
+      expect(onTick).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not arm a second fire when resumed twice', () => {
+      manager.createTimer({ ...base, intervalSeconds: 100 });
+      manager.suspendTimersBySession('session-1');
+      manager.resumeTimersBySession('session-1');
+      manager.resumeTimersBySession('session-1');
+
+      jest.advanceTimersByTime(100000);
+
+      expect(onTick).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves another session untouched', () => {
+      manager.createTimer({ ...base, sessionId: 'session-2', intervalSeconds: 60 });
+      manager.createTimer({ ...base, intervalSeconds: 60 });
+
+      manager.suspendTimersBySession('session-1');
+      jest.advanceTimersByTime(60000);
+
+      expect(onTick).toHaveBeenCalledTimes(1);
+      expect(onTick.mock.calls[0]?.[0].sessionId).toBe('session-2');
+      expect(manager.listTimers('session-2')[0]?.suspendedAt).toBeUndefined();
+    });
+
+    it('shows suspendedAt only while suspended', () => {
+      manager.createTimer({ ...base, intervalSeconds: 60 });
+      expect(manager.listTimers('session-1')[0]?.suspendedAt).toBeUndefined();
+
+      manager.suspendTimersBySession('session-1');
+      expect(manager.listTimers('session-1')[0]?.suspendedAt).toBe(new Date().toISOString());
+
+      manager.resumeTimersBySession('session-1');
+      expect(manager.listTimers('session-1')[0]).not.toHaveProperty('suspendedAt');
+    });
+
+    it('resetTimer on a suspended timer resets the backoff, stays suspended, resumes with the base interval', () => {
+      const timer = manager.createTimer({ ...base, intervalSeconds: 10, backoffFactor: 2 });
+      jest.advanceTimersByTime(10000);
+      jest.advanceTimersByTime(20000);
+      expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(40);
+      manager.suspendTimersBySession('session-1');
+
+      const reset = manager.resetTimer(timer.id);
+
+      expect(reset?.currentIntervalSeconds).toBe(10);
+      expect(reset?.fireCount).toBe(2);
+      expect(reset?.suspendedAt).toBeDefined();
+      jest.advanceTimersByTime(10 * 60000);
+      expect(onTick).toHaveBeenCalledTimes(2);
+
+      manager.resumeTimersBySession('session-1');
+      jest.advanceTimersByTime(9999);
+      expect(onTick).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(1);
+      expect(onTick).toHaveBeenCalledTimes(3);
+      expect(manager.getTimer(timer.id)?.currentIntervalSeconds).toBe(20);
+    });
+
+    it('deleteTimersBySession removes suspended timers and they never fire', () => {
+      manager.createTimer({ ...base, intervalSeconds: 60 });
+      manager.suspendTimersBySession('session-1');
+
+      expect(manager.deleteTimersBySession('session-1')).toBe(1);
+      manager.resumeTimersBySession('session-1');
+      jest.advanceTimersByTime(10 * 60000);
+
+      expect(onTick).not.toHaveBeenCalled();
+    });
+  });
+
   describe('computeEffectiveIntervalSeconds', () => {
     it('stays at base for factor 1', () => {
       expect(computeEffectiveIntervalSeconds(60, 1, 86400, 5)).toBe(60);
