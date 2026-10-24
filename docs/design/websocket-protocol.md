@@ -62,6 +62,8 @@ This is similar to SQL JOINs - explicitly specifying what data to fetch. The ser
 
 Per-worker WebSocket for terminal I/O.
 
+The server identifies a connection by the Bun socket (`ws.raw`), not by Hono's per-event `WSContext`: the hono/bun adapter builds a new `WSContext` for each of open, message and close, so every connection-tracking collection is keyed by the socket (`socketKey` in `packages/server/src/websocket/socket-key.ts`).
+
 ### Client → Server Messages
 
 | Type | Payload | Description |

@@ -27,7 +27,19 @@ import type { setupWebSocketRoutes } from '../routes.js';
  * subset they use, as an object literal, to keep the excess-property check.
  */
 export function asWSContext(stub: Partial<WSContext>): WSContext {
-  return stub as WSContext;
+  // Like the real hono/bun adapter, give each connection a stable `raw` (the Bun ServerWebSocket stand-in).
+  // The connection's identity is `raw`; the context objects around it are minted per event.
+  return (stub.raw === undefined ? { ...stub, raw: {} } : stub) as WSContext;
+}
+
+/**
+ * A NEW context object for the same connection: what hono/bun hands `onMessage` / `onClose` after `onOpen`
+ * received the original (`createWSContext(ws)` runs for each event; only `raw` is shared). Use it wherever a
+ * test calls a handler or the registry for a later event of a connection opened with `ws`, so a collection
+ * keyed by the context object fails here instead of in production.
+ */
+export function anotherContextFor(ws: WSContext): WSContext {
+  return { ...ws } as WSContext;
 }
 
 /** pino.Logger has many required properties a test double never needs. */

@@ -27,6 +27,7 @@ import { serverConfig } from '../lib/server-config.js';
 import { ForbiddenError, SessionPausingError } from '../lib/errors.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
+import { liveReadyState } from './socket-key.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
 import { withRepositoryRemote } from '../lib/repository-remote.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
@@ -89,18 +90,6 @@ export const EMBEDDED_USER_MESSAGE_MAX_BYTES = 262144; // 256 KiB
 export const EMBEDDED_CLIENT_MESSAGE_ID_MAX_LENGTH = 64;
 
 /**
- * Safely get the WebSocket ready state from a WSContext.
- * Returns undefined if readyState is not accessible.
- */
-function getWebSocketReadyState(client: WSContext): number | undefined {
-  const rawClient = client as { readyState?: unknown };
-  if (typeof rawClient.readyState === 'number') {
-    return rawClient.readyState;
-  }
-  return undefined;
-}
-
-/**
  * Broadcast a message to all connected app clients.
  * Used for real-time updates like session lifecycle events and async operation results.
  * Messages are queued for clients that are still syncing initial state.
@@ -130,7 +119,7 @@ export function broadcastToApp(msg: AppServerMessage): void {
     }
 
     // Skip clients not in OPEN state
-    const readyState = getWebSocketReadyState(client);
+    const readyState = liveReadyState(client);
     if (readyState !== undefined && readyState !== WS_READY_STATE.OPEN) {
       deadClients.push(client);
       continue;
@@ -727,7 +716,7 @@ export async function setupWebSocketRoutes(
         // Create buffered sender for this connection
         sender = new BufferedWebSocketSender(
           ws,
-          () => getWebSocketReadyState(ws),
+          () => liveReadyState(ws),
           logger,
           workerId,
           50, // flush interval (ms)

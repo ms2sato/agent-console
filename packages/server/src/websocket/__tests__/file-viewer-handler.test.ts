@@ -4,7 +4,7 @@ import * as v from 'valibot';
 import { FileViewerServerMessageSchema } from '@agent-console/shared';
 import { createFileViewerHandlers, viewerIgnores } from '../file-viewer-handler.js';
 import type { subscribeToFileChanges, FileChangeSubscriber } from '../../services/file-watch-service.js';
-import { asWSContext } from './ws-test-helpers.js';
+import { anotherContextFor, asWSContext } from './ws-test-helpers.js';
 
 function createMockWs() {
   const sent: string[] = [];
@@ -111,6 +111,20 @@ describe('createFileViewerHandlers', () => {
 
     handlers.handleDisconnection('s1', 'w1', ws2);
     expect(unsubscribes[1]).toHaveBeenCalledTimes(1);
+  });
+
+  // hono/bun mints a new WSContext per event; only `raw` is shared. Mutation: activeConnections
+  // keyed by the context object again -> this test fails (the subscription stays and the count stays 1).
+  it('a disconnection with another context object for the same connection unsubscribes once and leaves no connection', () => {
+    const { handlers, unsubscribes } = createHarness();
+    const ws = createMockWs();
+    handlers.handleConnection(ws, 's1', 'w1', '/work/dir');
+    expect(handlers.activeConnectionCount()).toBe(1);
+
+    handlers.handleDisconnection('s1', 'w1', anotherContextFor(ws));
+
+    expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
+    expect(handlers.activeConnectionCount()).toBe(0);
   });
 
   it('a disconnection without a socket (service teardown) unsubscribes every socket of the worker', () => {
