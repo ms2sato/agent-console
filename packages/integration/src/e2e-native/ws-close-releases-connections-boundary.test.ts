@@ -27,6 +27,9 @@ import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
 import { setupWebSocketRoutes } from '@agent-console/server/src/websocket/routes';
+import { isInternalPtyWorker } from '@agent-console/server/src/services/worker-types';
+import { asWSContext } from '@agent-console/server/src/websocket/__tests__/ws-test-helpers';
+import { sanitizeInheritedGitEnv } from '@agent-console/server/src/__tests__/utils/scratch-git';
 import { WebSocketConnectionRegistry } from '@agent-console/server/src/websocket/connection-registry';
 import { getGitDiffActiveConnectionCount } from '@agent-console/server/src/websocket/git-diff-handler';
 import { getFileViewerActiveConnectionCount } from '@agent-console/server/src/websocket/file-viewer-handler';
@@ -38,6 +41,12 @@ async function waitFor(c: () => boolean, what: string, t = 5000) {
     if (Date.now() > d) throw new Error('timeout waiting for ' + what);
     await delay(5);
   }
+}
+
+/** The `type` of a parsed frame, or undefined when the frame has none. */
+function frameType(frame: unknown): string | undefined {
+  if (typeof frame !== 'object' || frame === null || !('type' in frame)) return undefined;
+  return typeof frame.type === 'string' ? frame.type : undefined;
 }
 
 type Snapshot = Record<string, number>;
@@ -64,6 +73,7 @@ describe('Shipping path: closing a socket releases its connection entries', () =
   let registry: WebSocketConnectionRegistry;
   let server: ReturnType<typeof Bun.serve>;
   let repoDir = '';
+  let gitConfigDir = '';
   let sessionId = '';
   let ptyWorkerId = '';
   let diffWorkerId = '';
@@ -73,13 +83,42 @@ describe('Shipping path: closing a socket releases its connection entries', () =
     // A real git repository so the git-diff worker can produce a real diff-data frame.
     // (Bun.spawnSync / Bun.write act on the real disk; node:fs is memfs-backed in this process.)
     repoDir = Bun.spawnSync(['mktemp', '-d']).stdout.toString().trim();
+    // Hermetic git for the scratch repo only: the same throwaway global config (fixed identity, signing off,
+    // default branch main, empty hooks path), GIT_CONFIG_GLOBAL + GIT_CONFIG_NOSYSTEM and env sanitizing as
+    // createScratchGitRepo in server/src/__tests__/utils/scratch-git.ts, so the operator's signing program, hooks
+    // and aliases are never read. That helper cannot be used here: its mkdir / mkdtemp / writeFile (node:fs/promises,
+    // lines 20 and 224-262) are memfs-backed in this process, so the repo it makes exists only in memory and its
+    // Bun.spawn git (runGit, line 218) then fails with ENOENT on the missing cwd. Only its pure
+    // sanitizeInheritedGitEnv is reused.
+    gitConfigDir = Bun.spawnSync(['mktemp', '-d']).stdout.toString().trim();
+    await Bun.write(`${gitConfigDir}/hooks-empty/.keep`, '');
+    await Bun.write(
+      `${gitConfigDir}/gitconfig`,
+      [
+        '[user]',
+        '\tname = Scratch',
+        '\temail = scratch@example.com',
+        '[commit]',
+        '\tgpgsign = false',
+        '[init]',
+        '\tdefaultBranch = main',
+        '[core]',
+        `\thooksPath = ${gitConfigDir}/hooks-empty`,
+        '',
+      ].join('\n'),
+    );
+    const gitEnv: Record<string, string> = {
+      ...sanitizeInheritedGitEnv(process.env),
+      GIT_CONFIG_GLOBAL: `${gitConfigDir}/gitconfig`,
+      GIT_CONFIG_NOSYSTEM: '1',
+    };
     const git = (...args: string[]) => {
-      const r = Bun.spawnSync(['git', ...args], { cwd: repoDir });
-      if (r.exitCode !== 0) throw new Error('git failed: ' + args.join(' ') + ' ' + r.stderr.toString());
+      const r = Bun.spawnSync(['git', ...args], { cwd: repoDir, env: gitEnv });
+      if (r.exitCode !== 0) {
+        throw new Error(`test setup failed: scratch repo step 'git ${args.join(' ')}' exited ${r.exitCode}: ${r.stderr.toString()}`);
+      }
     };
     git('init', '-q', '-b', 'main');
-    git('config', 'user.email', 'probe@example.com');
-    git('config', 'user.name', 'probe');
     await Bun.write(`${repoDir}/a.txt`, 'one\n');
     git('add', '.');
     git('commit', '-q', '-m', 'init');
@@ -97,26 +136,27 @@ describe('Shipping path: closing a socket releases its connection entries', () =
     sessionId = session.id;
     ptyWorkerId = session.workers.find((w) => w.type === 'agent')!.id;
     diffWorkerId = session.workers.find((w) => w.type === 'git-diff')!.id;
-    const viewer = await ctx.sessionManager.createWorker(sessionId, { type: 'file-viewer' } as any);
+    const viewer = await ctx.sessionManager.createWorker(sessionId, { type: 'file-viewer' });
     viewerWorkerId = viewer!.id;
   });
 
   afterAll(async () => {
     await server?.stop(true);
-    await shutdownAppContext(ctx);
+    if (ctx) await shutdownAppContext(ctx);
     await cleanupTestEnvironment();
     await removeRealDirectory(repoDir);
+    await removeRealDirectory(gitConfigDir);
   });
 
   function snapshot(): Snapshot {
     const out: Snapshot = {};
-    for (const [name, val] of Object.entries(registry as unknown as Record<string, unknown>)) {
+    for (const [name, val] of Object.entries(registry) as Array<[string, unknown]>) {
       if (val instanceof Map) {
         out['registry.' + name] = val.size;
         let inner = 0;
         let hasInner = false;
         for (const x of val.values()) {
-          if (x instanceof Set) {
+          if (x instanceof Set || x instanceof Map) {
             inner += x.size;
             hasInner = true;
           }
@@ -128,8 +168,8 @@ describe('Shipping path: closing a socket releases its connection entries', () =
     }
     out['gitDiffHandler.activeConnections'] = getGitDiffActiveConnectionCount();
     out['fileViewerHandler.activeConnections'] = getFileViewerActiveConnectionCount();
-    const w: any = ctx.sessionManager.getWorker(sessionId, ptyWorkerId);
-    out['ptyWorker.connectionCallbacks'] = w?.connectionCallbacks?.size ?? 0;
+    const w = ctx.sessionManager.getWorker(sessionId, ptyWorkerId);
+    out['ptyWorker.connectionCallbacks'] = w && isInternalPtyWorker(w) ? w.connectionCallbacks.size : 0;
     return out;
   }
 
@@ -137,10 +177,10 @@ describe('Shipping path: closing a socket releases its connection entries', () =
   async function openAndCloseClient(
     urlPath: string,
     attached: () => boolean,
-    exercise?: (client: WebSocket, frames: any[]) => Promise<void>,
+    exercise?: (client: WebSocket, frames: unknown[]) => Promise<void>,
   ) {
     const baseline = snapshot();
-    const frames: any[] = [];
+    const frames: unknown[] = [];
     const client = new WebSocket(`ws://127.0.0.1:${server.port}${urlPath}`);
     client.addEventListener('message', (e) => {
       try {
@@ -177,12 +217,12 @@ describe('Shipping path: closing a socket releases its connection entries', () =
   });
 
   it('git-diff worker: refresh is answered with diff-data, and close returns every collection to baseline', async () => {
-    let refreshFrames: any[] = [];
+    let refreshFrames: unknown[] = [];
     const { baseline, after } = await openAndCloseClient(
       `/ws/session/${sessionId}/worker/${diffWorkerId}`,
       () => getGitDiffActiveConnectionCount() > 0,
       async (client, frames) => {
-        await waitFor(() => frames.some((f) => f.type === 'diff-data'), 'the initial diff-data frame');
+        await waitFor(() => frames.some((f) => frameType(f) === 'diff-data'), 'the initial diff-data frame');
         frames.length = 0;
         client.send(JSON.stringify({ type: 'refresh' }));
         await waitFor(() => frames.length > 0, 'a reply to refresh').catch(() => undefined);
@@ -191,8 +231,8 @@ describe('Shipping path: closing a socket releases its connection entries', () =
       },
     );
     // Polarity: with a per-event context the handler answers { type: 'diff-error', error: 'No active connection for this worker' }.
-    expect(refreshFrames.filter((f) => f.type === 'diff-error' || f.type === 'error')).toEqual([]);
-    expect(refreshFrames.map((f) => f.type)).toContain('diff-data');
+    expect(refreshFrames.filter((f) => frameType(f) === 'diff-error' || frameType(f) === 'error')).toEqual([]);
+    expect(refreshFrames.map(frameType)).toContain('diff-data');
     expect(after).toEqual(baseline);
   });
 
@@ -206,13 +246,17 @@ describe('Shipping path: closing a socket releases its connection entries', () =
 
   it('positive control: removing a context with the SAME object returns every collection to baseline', () => {
     const baseline = snapshot();
-    const fake: any = { send() {}, close() {}, raw: {} };
+    const fake = asWSContext({ send() {}, close() {} });
     registry.addAppClient(fake);
     registry.startSyncing(fake);
     registry.addWorkerConnection(sessionId, ptyWorkerId, fake);
     registry.setConnectionMetadata(fake, { sessionId, workerId: ptyWorkerId, connectionId: 'control' });
     const open = snapshot();
     expect(open).not.toEqual(baseline);
+    // The inner-member metric is recorded (it reads the per-key Maps of send handles) and sees the connection.
+    for (const key of ['registry.workerConnectionsBySession [inner members]', 'registry.workerConnections [inner members]']) {
+      expect(open[key]).toBe((baseline[key] ?? 0) + 1);
+    }
     registry.removeAppClient(fake);
     registry.removeWorkerConnection(sessionId, ptyWorkerId, fake);
     expect(snapshot()).toEqual(baseline);

@@ -10,16 +10,24 @@ import { describe, it, expect } from 'bun:test';
 import * as path from 'node:path';
 
 const SRC_ROOT = path.resolve(import.meta.dir, '../../');
-const KEYED_BY_CONTEXT = /\b(Map|Set|WeakMap|WeakSet|ReadonlyMap)<\s*WSContext\b/;
+const KEYED_BY_CONTEXT = /\b(Map|Set|WeakMap|WeakSet|ReadonlyMap)<\s*WSContext\b/g;
+
+/** Matches over the whole text (a type argument may wrap onto the next line); reports the start line of each match. */
+function findKeyedByContext(text: string): { line: number; snippet: string }[] {
+  const found: { line: number; snippet: string }[] = [];
+  for (const match of text.matchAll(KEYED_BY_CONTEXT)) {
+    const line = text.slice(0, match.index).split('\n').length;
+    found.push({ line, snippet: match[0].replace(/\s+/g, ' ') });
+  }
+  return found;
+}
 
 async function findOffenders(root: string): Promise<string[]> {
   const offenders: string[] = [];
   for await (const file of new Bun.Glob('**/*.ts').scan({ cwd: root })) {
     if (file.split('/').includes('__tests__')) continue;
     const text = await Bun.file(path.join(root, file)).text();
-    text.split('\n').forEach((line, i) => {
-      if (KEYED_BY_CONTEXT.test(line)) offenders.push(`${file}:${i + 1}: ${line.trim()}`);
-    });
+    for (const { line, snippet } of findKeyedByContext(text)) offenders.push(`${file}:${line}: ${snippet}`);
   }
   return offenders;
 }
@@ -29,11 +37,16 @@ describe('no collection is keyed by WSContext', () => {
     expect(await findOffenders(SRC_ROOT)).toEqual([]);
   });
 
-  it('positive control: the pattern finds a scratch line (and skips the read-only Set view)', () => {
-    for (const line of ['const a = new Map<WSContext, X>();', 'private s = new Set<WSContext>();', 'WeakMap< WSContext, 1>']) {
-      expect(KEYED_BY_CONTEXT.test(line)).toBe(true);
+  it('positive control: the pattern finds scratch text (and skips the read-only Set view)', () => {
+    for (const text of ['const a = new Map<WSContext, X>();', 'private s = new Set<WSContext>();', 'WeakMap< WSContext, 1>']) {
+      expect(findKeyedByContext(text)).toHaveLength(1);
     }
-    expect(KEYED_BY_CONTEXT.test('get(): ReadonlySet<WSContext> {')).toBe(false);
-    expect(KEYED_BY_CONTEXT.test('new Map<SocketKey, WSContext>()')).toBe(false);
+    expect(findKeyedByContext('get(): ReadonlySet<WSContext> {')).toEqual([]);
+    expect(findKeyedByContext('new Map<SocketKey, WSContext>()')).toEqual([]);
+  });
+
+  it('positive control: a type argument wrapped onto the next line is found, with the start line of the match', () => {
+    const text = 'const ok = 1;\nconst m = new Map<\n  WSContext,\n  number\n>();\n';
+    expect(findKeyedByContext(text)).toEqual([{ line: 2, snippet: 'Map< WSContext' }]);
   });
 });
