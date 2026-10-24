@@ -573,4 +573,31 @@ describe('AgentWorkerHandler: paused target and deferral (PR-2 of #2204)', () =>
     expect(await handler.handle(createCiCompletedEvent(), target, { jobId: 'job-1' })).toBe('not-applicable');
     expect(deliverWorkerNotification).not.toHaveBeenCalled();
   });
+
+  it("returns 'delivery-failed' (does not reject) and logs an error when the persistence lookup rejects", async () => {
+    const { deliverWorkerNotification } = makeHandler({ live: undefined, paused: null });
+    // Same shape as makeHandler's sessionManager, but the resolver rejects
+    // (e.g. sessionRepository.findById failing).
+    const rejectingHandler = createInboundHandlers({
+      sessionManager: {
+        getSession: mock(() => undefined),
+        resolvePausedMessageTarget: mock(async () => {
+          throw new Error('persistence down');
+        }),
+        deliverWorkerNotification,
+      },
+      broadcastToApp: () => {},
+    }).find((h) => h.handlerId === 'agent-worker')!;
+
+    const errorSpy = spyOn(rootLogger, 'error').mockImplementation(() => rootLogger);
+    try {
+      const outcome = await rejectingHandler.handle(createCiCompletedEvent(), target, { jobId: 'job-1' });
+      expect(outcome).toBe('delivery-failed');
+      expect(deliverWorkerNotification).not.toHaveBeenCalled();
+      const messages = errorSpy.mock.calls.map((c) => String(c[1] ?? c[0]));
+      expect(messages.some((m) => m.includes('Could not resolve the target session from persistence'))).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });

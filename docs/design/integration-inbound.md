@@ -173,9 +173,18 @@ class AgentWorkerHandler implements InboundEventHandler {
     // A paused session is not in memory; resolve it from persistence so the
     // delivery seam can defer to it (the resolver returns null for a live,
     // deleted or orphaned session).
-    const session =
-      this.sessionManager.getSession(target.sessionId) ??
-      (await this.sessionManager.resolvePausedMessageTarget(target.sessionId))?.session;
+    // The resolver reads persistence and can reject; the handler's contract
+    // is "an outcome, never a rejection", so a failed lookup is a failed
+    // delivery attempt.
+    let session: Session | undefined;
+    try {
+      session =
+        this.sessionManager.getSession(target.sessionId) ??
+        (await this.sessionManager.resolvePausedMessageTarget(target.sessionId))?.session;
+    } catch (err) {
+      logger.error({ err, sessionId: target.sessionId, eventType: event.type }, 'Could not resolve the target session from persistence for inbound event');
+      return 'delivery-failed';
+    }
     if (!session) return 'not-applicable';
     if (!target.workerId && !canDeliverToAgentWorker(session)) return 'not-applicable';
 
@@ -523,7 +532,21 @@ Sessions are matched to webhooks by comparing repository identifiers.
 1. **Runtime resolution** (current approach):
    ```typescript
    async function resolveTargets(event: InboundSystemEvent): Promise<EventTarget[]> {
-     const sessions = await sessionRepository.findAll();
+     // collectRoutableSessions: live sessions first, then paused ones
+     // (de-duplicated by id; orphaned sessions are excluded). Read once per call.
+     const live = sessionManager.getSessions();
+     let paused: Session[] = [];
+     try {
+       paused = await sessionManager.getAllPausedSessions();
+     } catch (err) {
+       // Logged at error level; routing continues with live sessions only.
+       logger.error({ err }, 'Failed to load paused sessions for inbound routing');
+     }
+     const liveIds = new Set(live.map((s) => s.id));
+     const sessions = [
+       ...live,
+       ...paused.filter((s) => !liveIds.has(s.id) && s.recoveryState !== 'orphaned'),
+     ];
      const targets: EventTarget[] = [];
 
      for (const session of sessions) {

@@ -136,9 +136,21 @@ class AgentWorkerHandler implements InboundEventHandler {
     // A paused session is not in memory; resolve it from persistence so the
     // delivery seam can defer to it (the resolver returns null for a live,
     // deleted or orphaned session).
-    const session =
-      this.sessionManager.getSession(target.sessionId) ??
-      (await this.sessionManager.resolvePausedMessageTarget(target.sessionId))?.session;
+    // The resolver reads persistence and can reject; this handler's contract
+    // is "an outcome, never a rejection", so a failed lookup is a failed
+    // delivery attempt.
+    let session: Session | undefined;
+    try {
+      session =
+        this.sessionManager.getSession(target.sessionId) ??
+        (await this.sessionManager.resolvePausedMessageTarget(target.sessionId))?.session;
+    } catch (err) {
+      handlerLogger.error(
+        { err, sessionId: target.sessionId, eventType: event.type },
+        'Could not resolve the target session from persistence for inbound event',
+      );
+      return 'delivery-failed';
+    }
     if (!session) return 'not-applicable';
 
     if (!target.workerId && !canDeliverToAgentWorker(session)) return 'not-applicable';
