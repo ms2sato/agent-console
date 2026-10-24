@@ -379,7 +379,9 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
       const creation = create(manager, session.id);
       await held.reached();
 
-      // Same end state the deletion service leaves: out of the registry, tombstoned, marker cleared.
+      // Same end state the deletion service leaves: out of the registry, tombstoned, marker cleared. Written by hand
+      // because this harness has no job queue, so a real deleteSession cannot run to completion while the activation
+      // is parked; the deletion service's own tests assert that it sets the tombstone.
       const internal = manager['sessions'].get(session.id)!;
       manager['sessions'].delete(session.id);
       internal.endedBy = 'delete';
@@ -428,6 +430,8 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
           await pause;
           expected = SessionPausingError;
         } else {
+          // Hand-written completed-deletion end state (see the note above): the same two writes the deletion service
+          // makes, because this harness has no job queue for a real deleteSession.
           const internal = manager['sessions'].get(session.id)!;
           manager['sessions'].delete(session.id);
           internal.endedBy = 'delete';
