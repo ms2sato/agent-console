@@ -18,7 +18,7 @@
  * shortened through the `readiness` test-context override (the gate's cap
  * fires; the byte floor is unreachable with a mock PTY). Single-user mode.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { createHmac } from 'node:crypto';
 import { Hono } from 'hono';
 
@@ -153,5 +153,57 @@ describe('Boundary: inbound webhook to a paused session is deferred into the res
     expect(digestWrites[0]).toContain('[inbound:ci:completed]');
 
     expect(await ctx.db.selectFrom('deferred_worker_notifications').selectAll().execute()).toHaveLength(0);
+  });
+
+  it('one malformed paused row does not block routing: the live session and the other paused session are still targeted', async () => {
+    const repo = (await ctx.repositoryManager.getAllRepositories())[0];
+    const paused = await ctx.sessionManager.createSession({
+      type: 'worktree',
+      locationPath: WORKTREE_PATH,
+      repositoryId: repo.id,
+      worktreeId: BRANCH,
+      agentId: CLAUDE_CODE_AGENT_ID,
+    });
+    const malformed = await ctx.sessionManager.createSession({
+      type: 'worktree',
+      locationPath: WORKTREE_PATH,
+      repositoryId: repo.id,
+      worktreeId: 'malformed-branch',
+      agentId: CLAUDE_CODE_AGENT_ID,
+    });
+    expect((await app.request(`/api/sessions/${paused.id}/pause`, { method: 'POST' })).status).toBe(200);
+    expect((await app.request(`/api/sessions/${malformed.id}/pause`, { method: 'POST' })).status).toBe(200);
+
+    // Corrupt only the malformed row as read from persistence: an unknown
+    // worker type makes persistedToPublicSession throw for that row alone.
+    const sessionRepo = ctx.sessionManager.getSessionRepository();
+    const realRows = await sessionRepo.findPaused();
+    expect(realRows.map((r) => r.id).sort()).toEqual([paused.id, malformed.id].sort());
+    const corrupted = realRows.map((row) =>
+      row.id === malformed.id
+        ? { ...row, workers: [{ id: 'bad-worker', type: 'bogus-type', name: 'x', createdAt: '2024-01-01T00:00:00.000Z' }] }
+        : row
+    ) as typeof realRows;
+    const findPausedSpy = spyOn(sessionRepo, 'findPaused').mockResolvedValue(corrupted);
+    try {
+      await postSignedCiCompleted();
+
+      const ledger = await waitFor(async () => {
+        const rows = await ctx.db
+          .selectFrom('inbound_event_notifications')
+          .selectAll()
+          .where('handler_id', '=', 'agent-worker')
+          .execute();
+        const settled = rows.filter((r) => r.status !== 'pending');
+        return settled.length >= 2 ? settled : null;
+      }, 'the live and the paused ledger rows to settle');
+      expect(ledger.map((r) => r.session_id).sort()).toEqual([sessionId, paused.id].sort());
+      expect(ledger.every((r) => r.status === 'delivered')).toBe(true);
+
+      const deferred = await ctx.db.selectFrom('deferred_worker_notifications').selectAll().execute();
+      expect(deferred.map((r) => r.session_id)).toEqual([paused.id]);
+    } finally {
+      findPausedSpy.mockRestore();
+    }
   });
 });

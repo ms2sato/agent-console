@@ -1451,4 +1451,79 @@ describe('resolveTargets: paused sessions (PR-2 of #2204)', () => {
       'designated-other:fallback',
     ]);
   });
+
+  it('reads the paused provider exactly once when the main-push fallback fires', async () => {
+    const repository = buildRepositoryWithDesignation({ id: 'repo-1', path: '/path/to/repo', orchestratorSessionIds: ['paused-orch'] });
+    let providerCalls = 0;
+    const base = makeDeps({ paused: [pausedSession({ id: 'paused-orch', worktreeId: 'orch-branch' })], repository });
+    const deps: TargetResolverDependencies = {
+      ...base,
+      getPausedSessions: async () => {
+        providerCalls++;
+        return base.getPausedSessions();
+      },
+    };
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+    expect(targets).toEqual([{ sessionId: 'paused-orch', provenance: 'fallback' }]);
+    expect(providerCalls).toBe(1);
+  });
+
+  describe('a failing paused-session provider must not block live routing', () => {
+    function failingDeps(deps: TargetResolverDependencies): TargetResolverDependencies {
+      return { ...deps, getPausedSessions: async () => { throw new Error('malformed paused row'); } };
+    }
+
+    async function withErrorSpy<T>(run: () => Promise<T>): Promise<{ result: T; errorMessages: string[] }> {
+      const errorSpy = spyOn(rootLogger, 'error');
+      try {
+        const result = await run();
+        return { result, errorMessages: errorSpy.mock.calls.map((c) => String(c[1] ?? c[0])) };
+      } finally {
+        errorSpy.mockRestore();
+      }
+    }
+
+    it('per-session loop: a live session on a matching branch is still a target; error logged; no throw', async () => {
+      const live = buildWorktreeSession({ id: 'live-1', repositoryId: 'repo-1', worktreeId: 'feature-branch', workers: [AGENT_WORKER] });
+      const { result, errorMessages } = await withErrorSpy(() =>
+        resolveTargets(createEvent({ branch: 'feature-branch' }), failingDeps(makeDeps({ live: [live] })))
+      );
+      expect(result).toEqual([{ sessionId: 'live-1', provenance: 'match' }]);
+      expect(errorMessages.some((m) => m.includes('Failed to load paused sessions'))).toBe(true);
+    });
+
+    it('main-push fallback: a live designated session still receives', async () => {
+      const repository = buildRepositoryWithDesignation({ id: 'repo-1', path: '/path/to/repo', orchestratorSessionIds: ['live-orch'] });
+      const orch = buildWorktreeSession({ id: 'live-orch', repositoryId: 'repo-1', worktreeId: 'orch-branch', workers: [AGENT_WORKER] });
+      const { result, errorMessages } = await withErrorSpy(() =>
+        resolveTargets(createEvent({ branch: 'main' }), failingDeps(makeDeps({ live: [orch], repository })))
+      );
+      expect(result).toEqual([{ sessionId: 'live-orch', provenance: 'fallback' }]);
+      expect(errorMessages.some((m) => m.includes('Failed to load paused sessions'))).toBe(true);
+    });
+
+    it('issue:labeled: a live designated session still receives', async () => {
+      const repository = buildRepositoryWithDesignation({
+        id: 'repo-1',
+        path: '/path/to/repo',
+        orchestratorSessionIds: ['live-orch'],
+        issueTriggerLabels: 'orchestrator-trigger',
+      });
+      const orch = buildWorktreeSession({ id: 'live-orch', repositoryId: 'repo-1', worktreeId: 'main', workers: [AGENT_WORKER] });
+      const { result, errorMessages } = await withErrorSpy(() =>
+        resolveTargets(createIssueLabeledEvent(), failingDeps(makeDeps({ live: [orch], repository })))
+      );
+      expect(result).toEqual([{ sessionId: 'live-orch', provenance: 'match' }]);
+      expect(errorMessages.some((m) => m.includes('Failed to load paused sessions'))).toBe(true);
+    });
+
+    it('positive control: a provider that resolves keeps the paused behaviour and logs no load error', async () => {
+      const live = buildWorktreeSession({ id: 'live-1', repositoryId: 'repo-1', worktreeId: 'feature-branch', workers: [AGENT_WORKER] });
+      const { result, errorMessages } = await withErrorSpy(() =>
+        resolveTargets(createEvent({ branch: 'feature-branch' }), makeDeps({ live: [live], paused: [pausedSession({ id: 'paused-2' })] }))
+      );
+      expect(result.map((t) => t.sessionId)).toEqual(['live-1', 'paused-2']);
+      expect(errorMessages.some((m) => m.includes('Failed to load paused sessions'))).toBe(false);
+    });
+  });
 });

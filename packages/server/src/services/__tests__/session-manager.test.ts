@@ -39,6 +39,7 @@ import type { McpServerPermissionRow } from '../../repositories/mcp-server-permi
 import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
 import { serverConfig } from '../../lib/server-config.js';
 import { createTestSessionRepository } from '../../__tests__/utils/test-session-repository.js';
+import { rootLogger } from '../../lib/logger.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -7555,6 +7556,78 @@ describe('SessionManager', () => {
       expect(pausedSessions.length).toBe(1);
       expect(pausedSessions[0].parentSessionId).toBe('parent-sess-paused');
       expect(pausedSessions[0].parentWorkerId).toBe('parent-wkr-paused');
+    });
+
+    it('skips one malformed paused row (unknown worker type), returns the valid ones and warns, without throwing', async () => {
+      const manager = await getSessionManager();
+      const ids: string[] = [];
+      for (const worktreeId of ['branch-a', 'branch-b', 'branch-c']) {
+        const s = await manager.createSession({
+          type: 'worktree',
+          locationPath: '/test/path',
+          repositoryId: 'repo-1',
+          worktreeId,
+          agentId: 'claude-code',
+        });
+        await manager.pauseSession(s.id);
+        ids.push(s.id);
+      }
+
+      const repo = manager.getSessionRepository();
+      const realRows = await repo.findPaused();
+      expect(realRows.length).toBe(3);
+      // Corrupt the middle row: persistedToPublicSession throws on an unknown worker type.
+      const malformedId = ids[1];
+      const corrupted = realRows.map((row) =>
+        row.id === malformedId
+          ? { ...row, workers: [{ id: 'bad-worker', type: 'bogus-type', name: 'x', createdAt: '2024-01-01T00:00:00.000Z' }] }
+          : row
+      ) as typeof realRows;
+      const findPausedSpy = spyOn(repo, 'findPaused').mockResolvedValue(corrupted);
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        const paused = await manager.getAllPausedSessions();
+        expect(paused.map((s) => s.id).sort()).toEqual([ids[0], ids[2]].sort());
+        const skipWarns = warnSpy.mock.calls.filter((c) => c.some((a) => a === 'Skipping malformed paused session'));
+        expect(skipWarns).toHaveLength(1);
+        expect(JSON.stringify(skipWarns[0][0])).toContain(malformedId);
+        expect(JSON.stringify(skipWarns[0][0])).not.toContain(ids[0]);
+        expect(JSON.stringify(skipWarns[0][0])).not.toContain(ids[2]);
+      } finally {
+        warnSpy.mockRestore();
+        findPausedSpy.mockRestore();
+      }
+    });
+
+    it('a username-priming failure does not drop paused sessions: all are returned and one warn is logged', async () => {
+      const usernameLookup = new UsernameLookupService(createStubUserRepository(async () => null));
+      const manager = await getSessionManager({ usernameLookup });
+      const ids: string[] = [];
+      for (const worktreeId of ['branch-a', 'branch-b']) {
+        const s = await manager.createSession({
+          type: 'worktree',
+          locationPath: '/test/path',
+          repositoryId: 'repo-1',
+          worktreeId,
+          agentId: 'claude-code',
+        });
+        await manager.pauseSession(s.id);
+        ids.push(s.id);
+      }
+
+      const primeSpy = spyOn(usernameLookup, 'primeMany').mockRejectedValue(new Error('user lookup down'));
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        const paused = await manager.getAllPausedSessions();
+        expect(paused.map((s) => s.id).sort()).toEqual([...ids].sort());
+        const primeWarns = warnSpy.mock.calls.filter((c) =>
+          c.some((a) => a === 'Failed to prime usernames for paused sessions; continuing without them')
+        );
+        expect(primeWarns).toHaveLength(1);
+      } finally {
+        warnSpy.mockRestore();
+        primeSpy.mockRestore();
+      }
     });
   });
 

@@ -2019,12 +2019,32 @@ export class SessionManager {
     const trulyPaused = pausedPersisted.filter((p) => !this.sessions.has(p.id));
 
     // Prime username cache for all paused createdBy values so the public
-    // responses carry createdByUsername.
+    // responses carry createdByUsername. A failure here (e.g. a user lookup
+    // error) must not drop sessions: they are still returned, just without
+    // createdByUsername.
     if (this.usernameLookup instanceof UsernameLookupService) {
-      await this.usernameLookup.primeMany(trulyPaused.map((p) => p.createdBy));
+      try {
+        await this.usernameLookup.primeMany(trulyPaused.map((p) => p.createdBy));
+      } catch (err) {
+        logger.warn({ err }, 'Failed to prime usernames for paused sessions; continuing without them');
+      }
     }
 
-    return trulyPaused.map((p) => this.persistedToPublicSession(p));
+    // PRIMARY protection against a malformed persisted row (e.g. a worker of
+    // an unknown type): isolate each row here, at the method level. This
+    // method has three callers -- the /ws/app initial sync,
+    // resolveWorktreeOwnerUsername and inbound routing -- and one malformed
+    // row must not blank the paused list for every connecting client. Do not
+    // remove this as redundant with the catch in resolve-targets, which is
+    // only a defence-in-depth net for the whole provider failing.
+    return trulyPaused.flatMap((p) => {
+      try {
+        return [this.persistedToPublicSession(p)];
+      } catch (err) {
+        logger.warn({ sessionId: p.id, err }, 'Skipping malformed paused session');
+        return [];
+      }
+    });
   }
 
   private persistedToPublicSession(p: PersistedSession): Session {
