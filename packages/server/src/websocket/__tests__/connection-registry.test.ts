@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import type { WSContext } from 'hono/ws';
 import { WebSocketConnectionRegistry } from '../connection-registry.js';
-import { asWSContext } from './ws-test-helpers.js';
+import { anotherContextFor, asWSContext } from './ws-test-helpers.js';
 
 function createMockWs(): WSContext {
   return asWSContext({
@@ -35,6 +35,52 @@ describe('WebSocketConnectionRegistry', () => {
       expect(registry.appClientCount).toBe(0);
       expect(registry.isSyncing(ws)).toBe(false);
       expect(registry.getSyncQueue(ws)).toBeUndefined();
+    });
+  });
+
+  // hono/bun mints a new WSContext for each of open / message / close; only `raw` is shared.
+  // Mutation: keying a collection by the context object again makes the matching test below fail.
+  describe('removal with a different context object for the same connection', () => {
+    it('removeAppClient empties the app collections', () => {
+      const ws = createMockWs();
+      registry.addAppClient(ws);
+      registry.startSyncing(ws);
+
+      registry.removeAppClient(anotherContextFor(ws));
+
+      expect(registry.appClientCount).toBe(0);
+      expect(registry.getAppClients().size).toBe(0);
+      expect(registry.isSyncing(ws)).toBe(false);
+      expect(registry.getSyncQueue(ws)).toBeUndefined();
+    });
+
+    it('removeWorkerConnection empties every worker collection and the metadata', () => {
+      const ws = createMockWs();
+      registry.addWorkerConnection('s1', 'w1', ws);
+      registry.setConnectionMetadata(ws, { sessionId: 's1', workerId: 'w1', connectionId: 'c1' });
+
+      registry.removeWorkerConnection('s1', 'w1', anotherContextFor(ws));
+
+      expect(registry.getWorkerConnectionsBySession('s1')).toBeUndefined();
+      expect(registry.getWorkerConnections('s1', 'w1')).toBeUndefined();
+      expect(registry.getConnectionMetadata(ws)).toBeUndefined();
+    });
+
+    it('getConnectionMetadata finds the metadata through another context', () => {
+      const ws = createMockWs();
+      const metadata = { sessionId: 's1', workerId: 'w1', connectionId: 'c1' };
+      registry.setConnectionMetadata(ws, metadata);
+
+      expect(registry.getConnectionMetadata(anotherContextFor(ws))).toEqual(metadata);
+    });
+
+    it('a stored context stays the send handle returned by the getters', () => {
+      const ws = createMockWs();
+      registry.addWorkerConnection('s1', 'w1', ws);
+      registry.addAppClient(ws);
+
+      expect(registry.getWorkerConnections('s1', 'w1')?.has(ws)).toBe(true);
+      expect(registry.getAppClients().has(ws)).toBe(true);
     });
   });
 
