@@ -536,9 +536,12 @@ A Repository row holds a SET of designated Orchestrator sessions (`repository_or
 
 | The designated session… | Skipped, logged as |
 |---|---|
-| is not in `getSessions()` (deleted, or paused — a paused session's DB row survives but it is absent from the live session manager) | not a live session |
-| has `activationState !== 'running'` (hibernated: all its PTY workers have exited) | not running |
+| is neither live nor paused: deleted, or orphaned (a paused session's DB row survives and `getPausedSessions()` returns it; an orphaned row is excluded) | not a live session |
+| is paused (persisted, no owning server, not orphaned) | NOT skipped: a deferred target. The event is stored for the session's resume digest (`session-pause-resume.md`) and the ledger row becomes `delivered`. A paused session is recognised by membership in `getPausedSessions()`, never by `activationState`, which reads `hibernated` for a paused session AND for a live session whose workers have all exited |
+| is live with `activationState !== 'running'` (hibernated: all its PTY workers have exited) | not running |
 | fails `canDeliverToAgentWorker` (no agent-shaped worker: neither a PTY `agent` nor an `embedded-agent` — e.g. a worktree session whose only worker is `git-diff`, which computes `running` vacuously) | no agent worker to deliver to |
+
+**Paused sessions are targets on every path (Issue [#2204](https://github.com/ms2sato/agent-console/issues/2204), PR-2).** `TargetResolverDependencies.getPausedSessions()` (`SessionManager.getAllPausedSessions()`) supplies the paused sessions; the per-session loop iterates live sessions first, then paused ones (de-duplicated by id), so a paused session whose worktree matches the event is a `match` target, a paused parent with an agent-shaped worker counts as a live parent for `hasLiveParentTarget`, and a paused designated session is eligible on both the `issue:labeled` path and the #1661 fallback. Each routing decision to a paused session logs one info line naming `paused`. `InboundEventHandler.handle(event, target, { jobId })` receives the inbound job id; `AgentWorkerHandler` resolves a paused session through `SessionManager.resolvePausedMessageTarget`, passes the job id as `sourceId` to `deliverWorkerNotification`, and maps `{ ok: true, deferred: true }` to `'handled'`, so the ledger row is `delivered` exactly as for a live delivery. `DiffWorkerHandler` is a no-op for a paused target (a paused session is not in `getSession()`).
 
 Targets are collected into a `Set` keyed by session id, so a session designated on two same-remote rows is delivered to once. There is no precedence among designated sessions and no ordering guarantee beyond the deduplication; each recipient decides for itself whether the event is its responsibility, and recipients coordinate through `send_session_message` when they act.
 
