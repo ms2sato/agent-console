@@ -8,6 +8,14 @@ const logger = createLogger('resolve-targets');
 
 export interface TargetResolverDependencies {
   getSessions: () => Session[];
+  /**
+   * Paused sessions (persisted, no owning server, not orphaned) as public
+   * sessions. A paused session is a deferral target: the delivery seam stores
+   * the notification for its resume digest. Orphaned sessions are excluded by
+   * the source (the seam refuses them), and `getSessions()` never contains a
+   * paused session.
+   */
+  getPausedSessions: () => Promise<Session[]>;
   getRepository: (repositoryId: string) => Repository | undefined;
   getAllRepositories: () => Repository[];
   getOrgRepoFromPath?: (path: string) => Promise<string | null>;
@@ -45,6 +53,31 @@ function isExpectedError(error: unknown): boolean {
   return error instanceof GitError;
 }
 
+/**
+ * The sessions an event can be routed through: live ones first, then paused
+ * ones (de-duplicated by id; a session is never both). Paused sessions are
+ * recognised by membership in `getPausedSessions()`, NOT by `activationState`,
+ * which reads 'hibernated' for a paused session AND for a live session whose
+ * workers have all exited -- only the former can receive a deferral.
+ */
+async function collectRoutableSessions(
+  deps: TargetResolverDependencies
+): Promise<{ sessions: Session[]; pausedIds: ReadonlySet<string> }> {
+  const live = deps.getSessions();
+  const liveIds = new Set(live.map((s) => s.id));
+  // Orphaned sessions are refused by the delivery seam, so they are not
+  // targets even if the source returns them.
+  const paused = (await deps.getPausedSessions()).filter(
+    (s) => !liveIds.has(s.id) && s.recoveryState !== 'orphaned'
+  );
+  return { sessions: [...live, ...paused], pausedIds: new Set(paused.map((s) => s.id)) };
+}
+
+/** Live and running, or paused: the two states in which a delivery has somewhere to go. */
+function isRoutableState(session: Session, pausedIds: ReadonlySet<string>): boolean {
+  return pausedIds.has(session.id) || session.activationState === 'running';
+}
+
 export async function resolveTargets(
   event: InboundSystemEvent,
   deps: TargetResolverDependencies
@@ -64,7 +97,7 @@ export async function resolveTargets(
     return resolveIssueLabeledTargets(event, deps, repositoryName, getOrgRepoFromPath);
   }
 
-  const sessions = deps.getSessions();
+  const { sessions, pausedIds } = await collectRoutableSessions(deps);
   const targets: EventTarget[] = [];
   let hasLiveParentTarget = false;
 
@@ -86,6 +119,12 @@ export async function resolveTargets(
         continue;
       }
 
+      if (pausedIds.has(session.id)) {
+        logger.info(
+          { sessionId: session.id, repositoryName },
+          'Inbound event matched a paused session; delivery will be deferred to its resume digest'
+        );
+      }
       targets.push({ sessionId: session.id, provenance: 'match' });
 
       // Also notify the parent session (e.g., orchestrator)
@@ -97,7 +136,7 @@ export async function resolveTargets(
         // parent to deliver to at all (#1661 case 3: a dead/stale parent
         // pointer, most commonly left behind by an Orchestrator restart).
         const parentSession = sessions.find((s) => s.id === session.parentSessionId);
-        if (parentSession && parentSession.activationState === 'running' && canDeliverToAgentWorker(parentSession)) {
+        if (parentSession && isRoutableState(parentSession, pausedIds) && canDeliverToAgentWorker(parentSession)) {
           hasLiveParentTarget = true;
         }
       }
@@ -216,16 +255,22 @@ async function resolveDesignatedFallbackSessionIds(
   getOrgRepoFromPath: (path: string) => Promise<string | null>
 ): Promise<string[]> {
   const matchedRepositories = await findMatchingRepositories(deps, repositoryName, getOrgRepoFromPath);
-  const sessions = deps.getSessions();
+  const { sessions, pausedIds } = await collectRoutableSessions(deps);
   const eligible = new Set<string>();
 
   for (const repository of matchedRepositories) {
     for (const orchestratorSessionId of repository.orchestratorSessionIds) {
       const liveSession = sessions.find((s) => s.id === orchestratorSessionId);
       if (!liveSession) continue;
-      if (liveSession.activationState !== 'running') continue;
+      if (!isRoutableState(liveSession, pausedIds)) continue;
       if (!canDeliverToAgentWorker(liveSession)) continue;
 
+      if (pausedIds.has(orchestratorSessionId)) {
+        logger.info(
+          { repositoryName, orchestratorSessionId },
+          'Designated orchestrator session is paused; fallback delivery will be deferred to its resume digest'
+        );
+      }
       eligible.add(orchestratorSessionId);
     }
   }
@@ -258,7 +303,7 @@ async function resolveIssueLabeledTargets(
   // events by construction in the parser (github-service-parser.ts) --
   // TypeScript's `labels?: string[]` can't express "present iff type X".
   const eventLabels = event.metadata.labels ?? [];
-  const sessions = deps.getSessions();
+  const { sessions, pausedIds } = await collectRoutableSessions(deps);
 
   // Evaluate eligibility (label match, then per-session live lookup) for
   // EVERY same-remote candidate -- one ineligible candidate must never
@@ -315,7 +360,7 @@ async function resolveIssueLabeledTargets(
       // already computed upstream by
       // `SessionConverterService.toPublicSession()`; read it off
       // `liveSession` rather than recomputing it here.
-      if (liveSession.activationState !== 'running') {
+      if (!isRoutableState(liveSession, pausedIds)) {
         logger.info(
           { repositoryId: repository.id, orchestratorSessionId, activationState: liveSession.activationState },
           'issue:labeled event matched repository but the designated orchestrator session is not running'
@@ -340,6 +385,12 @@ async function resolveIssueLabeledTargets(
         continue;
       }
 
+      if (pausedIds.has(orchestratorSessionId)) {
+        logger.info(
+          { repositoryId: repository.id, orchestratorSessionId },
+          'issue:labeled event routed to a paused designated orchestrator session; delivery will be deferred to its resume digest'
+        );
+      }
       orchestratorSessionIds.add(orchestratorSessionId);
     }
   }

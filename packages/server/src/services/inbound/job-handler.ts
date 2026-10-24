@@ -230,7 +230,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           });
 
           step = 'handle';
-          const outcome = await handler.handle(event, target);
+          const outcome = await handler.handle(event, target, { jobId: job.jobId });
 
           // 'handled' and 'not-applicable' both mean the processing
           // attempt completed without a delivery failure (the old

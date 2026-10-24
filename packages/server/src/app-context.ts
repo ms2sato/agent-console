@@ -16,7 +16,7 @@ import type { Database } from './database/schema.js';
 import type { JobQueue } from './jobs/job-queue.js';
 import type { SessionRepository } from './repositories/session-repository.js';
 import type { UserRepository } from './repositories/user-repository.js';
-import type { SessionManager } from './services/session-manager.js';
+import type { SessionManager, WorkerReadinessConfig } from './services/session-manager.js';
 import type { runAsUser, SpawnAsUserFn } from './services/privilege-elevation.js';
 import type { EnsureMemoryDirFn } from './lib/memory-dir.js';
 import type { RepositoryManager } from './services/repository-manager.js';
@@ -855,6 +855,12 @@ export interface CreateTestContextOptions {
    * is no `createAppContext` (production) counterpart.
    */
   ensureMemoryDirFn?: EnsureMemoryDirFn;
+  /**
+   * Test seam for the agent-worker readiness gate the resume digest waits on
+   * (`SessionManager`'s `readiness` option); `undefined` keeps the production
+   * constants. Test-context override only.
+   */
+  readiness?: Partial<WorkerReadinessConfig>;
   /** Callback to broadcast messages to app WebSocket clients (default: no-op). */
   broadcastToApp?: (msg: AppServerMessage) => void;
 }
@@ -983,6 +989,7 @@ export async function createTestContext(
     assertSpawnCwdFn: overrides?.assertSpawnCwdFn,
     spawnAsUserFn: overrides?.spawnAsUserFn,
     ensureMemoryDirFn: overrides?.ensureMemoryDirFn,
+    ...(overrides?.readiness ? { readiness: overrides.readiness } : {}),
     notificationManager,
     annotationService,
     workerOutputFileManager,

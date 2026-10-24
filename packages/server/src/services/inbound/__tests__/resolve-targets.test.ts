@@ -80,7 +80,7 @@ describe('resolveTargets', () => {
   it('matches repository names case-insensitively', async () => {
     const session = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'main' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [session],
+      getPausedSessions: async () => [], getSessions: () => [session],
       getRepository: () => defaultRepository,
       getAllRepositories: () => [defaultRepository],
       getOrgRepoFromPath: mock(() => Promise.resolve('Owner/Repo')),
@@ -95,7 +95,7 @@ describe('resolveTargets', () => {
     const mainSession = buildWorktreeSession({ id: 'session-main', worktreeId: 'main' });
     const featureSession = buildWorktreeSession({ id: 'session-feature', worktreeId: 'feature-branch' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [mainSession, featureSession],
+      getPausedSessions: async () => [], getSessions: () => [mainSession, featureSession],
       getRepository: () => defaultRepository,
       getAllRepositories: () => [defaultRepository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -109,7 +109,7 @@ describe('resolveTargets', () => {
   it('skips non-worktree sessions', async () => {
     const session = buildQuickSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [session],
+      getPausedSessions: async () => [], getSessions: () => [session],
       getRepository: () => defaultRepository,
       getAllRepositories: () => [defaultRepository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -129,7 +129,7 @@ describe('resolveTargets', () => {
     };
     let callCount = 0;
     const deps: TargetResolverDependencies = {
-      getSessions: () => [session1, session2],
+      getPausedSessions: async () => [], getSessions: () => [session1, session2],
       getRepository: (id) => repositories[id],
       getAllRepositories: () => Object.values(repositories),
       getOrgRepoFromPath: mock(() => {
@@ -149,7 +149,7 @@ describe('resolveTargets', () => {
   it('includes parent session when child matches', async () => {
     const child = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'feature', parentSessionId: 'parent-1' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [child],
+      getPausedSessions: async () => [], getSessions: () => [child],
       getRepository: () => defaultRepository,
       getAllRepositories: () => [defaultRepository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -166,7 +166,7 @@ describe('resolveTargets', () => {
   it('does not include parent when parentSessionId is absent', async () => {
     const child = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'feature' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [child],
+      getPausedSessions: async () => [], getSessions: () => [child],
       getRepository: () => defaultRepository,
       getAllRepositories: () => [defaultRepository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -181,7 +181,7 @@ describe('resolveTargets', () => {
     const child1 = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' });
     const child2 = buildWorktreeSession({ id: 'child-2', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [child1, child2],
+      getPausedSessions: async () => [], getSessions: () => [child1, child2],
       getRepository: () => defaultRepository,
       getAllRepositories: () => [defaultRepository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -198,7 +198,7 @@ describe('resolveTargets', () => {
     const parent = buildWorktreeSession({ id: 'parent-1', repositoryId: 'repo-1', worktreeId: 'main' });
     const child = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [parent, child],
+      getPausedSessions: async () => [], getSessions: () => [parent, child],
       getRepository: () => defaultRepository,
       getAllRepositories: () => [defaultRepository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -214,7 +214,7 @@ describe('resolveTargets', () => {
   it('returns empty array when repositoryName is missing', async () => {
     const session = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [session],
+      getPausedSessions: async () => [], getSessions: () => [session],
       getRepository: () => defaultRepository,
       getAllRepositories: () => [defaultRepository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -269,7 +269,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [nonMatchingSession, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [nonMatchingSession, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -292,7 +292,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const designatedSession = buildDesignatedSession({ workers: [EMBEDDED_WORKER] });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [nonMatchingSession, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [nonMatchingSession, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -312,7 +312,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const matchedSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature' });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [matchedSession, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [matchedSession, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -340,7 +340,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [matchedSession, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [matchedSession, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -375,7 +375,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [matchedSession, hibernatedParent, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [matchedSession, hibernatedParent, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -419,7 +419,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [matchedSession, vacuouslyRunningParent, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [matchedSession, vacuouslyRunningParent, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -459,7 +459,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [matchedSession, embeddedParent, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [matchedSession, embeddedParent, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -499,7 +499,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [matchedSession, liveParent, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [matchedSession, liveParent, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -527,7 +527,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [matchedSession, designatedSession],
+      getPausedSessions: async () => [], getSessions: () => [matchedSession, designatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -549,7 +549,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [nonMatchingSession],
+      getPausedSessions: async () => [], getSessions: () => [nonMatchingSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -568,7 +568,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [nonMatchingSession],
+      getPausedSessions: async () => [], getSessions: () => [nonMatchingSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -592,7 +592,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [nonMatchingSession],
+      getPausedSessions: async () => [], getSessions: () => [nonMatchingSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -613,7 +613,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const liveDesignated = buildDesignatedSession({ id: 'designated-live' });
     const hibernatedDesignated = buildDesignatedSession({ id: 'designated-hibernated', activationState: 'hibernated' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [nonMatchingSession, liveDesignated, hibernatedDesignated],
+      getPausedSessions: async () => [], getSessions: () => [nonMatchingSession, liveDesignated, hibernatedDesignated],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -635,7 +635,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const designated2 = buildDesignatedSession({ id: 'designated-2' });
     const designated3 = buildDesignatedSession({ id: 'designated-3' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [nonMatchingSession, designated1, designated2, designated3],
+      getPausedSessions: async () => [], getSessions: () => [nonMatchingSession, designated1, designated2, designated3],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -662,7 +662,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-a', worktreeId: 'feature-branch' });
     const sharedDesignated = buildDesignatedSession({ id: 'designated-shared' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [nonMatchingSession, sharedDesignated],
+      getPausedSessions: async () => [], getSessions: () => [nonMatchingSession, sharedDesignated],
       getRepository: () => repositoryA,
       getAllRepositories: () => [repositoryA, repositoryB],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -714,7 +714,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     });
     const orchestratorSession = createOrchestratorSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [orchestratorSession],
+      getPausedSessions: async () => [], getSessions: () => [orchestratorSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -738,7 +738,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     });
     const orchestratorSession = createOrchestratorSession({ workers: [EMBEDDED_WORKER] });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [orchestratorSession],
+      getPausedSessions: async () => [], getSessions: () => [orchestratorSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -770,7 +770,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const orchestratorSession = createOrchestratorSession();
     const otherSession = buildWorktreeSession({ id: 'other-session', repositoryId: 'repo-1', worktreeId: 'feature', parentSessionId: 'orchestrator-session-1' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [orchestratorSession, otherSession],
+      getPausedSessions: async () => [], getSessions: () => [orchestratorSession, otherSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -790,7 +790,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     });
     const orchestratorSession = createOrchestratorSession();
     const deps: TargetResolverDependencies = {
-      getSessions: () => [orchestratorSession],
+      getPausedSessions: async () => [], getSessions: () => [orchestratorSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -808,7 +808,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [],
+      getPausedSessions: async () => [], getSessions: () => [],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -827,7 +827,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [],
+      getPausedSessions: async () => [], getSessions: () => [],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -846,7 +846,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [createOrchestratorSession()],
+      getPausedSessions: async () => [], getSessions: () => [createOrchestratorSession()],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('some-other/repo')),
@@ -865,7 +865,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       issueTriggerLabels: null,
     });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [createOrchestratorSession()],
+      getPausedSessions: async () => [], getSessions: () => [createOrchestratorSession()],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -916,7 +916,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       [eligibleRepo, ineligibleRepo],
     ]) {
       const deps: TargetResolverDependencies = {
-        getSessions: () => [eligibleSession],
+        getPausedSessions: async () => [], getSessions: () => [eligibleSession],
         getRepository: () => undefined,
         getAllRepositories: () => repos,
         getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -945,7 +945,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const sessionB = buildWorktreeSession({ id: 'orchestrator-session-b', repositoryId: 'repo-b', worktreeId: 'main', workers: [AGENT_WORKER] });
 
     const deps: TargetResolverDependencies = {
-      getSessions: () => [sessionA, sessionB],
+      getPausedSessions: async () => [], getSessions: () => [sessionA, sessionB],
       getRepository: () => undefined,
       getAllRepositories: () => [repoA, repoB],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -980,7 +980,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     });
 
     const dedupDeps: TargetResolverDependencies = {
-      getSessions: () => [sharedSession],
+      getPausedSessions: async () => [], getSessions: () => [sharedSession],
       getRepository: () => undefined,
       getAllRepositories: () => [repoC, repoD],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -1012,7 +1012,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       activationState: 'hibernated',
     });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [hibernatedSession],
+      getPausedSessions: async () => [], getSessions: () => [hibernatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -1069,7 +1069,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       ],
     });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [noAgentWorkerSession],
+      getPausedSessions: async () => [], getSessions: () => [noAgentWorkerSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -1131,7 +1131,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       ],
     });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [hibernatedMixedSession],
+      getPausedSessions: async () => [], getSessions: () => [hibernatedMixedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -1166,7 +1166,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       issueTriggerLabels: ' Bug ,  Orchestrator-Trigger,needs-triage ',
     });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [createOrchestratorSession()],
+      getPausedSessions: async () => [], getSessions: () => [createOrchestratorSession()],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -1196,7 +1196,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const liveSession = createOrchestratorSession({ id: 'orchestrator-live' });
     const hibernatedSession = createOrchestratorSession({ id: 'orchestrator-hibernated', activationState: 'hibernated' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [liveSession, hibernatedSession],
+      getPausedSessions: async () => [], getSessions: () => [liveSession, hibernatedSession],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -1218,7 +1218,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const session2 = createOrchestratorSession({ id: 'orchestrator-2' });
     const session3 = createOrchestratorSession({ id: 'orchestrator-3' });
     const deps: TargetResolverDependencies = {
-      getSessions: () => [session1, session2, session3],
+      getPausedSessions: async () => [], getSessions: () => [session1, session2, session3],
       getRepository: () => repository,
       getAllRepositories: () => [repository],
       getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
@@ -1288,5 +1288,167 @@ describe('matchesAnyTriggerLabel', () => {
 
   it('returns false when no event label matches any configured label', () => {
     expect(matchesAnyTriggerLabel(['unrelated'], 'bug,enhancement')).toBe(false);
+  });
+});
+
+describe('resolveTargets: paused sessions (PR-2 of #2204)', () => {
+  const AGENT_WORKER = { id: 'worker-1', type: 'agent' as const, name: 'Claude', agentId: 'claude-code-builtin', activated: false, createdAt: '2024-01-01T00:00:00Z' };
+
+  function pausedSession(overrides: Partial<WorktreeSession> = {}): WorktreeSession {
+    return buildWorktreeSession({
+      id: 'paused-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      activationState: 'hibernated',
+      pausedAt: '2026-01-01T00:00:00.000Z',
+      workers: [AGENT_WORKER],
+      ...overrides,
+    });
+  }
+
+  function makeDeps(opts: {
+    live?: WorktreeSession[];
+    paused?: WorktreeSession[];
+    repository?: Repository;
+  }): TargetResolverDependencies {
+    const repository = opts.repository ?? buildRepositoryWithDesignation({ id: 'repo-1', path: '/path/to/repo' });
+    return {
+      getSessions: () => opts.live ?? [],
+      getPausedSessions: async () => opts.paused ?? [],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+  }
+
+  it('zero paused and zero live -> no targets (fallback behaviour unchanged)', async () => {
+    expect(await resolveTargets(createEvent({ branch: 'feature-branch' }), makeDeps({}))).toEqual([]);
+  });
+
+  it('one paused session whose worktree matches the branch -> exactly one target with provenance match', async () => {
+    const targets = await resolveTargets(createEvent({ branch: 'feature-branch' }), makeDeps({ paused: [pausedSession()] }));
+    expect(targets).toEqual([{ sessionId: 'paused-1', provenance: 'match' }]);
+  });
+
+  it('logs an info line naming "paused" when a paused session is selected', async () => {
+    const infoSpy = spyOn(rootLogger, 'info');
+    try {
+      await resolveTargets(createEvent({ branch: 'feature-branch' }), makeDeps({ paused: [pausedSession()] }));
+      const messages = infoSpy.mock.calls.map((c) => String(c[1] ?? c[0]));
+      expect(messages.some((m) => m.includes('paused session'))).toBe(true);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('a paused session on a different branch is not targeted', async () => {
+    const targets = await resolveTargets(createEvent({ branch: 'other' }), makeDeps({ paused: [pausedSession()] }));
+    expect(targets).toEqual([]);
+  });
+
+  it('paused designated Orchestrator on a main-push event -> fallback target', async () => {
+    const repository = buildRepositoryWithDesignation({ id: 'repo-1', path: '/path/to/repo', orchestratorSessionIds: ['paused-orch'] });
+    const orch = pausedSession({ id: 'paused-orch', worktreeId: 'orch-branch' });
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), makeDeps({ paused: [orch], repository }));
+    expect(targets).toEqual([{ sessionId: 'paused-orch', provenance: 'fallback' }]);
+  });
+
+  it('paused designated Orchestrator on issue:labeled -> target (provenance match)', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['paused-orch'],
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const orch = pausedSession({ id: 'paused-orch', worktreeId: 'main' });
+    const targets = await resolveTargets(createIssueLabeledEvent(), makeDeps({ paused: [orch], repository }));
+    expect(targets).toEqual([{ sessionId: 'paused-orch', provenance: 'match' }]);
+  });
+
+  it('paused AND hibernated-live both designated -> the paused one is targeted, the hibernated-live one is skipped', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['paused-orch', 'hibernated-live'],
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const paused = pausedSession({ id: 'paused-orch', worktreeId: 'orch-branch' });
+    const hibernatedLive = buildWorktreeSession({
+      id: 'hibernated-live',
+      repositoryId: 'repo-1',
+      worktreeId: 'other-branch',
+      activationState: 'hibernated',
+      workers: [AGENT_WORKER],
+    });
+    expect(await resolveTargets(createIssueLabeledEvent(), makeDeps({ live: [hibernatedLive], paused: [paused], repository }))).toEqual([
+      { sessionId: 'paused-orch', provenance: 'match' },
+    ]);
+    // Same on the main-push fallback path.
+    expect(await resolveTargets(createEvent({ branch: 'main' }), makeDeps({ live: [hibernatedLive], paused: [paused], repository }))).toEqual([
+      { sessionId: 'paused-orch', provenance: 'fallback' },
+    ]);
+  });
+
+  it('a hibernated-but-live session is NOT treated as paused (no pausedAt-by-state inference)', async () => {
+    const repository = buildRepositoryWithDesignation({ id: 'repo-1', path: '/path/to/repo', orchestratorSessionIds: ['hibernated-live'] });
+    const hibernatedLive = buildWorktreeSession({
+      id: 'hibernated-live',
+      repositoryId: 'repo-1',
+      worktreeId: 'other-branch',
+      activationState: 'hibernated',
+      workers: [AGENT_WORKER],
+    });
+    expect(await resolveTargets(createEvent({ branch: 'main' }), makeDeps({ live: [hibernatedLive], repository }))).toEqual([]);
+  });
+
+  it('an orphaned paused session is not targeted', async () => {
+    const targets = await resolveTargets(
+      createEvent({ branch: 'feature-branch' }),
+      makeDeps({ paused: [pausedSession({ recoveryState: 'orphaned' })] })
+    );
+    expect(targets).toEqual([]);
+  });
+
+  it('a session listed both live and paused is routed once, as live', async () => {
+    const live = buildWorktreeSession({ id: 'paused-1', repositoryId: 'repo-1', worktreeId: 'feature-branch', workers: [AGENT_WORKER] });
+    const targets = await resolveTargets(createEvent({ branch: 'feature-branch' }), makeDeps({ live: [live], paused: [pausedSession()] }));
+    expect(targets).toEqual([{ sessionId: 'paused-1', provenance: 'match' }]);
+  });
+
+  it('matched live session whose parent is PAUSED -> parent target and no fallback fires', async () => {
+    const repository = buildRepositoryWithDesignation({ id: 'repo-1', path: '/path/to/repo', orchestratorSessionIds: ['designated-other'] });
+    const child = buildWorktreeSession({
+      id: 'child-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature-branch',
+      parentSessionId: 'paused-parent',
+      workers: [AGENT_WORKER],
+    });
+    const parent = pausedSession({ id: 'paused-parent', worktreeId: 'parent-branch' });
+    const designated = buildWorktreeSession({ id: 'designated-other', repositoryId: 'repo-1', worktreeId: 'main', workers: [AGENT_WORKER] });
+    const targets = await resolveTargets(
+      createEvent({ branch: 'feature-branch' }),
+      makeDeps({ live: [child, designated], paused: [parent], repository })
+    );
+    expect(targets).toEqual([
+      { sessionId: 'child-1', provenance: 'match' },
+      { sessionId: 'paused-parent', provenance: 'parent' },
+    ]);
+  });
+
+  it('matched live session whose parent is paused but has no agent worker -> fallback still fires', async () => {
+    const repository = buildRepositoryWithDesignation({ id: 'repo-1', path: '/path/to/repo', orchestratorSessionIds: ['designated-other'] });
+    const child = buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'feature-branch', parentSessionId: 'paused-parent', workers: [AGENT_WORKER] });
+    const parent = pausedSession({ id: 'paused-parent', worktreeId: 'parent-branch', workers: [] });
+    const designated = buildWorktreeSession({ id: 'designated-other', repositoryId: 'repo-1', worktreeId: 'main', workers: [AGENT_WORKER] });
+    const targets = await resolveTargets(
+      createEvent({ branch: 'feature-branch' }),
+      makeDeps({ live: [child, designated], paused: [parent], repository })
+    );
+    expect(targets.map((t) => `${t.sessionId}:${t.provenance}`)).toEqual([
+      'child-1:match',
+      'paused-parent:parent',
+      'designated-other:fallback',
+    ]);
   });
 });

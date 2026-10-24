@@ -76,6 +76,7 @@ const EMBEDDED_WORKER = {
 function createPtyBranchSessionManager(session: Session, writes: string[]): InboundHandlerDependencies['sessionManager'] {
   return {
     getSession: mock(() => session),
+    resolvePausedMessageTarget: mock(async () => null),
     deliverWorkerNotification: mock(async (_sessionId: string, _workerId: string, params) => {
       writePtyNotification({
         ...params,
@@ -101,7 +102,7 @@ describe('AgentWorkerHandler: issue:labeled', () => {
     });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
     expect(result).toBe('handled');
     expect(writes[0]).toContain('intent=triage');
@@ -114,12 +115,13 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
   it("returns 'not-applicable' when the session does not exist", async () => {
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => undefined),
+      resolvePausedMessageTarget: mock(async () => null),
       deliverWorkerNotification: mock(async () => ({ ok: true as const })),
     };
     const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
     expect(result).toBe('not-applicable');
   });
@@ -128,12 +130,13 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
     const session = buildWorktreeSession({ ...mockSessionOverrides, workers: [] });
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => session),
+      resolvePausedMessageTarget: mock(async () => null),
       deliverWorkerNotification: mock(async () => ({ ok: true as const })),
     };
     const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
     expect(result).toBe('not-applicable');
   });
@@ -142,6 +145,7 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
     const session = buildWorktreeSession({ ...mockSessionOverrides, workers: [] });
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => session),
+      resolvePausedMessageTarget: mock(async () => null),
       deliverWorkerNotification: mock(async () => ({ ok: true as const })),
     };
     const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
@@ -151,7 +155,7 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
     // substitute for it (only for null/undefined), so the first
     // not-applicable check (no workerId given) is bypassed, exercising
     // the SECOND, independent `!workerId` branch (handlers.ts).
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', workerId: '', provenance: 'match' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', workerId: '', provenance: 'match' }, { jobId: 'job-1' });
 
     expect(result).toBe('not-applicable');
   });
@@ -161,6 +165,7 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
     const deliverWorkerNotification = mock(async () => ({ ok: true as const }));
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => session),
+      resolvePausedMessageTarget: mock(async () => null),
       deliverWorkerNotification,
     };
     const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
@@ -175,7 +180,7 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
       summary: 'Issue closed',
     };
 
-    const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1', provenance: 'match' });
+    const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
     expect(result).toBe('not-applicable');
     expect(deliverWorkerNotification).not.toHaveBeenCalled();
@@ -194,7 +199,7 @@ describe('AgentWorkerHandler: fallback target (#1661)', () => {
     });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'fallback' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'fallback' }, { jobId: 'job-1' });
 
     expect(result).toBe('handled');
     expect(writes[0]).toContain('[inbound:issue:labeled]');
@@ -214,7 +219,7 @@ describe('UINotificationHandler: issue:labeled', () => {
     });
     const uiHandler = handlers.find((h) => h.handlerId === 'ui-notification')!;
 
-    const result = await uiHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+    const result = await uiHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
     expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
@@ -275,11 +280,12 @@ describe('canDeliverToAgentWorker', () => {
 
 describe('AgentWorkerHandler: embedded-agent worker delivery (Issue #1739)', () => {
   it('resolves the embedded-agent worker and calls deliverWorkerNotification with exactly the PTY-parity params', async () => {
-    const deliverWorkerNotification = mock((_sessionId: string, _workerId: string, _params: PtyNotificationParams) =>
+    const deliverWorkerNotification = mock((_sessionId: string, _workerId: string, _params: PtyNotificationParams, _opts?: { sourceId?: string }) =>
       Promise.resolve({ ok: true as const }),
     );
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => buildWorktreeSession({ ...mockSessionOverrides, workers: [EMBEDDED_WORKER] })),
+      resolvePausedMessageTarget: mock(async () => null),
       deliverWorkerNotification,
     };
 
@@ -289,7 +295,7 @@ describe('AgentWorkerHandler: embedded-agent worker delivery (Issue #1739)', () 
     });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
     expect(result).toBe('handled');
     expect(deliverWorkerNotification).toHaveBeenCalledTimes(1);
@@ -315,13 +321,14 @@ describe('AgentWorkerHandler: embedded-agent worker delivery (Issue #1739)', () 
         },
         intent: 'triage',
       },
+      { sourceId: 'job-1' },
     ]);
   });
 });
 
 describe('AgentWorkerHandler: worker resolution order (Issue #1739)', () => {
   it('resolves to the first agent-shaped worker in workers order when both an agent and an embedded-agent worker are present', async () => {
-    const deliverWorkerNotification = mock((_sessionId: string, _workerId: string, _params: PtyNotificationParams) =>
+    const deliverWorkerNotification = mock((_sessionId: string, _workerId: string, _params: PtyNotificationParams, _opts?: { sourceId?: string }) =>
       Promise.resolve({ ok: true as const }),
     );
     const session = buildWorktreeSession({
@@ -334,6 +341,7 @@ describe('AgentWorkerHandler: worker resolution order (Issue #1739)', () => {
     });
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => session),
+      resolvePausedMessageTarget: mock(async () => null),
       deliverWorkerNotification,
     };
 
@@ -343,7 +351,7 @@ describe('AgentWorkerHandler: worker resolution order (Issue #1739)', () => {
     });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+    await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
     expect(deliverWorkerNotification.mock.calls[0][1]).toBe('worker-1');
   });
@@ -378,12 +386,12 @@ describe('AgentWorkerHandler: PTY byte parity through the delivery seam (Issue #
       });
       const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-      await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+      await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
       // Real timers: writePtyNotification's Enter keystroke fires via a
       // real 150ms setTimeout.
       await new Promise((resolve) => setTimeout(resolve, 200));
 
-      await agentHandler.handle(createCiCompletedEvent(), { sessionId: 'session-1', provenance: 'match' });
+      await agentHandler.handle(createCiCompletedEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       // Reach (measured 2026-09-17): swapping the order of `repo` and
@@ -405,6 +413,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
   it('returns false and logs a warning exactly once when deliverWorkerNotification resolves { ok: false }', async () => {
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
+      resolvePausedMessageTarget: mock(async () => null),
       deliverWorkerNotification: mock(async () => ({ ok: false as const, error: 'boom', reason: 'pty-write-failed' as const })),
     };
 
@@ -416,7 +425,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
 
     const warnSpy = spyOn(rootLogger, 'warn');
     try {
-      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
       expect(result).toBe('delivery-failed');
       expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -439,6 +448,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
   it('resolves false (does not reject) and logs a warning exactly once when deliverWorkerNotification REJECTS -- e.g. an embedded-agent activation failure surfacing through ensureDeliverable', async () => {
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
+      resolvePausedMessageTarget: mock(async () => null),
       deliverWorkerNotification: mock(async () => {
         throw new Error('activation exploded');
       }),
@@ -455,7 +465,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
       // The seam's PTY branch never throws -- only the embedded-agent
       // branch can reject. `handle()`'s contract to job-handler.ts is
       // "false, never a rejection", so `await` must resolve, not throw.
-      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
+      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
 
       expect(result).toBe('delivery-failed');
       expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -487,5 +497,80 @@ describe('DiffWorkerHandler: issue:labeled', () => {
     const diffHandler = handlers.find((h) => h.handlerId === 'diff-worker')!;
 
     expect(diffHandler.supportedEvents).not.toContain('issue:labeled');
+  });
+});
+
+describe('AgentWorkerHandler: paused target and deferral (PR-2 of #2204)', () => {
+  function makeHandler(overrides: {
+    live?: Session | undefined;
+    paused?: Session | null;
+    result?: Awaited<ReturnType<InboundHandlerDependencies['sessionManager']['deliverWorkerNotification']>>;
+  }) {
+    const deliverWorkerNotification = mock(
+      async (_s: string, _w: string, _p: PtyNotificationParams, _o?: { replyToSessionId?: string; sourceId?: string }) =>
+        overrides.result ?? ({ ok: true as const }),
+    );
+    const sessionManager: InboundHandlerDependencies['sessionManager'] = {
+      getSession: mock(() => overrides.live),
+      resolvePausedMessageTarget: mock(async () =>
+        overrides.paused ? ({ session: overrides.paused, resolver: {} as never }) : null,
+      ),
+      deliverWorkerNotification,
+    };
+    const handler = createInboundHandlers({ sessionManager, broadcastToApp: () => {} }).find(
+      (h) => h.handlerId === 'agent-worker',
+    )!;
+    return { handler, deliverWorkerNotification };
+  }
+  const target = { sessionId: 'session-1', provenance: 'match' as const };
+
+  it("maps { ok: true, deferred: true } to 'handled'", async () => {
+    const session = buildWorktreeSession(mockSessionOverrides);
+    const { handler } = makeHandler({ live: session, result: { ok: true, deferred: true } });
+    expect(await handler.handle(createCiCompletedEvent(), target, { jobId: 'job-1' })).toBe('handled');
+  });
+
+  it('passes the job id as opts.sourceId to the seam', async () => {
+    const session = buildWorktreeSession(mockSessionOverrides);
+    const { handler, deliverWorkerNotification } = makeHandler({ live: session });
+    await handler.handle(createCiCompletedEvent(), target, { jobId: 'job-xyz' });
+    expect(deliverWorkerNotification).toHaveBeenCalledTimes(1);
+    expect(deliverWorkerNotification.mock.calls[0][3]).toEqual({ sourceId: 'job-xyz' });
+  });
+
+  it("a plain { ok: true } stays 'handled' and { ok: false } stays 'delivery-failed'", async () => {
+    const session = buildWorktreeSession(mockSessionOverrides);
+    const ok = makeHandler({ live: session, result: { ok: true } });
+    expect(await ok.handler.handle(createCiCompletedEvent(), target, { jobId: 'job-1' })).toBe('handled');
+
+    const warnSpy = spyOn(rootLogger, 'warn').mockImplementation(() => rootLogger);
+    try {
+      const failed = makeHandler({
+        live: session,
+        result: { ok: false, error: 'boom', reason: 'pty-inactive' },
+      });
+      expect(await failed.handler.handle(createCiCompletedEvent(), target, { jobId: 'job-1' })).toBe('delivery-failed');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('delivers to a paused session (not in memory) by resolving it from persistence', async () => {
+    const paused = buildWorktreeSession(mockSessionOverrides);
+    const { handler, deliverWorkerNotification } = makeHandler({
+      live: undefined,
+      paused,
+      result: { ok: true, deferred: true },
+    });
+    expect(await handler.handle(createCiCompletedEvent(), target, { jobId: 'job-9' })).toBe('handled');
+    expect(deliverWorkerNotification.mock.calls[0][0]).toBe('session-1');
+    expect(deliverWorkerNotification.mock.calls[0][1]).toBe('worker-1');
+    expect(deliverWorkerNotification.mock.calls[0][3]).toEqual({ sourceId: 'job-9' });
+  });
+
+  it("returns 'not-applicable' when the session is neither live nor paused", async () => {
+    const { handler, deliverWorkerNotification } = makeHandler({ live: undefined, paused: null });
+    expect(await handler.handle(createCiCompletedEvent(), target, { jobId: 'job-1' })).toBe('not-applicable');
+    expect(deliverWorkerNotification).not.toHaveBeenCalled();
   });
 });
