@@ -80,6 +80,10 @@ export function canDeliverToAgentWorker(session: Session): boolean {
  */
 export type HandlerOutcome = 'handled' | 'not-applicable' | 'delivery-failed';
 
+export interface InboundHandleOptions {
+  jobId: string;
+}
+
 export interface InboundEventHandler {
   /** Handler identifier */
   readonly handlerId: string;
@@ -89,18 +93,20 @@ export interface InboundEventHandler {
    * Handle the event for a specific target.
    * @param event - The inbound event (already validated by job-handler)
    * @param target - The target session/worker to notify
+   * @param opts - `jobId` is the inbound job that produced this event; the
+   * agent-worker handler records it as the deferred notification's `source_id`.
    * @returns `'handled'` if the handler performed an action, `'not-applicable'`
    * if it had nothing to do (e.g. no deliverable worker), `'delivery-failed'`
    * if it determined delivery should happen but the delivery itself failed.
    */
-  handle(event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome>;
+  handle(event: InboundSystemEvent, target: EventTarget, opts: InboundHandleOptions): Promise<HandlerOutcome>;
 }
 
 /**
  * Minimal SessionManager interface required by inbound handlers.
  * Narrowed to only the methods actually used, reducing coupling.
  */
-type InboundSessionManager = Pick<SessionManager, 'getSession' | 'deliverWorkerNotification'>;
+type InboundSessionManager = Pick<SessionManager, 'getSession' | 'resolvePausedMessageTarget' | 'deliverWorkerNotification'>;
 
 export interface InboundHandlerDependencies {
   sessionManager: InboundSessionManager;
@@ -126,8 +132,25 @@ class AgentWorkerHandler implements InboundEventHandler {
 
   constructor(private sessionManager: InboundSessionManager) {}
 
-  async handle(event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome> {
-    const session = this.sessionManager.getSession(target.sessionId);
+  async handle(event: InboundSystemEvent, target: EventTarget, opts: InboundHandleOptions): Promise<HandlerOutcome> {
+    // A paused session is not in memory; resolve it from persistence so the
+    // delivery seam can defer to it (the resolver returns null for a live,
+    // deleted or orphaned session).
+    // The resolver reads persistence and can reject; this handler's contract
+    // is "an outcome, never a rejection", so a failed lookup is a failed
+    // delivery attempt.
+    let session: Session | undefined;
+    try {
+      session =
+        this.sessionManager.getSession(target.sessionId) ??
+        (await this.sessionManager.resolvePausedMessageTarget(target.sessionId))?.session;
+    } catch (err) {
+      handlerLogger.error(
+        { err, sessionId: target.sessionId, eventType: event.type },
+        'Could not resolve the target session from persistence for inbound event',
+      );
+      return 'delivery-failed';
+    }
     if (!session) return 'not-applicable';
 
     if (!target.workerId && !canDeliverToAgentWorker(session)) return 'not-applicable';
@@ -168,7 +191,7 @@ class AgentWorkerHandler implements InboundEventHandler {
           summary: event.summary,
         },
         intent: this.resolveIntent(event.type),
-      });
+      }, { sourceId: opts.jobId });
     } catch (err) {
       handlerLogger.warn(
         { err, sessionId, workerId, eventType: event.type },
@@ -184,6 +207,9 @@ class AgentWorkerHandler implements InboundEventHandler {
       return 'delivery-failed';
     }
 
+    // `deferred: true` means the session is paused and the notification is
+    // stored for its resume digest -- the delivery obligation is met, so the
+    // ledger row becomes `delivered` exactly as for a live delivery.
     return 'handled';
   }
 
@@ -212,7 +238,7 @@ class DiffWorkerHandler implements InboundEventHandler {
 
   constructor(private sessionManager: InboundSessionManager) {}
 
-  async handle(_event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome> {
+  async handle(_event: InboundSystemEvent, target: EventTarget, _opts: InboundHandleOptions): Promise<HandlerOutcome> {
     if (target.provenance !== 'match') return 'not-applicable';
 
     const session = this.sessionManager.getSession(target.sessionId);
@@ -235,7 +261,7 @@ class UINotificationHandler implements InboundEventHandler {
 
   constructor(private broadcastToApp: InboundHandlerDependencies['broadcastToApp']) {}
 
-  async handle(event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome> {
+  async handle(event: InboundSystemEvent, target: EventTarget, _opts: InboundHandleOptions): Promise<HandlerOutcome> {
     this.broadcastToApp({
       type: 'inbound-event',
       sessionId: target.sessionId,

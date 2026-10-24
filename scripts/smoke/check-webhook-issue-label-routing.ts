@@ -68,17 +68,22 @@
  *      Same D-and-D2-not-T assertion shape as scenario 3, on a different
  *      issue number so the two are distinguishable if debugging is needed.
  *
- *   4b. POSITIVE (Issue #1716, hibernated designated session is SKIPPED,
- *      never auto-removed): D2 is PAUSED via `POST /:id/pause` (absent
- *      from the live session manager, DB row preserved) and the scenario 3
- *      shape is posted again. Only D receives; D2's output file and T's
- *      are unchanged; the server's own stdout contains the exact
- *      per-session skip reason `resolveIssueLabeledTargets` logs for a
- *      designated session that is not live (attribution, not silence);
- *      and `GET /api/repositories/:id` still lists D2 in
- *      `orchestratorSessionIds` -- routing skipped it, nothing removed it.
- *      D2 stays paused for scenarios 5-7, which therefore also exercise
- *      "a designated-but-not-live session is skipped by the fallback".
+ *   4b. POSITIVE (Issue #1716 + Issue #2204, a PAUSED designated session is
+ *      a DEFERRED target, never skipped, never auto-removed): D2 is PAUSED
+ *      via `POST /:id/pause` (absent from the live session manager, DB row
+ *      preserved) and the scenario 3 shape is posted again. D receives the
+ *      PTY tag; D2 gets no PTY write of the notification (no `[inbound:` text appended to its output file) AND exactly
+ *      one new `kind = 'inbound-event'` row exists in
+ *      `deferred_worker_notifications` for D2's agent worker (read through
+ *      a read-only SQLite handle, baseline-relative, scoped by session and
+ *      worker id); T's output file is unchanged; the server's own stdout
+ *      contains the paused-selection record `resolveIssueLabeledTargets`
+ *      logs ("... routed to a paused designated orchestrator session;
+ *      delivery will be deferred to its resume digest") naming D2; and
+ *      `GET /api/repositories/:id` still lists D2 in
+ *      `orchestratorSessionIds`. D2 stays paused for scenarios 5-7, which
+ *      therefore also exercise "a paused designated session is a deferred
+ *      fallback target".
  *
  *   4c. POSITIVE (Issue #1739, inbound delivery to an EMBEDDED-agent
  *      worker): an `openai-api` embedded-agent definition is created
@@ -109,7 +114,9 @@
  *      (the live designated Orchestrator session) via `resolveTargets`'s
  *      designated-session fallback -- confirmed by reading D's real worker
  *      output file for the `[inbound:ci:completed]` tag. T must NOT receive
- *      it, and neither must the paused D2 (designated, skipped). E (the
+   *      it. The paused D2 (designated) gets NO PTY write (output file
+ *      unchanged) but exactly one new `inbound-event` deferred row for the
+ *      fallback event (baseline-relative). E (the
  *      embedded-designated session from 4c) MUST receive it too, as the
  *      same NDJSON `inbound-event` user-message shape on the
  *      `[inbound:ci:completed]` tag with exactly one more stub request
@@ -118,22 +125,22 @@
  *      gate never runs (it only fires when `commitSha` is present), avoiding
  *      a pointless real `gh api` call against a nonexistent repo.
  *
- *   6. POSITIVE (Issue #1661, dead-parent fallback): a third worktree
- *      session O is created with `parentSessionId` pointing at a real
- *      session P, which is then PAUSED via `POST /:id/pause` -- pausing
- *      removes P from the live session manager (`getAllSessions()`) while
- *      preserving its DB row, exactly matching `resolveTargets`'s "parent
- *      absent from getSessions()" shape without tripping a separate
- *      `job-handler.ts` defect a literal never-persisted UUID would trigger
- *      (see this scenario's own in-code comment for the full explanation --
- *      that defect is now fixed, Issue #1677, and scenario 7 below exercises
- *      it directly). The same `workflow_run` shape as scenario 5, but with
- *      `head_branch` matching O's worktreeId, routes to BOTH O (direct
- *      branch match) and D (fallback, since O's parent P is no longer live)
- *      -- confirmed by reading both O's and D's real worker output files.
- *      T must receive neither.
+ *   6. POSITIVE (Issue #1661 + Issue #2204, a PAUSED parent is a deferred
+ *      target; no fallback): a third worktree session O is created with
+ *      `parentSessionId` pointing at a real session P, which is then PAUSED
+ *      via `POST /:id/pause` (P leaves the live session manager, DB row
+ *      preserved). The same `workflow_run` shape as scenario 5, with
+ *      `head_branch` matching O's worktreeId, routes to O (direct branch
+ *      match, PTY tag) and to P as a deferred target (exactly one new
+ *      `inbound-event` row for P's agent worker, baseline-relative).
+ *      Because the paused parent counts as the parent target, the
+ *      designated-session fallback does NOT fire: D's output file is
+ *      unchanged, read after O's tag and P's deferred row were seen plus a
+ *      short settle (an absence read too early passes falsely). T receives
+ *      nothing. The dead-parent fallback itself is scenario 7.
  *
- *   7. POSITIVE (Issue #1677, deleted-parent fallback + no job retry): a
+   *   7. POSITIVE (Issue #1677, deleted-parent fallback + no job retry; the
+ *      only dead-parent fallback case now that a paused parent is a target): a
  *      fourth worktree session Q is created with `parentSessionId` pointing
  *      at a real session R, which is then genuinely DELETED via
  *      `DELETE /api/sessions/:id` -- unlike scenario 6's pause, this removes
@@ -188,7 +195,8 @@
  *     `baseUrl` -- upstream of and outside the delivery chain under test.
  *
  * Usage:
- *   bun scripts/smoke/check-webhook-issue-label-routing.ts
+ *   NODE_ENV=development bun scripts/smoke/check-webhook-issue-label-routing.ts
+ *   (NODE_ENV must be set explicitly; the smoke refuses to guess.)
  *
  * Exit codes:
  *   0  all assertions passed
@@ -483,7 +491,7 @@ async function main(): Promise<void> {
      * Merge one more pre-trusted project path into the in-memory config and
      * re-write it to disk. Extracted (Issue #1661, scenario 6) so a
      * worktree created AFTER the disposable server has already started
-     * (session O, added for the dead-parent-fallback scenario) can still be
+     * (session O, added for the paused-parent scenario) can still be
      * pre-trusted -- the config file is read by the `claude` CLI process at
      * its own PTY-spawn time, not just once at server bring-up, so
      * appending to the same on-disk file the running server's
@@ -735,6 +743,41 @@ async function main(): Promise<void> {
       }
     }
 
+    /**
+     * Rows in `deferred_worker_notifications` for one worker, optionally
+     * narrowed to a kind. A paused session is a deferred TARGET: the delivery
+     * seam stores the notification here for the resume digest instead of
+     * writing to a PTY. Scoped by session AND worker id so another session's
+     * rows can never satisfy an assertion; callers compare against a baseline
+     * captured before the POST.
+     */
+    function countDeferredRows(sessionId: string, workerId: string, kind: string): number {
+      const sqliteHandle = new BunDatabase(dbPath, { readonly: true });
+      try {
+        const row = sqliteHandle
+          .query('SELECT COUNT(*) as c FROM deferred_worker_notifications WHERE session_id = ? AND worker_id = ? AND kind = ?')
+          .get(sessionId, workerId, kind) as { c: number };
+        return row.c;
+      } finally {
+        sqliteHandle.close();
+      }
+    }
+
+    /**
+     * Whether `stdoutSince` holds a record with `msg` that names `sessionId`
+     * within the same log record (a +/-800-char window around each occurrence
+     * of the message: pino-pretty prints message and fields on adjacent
+     * lines, JSON mode prints the fields before `msg`).
+     */
+    function recordNaming(stdoutSince: string, msg: string, sessionId: string): boolean {
+      let idx = stdoutSince.indexOf(msg);
+      while (idx !== -1) {
+        if (stdoutSince.slice(Math.max(0, idx - 800), idx + msg.length + 800).includes(sessionId)) return true;
+        idx = stdoutSince.indexOf(msg, idx + msg.length);
+      }
+      return false;
+    }
+
     // ===================================================================
     // SCENARIO 1: positive control -- `issues` `closed` fans out via the
     // OLD per-session loop to every worktree session (D and T), never to
@@ -902,22 +945,26 @@ async function main(): Promise<void> {
     );
 
     // ===================================================================
-    // SCENARIO 4b (Issue #1716): a designated session that is not live is
-    // SKIPPED by routing and never auto-removed. Pause D2 (its DB row
-    // survives; it leaves the live session manager, so
-    // `resolveIssueLabeledTargets` finds no live session for that id), post
-    // the scenario 3 shape again, and assert: D still receives, D2 and T
-    // do not, the server logged the per-session skip reason for D2 (the
-    // negative result is attributed to the code path, not to silence), and
-    // the row STILL lists D2 as designated.
+    // SCENARIO 4b (Issue #1716, paused-session deferral of Issue #2204): a
+    // designated session that is PAUSED is a deferred TARGET, never skipped
+    // and never auto-removed. Pause D2 (its DB row survives; it leaves the
+    // live session manager), post the scenario 3 shape again, and assert: D
+    // still receives over the PTY; the paused D2 gets NO PTY write (its
+    // no `[inbound:` text in its output file) but exactly one new `inbound-event` row in
+    // `deferred_worker_notifications` for its agent worker (baseline-relative,
+    // scoped by session and worker id); T does not receive; the server logged
+    // the paused-selection record naming D2 (the routing decision is
+    // attributed to the code path, not to silence); and the row STILL lists
+    // D2 as designated.
     // ===================================================================
-    console.log('\n==> SCENARIO 4b: issues/labeled, matching label, with D2 PAUSED (D only; D2 skipped, still designated)');
+    console.log('\n==> SCENARIO 4b: issues/labeled, matching label, with D2 PAUSED (D over PTY; D2 deferred, still designated)');
     const pauseD2Res = await fetch(`${baseUrl}/api/sessions/${sessionD2.id}/pause`, { method: 'POST' });
     expect(pauseD2Res.status === 200, 'SCENARIO 4b: session D2 paused successfully (absent from the live session manager, DB row preserved)', `status=${pauseD2Res.status} body=${await pauseD2Res.text().catch(() => '')}`);
 
     const beforeD4b = readOutputFileSafe(outputPathD);
     const beforeD24b = readOutputFileSafe(outputPathD2);
     const beforeT4b = readOutputFileSafe(outputPathT);
+    const deferredD2Before4b = countDeferredRows(sessionD2.id, agentWorkerD2.id, 'inbound-event');
     const stdoutLenBefore4b = stdoutBuf.length;
     const pausedRes = await postWebhook(
       baseUrl,
@@ -939,41 +986,60 @@ async function main(): Promise<void> {
     }, 45_000, "D's output file to contain [inbound:issue:labeled] (scenario 4b)");
     expect(scenario4bTagFound, 'SCENARIO 4b: D (the live designated session) received the [inbound:issue:labeled] PTY notification', readOutputFileSafe(outputPathD).slice(beforeD4b.length).slice(-500));
 
+    // The deferral is written by the same routing pass that wrote D's PTY
+    // tag; poll for the row, then read the exact delta once it has landed.
+    const scenario4bDeferredLanded = await waitFor(
+      () => countDeferredRows(sessionD2.id, agentWorkerD2.id, 'inbound-event') > deferredD2Before4b,
+      15_000,
+      "a new inbound-event deferred_worker_notifications row for D2's agent worker (scenario 4b)",
+    );
+    const deferredD2Delta4b = countDeferredRows(sessionD2.id, agentWorkerD2.id, 'inbound-event') - deferredD2Before4b;
+    expect(
+      scenario4bDeferredLanded && deferredD2Delta4b === 1,
+      "SCENARIO 4b: the paused D2 is a deferred TARGET: exactly one new kind='inbound-event' deferred_worker_notifications row for D2's agent worker",
+      `before=${deferredD2Before4b} delta=${deferredD2Delta4b}`,
+    );
     const afterD24b = readOutputFileSafe(outputPathD2);
     expect(
-      !afterD24b.slice(beforeD24b.length).includes('[inbound:issue:labeled]'),
-      'SCENARIO 4b: the paused D2 did NOT receive the [inbound:issue:labeled] PTY notification',
+      !afterD24b.slice(beforeD24b.length).includes('[inbound:'),
+      'SCENARIO 4b: the paused D2 got NO PTY write of the notification (no [inbound:...] text appended to its worker output file; deferred, not delivered)',
       afterD24b.slice(beforeD24b.length).slice(-500),
     );
+    // Not a byte-equality check: a paused session has no PTY or TUI (pause kills
+    // every PTY), but the output file is written by a late flush. bufferOutput
+    // schedules each write-out about WORKER_OUTPUT_FLUSH_INTERVAL (~100 ms) later
+    // and killWorker does not flush before it returns, so the TUI's exit-time output
+    // (the window-title reset it prints on SIGTERM) lands after the byte-length
+    // baseline. That failed a strict "unchanged" assertion on a real run. The
+    // notification's own tag is the signal.
     const afterT4b = readOutputFileSafe(outputPathT);
     expect(
       !afterT4b.slice(beforeT4b.length).includes('[inbound:issue:labeled]'),
       'SCENARIO 4b: T did NOT receive the [inbound:issue:labeled] PTY notification',
       afterT4b.slice(beforeT4b.length).slice(-500),
     );
-    // Exact wording confirmed by reading resolve-targets.ts's per-session
-    // skip log call directly (a paused session is absent from
-    // `getSessions()`, so this is the "not a live session" reason, not the
-    // "not running" one a hibernated-but-present session would produce).
+    // Exact wording confirmed by reading resolve-targets.ts's
+    // resolveIssueLabeledTargets paused-selection log call directly.
     //
     // Polled rather than read once: the child's pino-pretty transport
     // flushes to the pipe asynchronously, so the record can land in
     // `stdoutBuf` a moment after D's PTY notification is already visible
     // (observed once as an empty `stdoutSince4b` on an otherwise green run).
-    const NOT_LIVE_SKIP_MSG = 'issue:labeled event matched repository but a designated orchestrator session is not a live session';
-    const scenario4bSkipLogged = await waitFor(() => {
-      const since = stdoutBuf.slice(stdoutLenBefore4b);
-      return since.includes(NOT_LIVE_SKIP_MSG) && since.includes(sessionD2.id);
-    }, 15_000, "server stdout to contain the 'not a live session' skip reason naming D2 (scenario 4b)");
+    const PAUSED_SELECTED_MSG = 'issue:labeled event routed to a paused designated orchestrator session; delivery will be deferred to its resume digest';
+    const scenario4bSelectionLogged = await waitFor(
+      () => recordNaming(stdoutBuf.slice(stdoutLenBefore4b), PAUSED_SELECTED_MSG, sessionD2.id),
+      15_000,
+      'server stdout to contain the paused-selection record naming D2 (scenario 4b)',
+    );
     expect(
-      scenario4bSkipLogged,
-      "SCENARIO 4b: server stdout contains resolve-targets.ts's per-session 'not a live session' skip reason naming D2",
+      scenario4bSelectionLogged,
+      "SCENARIO 4b: server stdout contains resolve-targets.ts's paused-selection record naming D2",
       `stdout tail: ${stdoutBuf.slice(stdoutLenBefore4b).slice(-2000)}`,
     );
     const designatedAfterPause = await readDesignatedSet();
     expect(
       designatedAfterPause.includes(sessionD2.id) && designatedAfterPause.includes(sessionD.id),
-      'SCENARIO 4b: D2 is STILL in the designated set after being skipped (routing never auto-removes a designation)',
+      'SCENARIO 4b: D2 is STILL in the designated set after being selected as a deferred target (routing never auto-removes a designation)',
       JSON.stringify(designatedAfterPause),
     );
 
@@ -1230,16 +1296,16 @@ async function main(): Promise<void> {
       afterT4c.slice(beforeT4c.length).slice(-500),
     );
     // Positive control for the absence assertion below: the SAME
-    // `resolveIssueLabeledTargets` pass skips the still-paused D2 with the
-    // 'not a live session' reason, logged right before E is evaluated.
+    // `resolveIssueLabeledTargets` pass selects the still-paused D2 as a
+    // deferred target and logs the paused-selection record, right before E
+    // is evaluated.
     // Waiting for that record proves the instrument (the stdout pipe) has
     // caught up to this routing pass, so "no skip line naming E" is a fact
     // about the routing decision and not about pino's flush latency.
     const scenario4cControlLogged = await waitFor(() => {
-      const since = stdoutBuf.slice(stdoutLenBefore4c);
-      return since.includes(NOT_LIVE_SKIP_MSG) && since.includes(sessionD2.id);
-    }, 15_000, "server stdout to contain the 'not a live session' skip reason naming D2 (scenario 4c positive control)");
-    expect(scenario4cControlLogged, "SCENARIO 4c: positive control -- server stdout since the POST names D2 in the 'not a live session' skip reason (the stdout instrument sees this routing pass)", stdoutBuf.slice(stdoutLenBefore4c).slice(-2000));
+      return recordNaming(stdoutBuf.slice(stdoutLenBefore4c), PAUSED_SELECTED_MSG, sessionD2.id);
+    }, 15_000, 'server stdout to contain the paused-selection record naming D2 (scenario 4c positive control)');
+    expect(scenario4cControlLogged, "SCENARIO 4c: positive control -- server stdout since the POST names D2 in the paused-selection record (the stdout instrument sees this routing pass)", stdoutBuf.slice(stdoutLenBefore4c).slice(-2000));
     const stdoutSince4c = stdoutBuf.slice(stdoutLenBefore4c);
     const skipRecordNamingE = noAgentWorkerSkipNaming(stdoutSince4c, sessionE.id);
     expect(
@@ -1267,6 +1333,7 @@ async function main(): Promise<void> {
     const beforeD25 = readOutputFileSafe(outputPathD2);
     const beforeT5 = readOutputFileSafe(outputPathT);
     const beforeE5 = readOutputFileSafe(outputPathE);
+    const deferredD2Before5 = countDeferredRows(sessionD2.id, agentWorkerD2.id, 'inbound-event');
     const postedAt5 = Date.now();
     const mainPushRes = await postWebhook(
       baseUrl,
@@ -1302,9 +1369,20 @@ async function main(): Promise<void> {
     );
     const afterD25 = readOutputFileSafe(outputPathD2);
     expect(
-      !afterD25.slice(beforeD25.length).includes('[inbound:ci:completed]'),
-      'SCENARIO 5: the paused-but-still-designated D2 did NOT receive the fallback (skipped by the same per-session exclusion)',
+      !afterD25.slice(beforeD25.length).includes('[inbound:'),
+      'SCENARIO 5: the paused-but-still-designated D2 got NO PTY write of the fallback (no [inbound:...] text appended to its output file)',
       afterD25.slice(beforeD25.length).slice(-500),
+    );
+    const scenario5DeferredLanded = await waitFor(
+      () => countDeferredRows(sessionD2.id, agentWorkerD2.id, 'inbound-event') > deferredD2Before5,
+      15_000,
+      "a new inbound-event deferred row for D2's agent worker (scenario 5)",
+    );
+    const deferredD2Delta5 = countDeferredRows(sessionD2.id, agentWorkerD2.id, 'inbound-event') - deferredD2Before5;
+    expect(
+      scenario5DeferredLanded && deferredD2Delta5 === 1,
+      "SCENARIO 5: the paused D2 got exactly one new kind='inbound-event' deferred row for the fallback event (deferred, not a PTY write)",
+      `before=${deferredD2Before5} delta=${deferredD2Delta5}`,
     );
 
     // Issue #1739: E (embedded-designated) receives the SAME fallback
@@ -1331,16 +1409,17 @@ async function main(): Promise<void> {
     );
 
     // ===================================================================
-    // SCENARIO 6 (Issue #1661): dead-parent fallback. A third worktree
-    // session O is created whose `parentSessionId` points at a REAL session
-    // (P) that is then PAUSED -- `POST /:id/pause` kills P's PTY workers,
+    // SCENARIO 6 (Issue #1661, Issue #2204): paused parent is a deferred
+    // target, so NO fallback. A third worktree session O is created whose
+    // `parentSessionId` points at a REAL session (P) that is then PAUSED -- `POST /:id/pause` kills P's PTY workers,
     // persists its paused state, and REMOVES it from the in-memory session
     // manager (`session-pause-resume-service.ts`'s own header comment:
     // "Pause: kill PTY workers, persist paused state, remove from memory").
-    // The net effect is exactly `resolveTargets`'s "parent not found in
-    // getSessions()" shape (P is absent from `sessionManager.getAllSessions()`
-    // after pausing, same as a session that was never created) WITHOUT the
-    // DB row being deleted.
+    // P is absent from `sessionManager.getAllSessions()` after pausing but is
+    // returned by `getPausedSessions()`, so `resolveTargets` treats it as a
+    // deferred delivery target and counts it as the live parent: the
+    // designated-session fallback does not fire (before Issue #2204 it did,
+    // because a paused parent was treated as dead).
     //
     // This is deliberately NOT a literal syntactically-valid-but-never-
     // persisted UUID (e.g. all-zeros), which was the first design tried
@@ -1366,7 +1445,7 @@ async function main(): Promise<void> {
     // `resolveTargets`, but only the genuinely-deleted-row shape used to
     // trip the FK crash, which is why two separate scenarios exist.
     // ===================================================================
-    console.log('\n==> SCENARIO 6: workflow_run/completed matching session O, whose parent P was paused (dead-parent fallback)');
+    console.log('\n==> SCENARIO 6: workflow_run/completed matching session O, whose parent P was paused (paused parent is a deferred target; no fallback)');
     const worktreePDir = path.join(scratchRoot, 'worktree-p');
     await git(['worktree', 'add', worktreePDir, '-b', 'smoke-branch-p'], repoDir);
     addTrustedProject(worktreePDir);
@@ -1377,6 +1456,8 @@ async function main(): Promise<void> {
       worktreeId: 'smoke-branch-p',
       locationPath: worktreePDir,
     });
+    const agentWorkerP = sessionP.workers.find((w) => w.type === 'agent');
+    if (!agentWorkerP) bail('session P has no agent worker');
     console.log(`==> session P created (will be paused to simulate a dead parent): ${sessionP.id}`);
 
     const worktreeODir = path.join(scratchRoot, 'worktree-o');
@@ -1415,6 +1496,7 @@ async function main(): Promise<void> {
     const beforeD6 = readOutputFileSafe(outputPathD);
     const beforeT6 = readOutputFileSafe(outputPathT);
     const beforeO6 = readOutputFileSafe(outputPathO);
+    const deferredPBefore6 = countDeferredRows(sessionP.id, agentWorkerP.id, 'inbound-event');
     const deadParentRes = await postWebhook(
       baseUrl,
       'workflow_run',
@@ -1441,11 +1523,29 @@ async function main(): Promise<void> {
     }, 45_000, "O's output file to contain [inbound:ci:completed] (scenario 6, direct match)");
     expect(scenario6OTagFound, 'SCENARIO 6: O received the [inbound:ci:completed] PTY notification (direct match)', readOutputFileSafe(outputPathO).slice(beforeO6.length).slice(-500));
 
-    const scenario6DTagFound = await waitFor(() => {
-      const content = readOutputFileSafe(outputPathD);
-      return content.slice(beforeD6.length).includes('[inbound:ci:completed]');
-    }, 45_000, "D's output file to contain [inbound:ci:completed] (scenario 6, dead-parent fallback)");
-    expect(scenario6DTagFound, 'SCENARIO 6: D received the [inbound:ci:completed] PTY notification (fallback, O\'s parent P is paused/not live)', readOutputFileSafe(outputPathD).slice(beforeD6.length).slice(-500));
+    // P (O's PAUSED parent) is a deferred target (provenance 'parent'), so it
+    // counts as the live parent and the designated-session fallback does NOT
+    // fire. Read the absence on D only after the event has settled: O's PTY
+    // tag (the direct match) is already seen above, and P's deferred row is
+    // awaited here; a short fixed settle then covers a late fallback write.
+    const scenario6PDeferredLanded = await waitFor(
+      () => countDeferredRows(sessionP.id, agentWorkerP.id, 'inbound-event') > deferredPBefore6,
+      15_000,
+      "a new inbound-event deferred row for P's agent worker (scenario 6)",
+    );
+    const deferredPDelta6 = countDeferredRows(sessionP.id, agentWorkerP.id, 'inbound-event') - deferredPBefore6;
+    expect(
+      scenario6PDeferredLanded && deferredPDelta6 === 1,
+      "SCENARIO 6: P (O's paused parent) received exactly one new kind='inbound-event' deferred row (a deferred target, baseline-relative)",
+      `before=${deferredPBefore6} delta=${deferredPDelta6}`,
+    );
+    await Bun.sleep(3_000);
+    const afterD6 = readOutputFileSafe(outputPathD);
+    expect(
+      !afterD6.slice(beforeD6.length).includes('[inbound:ci:completed]'),
+      "SCENARIO 6: D did NOT receive the fallback (O's parent P is paused, a deferred target, so no designated-session fallback fires)",
+      afterD6.slice(beforeD6.length).slice(-500),
+    );
 
     const afterT6 = readOutputFileSafe(outputPathT);
     expect(
