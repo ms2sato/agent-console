@@ -411,6 +411,13 @@ describe('AppContext', () => {
 
       expect(await sessionManager.resumeSession('sched-session')).not.toBeNull();
 
+      // The participant re-arm runs in the resume flush's `finally`, after the
+      // readiness gate, so it completes asynchronously after resumeSession returns.
+      await waitForCondition(
+        () =>
+          timerManager.listTimers('sched-session')[0]?.suspendedAt === undefined &&
+          conditionalWakeupManager.listWakeups('sched-session')[0]?.status === 'running',
+      );
       expect(timerManager.listTimers('sched-session')[0]?.suspendedAt).toBeUndefined();
       expect(conditionalWakeupManager.listWakeups('sched-session')[0]?.status).toBe('running');
     });

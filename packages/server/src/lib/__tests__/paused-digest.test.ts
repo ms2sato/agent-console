@@ -170,7 +170,7 @@ describe('composePausedDigest', () => {
     expect(digest.body).not.toContain('[Reply Instructions]');
   });
 
-  it('51 entries -> 50 shown, omitted=1, the oldest is gone, body starts with the omitted line', () => {
+  it('with short entries that fit the char budget, 51 entries -> 50 shown, omitted=1, the oldest is gone, body starts with the omitted line', () => {
     const entries = Array.from({ length: 51 }, (_, i) => message(`e${String(i).padStart(2, '0')}`, at(i)));
     // The entry cap in isolation: a realistic rendered line is ~175 characters, so the
     // 6000-char budget (tested separately below) binds before 50 entries for such lines.
@@ -211,6 +211,37 @@ describe('composePausedDigest', () => {
     // The cut is minimal: one more entry would not have fit.
     const oneMore = composePausedDigest(entries, { ...OPTIONS, maxEntries: 30 - omitted + 1, maxChars: Number.MAX_SAFE_INTEGER })!;
     expect(oneMore.body.length).toBeGreaterThan(6000);
+  });
+
+  it('at a typical ~175-char rendered entry the char budget binds before the 50-entry cap', () => {
+    const TARGET = 175;
+    const renderedLength = (summary: string): number => {
+      const probe = composePausedDigest([message('e00', at(0), {}, summary)], { ...OPTIONS, maxChars: Number.MAX_SAFE_INTEGER })!;
+      return entryLines(probe.body)[0]!.length;
+    };
+    // Size the content field from a measured empty-summary rendering, then re-measure the result.
+    const summary = 'y'.repeat(TARGET - renderedLength(''));
+    const perEntry = renderedLength(summary);
+    expect(perEntry).toBe(TARGET);
+
+    const total = 50;
+    const entries = Array.from({ length: total }, (_, i) => message(`e${String(i).padStart(2, '0')}`, at(i), {}, summary));
+    const digest = composePausedDigest(entries, OPTIONS)!;
+
+    // Expected count from the measured sizes: framing line + omitted line + N * (newline + entry) <= maxChars.
+    const framingLength = composePausedDigest([entries[0]!], OPTIONS)!.body.split('\n')[0]!.length;
+    const omittedLineLength = `10 older entries omitted, full list at ${PATH}`.length;
+    const fit = Math.floor((OPTIONS.maxChars - omittedLineLength - 1 - framingLength) / (perEntry + 1));
+    const expectedOmitted = total - fit;
+
+    expect(expectedOmitted).toBeGreaterThanOrEqual(10);
+    expect(expectedOmitted).toBeLessThan(100);
+    expect(Number(digest.fields.omitted)).toBe(expectedOmitted);
+    // The budget, not the cap, decided: more than 0 omitted although 50 entries are within maxEntries.
+    expect(total).toBeLessThanOrEqual(OPTIONS.maxEntries);
+    expect(entryLines(digest.body)).toHaveLength(fit);
+    expect(fit).toBeLessThan(50);
+    expect(digest.body.length).toBeLessThanOrEqual(OPTIONS.maxChars);
   });
 
   it('when even the newest entry cannot fit, none is shown and all are counted as omitted', () => {

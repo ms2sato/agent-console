@@ -1,4 +1,6 @@
-import { access } from 'fs/promises';
+import { randomUUID } from 'crypto';
+import { access, rename, rm, writeFile } from 'fs/promises';
+import * as path from 'path';
 import type { Kysely } from 'kysely';
 import type { Database } from '../database/schema.js';
 import type {
@@ -15,9 +17,12 @@ import type {
 } from '@agent-console/shared';
 import {
   isPtyBackedWorker,
+  canReceiveNotifications,
+  PTY_NOTIFICATION_KINDS,
   EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES,
   EMBEDDED_AGENT_IMAGE_MIME_TYPES,
 } from '@agent-console/shared';
+import type { PtyNotificationKind } from '@agent-console/shared';
 import type {
   PersistedSession,
 } from '../repositories/persisted-types.js';
@@ -54,6 +59,11 @@ import { parseEnvVars } from '../lib/env-parser.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
+import { ensureTrustedDirChain, resolveAncestorContract } from '../lib/trusted-dir.js';
+import { composeDeferredReadMore, composePausedDigest, type PausedDigestEntry } from '../lib/paused-digest.js';
+import { PAUSE_DISPOSITION, MAX_DEFERRED_NOTIFICATIONS_PER_SESSION } from './pause-disposition.js';
+import type { DeferredWorkerNotificationRepository } from '../repositories/deferred-worker-notification-repository.js';
+import { SqliteDeferredWorkerNotificationRepository } from '../repositories/sqlite-deferred-worker-notification-repository.js';
 import {
   writePtyNotification,
   type PtyNotificationParams,
@@ -121,10 +131,12 @@ export type WorkerNotificationFailureReason =
   | 'pty-inactive'
   | 'pty-write-failed'
   | 'embedded-delivery-failed'
-  | 'unsupported-worker';
+  | 'unsupported-worker'
+  | 'deferral-failed';
 
 export type WorkerNotificationResult =
-  | { ok: true }
+  /** `deferred: true`: the session is paused or pausing and the notification was stored for the resume digest. */
+  | { ok: true; deferred?: true }
   | { ok: false; error: string; reason: WorkerNotificationFailureReason };
 
 export interface WebSocketCallbacks {
@@ -198,6 +210,22 @@ async function defaultPathExists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Agent-worker readiness gate constants (see {@link SessionManager.waitForWorkerReady}).
+ * The floor must stay well above the shell's echo of the typed command and below the
+ * agent's first frame; the settle window must exceed the longest silent pause a
+ * starting TUI makes. Revisit together with a shared "TUI at prompt" detector.
+ */
+export const WORKER_READY_MIN_OUTPUT_BYTES = 2048;
+export const WORKER_READY_SETTLE_MS = 3000;
+export const WORKER_READY_CAP_MS = 60_000;
+
+export interface WorkerReadinessConfig {
+  minOutputBytes: number;
+  settleMs: number;
+  capMs: number;
+}
+
 interface SessionManagerOptions {
   userMode: UserMode;
   pathExists?: (path: string) => Promise<boolean>;
@@ -210,6 +238,14 @@ interface SessionManagerOptions {
    * that never inject a database on their previous behaviour.
    */
   db?: Kysely<Database>;
+  /**
+   * Store for notifications addressed to a paused (or pausing) session's workers.
+   * Defaults to the SQLite implementation over `db`; without either, nothing is
+   * deferred and such notifications fail as they did before deferral existed.
+   */
+  deferredNotificationRepository?: DeferredWorkerNotificationRepository;
+  /** Overrides for the agent-worker readiness gate ({@link SessionManager.waitForWorkerReady}); production uses the defaults. */
+  readiness?: Partial<WorkerReadinessConfig>;
   /**
    * Human TODO list repository. Session deletion withdraws the session's open
    * session-scoped items through it. Optional: callers that never hold TODO items omit it.
@@ -398,6 +434,36 @@ export function composeEmbeddedAgentDeliveryText(
   return content.length > 0 ? `${content}\n\n${block}` : block;
 }
 
+/**
+ * A persisted session no server owns and that is not orphaned. The row mappers
+ * read a NULL `server_pid` back as `undefined`, so "no owner" is nullish here.
+ */
+function isPausedRow(persisted: PersistedSession): boolean {
+  return (persisted.serverPid === null || persisted.serverPid === undefined) && persisted.recoveryState !== 'orphaned';
+}
+
+function parseStoredParams(paramsJson: string): PtyNotificationParams | null {
+  try {
+    const parsed: unknown = JSON.parse(paramsJson);
+    return typeof parsed === 'object' && parsed !== null ? (parsed as PtyNotificationParams) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write the read-more file atomically, creating its directory through the trusted-dir walker. */
+async function writeDeferredReadMore(resolver: SessionDataPathResolver, filePath: string, content: string): Promise<void> {
+  await ensureTrustedDirChain(resolver.getTrustedRoot(), path.dirname(filePath), resolveAncestorContract());
+  const tmpPath = `${filePath}.tmp`;
+  await writeFile(tmpPath, content, 'utf-8');
+  try {
+    await rename(tmpPath, filePath);
+  } catch (err) {
+    await rm(tmpPath, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
@@ -439,6 +505,8 @@ export class SessionManager {
   private userRepository: UserRepository | null = null;
   private jobQueue: JobQueue | null = null;
   private db: Kysely<Database> | null = null;
+  private deferredNotificationRepository: DeferredWorkerNotificationRepository | null = null;
+  private readonly readiness: WorkerReadinessConfig;
   private todoRepository: TodoRepository | null = null;
   private notificationManager: NotificationManager | null = null;
   private workerOutputFileManager: WorkerOutputFileManager;
@@ -545,6 +613,14 @@ export class SessionManager {
     this.sessionRepository = options.sessionRepository;
     this.jobQueue = options?.jobQueue ?? null;
     this.db = options?.db ?? null;
+    this.deferredNotificationRepository =
+      options.deferredNotificationRepository ??
+      (this.db ? new SqliteDeferredWorkerNotificationRepository(this.db) : null);
+    this.readiness = {
+      minOutputBytes: options.readiness?.minOutputBytes ?? WORKER_READY_MIN_OUTPUT_BYTES,
+      settleMs: options.readiness?.settleMs ?? WORKER_READY_SETTLE_MS,
+      capMs: options.readiness?.capMs ?? WORKER_READY_CAP_MS,
+    };
     this.todoRepository = options.todoRepository ?? null;
 
     // Embedded-agent subprocess lifecycle. Constructed before the
@@ -729,6 +805,8 @@ export class SessionManager {
         this.branchWatcherCallbacks?.startWatching(sessionId, locationPath, currentBranch) ?? Promise.resolve(),
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
       getPauseParticipants: () => [...this.pauseParticipants],
+      isPausing: (id) => this.isPausing(id),
+      flushDeferredNotifications: (id, pausedAt) => this.flushDeferredNotifications(id, pausedAt),
       getServerPid,
       hasSessionHookCommand: (kind, session) => this.configuredHookCommand(kind, session) !== undefined,
       runSessionHookCommand: (kind, session, username) => this.runSessionHookCommand(kind, session, username),
@@ -811,6 +889,70 @@ export class SessionManager {
     // workers observe it via EmbeddedAgentWorkerService's getGlobalActivityCallback.
     this.globalActivityCallback = callback;
     this.workerManager.setGlobalActivityCallback(callback);
+  }
+
+  /**
+   * Resolve once the worker can take a pasted notification. Never rejects.
+   *
+   * - `terminal`, `embedded-agent` and any other non-`agent` type: immediately (a
+   *   shell has no prompt to wait for; an embedded agent queues input).
+   * - `agent` (PTY): output-quiet readiness, agent-agnostic. Resolves when ALL hold:
+   *   (a) the command was typed into the login shell (`commandInjection`);
+   *   (b) at least `minOutputBytes` of output arrived after that; (c) `settleMs`
+   *   have passed since the last output chunk. Or the cap (`capMs`) elapsed: a warn
+   *   is logged and the promise resolves. If the PTY is gone after the injection it
+   *   resolves at once (the digest write then fails pty-inactive and is logged).
+   *
+   * Basis. The first post-injection chunk is the shell's echo of the typed command
+   * (tens to a few hundred bytes); the agent's own first frame comes one process
+   * startup later (box drawing and colours, kilobytes). The byte floor separates
+   * the two, so a quiet gap between the echo and the first frame cannot pass the
+   * gate. The settle window separates a frame still being drawn, or a spinner
+   * (a chunk every few tens of ms), from a prompt at rest. The activity detector
+   * is not involved: its rate threshold does not fire on a TUI's few large redraws.
+   */
+  waitForWorkerReady(sessionId: string, workerId: string): Promise<void> {
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type !== 'agent') return Promise.resolve();
+    const { minOutputBytes, settleMs, capMs } = this.readiness;
+
+    return new Promise<void>((resolve) => {
+      let finished = false;
+      let settleTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(settleTimer);
+        clearTimeout(capTimer);
+        worker.postInjectionOutputWaiters.delete(evaluate);
+        resolve();
+      };
+      // Called after the injection, on every post-injection chunk, and on PTY exit.
+      const evaluate = (): void => {
+        if (finished) return;
+        clearTimeout(settleTimer);
+        if (!worker.pty) {
+          finish();
+          return;
+        }
+        if (worker.postInjectionOutputBytes < minOutputBytes) return;
+        const quietFor = Date.now() - (worker.lastOutputAt ?? Date.now());
+        settleTimer = setTimeout(finish, Math.max(0, settleMs - quietFor));
+      };
+      const capTimer = setTimeout(() => {
+        logger.warn(
+          { sessionId, workerId, capMs, minOutputBytes, settleMs, outputBytes: worker.postInjectionOutputBytes },
+          'Agent worker was not ready before the deferred digest; proceeding',
+        );
+        finish();
+      }, capMs);
+
+      void (worker.commandInjection?.promise ?? Promise.resolve()).then(() => {
+        if (finished) return;
+        worker.postInjectionOutputWaiters.add(evaluate);
+        evaluate();
+      });
+    });
   }
 
   /**
@@ -1025,8 +1167,33 @@ export class SessionManager {
     sessionId: string,
     workerId: string,
     params: PtyNotificationParams,
-    opts: { replyToSessionId?: string } = {},
+    opts: { replyToSessionId?: string; sourceId?: string } = {},
   ): Promise<WorkerNotificationResult> {
+    // (1) A pause in flight: the session is still in memory with its workers
+    // going down, so a live delivery would fail. Store what the disposition
+    // table says to store; anything else keeps today's failure.
+    if (this.isPausing(sessionId)) {
+      const pausingWorker = this.sessions.get(sessionId)?.workers.get(workerId);
+      if (pausingWorker && canReceiveNotifications(this.workerManager.toPublicWorker(pausingWorker))) {
+        if (PAUSE_DISPOSITION[params.kind] === 'defer') {
+          const deferred = await this.deferWorkerNotification(sessionId, workerId, params, opts, undefined);
+          if (deferred) return deferred;
+        } else {
+          logger.warn(
+            { sessionId, workerId, kind: params.kind, disposition: PAUSE_DISPOSITION[params.kind] },
+            'Notification of a kind that is not deferred arrived while the session is pausing',
+          );
+        }
+      }
+    }
+
+    // (2) Live session: unchanged below. (3) Not in memory: a paused session
+    // still has a place to put it.
+    if (!this.sessions.has(sessionId)) {
+      const paused = await this.deferToPausedSession(sessionId, workerId, params, opts);
+      if (paused) return paused;
+    }
+
     const session = this.getSession(sessionId);
     const worker = session?.workers.find((w) => w.id === workerId);
     if (!session || !worker) {
@@ -1068,6 +1235,201 @@ export class SessionManager {
       error: `Worker ${workerId} in session ${sessionId} cannot receive notifications`,
       reason: 'unsupported-worker',
     };
+  }
+
+  /**
+   * A persisted session that is paused, as far as notification delivery is
+   * concerned: no owning server, not orphaned, and `workerId` is one of its
+   * notification-capable workers. `null` for anything else (deleted, orphaned,
+   * unknown or non-capable worker), which the caller reports as `not-found`.
+   */
+  private async findPausedNotificationTarget(sessionId: string, workerId: string): Promise<PersistedSession | null> {
+    const persisted = await this.sessionRepository.findById(sessionId);
+    if (!persisted || !isPausedRow(persisted)) return null;
+    const worker = this.persistedToPublicSession(persisted).workers.find((w) => w.id === workerId);
+    if (!worker || !canReceiveNotifications(worker)) return null;
+    return persisted;
+  }
+
+  /**
+   * Step (3) of {@link deliverWorkerNotification}. Returns the result to hand
+   * back, or `null` to let the caller continue to the live path (the session
+   * came back into memory while we were reading it).
+   */
+  private async deferToPausedSession(
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string; sourceId?: string },
+  ): Promise<WorkerNotificationResult | null> {
+    const persisted = await this.findPausedNotificationTarget(sessionId, workerId);
+    // Resumed while the row was being read: the live path owns it now.
+    if (this.sessions.has(sessionId)) return null;
+    if (!persisted) return null;
+
+    const disposition = PAUSE_DISPOSITION[params.kind];
+    if (disposition !== 'defer') {
+      logger.warn(
+        { sessionId, workerId, kind: params.kind, disposition },
+        'Notification of a kind that is not deferred arrived for a paused session; dropped',
+      );
+      return { ok: false, error: `Worker ${workerId} not found in session ${sessionId}`, reason: 'not-found' };
+    }
+    return this.deferWorkerNotification(sessionId, workerId, params, opts, persisted.pausedAt);
+  }
+
+  /**
+   * Store the notification for the resume digest. `null` when there is no
+   * store to put it in, so the caller falls back to today's behaviour.
+   */
+  private async deferWorkerNotification(
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string; sourceId?: string },
+    pausedAt: string | undefined,
+  ): Promise<WorkerNotificationResult | null> {
+    const repository = this.deferredNotificationRepository;
+    if (!repository) return null;
+    try {
+      await repository.insert(
+        {
+          id: randomUUID(),
+          sessionId,
+          workerId,
+          kind: params.kind,
+          sourceId: opts.sourceId ?? null,
+          paramsJson: JSON.stringify(params),
+          replyToSessionId: opts.replyToSessionId ?? null,
+          createdAt: new Date().toISOString(),
+        },
+        MAX_DEFERRED_NOTIFICATIONS_PER_SESSION,
+      );
+    } catch (err) {
+      logger.error({ sessionId, workerId, kind: params.kind, err }, 'Failed to store a deferred notification');
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Failed to store the notification',
+        reason: 'deferral-failed',
+      };
+    }
+    logger.info(
+      { sessionId, workerId, kind: params.kind, pausedAt: pausedAt ?? null, pausing: this.isPausing(sessionId) },
+      'Deferred a notification for a paused session',
+    );
+    return { ok: true, deferred: true };
+  }
+
+  /**
+   * Public form of the paused-target check for producers that look the target
+   * session up before reaching the seam (`send_session_message`): the paused
+   * session and its data path resolver, or `null` when it is not a deferral
+   * target (deleted, orphaned, or live -- a live session is read in memory).
+   */
+  async resolvePausedMessageTarget(
+    sessionId: string,
+  ): Promise<{ session: Session; resolver: SessionDataPathResolver } | null> {
+    if (this.sessions.has(sessionId)) return null;
+    const persisted = await this.sessionRepository.findById(sessionId);
+    if (!persisted || !isPausedRow(persisted)) return null;
+    try {
+      return {
+        session: this.persistedToPublicSession(persisted),
+        resolver: this.getPathResolverForPersistedSession(persisted),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Deliver what arrived while the session was paused: ONE
+   * `internal-paused-digest` per notification-capable worker, oldest entry
+   * first, plus a read-more file with the full list. Best effort -- a failed
+   * delivery is logged and its rows stay deleted (this is not a retry queue).
+   *
+   * Order matters: every capable worker is first made ready (an agent PTY must
+   * reach its first `idle`, or the write lands in a prompt that is not up), the
+   * read-more file is written BEFORE any row is deleted, and the caller re-arms
+   * timers and wakeups only after this resolves, so a timer that came due during
+   * the pause fires after the digest.
+   *
+   * `pausedAt` is the persisted pause time the resume read before clearing it;
+   * without one the digest reports the earliest entry's arrival instead.
+   */
+  async flushDeferredNotifications(sessionId: string, pausedAt?: string | null): Promise<void> {
+    const repository = this.deferredNotificationRepository;
+    if (!repository) return;
+    if (this.isPausing(sessionId)) return;
+    const resumedAt = new Date().toISOString();
+
+    const live = this.sessions.get(sessionId);
+    if (!live) return;
+    const capableWorkerIds = [...live.workers.values()]
+      .filter((w) => canReceiveNotifications(this.workerManager.toPublicWorker(w)))
+      .map((w) => w.id);
+
+    // Readiness gate, even with nothing stored: only a PTY agent has a prompt to wait for
+    // (waitForWorkerReady resolves at once for every other type).
+    await Promise.all(capableWorkerIds.map((id) => this.waitForWorkerReady(sessionId, id)));
+    // A pause can begin while waiting: the rows stay for the next resume.
+    if (this.isPausing(sessionId) || !this.sessions.has(sessionId)) return;
+
+    const rows = await repository.listBySession(sessionId);
+    if (rows.length === 0) return;
+
+    const entries: PausedDigestEntry[] = [];
+    const idsByWorker = new Map<string, string[]>();
+    for (const row of rows) {
+      const ids = idsByWorker.get(row.workerId);
+      if (ids) ids.push(row.id);
+      else idsByWorker.set(row.workerId, [row.id]);
+      const params = parseStoredParams(row.paramsJson);
+      const kind = (PTY_NOTIFICATION_KINDS as readonly string[]).includes(row.kind) ? (row.kind as PtyNotificationKind) : null;
+      if (!params || !kind) {
+        logger.warn({ sessionId, rowId: row.id, workerId: row.workerId, kind: row.kind }, 'Skipping a corrupt deferred notification; deleting it');
+        continue;
+      }
+      entries.push({
+        id: row.id,
+        workerId: row.workerId,
+        kind,
+        params,
+        sourceId: row.sourceId,
+        replyToSessionId: row.replyToSessionId,
+        createdAt: row.createdAt,
+      });
+    }
+
+    const header = { pausedAt: pausedAt ?? rows[0].createdAt, resumedAt };
+    let readMorePath: string;
+    try {
+      const resolver = this.getPathResolverForSession(live);
+      readMorePath = path.join(resolver.getDeferredDir(), `${resumedAt}.md`);
+      await writeDeferredReadMore(resolver, readMorePath, composeDeferredReadMore(entries, header));
+    } catch (err) {
+      logger.error({ sessionId, err }, 'Failed to write the deferred read-more file; keeping the rows for the next resume');
+      return;
+    }
+
+    const workerOrder = [...new Set([...capableWorkerIds, ...idsByWorker.keys()])].filter((id) => idsByWorker.has(id));
+    for (const workerId of workerOrder) {
+      const digest = composePausedDigest(
+        entries.filter((e) => e.workerId === workerId),
+        { ...header, path: readMorePath, maxEntries: 50, maxChars: 6000 },
+      );
+      await repository.deleteByIds(idsByWorker.get(workerId) ?? []);
+      if (!digest) continue;
+      try {
+        const result = await this.deliverWorkerNotification(sessionId, workerId, digest, { sourceId: readMorePath });
+        if (!result.ok) {
+          logger.warn({ sessionId, workerId, reason: result.reason, error: result.error }, 'Failed to deliver the paused-session digest');
+        }
+      } catch (err) {
+        logger.warn({ sessionId, workerId, err }, 'Failed to deliver the paused-session digest');
+      }
+    }
+    logger.info({ sessionId, count: rows.length, path: readMorePath }, 'Flushed deferred notifications');
   }
 
   /** Forward a cancel command to an embedded-agent worker's loop. */

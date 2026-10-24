@@ -85,6 +85,9 @@ function buildBody(shown: readonly PausedDigestEntry[], omitted: number, path: s
  * what the worker most needs) and the header's `omitted` and the body's first
  * line say how many; the read-more file at `path` has them all. The budget is
  * strict: if even the newest entry does not fit, none is shown.
+ *
+ * The char budget is the binding limit at typical entry sizes (measured ~175 chars per rendered entry on 2026-10-24, so about 34 entries fit); the entry cap is a backstop for short entries.
+ * If more inline content is wanted, raise the char budget, never the entry cap.
  */
 export function composePausedDigest(
   entries: readonly PausedDigestEntry[],

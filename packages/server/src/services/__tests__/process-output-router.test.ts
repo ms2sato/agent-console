@@ -692,6 +692,11 @@ describe('delivery retry (bounded, transient failures only)', () => {
     expect(r).toEqual({ calls: 1, sleeps: [], warns: [] });
   });
 
+  it('a deferred delivery (paused session) counts as delivered: one call, no retry, no warn', async () => {
+    const r = await run([{ ok: true, deferred: true }]);
+    expect(r).toEqual({ calls: 1, sleeps: [], warns: [] });
+  });
+
   it('transient, transient, ok: three calls, waits 1s then 2s, no warn', async () => {
     const r = await run([TRANSIENT_PTY, TRANSIENT_EMBEDDED, { ok: true }]);
     expect(r).toEqual({ calls: 3, sleeps: [1000, 2000], warns: [] });

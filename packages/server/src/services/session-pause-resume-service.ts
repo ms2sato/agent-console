@@ -95,6 +95,14 @@ export interface SessionPauseResumeDeps {
   stopBranchWatching: (sessionId: string) => void;
   /** Registered pause participants as [name, participant], in registration order. */
   getPauseParticipants: () => ReadonlyArray<readonly [string, PauseParticipant]>;
+  /** True while a pause for the session is in flight. */
+  isPausing: (id: string) => boolean;
+  /**
+   * Deliver what was deferred while the session was paused (one digest per
+   * worker). `pausedAt` is the pause time read from the row before the resume
+   * clears it.
+   */
+  flushDeferredNotifications: (id: string, pausedAt?: string | null) => Promise<void>;
   getServerPid: () => number;
   /** Whether the session's repository has a non-blank pause or resume command configured. */
   hasSessionHookCommand: (kind: 'pause' | 'resume', session: InternalSession) => boolean;
@@ -502,9 +510,22 @@ export class SessionPauseResumeService {
     // After resume, session is always in running state
     this.deps.getSessionLifecycleCallbacks()?.onSessionResumed?.(publicSession as RunningSession, activityStates);
 
-    // Re-arm timers and wakeups suspended by the pause, continuing with their
-    // remaining wait. Reached only after activation and persistence succeeded.
-    this.runPauseParticipants(id, 'resume');
+    // Deliver what arrived while paused, THEN re-arm timers and wakeups
+    // (continuing with their remaining wait), so a schedule that came due during
+    // the pause fires after the digest. Reached only after activation and
+    // persistence succeeded. The resume request does not wait for the flush. The
+    // check and the re-arm share one synchronous tick: a pause that began during
+    // the flush owns the schedules (its own resume re-arms them).
+    void this.deps
+      .flushDeferredNotifications(id, persisted.pausedAt)
+      .catch((error: unknown) => {
+        logger.error({ sessionId: id, err: error }, 'Failed to flush deferred notifications');
+      })
+      .finally(() => {
+        if (!this.deps.isPausing(id) && this.deps.getSession(id)) {
+          this.runPauseParticipants(id, 'resume');
+        }
+      });
 
     return resumeCommandResult
       ? { session: publicSession, resumeCommandResult }

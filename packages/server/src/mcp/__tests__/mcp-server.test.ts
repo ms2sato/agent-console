@@ -45,6 +45,11 @@ import type { SuggestSessionMetadataFn } from '../../services/session-metadata-s
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { AgentDirectoryEntry, EmbeddedAgentDefinition, AppServerMessage, InteractiveProcessInfo } from '@agent-console/shared';
 import type { PersistedWorker } from '../../repositories/persisted-types.js';
+import type {
+  DeferredWorkerNotificationRecord,
+  DeferredWorkerNotificationRepository,
+  NewDeferredWorkerNotification,
+} from '../../repositories/deferred-worker-notification-repository.js';
 import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
@@ -210,6 +215,23 @@ const TEST_REPO_PATH = '/test/repo';
 // Embedded-agent definition the createWorker path resolves against, mirroring
 // worker-lifecycle-manager.test.ts's EMBEDDED_AGENT_DEF. Used by the
 // get_session_status activityState tests (Issue #1128).
+/**
+ * In-memory store for notifications deferred while a target session is paused.
+ * This file's sessions live in a JSON file, not in the database, so the real
+ * repository's foreign keys cannot be satisfied here; its own tests cover them.
+ */
+class InMemoryDeferredRepository implements DeferredWorkerNotificationRepository {
+  rows: DeferredWorkerNotificationRecord[] = [];
+  async insert(row: NewDeferredWorkerNotification): Promise<void> { this.rows.push(row); }
+  async listBySession(sessionId: string) { return this.rows.filter((r) => r.sessionId === sessionId); }
+  async deleteByIds(ids: string[]) {
+    const before = this.rows.length;
+    this.rows = this.rows.filter((r) => !ids.includes(r.id));
+    return before - this.rows.length;
+  }
+  async countBySession(sessionId: string) { return this.rows.filter((r) => r.sessionId === sessionId).length; }
+}
+
 const TEST_EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
   id: 'def-1',
   name: 'My Local Model',
@@ -429,6 +451,7 @@ describe('MCP Server Tools', () => {
   // Issue #1260 PR-1: embedded-agent loop subprocess fake, see
   // `makeFakeEmbeddedAgentDelegateSpawn` above.
   let fakeEmbeddedSpawn: ReturnType<typeof makeFakeEmbeddedAgentDelegateSpawn>;
+  let deferredRepository: InMemoryDeferredRepository;
 
   /**
    * Capture of the `runAsUser` invocation made by the injected stub on the
@@ -567,8 +590,14 @@ describe('MCP Server Tools', () => {
     // exercise it.
     fakeEmbeddedSpawn = makeFakeEmbeddedAgentDelegateSpawn();
 
+    deferredRepository = new InMemoryDeferredRepository();
+
     // Create SessionManager directly
     sessionManager = await SessionManager.create({
+      deferredNotificationRepository: deferredRepository,
+      // Resolve the agent-worker output-quiet gate immediately so the resume
+      // digest does not wait on real output/settle timers.
+      readiness: { minOutputBytes: 0, settleMs: 1, capMs: 50 },
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
       sessionRepository,
@@ -2687,6 +2716,113 @@ describe('MCP Server Tools', () => {
     // in the parent `describe('send_session_message', ...)` block above are
     // UNCHANGED by this PR (no assertion in them was modified) -- their
     // continued passing is the byte-identical-PTY-branch AC requirement.
+  });
+
+  describe('send_session_message: paused target (notification deferred to the resume digest)', () => {
+    async function pausedWorktreeTarget(kind: 'agent' | 'embedded') {
+      await registerTestRepo();
+      vol.mkdirSync('/test/paused-target', { recursive: true });
+      const target = await sessionManager.createSession(
+        {
+          type: 'worktree',
+          locationPath: '/test/paused-target',
+          repositoryId: 'repo-1',
+          worktreeId: `paused-${kind}`,
+          ...(kind === 'embedded'
+            ? { embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id }
+            : { agentId: 'claude-code' }),
+        },
+        { createdBy: 'test-user-id' },
+      );
+      const sender = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
+      const worker = target.workers.find((w) => w.type === (kind === 'embedded' ? 'embedded-agent' : 'agent'))!;
+      await sessionManager.pauseSession(target.id);
+      return { target, sender, worker };
+    }
+
+    it('PTY target: the message file is written, the tool succeeds, one row is stored with the sender, and no reply instructions are written', async () => {
+      const { target, sender, worker } = await pausedWorktreeTarget('agent');
+      const writesBefore = ptyFactory.instances.flatMap((p) => p.writtenData).join('');
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: target.id,
+        toWorkerId: worker.id,
+        content: 'hello while paused',
+        fromSessionId: sender.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      expect(vol.readFileSync(data.path, 'utf-8')).toBe('hello while paused');
+      expect(deferredRepository.rows).toHaveLength(1);
+      expect(deferredRepository.rows[0]).toMatchObject({
+        sessionId: target.id,
+        workerId: worker.id,
+        kind: 'internal-message',
+        replyToSessionId: sender.id,
+        sourceId: data.path,
+      });
+      const writesAfter = ptyFactory.instances.flatMap((p) => p.writtenData).join('');
+      expect(writesAfter).toBe(writesBefore);
+      expect(writesAfter).not.toContain('[Reply Instructions]');
+    });
+
+    it('embedded target: the tool succeeds, one row is stored, and the dormant worker is not activated', async () => {
+      const { target, sender, worker } = await pausedWorktreeTarget('embedded');
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: target.id,
+        toWorkerId: worker.id,
+        content: 'hello embedded while paused',
+        fromSessionId: sender.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(deferredRepository.rows).toHaveLength(1);
+      expect(deferredRepository.rows[0]).toMatchObject({
+        workerId: worker.id,
+        kind: 'internal-message',
+        replyToSessionId: sender.id,
+      });
+      expect(fakeEmbeddedSpawn.captured.length).toBe(0);
+    });
+
+    it('a session that does not exist at all is still reported as not found, with nothing stored', async () => {
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: 'no-such-session',
+        content: 'hello',
+        fromSessionId: 'test-sender',
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      expect((parseToolResult(response) as { error: string }).error).toBe('Session no-such-session not found');
+      expect(deferredRepository.rows).toHaveLength(0);
+    });
+
+    it('on resume the PTY target receives ONE digest whose message entry carries the reply hint', async () => {
+      const { target, sender, worker } = await pausedWorktreeTarget('agent');
+      await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: target.id,
+        toWorkerId: worker.id,
+        content: 'please look at this',
+        fromSessionId: sender.id,
+      }, nextId++);
+
+      await sessionManager.resumeSession(target.id);
+      for (let i = 0; i < 400 && deferredRepository.rows.length > 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      const written = ptyFactory.instances.flatMap((p) => p.writtenData).join('');
+      expect(deferredRepository.rows).toHaveLength(0);
+      expect(written.match(/\[internal:paused-digest\]/g)).toHaveLength(1);
+      expect(written).toContain('count=1');
+      expect(written).toContain(`reply: send_session_message toSessionId=${JSON.stringify(sender.id)}`);
+    });
   });
 
   // ===========================================================================

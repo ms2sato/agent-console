@@ -891,6 +891,24 @@ describe('SqliteSessionRepository', () => {
         .execute();
     }
 
+    // Deferred notifications reference the session twice (session_id CASCADE,
+    // reply_to_session_id SET NULL) and a worker, so they need a worker row.
+    async function seedDeferred(sessionId: string, workerId: string, id: string): Promise<void> {
+      await realDb
+        .insertInto('deferred_worker_notifications')
+        .values({
+          id,
+          session_id: sessionId,
+          worker_id: workerId,
+          kind: 'internal-message',
+          source_id: null,
+          params_json: '{}',
+          reply_to_session_id: sessionId,
+          created_at: new Date().toISOString(),
+        })
+        .execute();
+    }
+
     it('case (a) full preservation: an in-set session keeps its worker, designation, and notification across saveAll', async () => {
       const session = buildPersistedQuickSession({
         id: 'session-a',
@@ -898,6 +916,7 @@ describe('SqliteSessionRepository', () => {
       });
       await realRepository.save(session);
       await seedDependents('repo-a', 'session-a', 'notif-a');
+      await seedDeferred('session-a', 'worker-a', 'deferred-a');
 
       const beforeSessionRow = await realDb
         .selectFrom('sessions')
@@ -941,6 +960,15 @@ describe('SqliteSessionRepository', () => {
         .selectAll()
         .executeTakeFirst();
       expect(notification?.status).toBe('pending');
+
+      // Polarity: the pre-fix DELETE-all saveAll() cascade-deletes this row
+      // (and a SET NULL on reply_to_session_id would also null it).
+      const deferred = await realDb
+        .selectFrom('deferred_worker_notifications')
+        .where('id', '=', 'deferred-a')
+        .selectAll()
+        .executeTakeFirst();
+      expect(deferred?.reply_to_session_id).toBe('session-a');
     });
 
     it("case (b) absent session's dependents are cleaned up (intended cascade), while the in-set sibling keeps everything", async () => {
@@ -1074,7 +1102,7 @@ describe('SqliteSessionRepository', () => {
       // reference sessions(id), which put `repositories` in this set. It
       // was dropped by migration v42 (Issue #1725), shrinking the set to 3.
       expect(dependentTableNames).toEqual(
-        new Set(['workers', 'inbound_event_notifications', 'repository_orchestrator_sessions'])
+        new Set(['workers', 'inbound_event_notifications', 'repository_orchestrator_sessions', 'deferred_worker_notifications'])
       );
 
       // Detection half: the set-equality check above only proves the SCHEMA
@@ -1095,6 +1123,7 @@ describe('SqliteSessionRepository', () => {
       });
       await realRepository.save(session);
       await seedDependents('repo-gate', 'session-gate', 'notif-gate');
+      await seedDeferred('session-gate', 'worker-gate', 'deferred-gate');
 
       for (const { table, column } of dependentFks) {
         const row = await sql`SELECT 1 FROM ${sql.raw(table)} WHERE ${sql.raw(column)} = ${'session-gate'} LIMIT 1`.execute(
