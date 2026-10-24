@@ -1344,7 +1344,9 @@ export class EmbeddedAgentWorkerService {
       // marker set, both a completed pause and a completed deletion have removed the session from the registry;
       // the tombstone on the captured object tells them apart (the deletion rollback clears it when it puts the
       // same object back). A map miss with no tombstone is a deletion; the object is replaced only by a pause
-      // followed by a resume. Thrown inside the try, so the catch below revokes the token.
+      // followed by a resume. The tombstone is deliberately read BEFORE the registry lookup, as in the PTY guard:
+      // only that order makes a missing reset after a deletion rollback observable. Thrown inside the try, so the
+      // catch below revokes the token.
       if (this.deps.isSessionDeleting?.(sessionId)) throw new SessionDeletingError(sessionId);
       if (this.deps.isSessionPausing?.(sessionId)) throw new SessionPausingError(sessionId);
       if (session.endedBy === 'pause') throw new SessionPausingError(sessionId);

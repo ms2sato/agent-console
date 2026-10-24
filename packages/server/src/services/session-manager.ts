@@ -609,7 +609,9 @@ export class SessionManager {
         // the tombstone on the captured object tells them apart (the deletion rollback clears it when it puts the
         // same object back). A map miss with no tombstone is a deletion; the object is replaced only by a pause
         // followed by a resume. (Worker membership is no signal: a worker joins the session only after its first
-        // activation returns.)
+        // activation returns.) The tombstone is deliberately read BEFORE the map lookup: the outcomes are the same
+        // either way, but after a rollback the same object is back in the map, so a stale tombstone (a missing reset)
+        // is observable only in this order.
         if (session.endedBy === 'pause') return new SessionPausingError(id);
         if (session.endedBy === 'delete') return new SessionDeletingError(id);
         const current = this.sessions.get(id);
