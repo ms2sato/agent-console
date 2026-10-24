@@ -7600,33 +7600,50 @@ describe('SessionManager', () => {
     });
 
     it('a username-priming failure does not drop paused sessions: all are returned and one warn is logged', async () => {
-      const usernameLookup = new UsernameLookupService(createStubUserRepository(async () => null));
-      const manager = await getSessionManager({ usernameLookup });
+      // Persist two paused sessions that carry createdBy through a manager
+      // with no username lookup, then read them through a second manager that
+      // shares the repository and uses the REAL UsernameLookupService whose
+      // user repository rejects: the rejection travels findById -> prime ->
+      // primeMany -> the try/catch in getAllPausedSessions.
+      const sessionRepository = await createTestSessionRepository();
+      const writer = await getSessionManager({ sessionRepository });
       const ids: string[] = [];
       for (const worktreeId of ['branch-a', 'branch-b']) {
-        const s = await manager.createSession({
-          type: 'worktree',
-          locationPath: '/test/path',
-          repositoryId: 'repo-1',
-          worktreeId,
-          agentId: 'claude-code',
-        });
-        await manager.pauseSession(s.id);
+        const s = await writer.createSession(
+          {
+            type: 'worktree',
+            locationPath: '/test/path',
+            repositoryId: 'repo-1',
+            worktreeId,
+            agentId: 'claude-code',
+          },
+          { createdBy: `user-${worktreeId}` },
+        );
+        await writer.pauseSession(s.id);
         ids.push(s.id);
       }
 
-      const primeSpy = spyOn(usernameLookup, 'primeMany').mockRejectedValue(new Error('user lookup down'));
+      const lookedUp: string[] = [];
+      const usernameLookup = new UsernameLookupService(
+        createStubUserRepository(async (id) => {
+          lookedUp.push(id);
+          throw new Error('user repository down');
+        }),
+      );
+      const reader = await getSessionManager({ sessionRepository, usernameLookup });
+
       const warnSpy = spyOn(rootLogger, 'warn');
       try {
-        const paused = await manager.getAllPausedSessions();
+        const paused = await reader.getAllPausedSessions();
         expect(paused.map((s) => s.id).sort()).toEqual([...ids].sort());
+        // Presence control: the rejection really came from the repository call.
+        expect(lookedUp.sort()).toEqual(['user-branch-a', 'user-branch-b']);
         const primeWarns = warnSpy.mock.calls.filter((c) =>
           c.some((a) => a === 'Failed to prime usernames for paused sessions; continuing without them')
         );
         expect(primeWarns).toHaveLength(1);
       } finally {
         warnSpy.mockRestore();
-        primeSpy.mockRestore();
       }
     });
   });

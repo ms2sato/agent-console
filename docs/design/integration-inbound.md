@@ -187,21 +187,30 @@ class AgentWorkerHandler implements InboundEventHandler {
     // branch renders `\n[inbound:<type>] timestamp=... type=... source=... repo=...
     // branch=... url=... summary="..." intent=...`; the embedded branch delivers
     // the same text as a system-notification turn (notification.kind = 'inbound-event').
-    // A rejected delivery (e.g. an activation failure) is caught and mapped to
-    // 'delivery-failed' as well; the handler never rejects.
-    const result = await this.sessionManager.deliverWorkerNotification(target.sessionId, workerId, {
-      kind: 'inbound-event',
-      tag: `inbound:${event.type}`,
-      fields: {
-        type: event.type,
-        source: event.source,
-        repo: event.metadata.repositoryName ?? 'unknown',
-        branch: event.metadata.branch ?? 'unknown',
-        url: event.metadata.url ?? 'N/A',
-        summary: event.summary,
-      },
-      intent: this.resolveIntent(event.type),
-    }, { sourceId: opts.jobId });
+
+    // The PTY branch of the seam never throws, but the embedded-agent branch
+    // can reject (e.g. an activation failure). The handler's contract is
+    // "an outcome, never a rejection", so both failure shapes end up as
+    // 'delivery-failed'.
+    let result;
+    try {
+      result = await this.sessionManager.deliverWorkerNotification(target.sessionId, workerId, {
+        kind: 'inbound-event',
+        tag: `inbound:${event.type}`,
+        fields: {
+          type: event.type,
+          source: event.source,
+          repo: event.metadata.repositoryName ?? 'unknown',
+          branch: event.metadata.branch ?? 'unknown',
+          url: event.metadata.url ?? 'N/A',
+          summary: event.summary,
+        },
+        intent: this.resolveIntent(event.type),
+      }, { sourceId: opts.jobId });
+    } catch (err) {
+      logger.warn({ err, sessionId: target.sessionId, workerId, eventType: event.type }, 'notification delivery failed for inbound event');
+      return 'delivery-failed';
+    }
     if (!result.ok) return 'delivery-failed';
 
     // `deferred: true` means the session is paused and the notification is
@@ -535,7 +544,7 @@ Sessions are matched to webhooks by comparing repository identifiers.
        if (repoOrgRepo?.toLowerCase() === eventRepoName.toLowerCase()) {
          // Optionally match branch via worktreeId
          if (!event.metadata.branch || session.worktreeId === event.metadata.branch) {
-           targets.push({ sessionId: session.id });
+           targets.push({ sessionId: session.id, provenance: 'match' });
          }
        }
      }
