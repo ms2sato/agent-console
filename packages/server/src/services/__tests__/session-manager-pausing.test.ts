@@ -240,7 +240,7 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     await expect(manager.activateEmbeddedAgentWorker(session.id, embedded.id)).rejects.toBeInstanceOf(SessionDeletingError);
 
     release();
-    // This harness has no job queue, so the deletion itself fails after the window under test.
+    // The default setup passes no job queue, so the deletion itself fails after the window under test.
     await deletion.catch(() => undefined);
     killSpy.mockRestore();
     expect(manager.isDeleting(session.id)).toBe(false);
@@ -277,8 +277,9 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     );
     await held.reached();
 
-    // This harness has no job queue, so a real deletion fails and restores the session; its observable end state
-    // (marker cleared, session gone from the registry) is set directly.
+    // This test uses the default setup (no job queue), where a real deletion fails and restores the session; its
+    // observable end state (marker cleared, session gone from the registry) is set directly. The completed-deletion
+    // arms below run a real deleteSession through a completing job queue instead.
     manager['sessions'].delete(session.id);
     expect(manager['sessions'].has(session.id)).toBe(false);
     expect(manager.isDeleting(session.id)).toBe(false);
@@ -335,6 +336,9 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     await pause;
   });
 
+  // Lets a real deleteSession run to completion: the cleanup-job enqueue resolves and the wake is a no-op.
+  const completingJobQueue = { enqueue: async () => 'job-id', wake: () => {} } as unknown as JobQueue;
+
   // A completed pause and a completed deletion both leave the registry with both markers clear; the tombstone on
   // the captured session object tells them apart. Each case parks an activation, ends the session, then releases.
   for (const kind of ['agent', 'terminal'] as const) {
@@ -373,18 +377,18 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     });
 
     it(`a ${kind} activation parked before its spawn across a COMPLETED deletion spawns nothing and rejects with SessionDeletingError`, async () => {
-      const { manager } = await setup();
+      const { manager } = await setup(undefined, completingJobQueue);
       const session = await createSession(manager);
       const held = holdFirstSpawnCwdCheck(manager);
       const creation = create(manager, session.id);
       await held.reached();
 
-      // Same end state the deletion service leaves: out of the registry, tombstoned, marker cleared. Written by hand
-      // because this harness has no job queue, so a real deleteSession cannot run to completion while the activation
-      // is parked; the deletion service's own tests assert that it sets the tombstone.
-      const internal = manager['sessions'].get(session.id)!;
-      manager['sessions'].delete(session.id);
-      internal.endedBy = 'delete';
+      // A real deletion runs to completion while the activation is parked: out of the registry, tombstoned by the
+      // deletion service, marker cleared. Reach (measured): the recheck has two independent signals for this end
+      // state, the tombstone and the map miss. Dropping only one leaves these arms green; dropping both fails them
+      // (both COMPLETED deletion cases here and the token case's delete arm).
+      expect(await manager.deleteSession(session.id)).toBe(true);
+      expect(manager['sessions'].has(session.id)).toBe(false);
       expect(manager.isDeleting(session.id)).toBe(false);
       const spawnsBefore = ptyFactory.instances.length;
       held.release();
@@ -401,7 +405,7 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
       const originalAuthMode = process.env.AUTH_MODE;
       process.env.AUTH_MODE = 'multi-user';
       try {
-        const { manager, mcpTokenRegistry, executeHookCommand, resolveHook } = await setup(undefined, undefined, true);
+        const { manager, mcpTokenRegistry, executeHookCommand, resolveHook } = await setup(undefined, ending === 'delete' ? completingJobQueue : undefined, true);
         const mint = spyOn(mcpTokenRegistry, 'mint');
         const session = await manager.createSession(
           { type: 'worktree', locationPath: '/test/path', repositoryId: 'repo-1', worktreeId: 'feature-branch', agentId: 'claude-code' },
@@ -430,11 +434,7 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
           await pause;
           expected = SessionPausingError;
         } else {
-          // Hand-written completed-deletion end state (see the note above): the same two writes the deletion service
-          // makes, because this harness has no job queue for a real deleteSession.
-          const internal = manager['sessions'].get(session.id)!;
-          manager['sessions'].delete(session.id);
-          internal.endedBy = 'delete';
+          expect(await manager.deleteSession(session.id)).toBe(true);
           expected = SessionDeletingError;
         }
         const spawnsBefore = ptyFactory.instances.length;
