@@ -249,6 +249,8 @@ describe('SessionPauseResumeService', () => {
       expect(deps.sessionRepository.save).toHaveBeenCalledTimes(1);
       // Session removed from memory
       expect(deps.deleteSession).toHaveBeenCalled();
+      // The captured object is tombstoned so a parked activation can tell a pause from a deletion.
+      expect(session.endedBy).toBe('pause');
       // Lifecycle callback fired
       expect(onSessionPaused).toHaveBeenCalledTimes(1);
     });

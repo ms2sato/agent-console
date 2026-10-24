@@ -91,6 +91,14 @@ export interface InternalSessionBase {
    * SSH_AUTH_SOCK=...` works as before).
    */
   sshAuthSockFallback?: string;
+  /**
+   * Tombstone left on this object when it leaves the in-memory registry: `'pause'` or `'delete'` says which
+   * transition removed it. A completed pause and a completed deletion both end with the session absent from the
+   * registry and both in-flight markers clear, so only this tells an activation that captured the object which one
+   * ended it. Cleared when a failed deletion puts the same object back. In-memory only; the public converter builds
+   * its object field by field and never copies it.
+   */
+  endedBy?: 'pause' | 'delete';
 }
 
 export interface InternalWorktreeSession extends InternalSessionBase {

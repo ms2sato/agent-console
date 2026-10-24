@@ -604,10 +604,14 @@ export class SessionManager {
       (id, session) => {
         if (this.isDeleting(id)) return new SessionDeletingError(id);
         if (this.isPausing(id)) return new SessionPausingError(id);
-        // Neither marker is set, so the captured session can only have changed by a run that has already finished:
-        // a live session leaves the map without a pause marker only through a completed deletion, and the object
-        // is replaced only by a pause followed by a resume. (Worker membership is no signal: a worker joins the
-        // session only after its first activation returns.)
+        // Neither marker is set, so the captured session can only have changed by a run that has already finished.
+        // Both a completed pause and a completed deletion remove the session from the map with both markers clear;
+        // the tombstone on the captured object tells them apart (the deletion rollback clears it when it puts the
+        // same object back). A map miss with no tombstone is a deletion; the object is replaced only by a pause
+        // followed by a resume. (Worker membership is no signal: a worker joins the session only after its first
+        // activation returns.)
+        if (session.endedBy === 'pause') return new SessionPausingError(id);
+        if (session.endedBy === 'delete') return new SessionDeletingError(id);
         const current = this.sessions.get(id);
         if (current === undefined) return new SessionDeletingError(id);
         if (current !== session) return new SessionPausingError(id);
@@ -1398,7 +1402,8 @@ export class SessionManager {
     // stale one must not read or delete rows. The identity check is sound because the
     // sessions map has exactly three writers: createSession (inserts a new object), resume
     // (inserts a freshly built object) and the deletion rollback (puts back the SAME object);
-    // pause deletes the entry and never re-inserts it, so identity changes on resume only.
+    // pause deletes the entry and never re-inserts it, so identity changes on resume only. (A
+    // completed pause also empties the map entry, which the identity check below treats as stale.)
     if (this.isPausing(sessionId) || this.sessions.get(sessionId) !== live) return;
 
     const rows = await repository.listBySession(sessionId);

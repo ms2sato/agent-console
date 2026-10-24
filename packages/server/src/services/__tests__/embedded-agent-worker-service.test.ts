@@ -693,6 +693,43 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     });
   }
 
+  // A completed pause and a completed deletion both leave the registry with both markers clear. The tombstone on
+  // the captured session object tells them apart.
+  for (const [label, endedBy, expected] of [
+    ['a completed pause', 'pause', SessionPausingError],
+    ['a completed deletion', 'delete', SessionDeletingError],
+  ] as const) {
+    it(`does not spawn when ${label} removed the session from the registry during activation`, async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reached = false;
+      const h = setup({
+        ensureMemoryDirFnOverride: async () => {
+          reached = true;
+          await gate;
+          return undefined;
+        },
+      });
+
+      const outcome = h.service.activate(h.sessionId, h.workerId).then(
+        () => null,
+        (err: unknown) => err,
+      );
+      for (let i = 0; i < 400 && !reached; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(reached).toBe(true);
+      h.session.endedBy = endedBy;
+      h.deps.getSession = () => undefined;
+      release();
+
+      expect(await outcome).toBeInstanceOf(expected);
+      expect(h.fake.captured.length).toBe(0);
+      expect(h.mint).toHaveBeenCalledTimes(1);
+      expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
+    });
+  }
+
   it('spawns once with a secret-free argv, a secret-free identity env, correct cwd and username', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);

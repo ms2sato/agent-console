@@ -204,6 +204,7 @@ export class SessionPauseResumeService {
 
       // Remove from in-memory sessions Map (after successful persistence)
       this.deps.deleteSession(id);
+      session.endedBy = 'pause';
 
       logger.info({ sessionId: id }, 'Session paused');
 
