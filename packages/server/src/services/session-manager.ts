@@ -1374,7 +1374,10 @@ export class SessionManager {
     await Promise.all(capableWorkerIds.map((id) => this.waitForWorkerReady(sessionId, id)));
     // A pause can begin while waiting: the rows stay for the next resume. A pause + resume
     // cycle replaces the in-memory session object; that resume owns its own flush, so this
-    // stale one must not read or delete rows.
+    // stale one must not read or delete rows. The identity check is sound because the
+    // sessions map has exactly three writers: createSession (inserts a new object), resume
+    // (inserts a freshly built object) and the deletion rollback (puts back the SAME object);
+    // pause deletes the entry and never re-inserts it, so identity changes on resume only.
     if (this.isPausing(sessionId) || this.sessions.get(sessionId) !== live) return;
 
     const rows = await repository.listBySession(sessionId);

@@ -3848,6 +3848,9 @@ async function migrateWorktreeIndexesFromJson(database: Kysely<Database>): Promi
  * PRAGMA user_version = 55;
  * ```
  *
+ * Arrival order within a millisecond is the implicit rowid; do not add WITHOUT ROWID,
+ * and a VACUUM would renumber it.
+ *
  * @internal Exported for testing.
  */
 export async function migrateToV55(database: Kysely<Database>): Promise<void> {
