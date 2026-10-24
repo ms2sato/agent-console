@@ -8,7 +8,7 @@ import { WorkerManager } from '../worker-manager.js';
 import { SingleUserMode, type UserMode, type PtySpawnRequest } from '../user-mode.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
-import { buildInternalAgentWorker, buildInternalTerminalWorker } from '../../__tests__/utils/build-test-data.js';
+import { buildInternalAgentWorker, buildInternalQuickSession, buildInternalTerminalWorker } from '../../__tests__/utils/build-test-data.js';
 
 /**
  * @internal Reaches WorkerManager's private `userMode` collaborator so a
@@ -26,6 +26,9 @@ function getUserModeForTest(manager: WorkerManager): UserMode {
  * Verifies that agent worker PTY processes receive AGENT_CONSOLE_* env vars
  * for self-awareness and MCP tool integration, while terminal workers do not.
  */
+// The activation recheck only compares session identity; no WorkerManager here installs the recheck.
+const testSession = buildInternalQuickSession();
+
 describe('WorkerManager - AgentConsole env var injection', () => {
   const ptyFactory = createMockPtyFactory(20000);
   let workerManager: WorkerManager;
@@ -67,6 +70,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -87,6 +91,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-abc-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -105,6 +110,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker({ id: 'worker-xyz-789' });
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -123,6 +129,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -142,6 +149,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -161,6 +169,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker({ id: 'wkr-all-four' });
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'sess-all-four',
         locationPath: '/test/worktree/path',
         repositoryEnvVars: {},
@@ -183,6 +192,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -204,6 +214,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -223,6 +234,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker({ id: 'real-worker' });
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'real-session',
         locationPath: '/test/path',
         repositoryEnvVars: {
@@ -251,6 +263,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -270,6 +283,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -289,6 +303,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker();
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -309,6 +324,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalAgentWorker({ id: 'secure-worker' });
 
       await workerManager.activateAgentWorkerPty(worker, {
+        session: testSession,
         sessionId: 'secure-session',
         locationPath: '/test/path',
         repositoryEnvVars: {
@@ -339,6 +355,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       const worker = buildInternalTerminalWorker();
 
       await workerManager.activateTerminalWorkerPty(worker, {
+        session: testSession,
         sessionId: 'session-123',
         locationPath: '/test/path',
         repositoryEnvVars: {},
@@ -389,6 +406,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
 
       try {
         await workerManager.activateAgentWorkerPty(worker, {
+          session: testSession,
           sessionId: 'sess-ssh-fwd',
           locationPath: '/test/path',
           repositoryEnvVars: {},
@@ -424,6 +442,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
 
       try {
         await workerManager.activateAgentWorkerPty(worker, {
+          session: testSession,
           sessionId: 'sess-ssh-default',
           locationPath: '/test/path',
           repositoryEnvVars: {},

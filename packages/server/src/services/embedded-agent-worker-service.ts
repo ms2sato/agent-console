@@ -1339,6 +1339,17 @@ export class EmbeddedAgentWorkerService {
         ...(session.parentSessionId !== undefined ? { parentSessionId: session.parentSessionId } : {}),
         ...(session.parentWorkerId !== undefined ? { parentWorkerId: session.parentWorkerId } : {}),
       });
+      // Activation can be parked on the awaits above while a deletion or pause starts and finishes, clearing its
+      // marker: re-check synchronously (no await before the spawn) so no subprocess outlives the session. With no
+      // marker set, a live session leaves the registry only through a completed deletion, and the object is
+      // replaced only by a pause followed by a resume. Thrown inside the try, so the catch below revokes the token.
+      const currentSession = this.deps.getSession(sessionId);
+      if (this.deps.isSessionDeleting?.(sessionId) || currentSession === undefined) {
+        throw new SessionDeletingError(sessionId);
+      }
+      if (this.deps.isSessionPausing?.(sessionId) || currentSession !== session) {
+        throw new SessionPausingError(sessionId);
+      }
       const { subprocess, stdin } = this.spawnAsUserFn({
         username,
         command: `${shellEscape(this.bunPath)} ${shellEscape(this.entryPath)}`,

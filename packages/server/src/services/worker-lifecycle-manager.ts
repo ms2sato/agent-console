@@ -305,6 +305,7 @@ export class WorkerLifecycleManager {
         initialPromptDelivered: session.initialPromptDelivered,
       });
       await this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
+        session,
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
@@ -335,6 +336,7 @@ export class WorkerLifecycleManager {
         createdAt,
       });
       await this.deps.workerManager.activateTerminalWorkerPty(terminalWorker, {
+        session,
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
@@ -513,6 +515,7 @@ export class WorkerLifecycleManager {
         initialPromptDelivered: session.initialPromptDelivered,
       });
       await this.deps.workerManager.activateAgentWorkerPty(worker, {
+        session,
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
@@ -533,6 +536,7 @@ export class WorkerLifecycleManager {
       });
     } else {
       await this.deps.workerManager.activateTerminalWorkerPty(worker, {
+        session,
         sessionId,
         locationPath: session.locationPath,
         repositoryEnvVars,
@@ -820,6 +824,7 @@ export class WorkerLifecycleManager {
     // revived:false, so it does not reload the epoch).
     newWorker.epoch = newEpoch;
     await this.deps.workerManager.activateAgentWorkerPty(newWorker, {
+      session,
       sessionId,
       locationPath,
       repositoryEnvVars,
@@ -1332,6 +1337,7 @@ export class WorkerLifecycleManager {
     // started -- this method does NOT attempt to resurrect the deactivated
     // embedded worker.
     await this.deps.workerManager.activateAgentWorkerPty(newWorker, {
+      session: currentSession,
       sessionId,
       locationPath: currentSession.locationPath,
       repositoryEnvVars,
@@ -1726,6 +1732,7 @@ export class WorkerLifecycleManager {
           initialPromptDelivered: session.initialPromptDelivered,
         });
         await this.deps.workerManager.activateAgentWorkerPty(existingWorker, {
+          session,
           sessionId,
           locationPath: session.locationPath,
           repositoryEnvVars,
@@ -1746,6 +1753,7 @@ export class WorkerLifecycleManager {
         });
       } else {
         await this.deps.workerManager.activateTerminalWorkerPty(existingWorker, {
+          session,
           sessionId,
           locationPath: session.locationPath,
           repositoryEnvVars,

@@ -204,6 +204,109 @@ describe('SessionManager: a session that is pausing refuses worker activation', 
     expect(manager.isDeleting(session.id)).toBe(false);
   });
 
+  // A terminal worker's PTY activation is parked before its spawn (first cwd check held) while the session is
+  // deleted, or paused and resumed (a new session object), by the time it resumes. Each ends with no marker set.
+  function holdFirstSpawnCwdCheck(manager: SessionManager) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    manager['workerManager']['assertSpawnCwdFn'] = async () => {
+      calls++;
+      if (calls === 1) await gate;
+    };
+    return {
+      release,
+      reached: async () => {
+        for (let i = 0; i < 400 && calls === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(calls).toBeGreaterThan(0);
+      },
+    };
+  }
+
+  it('a worker activation parked before its spawn when the session is deleted spawns nothing and rejects with SessionDeletingError', async () => {
+    const { manager } = await setup();
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' }).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await held.reached();
+
+    // This harness has no job queue, so a real deletion fails and restores the session; its observable end state
+    // (marker cleared, session gone from the registry) is set directly.
+    manager['sessions'].delete(session.id);
+    expect(manager['sessions'].has(session.id)).toBe(false);
+    expect(manager.isDeleting(session.id)).toBe(false);
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    expect(await creation).toBeInstanceOf(SessionDeletingError);
+    expect(ptyFactory.instances.length).toBe(spawnsBefore);
+  });
+
+  it('a worker activation parked before its spawn when the session is paused and resumed spawns nothing and rejects with SessionPausingError', async () => {
+    const { manager, executeHookCommand, resolveHook } = await setup();
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' }).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await held.reached();
+
+    const pause = manager.pauseSession(session.id);
+    await hookStarted(executeHookCommand);
+    resolveHook({ success: true });
+    await pause;
+    const resumed = await manager.resumeSession(session.id);
+    expect(resumed?.session.id).toBe(session.id);
+    expect(manager.isPausing(session.id)).toBe(false);
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    expect(await creation).toBeInstanceOf(SessionPausingError);
+    expect(ptyFactory.instances.length).toBe(spawnsBefore);
+  });
+
+  it('a worker activation parked before its spawn while a pause is still in flight spawns nothing and rejects with SessionPausingError', async () => {
+    const { manager, executeHookCommand, resolveHook } = await setup();
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' }).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await held.reached();
+
+    const pause = manager.pauseSession(session.id);
+    await hookStarted(executeHookCommand);
+    expect(manager.isPausing(session.id)).toBe(true);
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    expect(await creation).toBeInstanceOf(SessionPausingError);
+    expect(ptyFactory.instances.length).toBe(spawnsBefore);
+    resolveHook({ success: true });
+    await pause;
+  });
+
+  it('a worker activation with nothing happening to the session during the gate spawns as before', async () => {
+    const { manager } = await setup();
+    const session = await createSession(manager);
+    const held = holdFirstSpawnCwdCheck(manager);
+    const creation = manager.createWorker(session.id, { type: 'terminal', name: 'Shell' });
+    await held.reached();
+    const spawnsBefore = ptyFactory.instances.length;
+    held.release();
+
+    const worker = await creation;
+    expect(worker?.type).toBe('terminal');
+    expect(ptyFactory.instances.length).toBe(spawnsBefore + 1);
+  });
+
   it('a notification for an embedded worker reports a delivery failure instead of waking the worker', async () => {
     const { manager, executeHookCommand, resolveHook } = await setup();
     const session = await createSession(manager, true);

@@ -64,6 +64,8 @@ let registry = new WebSocketConnectionRegistry();
 /** A git-diff socket that is still resolving its spawn user: a worker-wide teardown marks it `invalidated`. */
 interface PendingGitDiffSetup {
   invalidated: boolean;
+  /** Why the teardown ran, captured when it ran: the deletion marker may be gone by the time the setup resumes. */
+  invalidationCause: 'pause' | 'session-deletion' | 'worker-deletion' | null;
 }
 const pendingGitDiffSetups = new Map<string, Set<PendingGitDiffSetup>>();
 const workerSetupKey = (sessionId: string, workerId: string): string => `${sessionId}\0${workerId}`;
@@ -438,7 +440,15 @@ export async function setupWebSocketRoutes(
       // does not start a watch after this teardown (see the git-diff onOpen branch).
       const pendingSetups = pendingGitDiffSetups.get(workerSetupKey(sessionId, workerId));
       if (pendingSetups) {
-        for (const setup of pendingSetups) setup.invalidated = true;
+        const cause = sessionManager.isDeleting(sessionId)
+          ? 'session-deletion'
+          : sessionManager.isPausing(sessionId)
+            ? 'pause'
+            : 'worker-deletion';
+        for (const setup of pendingSetups) {
+          setup.invalidated = true;
+          setup.invalidationCause = cause;
+        }
         pendingGitDiffSetups.delete(workerSetupKey(sessionId, workerId));
       }
       handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
@@ -946,7 +956,7 @@ export async function setupWebSocketRoutes(
               // Track this setup until it connects: a worker-wide teardown (stopWorkerWatching) that runs while
               // the spawn user is being resolved cannot see the socket, so it invalidates the pending setup.
               const setupKey = workerSetupKey(sessionId, workerId);
-              const setup: PendingGitDiffSetup = { invalidated: false };
+              const setup: PendingGitDiffSetup = { invalidated: false, invalidationCause: null };
               const pending = pendingGitDiffSetups.get(setupKey) ?? new Set<PendingGitDiffSetup>();
               pending.add(setup);
               pendingGitDiffSetups.set(setupKey, pending);
@@ -966,11 +976,22 @@ export async function setupWebSocketRoutes(
               // watch and a dead socket behind.
               if (connectionClosed) return;
               if (setup.invalidated) {
-                // The worker-wide teardown (a deletion or a pause) ran while the spawn user was being resolved.
-                if (sessionManager.isDeleting(sessionId)) {
-                  refuseSocketOfDeletedSession(ws);
-                } else {
-                  sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+                // The worker-wide teardown ran while the spawn user was being resolved: answer with its recorded cause.
+                switch (setup.invalidationCause) {
+                  case 'session-deletion':
+                    refuseSocketOfDeletedSession(ws);
+                    break;
+                  case 'pause':
+                    sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+                    break;
+                  case 'worker-deletion':
+                  case null:
+                    refuseOpenedSocket(ws, 'Worker not found', 'WORKER_NOT_FOUND');
+                    break;
+                  default: {
+                    const _exhaustive: never = setup.invalidationCause;
+                    return _exhaustive;
+                  }
                 }
                 return;
               }

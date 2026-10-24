@@ -20,12 +20,14 @@ import {
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
   buildPersistedEmbeddedAgentWorker,
+  buildInternalQuickSession,
 } from '../../__tests__/utils/build-test-data.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
 import { SingleUserMode, SpawnCwdMissingError } from '../user-mode.js';
+import { SessionDeletingError, SessionPausingError } from '../../lib/errors.js';
 import type { assertSpawnCwdExists } from '../user-mode.js';
 import type {
   InternalAgentWorker,
@@ -43,6 +45,9 @@ import * as os from 'node:os';
 import * as fs from 'fs/promises';
 
 const TEST_CONFIG_DIR = '/test/config';
+
+// The captured session whose identity the spawn recheck compares.
+const testSession = buildInternalQuickSession();
 
 describe('WorkerManager', () => {
   const ptyFactory = createMockPtyFactory(10000);
@@ -100,6 +105,7 @@ describe('WorkerManager', () => {
   const defaultResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
 
   const defaultAgentActivationParams = {
+    session: testSession,
     sessionId: 'session-1',
     locationPath: '/test/project',
     repositoryEnvVars: {},
@@ -111,6 +117,7 @@ describe('WorkerManager', () => {
   };
 
   const defaultTerminalActivationParams = {
+    session: testSession,
     sessionId: 'session-1',
     locationPath: '/test/project',
     repositoryEnvVars: {},
@@ -1291,6 +1298,131 @@ describe('WorkerManager', () => {
         await ptyFactory.instances[ptyFactory.instances.length - 1].simulateExit(125);
 
         expect(worker.outputBuffer).not.toContain('internal:agent-spawn-failed');
+      });
+    });
+
+    describe('spawn recheck after a deletion or pause begins', () => {
+      const originalAuthMode = process.env.AUTH_MODE;
+      afterEach(() => {
+        if (originalAuthMode === undefined) delete process.env.AUTH_MODE;
+        else process.env.AUTH_MODE = originalAuthMode;
+      });
+
+      /** A cwd check that parks until released, so the termination can begin while activation is mid-await. */
+      function gatedCwdCheck() {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let reached = false;
+        const fn: typeof assertSpawnCwdExists = async () => {
+          reached = true;
+          await gate;
+        };
+        const untilReached = async () => {
+          for (let i = 0; i < 400 && !reached; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+          expect(reached).toBe(true);
+        };
+        return { fn, release, untilReached };
+      }
+
+      function buildManager(
+        assertSpawnCwdFn: typeof assertSpawnCwdExists,
+        getSpawnRefusal: (sessionId: string, session: unknown) => Error | null,
+        mcpTokenRegistry?: { mint: () => string; revokeByWorker: (id: string) => void },
+      ) {
+        const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
+        return new WorkerManager(
+          userMode,
+          agentManager,
+          new WorkerOutputFileManager(),
+          mcpTokenRegistry as never,
+          async () => ({ uid: 1000, homeDir: '/home/testuser' }),
+          fakeSuccessRunAsUser,
+          undefined,
+          undefined,
+          undefined,
+          assertSpawnCwdFn,
+          getSpawnRefusal as never,
+        );
+      }
+
+      it('agent activation: a deletion that begins during the pre-spawn awaits stops the spawn, revokes the token and deletes the prompt file', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const gated = gatedCwdCheck();
+        let terminating: Error | null = null;
+        const revokeByWorker = mock(() => {});
+        const refusalCalls: Array<[string, unknown]> = [];
+        const wm = buildManager(gated.fn, (id, captured) => {
+          refusalCalls.push([id, captured]);
+          return terminating;
+        }, { mint: () => 'token-value', revokeByWorker });
+        const worker = wm.initializeAgentWorker({
+          id: 'recheck-agent-1',
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+        const spawnCallsBefore = ptyFactory.spawn.mock.calls.length;
+
+        const activation = wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          sessionId: 'recheck-agent-session',
+          createdByUserId: 'creator-id',
+          initialPrompt: 'hello world',
+        });
+        const outcome = activation.then(
+          () => null,
+          (err: unknown) => err,
+        );
+        await gated.untilReached();
+        expect(worker.promptFile).not.toBeNull();
+        expect(worker.mcpToken).not.toBeNull();
+        terminating = new SessionDeletingError('recheck-agent-session');
+        gated.release();
+
+        expect(await outcome).toBeInstanceOf(SessionDeletingError);
+        // The refusal sees the session the caller captured (compared by identity by the owner of the registry).
+        expect(refusalCalls).toEqual([['recheck-agent-session', testSession]]);
+        expect(ptyFactory.spawn.mock.calls.length).toBe(spawnCallsBefore);
+        expect(worker.pty).toBeNull();
+        expect(revokeByWorker).toHaveBeenCalledWith(worker.id);
+        expect(worker.promptFile).toBeNull();
+      });
+
+      it('terminal activation: a pause that begins during the pre-spawn awaits stops the spawn with SessionPausingError', async () => {
+        const gated = gatedCwdCheck();
+        let terminating: Error | null = null;
+        const wm = buildManager(gated.fn, () => terminating);
+        const worker = wm.initializeTerminalWorker({
+          id: 'recheck-terminal-1',
+          name: 'Terminal',
+          createdAt: new Date().toISOString(),
+        });
+        const spawnCallsBefore = ptyFactory.spawn.mock.calls.length;
+
+        const outcome = wm.activateTerminalWorkerPty(worker, defaultTerminalActivationParams).then(
+          () => null,
+          (err: unknown) => err,
+        );
+        await gated.untilReached();
+        terminating = new SessionPausingError('session-1');
+        gated.release();
+
+        expect(await outcome).toBeInstanceOf(SessionPausingError);
+        expect(ptyFactory.spawn.mock.calls.length).toBe(spawnCallsBefore);
+        expect(worker.pty).toBeNull();
+      });
+
+      it('activation proceeds when no termination is in progress', async () => {
+        const wm = buildManager(async () => {}, () => null);
+        const worker = wm.initializeTerminalWorker({
+          id: 'recheck-terminal-2',
+          name: 'Terminal',
+          createdAt: new Date().toISOString(),
+        });
+        await wm.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+        expect(worker.pty).not.toBeNull();
       });
     });
 

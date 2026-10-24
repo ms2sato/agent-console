@@ -4748,6 +4748,113 @@ describe('SessionManager', () => {
         });
       }
 
+      // Overlapping deletions of one id: a delete joins any run in flight; a force joins a force, and replaces a
+      // delete (running after it settles) -- the marker never drops in between.
+      function fakeDeletionService(manager: Awaited<ReturnType<typeof getSessionManager>>) {
+        const service = manager['sessionDeletionService'];
+        const calls: string[] = [];
+        const gates: Array<{ kind: 'delete' | 'force'; settle: (outcome: 'resolve' | 'reject', value?: boolean) => void }> = [];
+        const impl = (kind: 'delete' | 'force') => async () => {
+          calls.push(kind);
+          return new Promise<boolean>((resolve, reject) => {
+            gates.push({
+              kind,
+              settle: (outcome, value = true) => (outcome === 'resolve' ? resolve(value) : reject(new Error(`${kind} failed`))),
+            });
+          });
+        };
+        const del = spyOn(service, 'deleteSession').mockImplementation(impl('delete'));
+        const force = spyOn(service, 'forceDeleteSession').mockImplementation(impl('force'));
+        return { calls, gates, restore: () => { del.mockRestore(); force.mockRestore(); } };
+      }
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+      it('delete + delete: the deletion service runs once and both callers get the same result', async () => {
+        const manager = await getSessionManager();
+        const fake = fakeDeletionService(manager);
+        const first = manager.deleteSession('s-1');
+        const second = manager.deleteSession('s-1');
+        await tick();
+        expect(fake.calls).toEqual(['delete']);
+        expect(manager.isDeleting('s-1')).toBe(true);
+
+        fake.gates[0].settle('resolve', true);
+        expect(await first).toBe(true);
+        expect(await second).toBe(true);
+        expect(manager.isDeleting('s-1')).toBe(false);
+        fake.restore();
+      });
+
+      it('force + force: the deletion service runs once', async () => {
+        const manager = await getSessionManager();
+        const fake = fakeDeletionService(manager);
+        const first = manager.forceDeleteSession('s-1');
+        const second = manager.forceDeleteSession('s-1');
+        await tick();
+        expect(fake.calls).toEqual(['force']);
+
+        fake.gates[0].settle('resolve', true);
+        expect(await Promise.all([first, second])).toEqual([true, true]);
+        expect(manager.isDeleting('s-1')).toBe(false);
+        fake.restore();
+      });
+
+      it('delete then force: two runs in order, the force returns its own result, the marker holds throughout', async () => {
+        const manager = await getSessionManager();
+        const fake = fakeDeletionService(manager);
+        const del = manager.deleteSession('s-1');
+        const force = manager.forceDeleteSession('s-1');
+        await tick();
+        expect(fake.calls).toEqual(['delete']);
+        expect(manager.isDeleting('s-1')).toBe(true);
+
+        fake.gates[0].settle('resolve', false);
+        expect(await del).toBe(false);
+        await tick();
+        expect(fake.calls).toEqual(['delete', 'force']);
+        expect(manager.isDeleting('s-1')).toBe(true);
+
+        fake.gates[1].settle('resolve', true);
+        expect(await force).toBe(true);
+        expect(manager.isDeleting('s-1')).toBe(false);
+        fake.restore();
+      });
+
+      it('force then delete: one run, and the delete gets the force result', async () => {
+        const manager = await getSessionManager();
+        const fake = fakeDeletionService(manager);
+        const force = manager.forceDeleteSession('s-1');
+        const del = manager.deleteSession('s-1');
+        await tick();
+        expect(fake.calls).toEqual(['force']);
+
+        fake.gates[0].settle('resolve', true);
+        expect(await Promise.all([force, del])).toEqual([true, true]);
+        expect(manager.isDeleting('s-1')).toBe(false);
+        fake.restore();
+      });
+
+      it('a rejecting delete followed by a force: the force still runs, the marker clears only after it settles', async () => {
+        const manager = await getSessionManager();
+        const fake = fakeDeletionService(manager);
+        const del = manager.deleteSession('s-1');
+        const force = manager.forceDeleteSession('s-1');
+        await tick();
+        expect(fake.calls).toEqual(['delete']);
+
+        fake.gates[0].settle('reject');
+        await expect(del).rejects.toThrow('delete failed');
+        await tick();
+        expect(fake.calls).toEqual(['delete', 'force']);
+        expect(manager.isDeleting('s-1')).toBe(true);
+
+        fake.gates[1].settle('resolve', true);
+        expect(await force).toBe(true);
+        expect(manager.isDeleting('s-1')).toBe(false);
+        expect(() => manager['assertNotPausingOrDeleting']('s-1')).not.toThrow();
+        fake.restore();
+      });
+
       it('getAvailableWorker, restoreWorker and createWorker reject with SessionDeletingError while the session is being deleted', async () => {
         const { manager, session, release, deletion, killSpy } = await holdDeletion('deleteSession');
         const agent = session.workers.find((w: Worker) => w.type === 'agent')!;

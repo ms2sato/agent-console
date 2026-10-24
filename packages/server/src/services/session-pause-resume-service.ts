@@ -366,6 +366,7 @@ export class SessionPauseResumeService {
             initialPromptDelivered: internalSession.initialPromptDelivered,
           });
           await this.deps.workerManager.activateAgentWorkerPty(worker, {
+            session: internalSession,
             sessionId: id,
             locationPath: persisted.locationPath,
             repositoryEnvVars,
@@ -384,6 +385,7 @@ export class SessionPauseResumeService {
           await this.deps.appendRestoreBoundaryMarker(worker, id, resolver, restoredAt);
         } else if (worker.type === 'terminal') {
           await this.deps.workerManager.activateTerminalWorkerPty(worker, {
+            session: internalSession,
             sessionId: id,
             locationPath: persisted.locationPath,
             repositoryEnvVars,

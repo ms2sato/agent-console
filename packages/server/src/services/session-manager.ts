@@ -398,6 +398,12 @@ export function composeEmbeddedAgentDeliveryText(
   return content.length > 0 ? `${content}\n\n${block}` : block;
 }
 
+/** A deletion run in flight for a session; `force` covers everything `delete` does. */
+interface DeletionInFlight {
+  kind: 'delete' | 'force';
+  promise: Promise<boolean>;
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
@@ -412,7 +418,7 @@ export class SessionManager {
    */
   private readonly pausing = new Map<string, Promise<PauseSessionOutcome>>();
   /** Sessions whose deletion is in flight (set before the deletion service's first statement). */
-  private readonly deleting = new Set<string>();
+  private readonly deleting = new Map<string, DeletionInFlight>();
   private webSocketCallbacks: WebSocketCallbacks | null = null;
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
@@ -527,6 +533,18 @@ export class SessionManager {
       undefined,
       (id) => embeddedAgentManager.getEmbeddedAgent(id),
       options.assertSpawnCwdFn,
+      (id, session) => {
+        if (this.isDeleting(id)) return new SessionDeletingError(id);
+        if (this.isPausing(id)) return new SessionPausingError(id);
+        // Neither marker is set, so the captured session can only have changed by a run that has already finished:
+        // a live session leaves the map without a pause marker only through a completed deletion, and the object
+        // is replaced only by a pause followed by a resume. (Worker membership is no signal: a worker joins the
+        // session only after its first activation returns.)
+        const current = this.sessions.get(id);
+        if (current === undefined) return new SessionDeletingError(id);
+        if (current !== session) return new SessionPausingError(id);
+        return null;
+      },
     );
     this.workerManager.setOnInitialPromptInjected((sessionId, workerId) => {
       // Fire-and-forget: this callback is invoked synchronously from a PTY
@@ -1633,7 +1651,10 @@ export class SessionManager {
   }
 
   async deleteSession(id: string): Promise<boolean> {
-    return this.withDeleting(id, () => this.sessionDeletionService.deleteSession(id));
+    // Any run in flight (a force is a superset of a delete) already covers this request: join it.
+    const inFlight = this.deleting.get(id);
+    if (inFlight) return inFlight.promise;
+    return this.runDeletion(id, 'delete', () => this.sessionDeletionService.deleteSession(id));
   }
 
   /** True while a deletion for the session is in flight (see {@link deleting}). */
@@ -1642,18 +1663,35 @@ export class SessionManager {
   }
 
   /**
-   * Marks the session as deleting for the duration of `run`. Set synchronously
-   * before the service's first statement (so it precedes the deletion's socket
-   * notification) and cleared in `finally`, so a failed delete that restores
-   * the session accepts sockets again.
+   * Installs the deletion marker for the duration of `run`. The entry is set synchronously before the service's
+   * first statement (so it precedes the deletion's socket notification) and removed once `run` settles, so a
+   * failed delete that restores the session accepts sockets again. A force that replaces a delete installs its
+   * own entry before awaiting the delete (`after`), so the marker never drops in between.
    */
-  private async withDeleting<T>(id: string, run: () => Promise<T>): Promise<T> {
-    this.deleting.add(id);
-    try {
-      return await run();
-    } finally {
-      this.deleting.delete(id);
-    }
+  private runDeletion(
+    id: string,
+    kind: DeletionInFlight['kind'],
+    run: () => Promise<boolean>,
+    after?: Promise<boolean>,
+  ): Promise<boolean> {
+    const entry: DeletionInFlight = { kind, promise: Promise.resolve(false) };
+    this.deleting.set(id, entry);
+    entry.promise = (async () => {
+      try {
+        if (after) {
+          try {
+            await after;
+          } catch (err) {
+            logger.debug({ sessionId: id, err }, 'Delete run replaced by a force failed; running the force');
+          }
+        }
+        return await run();
+      } finally {
+        // Only the call that installed the entry may remove it: an earlier call's settle must not drop a replacement.
+        if (this.deleting.get(id) === entry) this.deleting.delete(id);
+      }
+    })();
+    return entry.promise;
   }
 
   getAllSessions(): Session[] {
@@ -1789,7 +1827,10 @@ export class SessionManager {
    * @returns true if session was deleted, false if not found
    */
   async forceDeleteSession(id: string): Promise<boolean> {
-    return this.withDeleting(id, () => this.sessionDeletionService.forceDeleteSession(id));
+    const inFlight = this.deleting.get(id);
+    if (inFlight?.kind === 'force') return inFlight.promise;
+    // A delete in flight does not cover a force (the orphaned-row cleanup): replace its entry, then run after it.
+    return this.runDeletion(id, 'force', () => this.sessionDeletionService.forceDeleteSession(id), inFlight?.promise);
   }
 
   /**
