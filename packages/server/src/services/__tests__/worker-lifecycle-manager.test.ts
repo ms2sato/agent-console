@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn, type Mock } from 'bun:test';
 import type { CreateWorkerParams, EmbeddedAgentDefinition, NotificationContext, Session, Worker } from '@agent-console/shared';
-import { ValidationError } from '../../lib/errors.js';
+import { ValidationError, SessionDeletingError, SessionPausingError } from '../../lib/errors.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -3915,6 +3915,92 @@ describe('WorkerLifecycleManager', () => {
       if (!result.success) {
         expect(result.errorCode).toBe('ACTIVATION_FAILED');
       }
+    });
+
+    describe('spawn-time session termination errors are not flattened into ACTIVATION_FAILED', () => {
+      function buildAgentWorker(id: string): InternalAgentWorker {
+        return {
+          id,
+          type: 'agent',
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+          pty: null,
+          outputBuffer: '',
+          outputOffset: 0,
+          epoch: 1_700_000_000_000,
+          activityState: 'unknown',
+          activityDetector: null,
+          postInjectionOutputBytes: 0,
+          lastOutputAt: null,
+          postInjectionOutputWaiters: new Set(),
+          connectionCallbacks: new Map(),
+          mcpToken: null,
+          promptFile: null,
+          deliverInitialPromptOnActivation: false,
+          model: null,
+          reasoningEffort: null,
+          sdkSessionId: null,
+        };
+      }
+
+      function buildTerminalWorker(id: string): InternalTerminalWorker {
+        return {
+          id,
+          type: 'terminal',
+          name: 'Terminal',
+          createdAt: new Date().toISOString(),
+          pty: null,
+          outputBuffer: '',
+          outputOffset: 0,
+          epoch: 1_700_000_000_000,
+          connectionCallbacks: new Map(),
+        } as InternalTerminalWorker;
+      }
+
+      const cases: Array<[string, 'agent' | 'terminal', () => Error]> = [
+        ['agent + SessionDeletingError', 'agent', () => new SessionDeletingError('s')],
+        ['agent + SessionPausingError', 'agent', () => new SessionPausingError('s')],
+        ['terminal + SessionDeletingError', 'terminal', () => new SessionDeletingError('s')],
+        ['terminal + SessionPausingError', 'terminal', () => new SessionPausingError('s')],
+      ];
+
+      for (const [label, kind, makeError] of cases) {
+        it(`rejects with the original error: ${label}`, async () => {
+          const error = makeError();
+          const activateAgent = mock(async () => { throw error; });
+          const activateTerminal = mock(async () => { throw error; });
+          const manager = new WorkerLifecycleManager(createDeps({
+            workerManager: {
+              activateAgentWorkerPty: activateAgent,
+              activateTerminalWorkerPty: activateTerminal,
+            } as unknown as WorkerManager,
+          }));
+          const session = createTestSession();
+          sessions.set(session.id, session);
+          const worker = kind === 'agent' ? buildAgentWorker('w-term-err') : buildTerminalWorker('w-term-err');
+          session.workers.set(worker.id, worker);
+
+          await expect(manager.restoreWorker(session.id, worker.id)).rejects.toBe(error);
+        });
+      }
+
+      it('still returns ACTIVATION_FAILED for a generic activation error (positive control)', async () => {
+        const manager = new WorkerLifecycleManager(createDeps({
+          workerManager: {
+            activateAgentWorkerPty: mock(async () => { throw new Error('boom'); }),
+            activateTerminalWorkerPty: mock(async () => { throw new Error('boom'); }),
+          } as unknown as WorkerManager,
+        }));
+        const session = createTestSession();
+        sessions.set(session.id, session);
+        for (const worker of [buildAgentWorker('w-generic-a'), buildTerminalWorker('w-generic-t')]) {
+          session.workers.set(worker.id, worker);
+          const result = await manager.restoreWorker(session.id, worker.id);
+          expect(result.success).toBe(false);
+          if (!result.success) expect(result.errorCode).toBe('ACTIVATION_FAILED');
+        }
+      });
     });
 
     it('should persist session after successful restoration', async () => {

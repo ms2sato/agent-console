@@ -42,7 +42,7 @@ import { JOB_TYPES } from '../jobs/index.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
-import { ValidationError } from '../lib/errors.js';
+import { ValidationError, SessionDeletingError, SessionPausingError } from '../lib/errors.js';
 import {
   validateEmbeddedAgentParameterOverride,
   type EmbeddedAgentParameterOverrideCreateInput,
@@ -1763,6 +1763,10 @@ export class WorkerLifecycleManager {
         });
       }
     } catch (err) {
+      // The session is ending: surface the typed error so the caller can answer the socket accordingly.
+      if (err instanceof SessionDeletingError || err instanceof SessionPausingError) {
+        throw err;
+      }
       logger.error({ sessionId, workerId, err }, 'Failed to activate PTY for worker');
       return {
         success: false,

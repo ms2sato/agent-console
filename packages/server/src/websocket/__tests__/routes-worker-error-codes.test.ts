@@ -31,7 +31,7 @@ import { serverConfig } from '../../lib/server-config.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { triggerRefresh, isWatching } from '../../services/git-diff-service.js';
 import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
-import { SessionDeletingError } from '../../lib/errors.js';
+import { SessionDeletingError, SessionPausingError } from '../../lib/errors.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import type { AppContext } from '../../app-context.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
@@ -895,6 +895,18 @@ describe('Worker WebSocket connection error codes', () => {
 
     expect(ws.sentMessages.map((m) => JSON.parse(m))).toEqual(DELETED_FRAMES);
     expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session has been deleted' }]);
+  });
+
+  it('a PTY restore rejected with SessionPausingError closes the socket with SESSION_PAUSED', async () => {
+    const session = await createWorktreeSession();
+    const agentWorker = session.workers.find((w) => w.type === 'agent')!;
+    spyOn(sessionManager, 'restoreWorker').mockRejectedValue(new SessionPausingError(session.id));
+
+    const { ws } = openWorkerSocket(session.id, agentWorker.id);
+    await untilClosed(ws);
+
+    expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'error', message: 'Session is pausing', code: 'SESSION_PAUSED' });
+    expect(ws.closeCalls).toEqual([{ code: 1000, reason: 'Session is pausing' }]);
   });
 
   it('should send SESSION_PAUSED error code when notifySessionPaused is called', async () => {
