@@ -4,10 +4,11 @@
  * WHY THIS INVOCATION EXISTS -- read before adding a test file here or
  * touching `../setup.ts`.
  *
- * The files under this directory (`embedded-agent-e2e.test.ts`,
+ * The files under this directory (e.g. `embedded-agent-e2e.test.ts`,
  * `embedded-agent-artifact-e2e.test.ts`) drive a real embedded-agent
  * subprocess that talks to a REAL `/mcp` HTTP endpoint served via
- * `Bun.serve`. happy-dom's `GlobalRegistrator` (registered by `../setup.ts`
+ * `Bun.serve` (`session-delete-late-socket-boundary.test.ts` serves a real
+ * worker WebSocket route the same way). happy-dom's `GlobalRegistrator` (registered by `../setup.ts`
  * for the package's boundary tests) replaces the process-global `Response`
  * / `Headers` implementations, which makes `Bun.serve` serialize real HTTP
  * responses in a shape the loop subprocess's MCP client rejects
@@ -53,7 +54,7 @@
  *
  * Unlike `../setup.ts`, this preload intentionally does NOT import
  * `mock-open-helper` (the `open` npm package `mock.module()` registration):
- * neither e2e file in this directory exercises `routes/system.ts`'s
+ * no e2e file in this directory exercises `routes/system.ts`'s
  * "reveal in file manager" endpoints (the only callers of `open()`), so
  * there is no risk of a real desktop `open` invocation. Add that import
  * here if a future file under this directory reaches those endpoints.

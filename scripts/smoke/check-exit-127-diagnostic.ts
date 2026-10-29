@@ -83,6 +83,7 @@ import { SessionDataPathResolver } from '../../packages/server/src/lib/session-d
 import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../../packages/server/src/services/agent-manager.js';
 import { SqliteAgentRepository } from '../../packages/server/src/repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../packages/server/src/database/connection.js';
+import type { InternalSession } from '../../packages/server/src/services/internal-types.js';
 
 // The configured provider, same resolution `createAppContext` uses in
 // production (`getPtyProvider(serverConfig.PTY_PROVIDER)`). Default
@@ -193,7 +194,17 @@ async function main(): Promise<void> {
     // Deliberately: no attachCallbacks() call anywhere in this scenario --
     // zero WebSocket clients ever attached, mirroring T2's delegate-path
     // shape but against a real process.
+    // No session registry exists here, so the spawn recheck is not installed; the field only carries the captured session.
+    const session: InternalSession = {
+      id: sessionId,
+      type: 'quick',
+      locationPath: '/',
+      status: 'active',
+      createdAt: new Date().toISOString(),
+      workers: new Map(),
+    };
     await workerManager.activateAgentWorkerPty(worker, {
+      session,
       sessionId,
       locationPath: '/',
       // SHELL flows through additionalEnvVars in spawnDirectPty, spread AFTER

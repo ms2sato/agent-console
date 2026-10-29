@@ -24,7 +24,7 @@ import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
-import { ForbiddenError, SessionPausingError } from '../lib/errors.js';
+import { ForbiddenError, SessionDeletingError, SessionPausingError } from '../lib/errors.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { liveReadyState } from './socket-key.js';
@@ -61,9 +61,13 @@ export function extractMessageData(data: WSMessageReceive): string | ArrayBuffer
 // Initialized once in setupWebSocketRoutes() and shared by broadcastToApp/notifySessionDeleted.
 let registry = new WebSocketConnectionRegistry();
 
-/** A git-diff socket that is still resolving its spawn user: a worker-wide teardown marks it `invalidated`. */
+/** A git-diff socket that is still resolving its spawn user: a worker-wide teardown records its cause here. */
 interface PendingGitDiffSetup {
-  invalidated: boolean;
+  /**
+   * Why the teardown ran, captured when it ran: the deletion marker may be gone by the time the setup resumes.
+   * `null` means no teardown has run, so the setup is still valid.
+   */
+  invalidationCause: 'pause' | 'session-deletion' | 'worker-deletion' | null;
 }
 const pendingGitDiffSetups = new Map<string, Set<PendingGitDiffSetup>>();
 const workerSetupKey = (sessionId: string, workerId: string): string => `${sessionId}\0${workerId}`;
@@ -438,7 +442,14 @@ export async function setupWebSocketRoutes(
       // does not start a watch after this teardown (see the git-diff onOpen branch).
       const pendingSetups = pendingGitDiffSetups.get(workerSetupKey(sessionId, workerId));
       if (pendingSetups) {
-        for (const setup of pendingSetups) setup.invalidated = true;
+        const cause = sessionManager.isDeleting(sessionId)
+          ? 'session-deletion'
+          : sessionManager.isPausing(sessionId)
+            ? 'pause'
+            : 'worker-deletion';
+        for (const setup of pendingSetups) {
+          setup.invalidationCause = cause;
+        }
         pendingGitDiffSetups.delete(workerSetupKey(sessionId, workerId));
       }
       handleGitDiffDisconnection(sessionId, workerId).catch((err) => {
@@ -817,6 +828,21 @@ export async function setupWebSocketRoutes(
       }
 
       /**
+       * Refuse a socket that onOpen has already registered. onOpen registers the socket before its checks run,
+       * and a refused socket must not stay in the session's connection set: the deletion or pause sweep has
+       * already run or will not run again, so nothing else would remove it. Idempotent for a socket the sweep
+       * already removed.
+       */
+      function refuseOpenedSocket(ws: WSContext, message: string, code: WorkerErrorCode): void {
+        registry.removeWorkerConnection(sessionId, workerId, ws);
+        sendErrorAndClose(ws, message, code);
+      }
+
+      function refuseSocketOfDeletedSession(ws: WSContext): void {
+        refuseOpenedSocket(ws, 'Session has been deleted', 'SESSION_DELETED');
+      }
+
+      /**
        * Send a non-fatal error message to the client WITHOUT closing the
        * socket. Used for embedded-agent activation failures and message
        * rejections (turn-in-progress, unsupported PTY messages) — per the
@@ -885,13 +911,26 @@ export async function setupWebSocketRoutes(
 
           const session = sessionManager.getSession(sessionId);
           if (!session) {
-            sendErrorAndClose(ws, 'Session not found', 'SESSION_DELETED');
+            refuseOpenedSocket(ws, 'Session not found', 'SESSION_DELETED');
             return;
           }
 
           const worker = session.workers.find(w => w.id === workerId);
           if (!worker) {
-            sendErrorAndClose(ws, 'Worker not found', 'WORKER_NOT_FOUND');
+            refuseOpenedSocket(ws, 'Worker not found', 'WORKER_NOT_FOUND');
+            return;
+          }
+
+          // A deleting session refuses every open before any branch can start an
+          // activation, a restore or a watch: the deletion's kill loop and socket
+          // notification have run or are about to, so a socket accepted now would
+          // never be notified or closed. Deletion is terminal, so it is checked
+          // before pausing. `addWorkerConnection` above is the first synchronous
+          // line of onOpen and the manager marks the session before the deletion's
+          // notification, so every socket is either registered when that notify
+          // runs or refused here.
+          if (sessionManager.isDeleting(sessionId)) {
+            refuseSocketOfDeletedSession(ws);
             return;
           }
 
@@ -902,7 +941,7 @@ export async function setupWebSocketRoutes(
           // manager-level guard and the per-branch SessionPausingError catches below
           // remain as the second line of defence.
           if (sessionManager.isPausing(sessionId)) {
-            sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+            refuseOpenedSocket(ws, 'Session is pausing', 'SESSION_PAUSED');
             return;
           }
 
@@ -918,7 +957,7 @@ export async function setupWebSocketRoutes(
               // Track this setup until it connects: a worker-wide teardown (stopWorkerWatching) that runs while
               // the spawn user is being resolved cannot see the socket, so it invalidates the pending setup.
               const setupKey = workerSetupKey(sessionId, workerId);
-              const setup: PendingGitDiffSetup = { invalidated: false };
+              const setup: PendingGitDiffSetup = { invalidationCause: null };
               const pending = pendingGitDiffSetups.get(setupKey) ?? new Set<PendingGitDiffSetup>();
               pending.add(setup);
               pendingGitDiffSetups.set(setupKey, pending);
@@ -936,7 +975,26 @@ export async function setupWebSocketRoutes(
               // The socket may have closed while the spawn user was being resolved (its cleanup already ran and
               // found nothing registered), or the worker may have been torn down: connecting now would leave a
               // watch and a dead socket behind.
-              if (connectionClosed || setup.invalidated) return;
+              if (connectionClosed) return;
+              if (setup.invalidationCause !== null) {
+                // The worker-wide teardown ran while the spawn user was being resolved: answer with its recorded cause.
+                switch (setup.invalidationCause) {
+                  case 'session-deletion':
+                    refuseSocketOfDeletedSession(ws);
+                    break;
+                  case 'pause':
+                    refuseOpenedSocket(ws, 'Session is pausing', 'SESSION_PAUSED');
+                    break;
+                  case 'worker-deletion':
+                    refuseOpenedSocket(ws, 'Worker not found', 'WORKER_NOT_FOUND');
+                    break;
+                  default: {
+                    const _exhaustive: never = setup.invalidationCause;
+                    return _exhaustive;
+                  }
+                }
+                return;
+              }
               await handleGitDiffConnection(
                 ws,
                 sessionId,
@@ -985,10 +1043,16 @@ export async function setupWebSocketRoutes(
               try {
                 await sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
               } catch (err) {
+                if (err instanceof SessionDeletingError) {
+                  if (!connectionClosed) {
+                    refuseSocketOfDeletedSession(ws);
+                  }
+                  return;
+                }
                 if (err instanceof SessionPausingError) {
                   // Same terminal answer a socket open at pause time gets.
                   if (!connectionClosed) {
-                    sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+                    refuseOpenedSocket(ws, 'Session is pausing', 'SESSION_PAUSED');
                   }
                   return;
                 }
@@ -1039,8 +1103,12 @@ export async function setupWebSocketRoutes(
 
             await setupStreamWorkerHandlers(ws, result.worker.type, connectionStartTime, result.wasRestored);
           }).catch((err) => {
+            if (err instanceof SessionDeletingError) {
+              refuseSocketOfDeletedSession(ws);
+              return;
+            }
             if (err instanceof SessionPausingError) {
-              sendErrorAndClose(ws, 'Session is pausing', 'SESSION_PAUSED');
+              refuseOpenedSocket(ws, 'Session is pausing', 'SESSION_PAUSED');
               return;
             }
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');

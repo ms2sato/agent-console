@@ -1,4 +1,4 @@
-import { SessionPausingError } from '../../lib/errors.js';
+import { SessionDeletingError, SessionPausingError } from '../../lib/errors.js';
 import { describe, it, expect, mock, setSystemTime, spyOn, afterAll, type Mock } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile, symlink, unlink, readFile } from 'node:fs/promises';
@@ -607,6 +607,128 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await h.service.activate(h.sessionId, h.workerId);
     expect(h.fake.captured.length).toBe(1);
   });
+
+  it('refuses to activate while the session is being deleted and spawns nothing', async () => {
+    const h = setup();
+    h.deps.isSessionDeleting = (id) => id === h.sessionId;
+
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toBeInstanceOf(SessionDeletingError);
+    expect(h.fake.captured.length).toBe(0);
+
+    // Deletion is terminal: it wins over a simultaneous pause.
+    h.deps.isSessionPausing = (id) => id === h.sessionId;
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toBeInstanceOf(SessionDeletingError);
+    expect(h.fake.captured.length).toBe(0);
+  });
+
+  // The entry guard only sees the state at call time. A deletion that starts and finishes while activation is parked
+  // on a pre-spawn await must still stop the spawn, or a subprocess and token outlive the session's registry entry.
+  for (const [label, finishDeletion] of [
+    ['the deletion marker is set again', (h: ReturnType<typeof setup>) => { h.deps.isSessionDeleting = (id) => id === h.sessionId; }],
+    ['the session has left the registry (marker already cleared)', (h: ReturnType<typeof setup>) => { h.deps.getSession = () => undefined; }],
+  ] as const) {
+    it(`does not spawn when a deletion completes during activation: ${label}`, async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reached = false;
+      const h = setup({
+        ensureMemoryDirFnOverride: async () => {
+          reached = true;
+          await gate;
+          return undefined;
+        },
+      });
+
+      const activation = h.service.activate(h.sessionId, h.workerId);
+      const outcome = activation.then(
+        () => null,
+        (err: unknown) => err,
+      );
+      for (let i = 0; i < 400 && !reached; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(reached).toBe(true);
+      finishDeletion(h);
+      release();
+
+      expect(await outcome).toBeInstanceOf(SessionDeletingError);
+      expect(h.fake.captured.length).toBe(0);
+      expect(h.mint).toHaveBeenCalledTimes(1);
+      expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
+    });
+  }
+
+  for (const [label, interfere] of [
+    ['the pause marker is set', (h: ReturnType<typeof setup>) => { h.deps.isSessionPausing = (id) => id === h.sessionId; }],
+    ['the session object was replaced by a resume (marker already cleared)', (h: ReturnType<typeof setup>) => { const replacement = { ...h.session }; h.deps.getSession = () => replacement; }],
+  ] as const) {
+    it(`does not spawn when a pause begins or completes during activation: ${label}`, async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reached = false;
+      const h = setup({
+        ensureMemoryDirFnOverride: async () => {
+          reached = true;
+          await gate;
+          return undefined;
+        },
+      });
+
+      const activation = h.service.activate(h.sessionId, h.workerId);
+      const outcome = activation.then(
+        () => null,
+        (err: unknown) => err,
+      );
+      for (let i = 0; i < 400 && !reached; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(reached).toBe(true);
+      interfere(h);
+      release();
+
+      expect(await outcome).toBeInstanceOf(SessionPausingError);
+      expect(h.fake.captured.length).toBe(0);
+      expect(h.mint).toHaveBeenCalledTimes(1);
+      expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
+    });
+  }
+
+  // A completed pause and a completed deletion both leave the registry with both markers clear. The pause tombstone
+  // on the captured session object tells them apart (a map miss without it is a deletion).
+  for (const [label, endedBy, expected] of [
+    ['a completed pause', 'pause', SessionPausingError],
+    ['a completed deletion', undefined, SessionDeletingError],
+  ] as const) {
+    it(`does not spawn when ${label} removed the session from the registry during activation`, async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reached = false;
+      const h = setup({
+        ensureMemoryDirFnOverride: async () => {
+          reached = true;
+          await gate;
+          return undefined;
+        },
+      });
+
+      const outcome = h.service.activate(h.sessionId, h.workerId).then(
+        () => null,
+        (err: unknown) => err,
+      );
+      for (let i = 0; i < 400 && !reached; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(reached).toBe(true);
+      if (endedBy !== undefined) h.session.endedBy = endedBy;
+      h.deps.getSession = () => undefined;
+      release();
+
+      expect(await outcome).toBeInstanceOf(expected);
+      expect(h.fake.captured.length).toBe(0);
+      expect(h.mint).toHaveBeenCalledTimes(1);
+      expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
+    });
+  }
 
   it('spawns once with a secret-free argv, a secret-free identity env, correct cwd and username', async () => {
     const h = setup();
