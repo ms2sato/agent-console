@@ -237,4 +237,10 @@ describe('RepositoryDetailView / Delete Repository — source-repo cleanup check
       expect(deleteBodies).toEqual([undefined]);
     });
   });
+
+  it('links to the repository inbound webhooks page next to Edit', async () => {
+    await renderDetailPage(createTestRepository());
+    const link = await screen.findByRole('link', { name: 'Inbound Webhooks' });
+    expect(link.getAttribute('href')).toBe('/settings/repositories/repo-1/inbound-webhooks');
+  });
 });

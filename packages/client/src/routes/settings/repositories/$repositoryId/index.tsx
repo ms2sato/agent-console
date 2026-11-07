@@ -114,6 +114,13 @@ export function RepositoryDetailView({ repositoryId }: { repositoryId: string })
           >
             Edit
           </Link>
+          <Link
+            to="/settings/repositories/$repositoryId/inbound-webhooks"
+            params={{ repositoryId }}
+            className="btn text-sm no-underline"
+          >
+            Inbound Webhooks
+          </Link>
           <button
             onClick={() => setShowDeleteConfirm(true)}
             className="btn btn-danger text-sm"

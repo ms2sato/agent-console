@@ -1,27 +1,21 @@
-import { useState } from 'react';
+import type { ReactNode } from 'react';
+import { CopyButton } from './CopyButton';
 
 interface SecretRevealPanelProps {
   endpointLabel: string;
   secret: string;
-  onDismiss: () => void;
+  /** Rendered between the warning and the secret, e.g. the receive URL. */
+  children?: ReactNode;
+  /** Replaces the default dismiss button (e.g. a link that leaves the page). */
+  action?: ReactNode;
+  onDismiss?: () => void;
 }
 
 /**
- * Shows a signing secret exactly once. The parent owns the value in component
- * state and removes it on dismiss; nothing here persists it.
+ * Shows a generated signing secret exactly once. The parent owns the value in
+ * component state and removes it on dismiss; nothing here persists it.
  */
-export function SecretRevealPanel({ endpointLabel, secret, onDismiss }: SecretRevealPanelProps) {
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(secret);
-      setCopyState('copied');
-    } catch {
-      setCopyState('failed');
-    }
-  };
-
+export function SecretRevealPanel({ endpointLabel, secret, children, action, onDismiss }: SecretRevealPanelProps) {
   return (
     <div
       role="alert"
@@ -33,21 +27,19 @@ export function SecretRevealPanel({ endpointLabel, secret, onDismiss }: SecretRe
         This secret is shown only once and cannot be shown again. Copy it now and enter it where requests
         are signed. If it is lost, rotate the secret.
       </p>
-      <div className="flex gap-2 items-center">
+      {children && <div className="mb-3">{children}</div>}
+      <div data-testid="secret-block" className="flex gap-2 items-center">
         <code data-testid="issued-secret" className="flex-1 min-w-0 break-all bg-slate-900 rounded px-2 py-1 text-sm">
           {secret}
         </code>
-        <button type="button" className="btn btn-primary text-sm shrink-0" onClick={handleCopy}>
-          {copyState === 'copied' ? 'Copied' : 'Copy'}
-        </button>
+        <CopyButton text={secret} />
       </div>
-      {copyState === 'failed' && (
-        <p className="text-sm text-red-300 mt-2">Could not copy automatically. Select the secret and copy it manually.</p>
-      )}
       <div className="mt-3">
-        <button type="button" className="btn text-sm" onClick={onDismiss}>
-          I have saved the secret
-        </button>
+        {action ?? (
+          <button type="button" className="btn text-sm" onClick={onDismiss}>
+            I have saved the secret
+          </button>
+        )}
       </div>
     </div>
   );

@@ -30,14 +30,6 @@ describe('SettingsPage (Issue #1178 — agent management removed)', () => {
     expect(screen.queryByText('Loading agents...')).toBeNull();
   });
 
-  it('links to the Inbound Webhooks page regardless of auth mode', async () => {
-    setAuthMode('none');
-    await renderWithRouter(<SettingsPage />);
-
-    const link = screen.getByRole('link', { name: 'Inbound Webhooks' });
-    expect(link.getAttribute('href')).toBe('/settings/inbound-webhooks');
-  });
-
   it('renders a note linking to the Agents page', async () => {
     await renderWithRouter(<SettingsPage />);
 

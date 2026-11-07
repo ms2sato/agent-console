@@ -46,8 +46,11 @@ export const sharedAccountKeys = {
 } as const;
 
 export const inboundWebhookEndpointKeys = {
-  /** All inbound webhook endpoints list */
-  all: () => ['inbound-webhook-endpoints'] as const,
+  /** Endpoints of one repository */
+  all: (repositoryId: string) => ['inbound-webhook-endpoints', repositoryId] as const,
+  /** One endpoint of a repository */
+  detail: (repositoryId: string, endpointId: string) =>
+    ['inbound-webhook-endpoint', repositoryId, endpointId] as const,
 } as const;
 
 export const jobKeys = {

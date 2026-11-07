@@ -2,55 +2,50 @@
 // previousSecretExpiresAt) directly as props and DOES NOT exercise the
 // WebSocket/valibot parse path. Schema-level wire validation lives in the
 // api tests and packages/server route tests.
-import { describe, it, expect, mock, afterEach } from 'bun:test';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { waitForAbsent } from '../../../test/waitForAbsent';
 import type { InboundWebhookEndpoint } from '@agent-console/shared';
 import { EndpointRow } from '../EndpointRow';
+import { renderWithRouter } from '../../../test/renderWithRouter';
+import { installFakeServer, makeEndpoint } from '../../../test/inbound-webhooks-fake-server';
 
+const server = installFakeServer();
+afterAll(() => server.restore());
+beforeEach(() => server.reset());
 afterEach(cleanup);
 
-function makeEndpoint(overrides: Partial<InboundWebhookEndpoint> = {}): InboundWebhookEndpoint {
-  return {
-    id: 'ep-1',
-    label: 'Alerts',
-    repositoryId: 'repo-1',
-    instructionText: 'Triage it',
-    hasPreviousSecret: false,
-    previousSecretExpiresAt: null,
-    createdAt: '2026-01-01T00:00:00Z',
-    updatedAt: '2026-01-01T00:00:00Z',
-    ...overrides,
-  };
-}
-
-function setup(endpoint = makeEndpoint(), busy = false, rotateBlocked = false, onSave: (id: string, c: { label: string; instructionText: string }) => Promise<void> = async () => {}) {
+async function setup(endpoint: InboundWebhookEndpoint = makeEndpoint(), busy = false, rotateBlocked = false) {
   const handlers = {
-    onSave: mock(onSave),
     onRotate: mock((_e: InboundWebhookEndpoint) => {}),
     onClearPrevious: mock((_e: InboundWebhookEndpoint) => {}),
     onDelete: mock((_e: InboundWebhookEndpoint) => {}),
   };
-  render(<EndpointRow endpoint={endpoint} repositoryName="alpha" busy={busy} rotateBlocked={rotateBlocked} {...handlers} />);
+  await renderWithRouter(
+    <EndpointRow repositoryId="repo-1" endpoint={endpoint} busy={busy} rotateBlocked={rotateBlocked} {...handlers} />,
+  );
   return handlers;
 }
 
-const saveButton = () => screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
-
 describe('EndpointRow', () => {
-  it('renders label, repository, instruction and the path hint', () => {
-    setup();
-    expect(screen.getByText('Alerts')).toBeTruthy();
-    expect(screen.getByText('Repository: alpha')).toBeTruthy();
-    expect(screen.getByText('Instruction: Triage it')).toBeTruthy();
-    expect(screen.getByText('/webhooks/in/ep-1')).toBeTruthy();
+  it('renders the label, a multi-line instruction preserved with line breaks, the receive URL and an Edit link', async () => {
+    await setup(makeEndpoint({ instructionText: 'first\nsecond' }));
+    expect(screen.getByText('Slack alerts')).toBeTruthy();
+    const instruction = screen.getByTestId('endpoint-instruction');
+    expect(instruction.textContent).toBe('first\nsecond');
+    expect(instruction.className).toContain('whitespace-pre-wrap');
+    expect(instruction.className).toContain('line-clamp-4');
+    expect(instruction.title).toBe('first\nsecond');
+    await waitFor(() => expect(screen.getByText('https://hooks.example.com/webhooks/in/ep-1')).toBeTruthy());
+    expect(screen.getByRole('link', { name: 'Edit' }).getAttribute('href')).toBe(
+      '/settings/repositories/repo-1/inbound-webhooks/ep-1/edit',
+    );
   });
 
   it('wires Rotate and Delete to their callbacks with the endpoint', async () => {
     const user = userEvent.setup();
     const endpoint = makeEndpoint();
-    const h = setup(endpoint);
+    const h = await setup(endpoint);
     await user.click(screen.getByRole('button', { name: 'Rotate secret' }));
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(h.onRotate).toHaveBeenCalledWith(endpoint);
@@ -59,103 +54,34 @@ describe('EndpointRow', () => {
 
   it('shows the previous-secret controls only when hasPreviousSecret is true', async () => {
     const user = userEvent.setup();
-    setup();
+    await setup();
     expect(screen.queryByRole('button', { name: 'End previous secret now' })).toBeNull();
     expect(screen.queryByText(/Previous secret still valid until/)).toBeNull();
     cleanup();
 
     const endpoint = makeEndpoint({ hasPreviousSecret: true, previousSecretExpiresAt: '2099-01-02T00:00:00.000Z' });
-    const h = setup(endpoint);
+    const h = await setup(endpoint);
     expect(screen.getByText(/Previous secret still valid until/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'End previous secret now' }));
     expect(h.onClearPrevious).toHaveBeenCalledWith(endpoint);
   });
 
-  it('disables only Rotate when rotation is blocked; the other actions stay available', async () => {
-    const user = userEvent.setup();
-    const endpoint = makeEndpoint({ hasPreviousSecret: true, previousSecretExpiresAt: '2099-01-02T00:00:00.000Z' });
-    const h = setup(endpoint, false, true);
-    expect((screen.getByRole('button', { name: 'Rotate secret' }) as HTMLButtonElement).disabled).toBe(true);
-    for (const name of ['Edit', 'End previous secret now', 'Delete']) {
-      expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false);
-    }
-    await user.click(screen.getByRole('button', { name: 'Rotate secret' }));
-    expect(h.onRotate).not.toHaveBeenCalled();
-  });
-
-  it('disables every action while busy', () => {
-    setup(makeEndpoint({ hasPreviousSecret: true, previousSecretExpiresAt: '2099-01-02T00:00:00.000Z' }), true);
-    for (const name of ['Edit', 'Rotate secret', 'End previous secret now', 'Delete']) {
+  it('disables Rotate, End previous and Delete while busy', async () => {
+    await setup(makeEndpoint({ hasPreviousSecret: true, previousSecretExpiresAt: '2099-01-02T00:00:00.000Z' }), true);
+    for (const name of ['Rotate secret', 'End previous secret now', 'Delete']) {
       expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
     }
   });
 
-  it('edit mode shows the repository as read-only and Cancel restores the view without saving', async () => {
+  it('disables only Rotate when rotation is blocked; the other actions stay available', async () => {
     const user = userEvent.setup();
-    const h = setup();
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    expect(screen.getByText(/Repository: alpha \(fixed after creation\)/)).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Changed' } });
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    expect(screen.getByText('Alerts')).toBeTruthy();
-    expect(h.onSave).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('Alerts');
-  });
-
-  it('Save sends trimmed label and instruction and leaves edit mode', async () => {
-    const user = userEvent.setup();
-    const h = setup();
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.change(screen.getByLabelText('Label'), { target: { value: '  Renamed ' } });
-    fireEvent.change(screen.getByLabelText('Instruction text'), { target: { value: 'New text' } });
-
-    await user.click(saveButton());
-
-    await waitFor(() => expect(h.onSave).toHaveBeenCalledWith('ep-1', { label: 'Renamed', instructionText: 'New text' }));
-    await waitForAbsent(() => screen.queryByRole('button', { name: 'Save' }));
-  });
-
-  it('stays in edit mode when Save rejects', async () => {
-    const user = userEvent.setup();
-    const h = setup(makeEndpoint(), false, false, async () => {
-      throw new Error('nope');
-    });
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    await user.click(saveButton());
-    await waitFor(() => expect(h.onSave).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
-  });
-
-  it('refuses empty label and 101 character label, accepts 100', async () => {
-    const user = userEvent.setup();
-    setup();
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.change(screen.getByLabelText('Label'), { target: { value: '' } });
-    expect(screen.getByText('Label is required')).toBeTruthy();
-    expect(saveButton().disabled).toBe(true);
-
-    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'a'.repeat(101) } });
-    expect(saveButton().disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'a'.repeat(100) } });
-    expect(saveButton().disabled).toBe(false);
-  });
-
-  it('accepts a 300 character instruction and refuses 301 or blank', async () => {
-    const user = userEvent.setup();
-    setup();
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    const input = screen.getByLabelText('Instruction text');
-
-    fireEvent.change(input, { target: { value: 'a'.repeat(300) } });
-    expect(saveButton().disabled).toBe(false);
-    fireEvent.change(input, { target: { value: 'a'.repeat(301) } });
-    expect(screen.getByText('Instruction text must be at most 300 characters')).toBeTruthy();
-    expect(saveButton().disabled).toBe(true);
-    fireEvent.change(input, { target: { value: '  ' } });
-    expect(screen.getByText('Instruction text is required')).toBeTruthy();
-    expect(saveButton().disabled).toBe(true);
+    const endpoint = makeEndpoint({ hasPreviousSecret: true, previousSecretExpiresAt: '2099-01-02T00:00:00.000Z' });
+    const h = await setup(endpoint, false, true);
+    expect((screen.getByRole('button', { name: 'Rotate secret' }) as HTMLButtonElement).disabled).toBe(true);
+    for (const name of ['End previous secret now', 'Delete']) {
+      expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false);
+    }
+    await user.click(screen.getByRole('button', { name: 'Rotate secret' }));
+    expect(h.onRotate).not.toHaveBeenCalled();
   });
 });

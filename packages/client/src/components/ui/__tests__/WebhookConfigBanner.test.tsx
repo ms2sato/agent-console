@@ -60,6 +60,7 @@ describe('WebhookConfigBanner', () => {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: false,
           appUrl: 'https://example.com',
+          internetOrigin: null,
         }));
       }
       return originalFetch(url);
@@ -81,6 +82,7 @@ describe('WebhookConfigBanner', () => {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: true,
           appUrl: 'https://example.com',
+          internetOrigin: null,
         }));
       }
       return originalFetch(url);
@@ -103,6 +105,7 @@ describe('WebhookConfigBanner', () => {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: false,
           appUrl: 'https://example.com',
+          internetOrigin: null,
         }));
       }
       return originalFetch(url);
@@ -134,6 +137,7 @@ describe('WebhookConfigBanner', () => {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: false,
           appUrl: 'https://example.com',
+          internetOrigin: null,
         }));
       }
       return originalFetch(url);
@@ -156,6 +160,7 @@ describe('WebhookConfigBanner', () => {
         return Promise.resolve(createMockFetchResponse({
           webhookSecretConfigured: false,
           appUrl: 'https://example.com',
+          internetOrigin: null,
         }));
       }
       return originalFetch(url);
