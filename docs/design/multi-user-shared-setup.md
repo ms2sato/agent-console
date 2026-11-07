@@ -182,6 +182,7 @@ Rule (first match wins), applied to every method except `GET`, `HEAD` and `OPTIO
 
 1. `Sec-Fetch-Site` present: `same-origin` and `none` are accepted; any other value is refused.
 2. Otherwise `Origin` present: accepted when its host, including the port, equals the request's `Host` header; refused otherwise. `X-Forwarded-Host` is not trusted.
+   - Step 2 compares host and port, not the scheme: an `http://` Origin carrying the site's own host is accepted. Reaching it needs a browser that omits `Sec-Fetch-Site` and content served on that host over plain http, a position that already defeats more than this guard; recorded as an accepted limit. Operators who want it closed enable HSTS at the proxy, which keeps returning browsers off the plain-http origin.
 3. Neither header present: accepted. Non-browser callers (MCP server, scripts, `curl`, the embedded-agent harness) send neither header and are unchanged.
 
 A refusal answers `403 { "error": "Cross-site request refused" }` (deliberately distinct from the `401` of the auth middleware, since the guard runs first) and is logged at `debug` only.
