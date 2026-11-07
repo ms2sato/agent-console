@@ -78,5 +78,10 @@ const api = new Hono<AppBindings>()
   .route('/notifications', notifications)
   .route('/shared-accounts', sharedAccounts);
 
+// Registered after the whole chain (and outside it, so AppType is unchanged):
+// unknown /api/* paths answer a JSON 404 at the mount position instead of
+// falling through to the SPA fallback. Registration order is the mechanism.
+api.all('*', (c) => c.json({ error: 'Not Found' }, 404));
+
 export type AppType = typeof api;
 export { api };

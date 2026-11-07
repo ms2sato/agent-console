@@ -10,6 +10,26 @@ const logger = createLogger('webhooks');
 const webhooks = new Hono<AppBindings>();
 
 /**
+ * Register a POST-only route: `router.post(path, ...handlers)` followed by an
+ * `all` handler that answers every other method on the same path with a JSON
+ * 405 and `Allow: POST`. Without it, a GET on a webhook path would fall through
+ * to the production SPA fallback and answer 200 with index.html.
+ *
+ * Registration order is the mechanism: the POST handler must be registered
+ * first so it wins for POST; the `all` handler only sees what is left.
+ *
+ * @internal Exported for testing.
+ */
+export function postOnly(
+  router: Hono<AppBindings>,
+  path: string,
+  ...handlers: [MiddlewareHandler<AppBindings>, ...MiddlewareHandler<AppBindings>[]]
+): void {
+  router.on('POST', path, ...handlers);
+  router.all(path, (c) => c.json({ error: 'Method Not Allowed' }, 405, { Allow: 'POST' }));
+}
+
+/**
  * GitHub webhook endpoint.
  *
  * Always returns 200 OK regardless of internal errors.
@@ -21,7 +41,7 @@ const webhooks = new Hono<AppBindings>();
  * Note: Consider adding rate limiting at the infrastructure level (e.g., nginx, cloudflare)
  * to protect against webhook replay attacks.
  */
-webhooks.post('/github',
+postOnly(webhooks, '/github',
   bodyLimit({
     maxSize: 1 * 1024 * 1024, // 1MB
     onError: (c) => {
@@ -77,5 +97,13 @@ webhooks.post('/github',
 
   return c.json({ ok: true });
 });
+
+// Registration order is the mechanism: this catch-all must stay LAST in this
+// router. Hono matches handlers in registration order, so any webhook route
+// added above it wins, and every unknown path under /webhooks/ answers a JSON
+// 404 at the mount position instead of reaching the SPA fallback registered
+// after the router. Scanners hit this path, so it returns directly: no throw,
+// no logging.
+webhooks.all('*', (c) => c.json({ error: 'Not Found' }, 404));
 
 export { webhooks };
