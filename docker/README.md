@@ -356,28 +356,39 @@ beyond loopback**; they exist solely for local development and verification.
 
 ## Building behind a blocked Docker Hub
 
-The default `BUN_BASE` (`oven/bun:1.4.4`) is a directly-pullable fixed tag, so a
-clean environment with normal Docker Hub access builds with no extra flags:
+The base image is a dated Debian slim tag (`DEBIAN_BASE`, default
+`debian:trixie-20261027-slim`) that does not contain bun. Bun is installed from
+the release zip of the version listed in [`bun-sha256.txt`](./bun-sha256.txt),
+downloaded from GitHub Releases by [`fetch-bun.sh`](./fetch-bun.sh) in a
+throwaway build stage; the build **stops** unless the zip hashes to the SHA256
+recorded in that file, and the final image asserts `bun --version` equals the
+verified version. The final image therefore has no curl and no unzip. A clean
+environment builds with no extra flags:
 
 ```bash
 docker build -f docker/Dockerfile -t agent-console-multiuser-verify .
 ```
 
-If your environment can reach general networks (apt, npm, bun.sh) but **cannot
-pull from Docker Hub's registry** (a common corporate/proxy situation where
-`docker pull` hangs at "resolve image config"), build from a base image you
-already have cached and disable BuildKit so it never round-trips the registry:
+If your environment cannot pull from Docker Hub's registry (a common
+corporate/proxy situation where `docker pull` hangs at "resolve image config"),
+either point `DEBIAN_BASE` at a mirror or locally cached copy of the same
+image and disable BuildKit so it never round-trips the registry:
 
 ```bash
 DOCKER_BUILDKIT=0 docker build \
-  --build-arg BUN_BASE=oven/bun:1.3.4 \
+  --build-arg DEBIAN_BASE=<mirror>/debian:trixie-20261027-slim \
   -f docker/Dockerfile -t agent-console-multiuser-verify .
 ```
 
-The in-image step normalizes bun to `BUN_VERSION` (default `1.4.4`) regardless of
-the base tag, so an older cached base still produces a `>= 1.4.4` runtime. bun
-itself is fetched from `bun.sh` and npm packages from the npm registry — neither
-goes through Docker Hub.
+(or `docker tag` the mirror image as `debian:trixie-20261027-slim` and build
+with no flags). The bun download itself needs `github.com`, and npm packages
+the npm registry; neither goes through Docker Hub.
+
+**Upgrading bun** touches two files: the repo-root `.bun-version` and
+`docker/bun-sha256.txt` (its header has the procedure for computing and
+cross-checking the SHA256 values). `scripts/__tests__/bun-version-pins.test.mjs`
+fails if they disagree, and `scripts/__tests__/fetch-bun.test.mjs` exercises the
+checksum refusal against a local fixture.
 
 ## Notes / limitations
 

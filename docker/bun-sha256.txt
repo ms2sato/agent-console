@@ -1,0 +1,26 @@
+# Expected SHA256 of the Bun release zip, per version and architecture. The only
+# place (besides the repo-root `.bun-version`) to touch when Bun is upgraded.
+#
+# docker/Dockerfile and docker/Dockerfile.systemd install ONLY the version listed
+# here, from https://github.com/oven-sh/bun/releases, and refuse to continue if
+# the downloaded zip does not hash to the value written below. A release asset
+# that was replaced upstream therefore never reaches an image. The checksum
+# file published next to the release is NOT trusted for this (it is served from
+# the same place as the zip).
+#
+# Upgrade procedure:
+#   1. Pick a release that has been public for at least 7 days (security
+#      fixes excepted).
+#   2. Download bun-linux-x64.zip and bun-linux-aarch64.zip from
+#      https://github.com/oven-sh/bun/releases/tag/bun-v<version> and compute
+#      `sha256sum` yourself.
+#   3. Compare with the release's SHASUMS256.txt and the asset `digest` field of
+#      `gh api repos/oven-sh/bun/releases/tags/bun-v<version>`; write the
+#      values here only when all three agree.
+#   4. Replace the two data lines below (keep exactly ONE version in this file)
+#      and set the same version in the repo-root `.bun-version`.
+#      scripts/__tests__/bun-version-pins.test.mjs fails if they disagree.
+#
+# Format: <version> <arch: x64|aarch64> <sha256>
+1.4.4 x64 bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
+1.4.4 aarch64 baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e
