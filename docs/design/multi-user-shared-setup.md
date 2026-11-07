@@ -187,7 +187,9 @@ Rule (first match wins), applied to every method except `GET`, `HEAD` and `OPTIO
 
 A refusal answers `403 { "error": "Cross-site request refused" }` (deliberately distinct from the `401` of the auth middleware, since the guard runs first) and is logged at `debug` only.
 
-Exemptions, by mounting position rather than by an allowlist: `/webhooks/*` (signature-verified, must accept cross-origin POSTs), `/mcp` (bearer-authenticated) and `/ws/*` (WebSocket upgrades are a separate mechanism).
+Exemptions, by mounting position rather than by an allowlist: `/webhooks/*` (signature-verified, must accept cross-origin POSTs) and `/mcp` (bearer-authenticated).
+
+WebSocket upgrades on `/ws/app` and `/ws/session/:sessionId/worker/:workerId` apply the same header rule before the upgrade, through the shared predicate `crossSiteRefusal()` (`wsSameOriginGuard` in `packages/server/src/websocket/routes.ts`, the first middleware on both routes, ahead of authentication). A refusal answers `403 { "error": "Cross-site request refused" }` as a plain HTTP response, so no socket is created, and is logged at `debug` only. The safe-method pass-through does not apply: an upgrade is a `GET`, so the header rule is evaluated for every handshake.
 
 Multi-user mode already sets the auth cookie with `SameSite=Lax`, so there the guard is defence in depth. Single-user mode authenticates every request, so there the guard is the primary check. Step 2 is reached only by browsers that do not send `Sec-Fetch-Site`; behind a reverse proxy it requires the proxy to forward the original `Host` (see the [operator note](../multi-user-setup-guide.md#reverse-proxy-forward-the-original-host)).
 

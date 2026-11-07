@@ -439,7 +439,7 @@ sudo launchctl load /Library/LaunchDaemons/com.agentconsole.server.plist
 
 ## Reverse proxy: forward the original `Host`
 
-State-changing `/api` requests go through a [same-origin guard](design/multi-user-shared-setup.md#same-origin-guard). Browsers that do not send `Sec-Fetch-Site` are checked by comparing the host of the `Origin` header with the request's `Host` header. If you put a reverse proxy in front of Agent Console, it must forward the original `Host` header; otherwise such a browser's same-origin requests are refused with `403`. `X-Forwarded-Host` is not consulted.
+State-changing `/api` requests go through a [same-origin guard](design/multi-user-shared-setup.md#same-origin-guard). Browsers that do not send `Sec-Fetch-Site` are checked by comparing the host of the `Origin` header with the request's `Host` header. If you put a reverse proxy in front of Agent Console, it must forward the original `Host` header; otherwise such a browser's same-origin requests are refused with `403`. `X-Forwarded-Host` is not consulted. The WebSocket upgrade paths (`/ws/app` and `/ws/session/...`) are checked by the same rule, so the proxy must forward the original `Host` on them as well.
 
 For nginx:
 
