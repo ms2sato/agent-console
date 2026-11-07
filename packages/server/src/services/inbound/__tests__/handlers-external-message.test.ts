@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, setSystemTime, afterEach } from 'bun:test';
 import type { InboundSystemEvent, Session } from '@agent-console/shared';
-import { createInboundHandlers } from '../handlers.js';
+import { createInboundHandlers, findDeliverableWorkerId } from '../handlers.js';
 import type { InboundEventHandler, InboundHandlerDependencies } from '../handlers.js';
 import { buildPtyNotificationText, type PtyNotificationParams } from '../../../lib/pty-notification.js';
 import { SessionDataPathResolver } from '../../../lib/session-data-path-resolver.js';
@@ -194,5 +194,15 @@ describe('AgentWorkerHandler: external:message notification', () => {
     );
     expect(outcome).toBe('delivery-failed');
     expect(h.delivered).toEqual([]);
+  });
+});
+
+describe('findDeliverableWorkerId', () => {
+  it('names the first agent-shaped worker in worker order, or nothing', () => {
+    const diff = { id: 'w-diff', type: 'git-diff' as const, name: 'Diff', createdAt: '2024-01-01T00:00:00Z', baseCommit: 'abc' };
+    const first = { ...AGENT_WORKER, id: 'first' };
+    const second = { ...AGENT_WORKER, id: 'second' };
+    expect(findDeliverableWorkerId(buildWorktreeSession({ workers: [diff, first, second] }))).toBe('first');
+    expect(findDeliverableWorkerId(buildWorktreeSession({ workers: [diff] }))).toBeUndefined();
   });
 });

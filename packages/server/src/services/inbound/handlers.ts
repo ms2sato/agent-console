@@ -71,6 +71,16 @@ export function canDeliverToAgentWorker(session: Session): boolean {
 }
 
 /**
+ * The worker an inbound notification is delivered to when the target names
+ * none: the first agent-shaped worker in `session.workers` order. Single
+ * writer: the handler and anything that must name the same worker beforehand
+ * (the per-target delivery files) both call this.
+ */
+export function findDeliverableWorkerId(session: Session): string | undefined {
+  return session.workers.find(canReceiveSessionMessages)?.id;
+}
+
+/**
  * The result of a handler's attempt to act on an inbound event for one
  * target, distinguishing "nothing to do here" from "should have delivered
  * and could not" -- job-handler.ts maps these to the notification
@@ -167,7 +177,7 @@ class AgentWorkerHandler implements InboundEventHandler {
 
     // First match in `session.workers` order, deterministic, same as
     // today's `find`.
-    const workerId = target.workerId ?? session.workers.find(canReceiveSessionMessages)?.id;
+    const workerId = target.workerId ?? findDeliverableWorkerId(session);
     if (!workerId) return 'not-applicable';
 
     const sessionId = target.sessionId;
