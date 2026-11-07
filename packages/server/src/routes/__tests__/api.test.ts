@@ -118,6 +118,47 @@ describe('API route mounting', () => {
   });
 });
 
+describe('API unknown-path fallthrough', () => {
+  beforeEach(async () => {
+    await setupTestEnvironment();
+  });
+
+  afterEach(async () => {
+    await cleanupTestEnvironment();
+  });
+
+  // Mirrors index.ts's production SPA fallback shape: `app.get('*', ...)`,
+  // registered after /api. Without the api router's own catch-all, an unknown
+  // /api path would land here and answer 200 HTML.
+  function withSpaFallback(app: Hono<AppBindings>): Hono<AppBindings> {
+    app.get('*', (c) => c.html('<html>SPA index.html</html>'));
+    return app;
+  }
+
+  it('answers a JSON 404 (not the SPA page) for an unknown authenticated GET', async () => {
+    const app = withSpaFallback(await createTestApp());
+    const res = await app.request('/api/no-such-route');
+    expect(res.status).toBe(404);
+    const text = await res.text();
+    expect(text).not.toContain('<html');
+    expect(JSON.parse(text)).toEqual({ error: 'Not Found' });
+  });
+
+  it('still answers 401 for an unauthenticated request to an unknown path (auth runs first)', async () => {
+    const app = withSpaFallback(await createTestApp({
+      userMode: { authenticate: () => null } as Pick<UserMode, 'authenticate'> as UserMode,
+    }));
+    const res = await app.request('/api/no-such-route');
+    expect(res.status).toBe(401);
+  });
+
+  it('leaves known routes untouched', async () => {
+    const app = withSpaFallback(await createTestApp());
+    const res = await app.request('/api/skills');
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('GET /api/config — sharedAccountsAvailable', () => {
   beforeEach(async () => {
     await setupTestEnvironment();
@@ -231,5 +272,17 @@ describe('GET /api/config — deployedSha', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as ConfigResponse;
     expect(body.deployedSha).toBe('abc123def456');
+  });
+});
+
+describe('API router registration order', () => {
+  // A route appended after the catch-all would be shadowed by it, and the
+  // unknown-path 404 test would stay green. Pin the catch-all as the last
+  // registration.
+  it('keeps the ALL "/*" catch-all as the last registered route', async () => {
+    const { api } = await import('../api.js');
+    const last = api.routes.at(-1);
+    expect(last?.method).toBe('ALL');
+    expect(last?.path).toBe('/*');
   });
 });
