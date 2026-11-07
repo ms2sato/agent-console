@@ -181,40 +181,44 @@ describe('sameOriginGuard', () => {
   });
 
   describe('per request body type', () => {
+    // A route that ignores its request body, so every body type can succeed
+    // without Origin: a POST that dismisses an open todo. The effect is the
+    // repository `dismiss` call.
     const form = new FormData();
     form.append('title', 't');
-    const bodies: Array<{ name: string; contentType?: string; body?: string | FormData; controlStatus: number }> = [
-      { name: 'application/json', contentType: 'application/json', body: JSON.stringify({ title: 't', content: 'c' }), controlStatus: 201 },
-      { name: 'multipart/form-data', body: form, controlStatus: 400 },
-      { name: 'application/x-www-form-urlencoded', contentType: 'application/x-www-form-urlencoded', body: 'title=t&content=c', controlStatus: 400 },
-      { name: 'text/plain', contentType: 'text/plain', body: 'title=t', controlStatus: 400 },
-      { name: 'empty body', controlStatus: 400 },
+    const bodies: Array<{ name: string; contentType?: string; body?: string | FormData }> = [
+      { name: 'application/json', contentType: 'application/json', body: JSON.stringify({ title: 't', content: 'c' }) },
+      { name: 'multipart/form-data', body: form },
+      { name: 'application/x-www-form-urlencoded', contentType: 'application/x-www-form-urlencoded', body: 'title=t&content=c' },
+      { name: 'text/plain', contentType: 'text/plain', body: 'title=t' },
+      { name: 'empty body' },
     ];
 
     for (const b of bodies) {
-      it(`${b.name}: foreign Origin is refused with no side effect; without Origin the route answers itself`, async () => {
-        let created = 0;
-        const repo = {
-          create: async () => { created++; return { id: 'x', title: 't', content: 'c' }; },
-          findAll: async () => [],
+      it(`${b.name}: foreign Origin is refused with no side effect; without Origin the request works`, async () => {
+        let dismissed = 0;
+        const todo = { id: 'placeholder-id', sessionId: null, status: 'open' };
+        const todoRepository = {
+          findById: async () => todo,
+          dismiss: async () => { dismissed++; return { ...todo, status: 'dismissed' }; },
         };
-        const spied = await createTestApp({ messageTemplateRepository: repo as never });
+        const spied = await createTestApp({ todoRepository: todoRepository as never });
         const headers: Record<string, string> = { Host: HOST };
         if (b.contentType) headers['Content-Type'] = b.contentType;
+        const path = '/api/todos/placeholder-id/dismiss';
 
-        const refused = await spied.request('/api/message-templates', {
+        const refused = await spied.request(path, {
           method: 'POST',
           headers: { ...headers, Origin: FOREIGN_ORIGIN },
           body: b.body,
         });
         expect(refused.status).toBe(403);
-        expect(created).toBe(0);
+        expect(dismissed).toBe(0);
 
-        const control = await spied.request('/api/message-templates', { method: 'POST', headers, body: b.body });
-        // The headerless request reaches the route: JSON is created; the other
-        // body types get the route's own validation answer (400), never the guard's 403.
-        expect(control.status).toBe(b.controlStatus);
-        expect(created).toBe(b.controlStatus === 201 ? 1 : 0);
+        // Control: the same request without Origin reaches the handler and has its effect.
+        const control = await spied.request(path, { method: 'POST', headers, body: b.body });
+        expect(control.status).toBe(200);
+        expect(dismissed).toBe(1);
       });
     }
   });
