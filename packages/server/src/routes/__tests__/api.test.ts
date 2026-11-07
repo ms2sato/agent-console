@@ -274,3 +274,15 @@ describe('GET /api/config — deployedSha', () => {
     expect(body.deployedSha).toBe('abc123def456');
   });
 });
+
+describe('API router registration order', () => {
+  // A route appended after the catch-all would be shadowed by it, and the
+  // unknown-path 404 test would stay green. Pin the catch-all as the last
+  // registration.
+  it('keeps the ALL "/*" catch-all as the last registered route', async () => {
+    const { api } = await import('../api.js');
+    const last = api.routes.at(-1);
+    expect(last?.method).toBe('ALL');
+    expect(last?.path).toBe('/*');
+  });
+});

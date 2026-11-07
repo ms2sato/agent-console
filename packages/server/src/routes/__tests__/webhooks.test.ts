@@ -131,3 +131,13 @@ describe('Webhooks route fallthrough (method and path guards)', () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 });
+
+describe('Webhooks router registration order', () => {
+  // A route appended after the catch-all would be shadowed by it, and the 404
+  // tests above would stay green. Pin the catch-all as the last registration.
+  it('keeps the ALL "/*" catch-all as the last registered route', () => {
+    const last = webhooks.routes.at(-1);
+    expect(last?.method).toBe('ALL');
+    expect(last?.path).toBe('/*');
+  });
+});
