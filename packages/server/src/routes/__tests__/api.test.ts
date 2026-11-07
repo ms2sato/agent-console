@@ -318,4 +318,22 @@ describe('API router registration order', () => {
     const authIndex = api.routes.findIndex((r) => r.path.startsWith('/auth'));
     expect(authIndex).toBeGreaterThan(0);
   });
+
+  it('answers 403 (not 401) to a cross-site request when the caller is unauthenticated', async () => {
+    const app = await createTestApp({
+      userMode: { authenticate: () => null } as Pick<UserMode, 'authenticate'> as UserMode,
+    });
+    const foreign = await app.request('/api/message-templates', {
+      method: 'POST',
+      headers: { Host: 'console.test', Origin: 'https://evil.example' },
+    });
+    expect(foreign.status).toBe(403);
+
+    // Control: the same request without the cross-site marker reaches authMiddleware.
+    const control = await app.request('/api/message-templates', {
+      method: 'POST',
+      headers: { Host: 'console.test', 'Sec-Fetch-Site': 'same-origin' },
+    });
+    expect(control.status).toBe(401);
+  });
 });

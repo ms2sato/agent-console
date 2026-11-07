@@ -111,7 +111,7 @@ describe('sameOriginGuard', () => {
       }
     });
 
-    it('answers 403 (not 401) for an unauthenticated foreign request on /api/auth', async () => {
+    it('refuses a foreign Origin on /api/auth routes', async () => {
       const authRoute = routes.find((r) => r.path.startsWith('/api/auth/'));
       expect(authRoute).toBeDefined();
       const res = await send(app, authRoute!, { Origin: FOREIGN_ORIGIN });
