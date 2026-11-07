@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, spyOn } from 'bun:test';
 import { rootLogger } from '../../../lib/logger.js';
+import { initOutboundTls, resetOutboundTlsCacheForTest } from '../../../lib/outbound-tls.js';
 import {
   fetchAttachments,
   parseAllowedAttachmentUrl,
@@ -450,5 +451,61 @@ describe('uniqueAttachmentNames and its use in fetchAttachments', () => {
       fetchAttachments([entry(1, { name: undefined, mimetype: 'image/../../evil' })], { fetch: impl, limits: LIMITS }),
     );
     expect(result.fetched[0]!.name).toBe('attachment');
+  });
+});
+
+describe('fetchAttachments: the default fetch is the outbound TLS helper', () => {
+  type SeenCall = { input: unknown; init: Record<string, unknown> | undefined };
+
+  /** Spy on the global fetch (the helper's last hop) for one test, restoring it afterwards. */
+  async function withGlobalFetchSpy<T>(run: (calls: SeenCall[]) => Promise<T>): Promise<T> {
+    const calls: SeenCall[] = [];
+    const spy = spyOn(globalThis, 'fetch').mockImplementation(
+      Object.assign(
+        async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          calls.push({ input, init: init as Record<string, unknown> | undefined });
+          return new Response('neutral-bytes', { status: 200 });
+        },
+        { preconnect: () => {} },
+      ),
+    );
+    try {
+      return await run(calls);
+    } finally {
+      spy.mockRestore();
+      resetOutboundTlsCacheForTest();
+    }
+  }
+
+  it('with no fetch injected, the call reaches the global fetch THROUGH the helper: redirect, signal and the URL pass through, and tls.ca is added when a CA is resolved', async () => {
+    initOutboundTls({ OUTBOUND_TLS_CA_FILE: '/neutral/ca-bundle.crt' }, { readFile: () => 'CA-TEXT-NEUTRAL' }, { info: () => {} });
+    await withGlobalFetchSpy(async (calls) => {
+      const result = await guard(fetchAttachments([entry(1)], { limits: LIMITS }));
+      expect(result.fetched).toHaveLength(1);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.input).toBe(urlFor(1));
+      expect(calls[0]!.init?.redirect).toBe('manual');
+      expect(calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+      expect((calls[0]!.init?.tls as { ca?: string } | undefined)?.ca).toBe('CA-TEXT-NEUTRAL');
+    });
+  });
+
+  it('with the bundled CA list chosen, the helper adds no tls option and still passes redirect and signal', async () => {
+    initOutboundTls({ OUTBOUND_TLS_CA_FILE: 'bundled' }, { readFile: () => 'unused' }, { info: () => {} });
+    await withGlobalFetchSpy(async (calls) => {
+      await guard(fetchAttachments([entry(1)], { limits: LIMITS }));
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.init?.redirect).toBe('manual');
+      expect(calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+      expect(calls[0]!.init).not.toHaveProperty('tls');
+    });
+  });
+
+  it('an injected fetch still wins over the default: the global fetch is not touched', async () => {
+    await withGlobalFetchSpy(async (calls) => {
+      const { impl } = recordingFetch(okBytes('x'));
+      await guard(fetchAttachments([entry(1)], { fetch: impl, limits: LIMITS }));
+      expect(calls).toHaveLength(0);
+    });
   });
 });

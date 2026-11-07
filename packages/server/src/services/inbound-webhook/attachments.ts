@@ -8,6 +8,7 @@
  * message body from being delivered. This module imports nothing from the action half.
  */
 import { createLogger } from '../../lib/logger.js';
+import { outboundFetch } from '../../lib/outbound-tls.js';
 import { serverConfig } from '../../lib/server-config.js';
 
 const logger = createLogger('inbound-webhook-attachments');
@@ -51,6 +52,7 @@ export type AttachmentFetch = (
 ) => Promise<Response>;
 
 export interface AttachmentFetchDeps {
+  /** Defaults to `outboundFetch`, so the OS CA bundle governs the connection. */
   fetch?: AttachmentFetch;
   limits?: AttachmentFetchLimits;
 }
@@ -294,7 +296,7 @@ export async function fetchAttachments(
   files: AttachmentFileEntry[],
   deps: AttachmentFetchDeps = {},
 ): Promise<FetchAttachmentsResult> {
-  const fetchImpl: AttachmentFetch = deps.fetch ?? ((url, init) => fetch(url, init));
+  const fetchImpl: AttachmentFetch = deps.fetch ?? outboundFetch;
   const limits = deps.limits ?? defaultAttachmentLimits();
   const attempted = files.slice(0, limits.maxCount);
   let skipped = files.length - attempted.length;
