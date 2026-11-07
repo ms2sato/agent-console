@@ -7,7 +7,7 @@
  * mock objects; neither crosses the schema.
  *
  * Also pins the two new wire literals: an `inbound-event` frame carrying type `external:message`
- * and source `webhook` (with the three routing / rendering metadata keys) must parse through the
+ * and source `webhook` (with the routing / rendering metadata keys and the two attachment counts) must parse through the
  * real `AppServerMessageSchema`, and one carrying `instructionText` must not. Nothing emits such an
  * event yet, so the frame is hand-built in the exact shape `InboundEventSummary` has.
  *
@@ -176,6 +176,8 @@ describe('Client-Server Boundary: inbound webhook endpoints', () => {
         targetRepositoryId: 'repo-1',
         deliveryId: 'inbound-webhook:ep-1:webhook-1',
         instructionExcerpt: 'Run the triage skill',
+        attachmentsFetched: 2,
+        attachmentsSkipped: 1,
       },
     };
     const frame = (event: unknown) => JSON.parse(JSON.stringify({ type: 'inbound-event', sessionId: 'session-1', event }));
@@ -190,6 +192,24 @@ describe('Client-Server Boundary: inbound webhook endpoints', () => {
     it('an external:message frame carrying instructionText in its metadata is rejected (the full text travels as a file)', () => {
       const withText = { ...summary, metadata: { ...summary.metadata, instructionText: 'Run the triage skill' } };
       expect(v.safeParse(AppServerMessageSchema, frame(withText)).success).toBe(false);
+    });
+
+    it('the attachment counts parse as non-negative integers, zero included, and are optional', () => {
+      for (const counts of [{ attachmentsFetched: 0, attachmentsSkipped: 0 }, { attachmentsFetched: 10, attachmentsSkipped: 0 }]) {
+        const parsed = v.safeParse(AppServerMessageSchema, frame({ ...summary, metadata: { ...summary.metadata, ...counts } }));
+        expect(parsed.success).toBe(true);
+      }
+      const { attachmentsFetched: _f, attachmentsSkipped: _s, ...without } = summary.metadata;
+      expect(v.safeParse(AppServerMessageSchema, frame({ ...summary, metadata: without })).success).toBe(true);
+    });
+
+    it('a negative, fractional or non-numeric attachment count is rejected, on either key', () => {
+      for (const key of ['attachmentsFetched', 'attachmentsSkipped'] as const) {
+        for (const bad of [-1, 1.5, '2', null, Number.NaN]) {
+          const result = v.safeParse(AppServerMessageSchema, frame({ ...summary, metadata: { ...summary.metadata, [key]: bad } }));
+          expect(result.success).toBe(false);
+        }
+      }
     });
 
     it('controls: an unknown source, an unknown type and an unknown metadata key are still rejected', () => {

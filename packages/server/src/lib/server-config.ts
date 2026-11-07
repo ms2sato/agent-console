@@ -170,6 +170,42 @@ export const serverConfig = {
    * Default: 1MiB (1024 * 1024 bytes)
    */
   FILE_VIEWER_MAX_BYTES: parsePositiveIntWithDefault(process.env.FILE_VIEWER_MAX_BYTES, 1024 * 1024),
+  /*
+   * Memory bound of the three INBOUND_WEBHOOK_ATTACHMENT_* limits below. Every file fetched for one
+   * message is held in memory until all target sessions have their copy, so one job can hold up to
+   * MAX_COUNT x MAX_BYTES (10 x 25 MiB = 250 MiB by default). The job queue runs 4 jobs at a time by
+   * default (`jobConcurrency` in app-context.ts), so the per-process worst case is that times the
+   * concurrency, about 1 GiB. This is an accepted bound: the fan-out is one repository's designated
+   * sessions and attachments are few and small in practice. Raising MAX_COUNT or MAX_BYTES scales it
+   * linearly. There is deliberately no total-bytes cap.
+   */
+  /**
+   * Inbound webhook attachments: time allowed for ONE file (connect, headers and body together).
+   * A file that is not complete by then is skipped, never retried.
+   * Default: 10 seconds
+   */
+  INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS: parsePositiveIntWithDefault(
+    process.env.INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS,
+    10_000,
+  ),
+  /**
+   * Inbound webhook attachments: largest size of ONE file. Checked against the declared size and
+   * `Content-Length` first, and enforced while streaming; a file over the cap is skipped.
+   * Default: 25MiB (25 * 1024 * 1024 bytes)
+   */
+  INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES: parsePositiveIntWithDefault(
+    process.env.INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES,
+    25 * 1024 * 1024,
+  ),
+  /**
+   * Inbound webhook attachments: most files attempted per message, in payload order. The rest are
+   * skipped and counted.
+   * Default: 10
+   */
+  INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT: parsePositiveIntWithDefault(
+    process.env.INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT,
+    10,
+  ),
   /**
    * Base URL for the application.
    * Used to generate URLs in outbound notifications (e.g., Slack "Open Session" button).

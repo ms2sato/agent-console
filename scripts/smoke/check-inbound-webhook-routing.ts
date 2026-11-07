@@ -43,6 +43,20 @@
  *           same request helper and the same counters observed (a deliveries row, a job, a
  *           ledger row per target, tags in the output file).
  *
+ *   (5) ATTACHMENT REFUSAL (offline negative arm, last so the baselines above are untouched): a
+ *           second signed delivery whose `slack_files` entry points at a host outside the
+ *           allowlist that can never resolve (an RFC 2606 `.invalid` name). Positive control in
+ *           the same arm: the body reaches L (tag in its output, `body.md` on disk). Then
+ *           `attachments_fetched=0 attachments_skipped=1` in L's notification, no attachment
+ *           file in L's delivery directory, the child's own stdout carries the attachment
+ *           module's refusal record (so the fetch provably never left the machine: a refusal is
+ *           logged before any network call), the URL and token appear in no captured stdout, no
+ *           output of L and no `body.md`, and the POST-to-tag time is far below the 10 s
+ *           per-file timeout (a connect attempt to an unresolvable name would not return that
+ *           fast). The SUCCESS path (a fetched file written per target) cannot run here: the host
+ *           pin is hardcoded and forbids a fake host, so it is covered in process by an injected
+ *           fetch (a recorded proxy for the real Firebase host).
+ *
  * The request signature is computed HERE from the Standard Webhooks specification (HMAC-SHA256
  * over `{id}.{timestamp}.{body}`, keyed by the base64-decoded part of the secret after `whsec_`),
  * never by importing the production verifier, so a production signer or verifier that drifted
@@ -58,7 +72,7 @@
  *   2  bad usage / the smoke could not run (server failed to boot, git commands failed, etc.)
  */
 import { createHmac } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createScratchGitRepo, type ScratchGitRepo } from '../../packages/server/src/__tests__/utils/scratch-git.js';
@@ -197,6 +211,20 @@ const EXCERPT = 'Triage the message';
 const FILE_HOST_PATTERN = /files\.slack\.com/;
 const TOKEN_LOOKING = 'tok-SMOKE-TOKENLIKE-SUBSTRING';
 const RAW_EVENT_TEXT = 'RAW-SLACK-EVENT-TEXT';
+// Arm (5): a host outside the allowlist that can never resolve (RFC 2606 `.invalid`), matched as a pattern.
+const REFUSED_FILE_HOST_PATTERN = /attachments-NEUTRAL\.invalid/;
+const REFUSED_FILE_TOKEN = 'tok-NEUTRAL-0001';
+const REFUSAL_LOG_MESSAGE = 'Inbound webhook attachment skipped';
+const REFUSAL_LOG_REASON = 'url-refused';
+const REFUSED_BODY = {
+  schema_version: 1,
+  message: 'Second delivery, attachment host not allowed',
+  slack_channel: 'C123',
+  slack_ts: '1700000001.000100',
+  slack_files: [{ name: 'b.png', url: `https://attachments-NEUTRAL.invalid/files/b.png?token=${REFUSED_FILE_TOKEN}` }],
+};
+/** The POST-to-tag time must stay far below the 10 s attachment timeout; generous for a loaded runner. */
+const REFUSAL_ARM_MAX_ELAPSED_MS = 5_000;
 const TAG = '[inbound:external:message]';
 const SENDER_BODY = {
   schema_version: 1,
@@ -442,19 +470,22 @@ async function main(): Promise<void> {
       timestamp?: number;
       secretToSign?: string;
       signature?: string;
+      /** Raw request text; defaults to the first delivery's body. */
+      rawBody?: string;
     }
     /** One request through the real route; every arm and the control use this same helper. */
     const post = (o: PostOptions): Promise<Response> => {
       const timestamp = String(o.timestamp ?? nowSeconds());
+      const rawBody = o.rawBody ?? body;
       return fetch(`${baseUrl}/webhooks/in/${o.endpoint ?? endpointId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'webhook-id': o.webhookId,
           'webhook-timestamp': timestamp,
-          'webhook-signature': o.signature ?? standardWebhookSignature(o.secretToSign ?? secret, o.webhookId, timestamp, body),
+          'webhook-signature': o.signature ?? standardWebhookSignature(o.secretToSign ?? secret, o.webhookId, timestamp, rawBody),
         },
-        body,
+        body: rawBody,
       });
     };
 
@@ -636,6 +667,91 @@ async function main(): Promise<void> {
       'ARMS: the replay produced NO second notification (L\'s output, the stub and P\'s deferred rows are unchanged)',
       `tagsL=${tagCount(readSafe(outputPathL))} stub=${stubRequests.length} deferred=${countDeferred()}`,
     );
+
+    // ===================================================================
+    // (5) ATTACHMENT REFUSAL: last, so the replay and counter assertions above read what they read.
+    // ===================================================================
+    console.log('\n==> ATTACHMENT REFUSAL: a signed POST whose file host is outside the allowlist');
+    const refusedWebhookId = `${WEBHOOK_ID}-files`;
+    const refusedDeliveryId = `inbound-webhook:${endpointId}:${refusedWebhookId}`;
+    const beforeL2 = readSafe(outputPathL);
+    const stdoutBefore = stdoutBuf.length;
+    const stubBefore = stubRequests.length;
+    const postedAt2 = Date.now();
+    const refusedRes = await post({ webhookId: refusedWebhookId, rawBody: JSON.stringify(REFUSED_BODY) });
+    expect(refusedRes.status === 200, '(5) the signed POST with a refused file host is accepted (200)', `status=${refusedRes.status}`);
+    const tagFoundL2 = await waitFor(
+      () => tagCount(readSafe(outputPathL).slice(beforeL2.length)) >= 1,
+      45_000,
+      "L's output file to contain the tag of the second delivery",
+    );
+    const elapsedMs = Date.now() - postedAt2;
+    const newL2 = readSafe(outputPathL).slice(beforeL2.length);
+    // (i) positive control: the body was delivered, so a silent harness cannot pass the checks below.
+    expect(tagFoundL2, `(5) POSITIVE CONTROL: L's output gained ${TAG} for the second delivery`, newL2.slice(-600));
+    const resolverL = resolverFor(sessionL.id);
+    const pathsL2 = resolverL.getInboundWebhookDeliveryPaths(sessionL.id, workerL.id, refusedDeliveryId);
+    const bodyL2 = readSafe(pathsL2.bodyPath);
+    expect(
+      existsSync(pathsL2.bodyPath) && bodyL2.includes(REFUSED_BODY.message),
+      "(5) POSITIVE CONTROL: body.md exists in L's delivery directory and carries the sender message",
+      bodyL2.slice(0, 300),
+    );
+    // (ii) the counts.
+    expect(
+      newL2.includes('attachments_fetched=0') && newL2.includes('attachments_skipped=1'),
+      "(5) L's notification carries attachments_fetched=0 and attachments_skipped=1",
+      newL2.slice(-600),
+    );
+    expect(
+      newL2.includes(`body_path=${pathsL2.bodyPath} attachments_fetched=0 attachments_skipped=1 intent=triage`),
+      "(5) the count fields sit after body_path and before intent",
+      newL2.slice(-600),
+    );
+    // (iii) nothing was written as an attachment.
+    const attachmentEntries = existsSync(pathsL2.attachmentsDir) ? readdirSync(pathsL2.attachmentsDir) : [];
+    expect(attachmentEntries.length === 0, "(5) L's delivery directory has no attachment file (attachments/ absent or empty)", JSON.stringify(attachmentEntries));
+    // (iv) the fetch never left the machine, observed: the server's own refusal record, and speed.
+    const refusalLogged = await waitFor(
+      () => {
+        const since = stdoutBuf.slice(stdoutBefore);
+        return since.includes(REFUSAL_LOG_MESSAGE) && since.includes(REFUSAL_LOG_REASON);
+      },
+      15_000,
+      "the child server's stdout to carry the attachment refusal record",
+    );
+    const stdoutSince = stdoutBuf.slice(stdoutBefore);
+    expect(
+      refusalLogged,
+      `(5) the child server's stdout carries the attachment module's refusal record ("${REFUSAL_LOG_MESSAGE}", reason ${REFUSAL_LOG_REASON})`,
+      stdoutSince.slice(-600),
+    );
+    expect(
+      !REFUSED_FILE_HOST_PATTERN.test(stdoutBuf) && !stdoutBuf.includes(REFUSED_FILE_TOKEN) &&
+        !REFUSED_FILE_HOST_PATTERN.test(stderrBuf) && !stderrBuf.includes(REFUSED_FILE_TOKEN),
+      '(5) the attachment URL and token appear nowhere in the captured server stdout or stderr',
+      stdoutSince.slice(-600),
+    );
+    expect(
+      !REFUSED_FILE_HOST_PATTERN.test(newL2) && !newL2.includes(REFUSED_FILE_TOKEN) && !REFUSED_FILE_HOST_PATTERN.test(bodyL2) && !bodyL2.includes(REFUSED_FILE_TOKEN),
+      "(5) the attachment URL and token appear in neither L's output nor body.md",
+      bodyL2.slice(0, 300),
+    );
+    expect(
+      elapsedMs < REFUSAL_ARM_MAX_ELAPSED_MS,
+      `(5) the delivery was observed in ${elapsedMs} ms, well under the 10 s attachment timeout (bound ${REFUSAL_ARM_MAX_ELAPSED_MS} ms): no connect attempt was waited on`,
+      `elapsedMs=${elapsedMs}`,
+    );
+    const refusedJobDone = await waitFor(
+      () => queryOne<{ status: string }>('SELECT status FROM jobs WHERE id = ?', refusedDeliveryId)?.status === JOB_STATUS.COMPLETED,
+      30_000,
+      'the second delivery job to complete',
+    );
+    const refusedJob = queryOne<{ status: string; attempts: number }>('SELECT status, attempts FROM jobs WHERE id = ?', refusedDeliveryId);
+    expect(refusedJobDone && refusedJob?.attempts === 0, '(5) the second delivery job completed on its first attempt (the refused file did not fail the job)', JSON.stringify(refusedJob));
+    // Let E's turn for this event finish before teardown deletes its session (not an assertion).
+    await waitFor(() => stubRequests.length > stubBefore, 30_000, "E's turn for the second delivery");
+    await Bun.sleep(1_000);
     void stdoutBuf;
     void stderrBuf;
   } finally {

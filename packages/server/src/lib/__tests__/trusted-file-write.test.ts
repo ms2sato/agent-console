@@ -21,6 +21,26 @@ describe('writeFileInTrustedDir', () => {
     expect(fs.existsSync(`${target}.tmp`)).toBe(false);
   });
 
+  it('writes binary content byte for byte (every byte value, invalid UTF-8 included), leaving no temp file', async () => {
+    const target = `${ROOT}/a/b/file.bin`;
+    const bytes = Uint8Array.from({ length: 256 }, (_unused, i) => i);
+    await writeFileInTrustedDir(ROOT, target, bytes);
+    const read = fs.readFileSync(target);
+    expect(Array.from(read)).toEqual(Array.from(bytes));
+    expect(fs.existsSync(`${target}.tmp`)).toBe(false);
+  });
+
+  it('writes an empty binary file', async () => {
+    const target = `${ROOT}/sub/empty.bin`;
+    await writeFileInTrustedDir(ROOT, target, new Uint8Array(0));
+    expect(fs.readFileSync(target).byteLength).toBe(0);
+  });
+
+  it('refuses a binary target outside the trusted root and writes nothing', async () => {
+    await expect(writeFileInTrustedDir(ROOT, '/test/elsewhere/file.bin', new Uint8Array([1]))).rejects.toThrow();
+    expect(fs.existsSync('/test/elsewhere/file.bin')).toBe(false);
+  });
+
   it('refuses a target outside the trusted root and writes nothing', async () => {
     await expect(writeFileInTrustedDir(ROOT, '/test/elsewhere/file.md', 'x')).rejects.toThrow();
     expect(fs.existsSync('/test/elsewhere/file.md')).toBe(false);

@@ -829,10 +829,10 @@ POST /webhooks/in/:endpointId                                   -- RECEIVE HALF 
   -> 200 accepted; 503 if the transaction fails; 500 for anything unhandled
 job INBOUND_WEBHOOK_PROCESS:
   receive half  -> re-read the endpoint row (gone -> no delivery, the job completes without retry)
-                -> parse the body, build DeliveryContent { bodyMarkdown (sanitized), instructionMarkdown (endpoint.instruction_text as-is), summary, url }
+                -> parse the body, fetch the attachments once into memory (best effort), build DeliveryContent { bodyMarkdown (sanitized), instructionMarkdown (endpoint.instruction_text as-is), attachments, attachment counts, summary, url }
   action half   -> (kind: repository-orchestrators, the only kind today)
                    InboundSystemEvent { type: 'external:message', source: 'webhook', metadata: { targetRepositoryId, repositoryName, deliveryId, instructionExcerpt } }
-                -> resolveTargets -> write body.md + instruction.md into each target's messages dir
+                -> resolveTargets -> write body.md + instruction.md + attachments/ into each target's messages dir
                 -> existing handler chain -> deliverWorkerNotification (live PTY, embedded, paused deferral)
 ```
 
@@ -871,6 +871,19 @@ The 401 body is one generic message for every signature or timestamp failure; th
 - **Files.** Written by the action half before delivery, once per target, into `{messagesDir}/{sessionId}/{workerId}/inbound-webhook/{deliveryId}/` through the trusted-directory writer (`lib/trusted-file-write.ts`, the same ancestor-contract walk the inter-session message files use): the files inherit the `2775` data-root contract (readable by the session's OS user in multi-user mode) and session deletion already removes `messages/<sessionId>`. A paused session's deferred row references the paths and the files outlive any pause. `body.md` is a sanitized projection (`message`, `slack_permalink`, `slack_channel` / `slack_ts`); `slack_message` and `slack_files[].url` are never written to any session-visible file. `instruction.md` is `instruction_text` as stored at process time, byte for byte (the endpoint row is re-read, so an edit between receipt and processing is honoured). A write failure for one target drops only that target.
 - **Deleted endpoint.** The job handler re-reads the endpoint; if it is gone (deleted, or cascade-deleted with its repository) it logs and completes the job without delivering. The job queue itself retries every thrown error, so the handler absorbs this case rather than relying on a permanent-error class.
 
+### Attachments
+
+The sender's `slack_files` entries (`{name, mimetype, size, url}`) are short-lived download-token URLs (objects are deleted at the source after about a day), so the receive half fetches them when the job runs, before anything reaches a session. Everything about them is best effort: a file that cannot be fetched is skipped and counted, never retried, and never blocks the body.
+
+- **Host pin.** The only host is `firebasestorage.googleapis.com`, hardcoded in `services/inbound-webhook/attachments.ts` and not configurable, so no setting can widen where the server connects. The URL must parse, use `https`, have a hostname exactly equal to the pin (no suffix match, no substring match), carry no user name or password, and use the default port; anything else is skipped without any network call. The hostname is compared after URL parsing, so host case does not matter and an explicit `:443` is accepted; what is checked is what is fetched.
+- **Redirects.** The fetch is made with `redirect: 'manual'`; any 3xx or other non-2xx answer is a skip, never followed.
+- **Caps.** Per-file timeout 10 s, per-file size 25 MiB, at most 10 files per message, as injectable limits whose defaults live in `server-config.ts` (`INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS`, `INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES`, `INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT`). The size cap is enforced on the declared size, on `Content-Length`, and while streaming: the reader is cancelled the moment the running total passes the cap. Files beyond the count cap are not attempted and are counted as skipped.
+- **Token handling.** The download-token URL is read once and discarded. It appears in no `DeliveryContent` field, no written file, no notification field, no thrown error text and no log line (a failing fetch is logged by reason code and position only). Session-visible files carry only local file names.
+- **One fetch, one copy per target.** Each file is fetched once into memory by the receive half and copied per target by the action half into `{messagesDir}/{sessionId}/{workerId}/inbound-webhook/{deliveryId}/attachments/<name>` through the same trusted-directory writer as the other files. `body.md` lists the local names as relative paths (`attachments/<name>`) and the number not fetched; there is no separate notification field carrying the directory.
+- **File names.** The sender's name becomes a path inside a directory, so only its last path component survives (split on `/` and `\`), control, line-separator, bidi and zero-width characters are removed, an empty or dots-only name becomes `attachment`, a name is capped at 100 code points and 240 UTF-8 bytes (the stem is shortened, the extension kept, a surrogate pair is never split), and collisions are numbered before the extension (`a.png`, `a-2.png`), compared case-insensitively. The declared mimetype is never used to build a name.
+- **Counts.** `attachments_fetched` and `attachments_skipped` are notification fields rendered after `body_path`, only when the message listed files (a message without `slack_files` keeps the exact text it had before attachments existed); `fetched + skipped` equals the number of files listed. The counts are event-level, from the one fetch: a per-target write failure for one attachment is logged (ids and position only) and does not change them.
+- **Verification.** The success path (pin, caps, redirect, timeout, per-target copies, token absence) is exercised in-process through the real job handler with an injected fetch, because the pin forbids reaching any other host from a test; the shipping-path smoke covers the offline refusal arm (a non-allowlisted host is skipped without any network call while the body still delivers).
+
 ### Data at rest (accepted)
 
 - `jobs.payload` holds the dispatcher's raw body verbatim (including `slack_files[].url` and `slack_message`) for as long as the job row exists, which today is indefinitely (no completed-job retention sweep exists; `cancelJob` only deletes pending/stalled rows). Bounded in practice by the token's ~1 day validity at Firebase. A retention sweep would be a job-queue Issue, not part of this one.
@@ -880,7 +893,7 @@ The 401 body is one generic message for every signature or timestamp failure; th
 
 - Only the webhook paths are exposed to the internet. The receive URL shown in the UI, `<internet origin>/webhooks/in/<id>`, is built from the optional server setting `AGENT_CONSOLE_INTERNET_ORIGIN` (exposed as `internetOrigin` on `GET /api/system/health`): it must be the internet-facing origin that the reverse proxy routes to this server, never `AGENT_CONSOLE_PUBLIC_ORIGIN` or `APP_URL`, which are human-facing.
 - The reverse proxy must forward `/webhooks/in/*` (today only `/webhooks/github` may be exposed); a missing route answers 404, which the dispatcher treats as a permanent loss. **Register a URL in the dispatcher only after that forwarding is in place.**
-- During a deploy the proxy must answer 502/503 or refuse the connection on this path; a page answering 200, 401 or 404 loses the message permanently. The dispatcher retries on timeout, connection failure, 408, 429 and 5xx; other 4xx and 3xx are permanent. A secret mismatch is a permanent 401, so rotation updates the receiver first: rotate here, paste the new value into the dispatcher, let the 24 h previous-secret window close.
+- During a deploy the proxy must answer a 5xx (for example 502, 503, or Cloudflare Tunnel's 530) or refuse the connection on this path; a page answering 200, 401 or 404 loses the message permanently. The dispatcher retries on timeout, connection failure, 408, 429 and 5xx; other 4xx and 3xx are permanent. A secret mismatch is a permanent 401, so rotation updates the receiver first: rotate here, paste the new value into the dispatcher, let the 24 h previous-secret window close.
 
 ### Surfaces: decision table
 
@@ -923,7 +936,6 @@ Entered-secret handling in the client: the secret input is `type="password"` wit
 
 - A "launch" endpoint kind (start an agent with a prompt, not bound to one repository, possibly creating worktrees across repositories) is out of scope. When built, it is NOT represented as `repository_id IS NULL` on `inbound_webhook_endpoints`: it gets its own table, or a `kind` column with per-kind CHECKs, decided then. The receive/action split above is what that kind plugs into.
 - No templates or transformation of the sender's body; the first version projects fields only.
-- Attachments (`slack_files`) are not fetched yet; their URLs are never written anywhere session-visible.
 
 ## Configuration
 

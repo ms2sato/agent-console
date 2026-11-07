@@ -354,6 +354,8 @@ const SystemEventMetadataSchema = v.strictObject({
   targetRepositoryId: v.optional(v.string()),
   deliveryId: v.optional(v.string()),
   instructionExcerpt: v.optional(v.string()),
+  attachmentsFetched: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+  attachmentsSkipped: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
 });
 
 const InboundEventSummarySchema = v.strictObject({

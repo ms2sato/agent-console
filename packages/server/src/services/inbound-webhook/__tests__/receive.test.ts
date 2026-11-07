@@ -467,12 +467,83 @@ describe('prepareDelivery', () => {
         slack_message: { text: 'RAW-EVENT-SENTINEL', blocks: [] },
         slack_files: [{ name: 'a.png', mimetype: 'image/png', size: 5, url: `https://firebasestorage.googleapis.com/v0/b/x/o/a?alt=media&token=${token}` }],
       }),
-      { endpoints },
+      // The file is not fetchable here, so no local name is listed either.
+      { endpoints, attachmentFetch: async () => new Response('', { status: 404 }) },
     );
     const everything = JSON.stringify(content);
     for (const forbidden of ['RAW-EVENT-SENTINEL', token, 'firebasestorage', 'slack_message', 'slack_files', 'a.png']) {
       expect(everything).not.toContain(forbidden);
     }
+  });
+
+  describe('attachments', () => {
+    const TOKEN = 'tok-NEUTRAL-0002';
+    const fileUrl = (n: number) => `https://firebasestorage.googleapis.com/v0/b/bucket-NEUTRAL/o/f${n}?alt=media&token=${TOKEN}-${n}`;
+    const calls: string[] = [];
+    const stubFetch = async (url: string) => {
+      calls.push(url);
+      return url.includes('/f2?') ? new Response('', { status: 404 }) : new Response(new Uint8Array([9, 8, 7]), { status: 200 });
+    };
+
+    beforeEach(() => {
+      calls.length = 0;
+    });
+
+    it('a message without slack_files has no attachments, 0/0 counts, hasAttachments false and no section', async () => {
+      const content = await prepareDelivery(payloadOf({ message: 'x' }), { endpoints, attachmentFetch: stubFetch });
+      expect(content).toMatchObject({ attachments: [], attachmentsFetched: 0, attachmentsSkipped: 0, hasAttachments: false });
+      expect(content.bodyMarkdown).not.toContain('Attachments');
+      expect(calls).toEqual([]);
+    });
+
+    it('an empty slack_files array counts as no attachments', async () => {
+      const content = await prepareDelivery(payloadOf({ message: 'x', slack_files: [] }), { endpoints, attachmentFetch: stubFetch });
+      expect(content).toMatchObject({ attachmentsFetched: 0, attachmentsSkipped: 0, hasAttachments: false });
+    });
+
+    it('fetches each file once, lists the LOCAL names under attachments/, counts the failure, and carries no URL or token anywhere', async () => {
+      const content = await prepareDelivery(
+        payloadOf({
+          message: 'with files',
+          slack_files: [
+            { name: 'one.png', mimetype: 'image/png', size: 3, url: fileUrl(1) },
+            { name: '../../two.png', url: fileUrl(2) },
+            { name: 'three.txt', url: fileUrl(3) },
+            { name: 'four.txt', url: 'https://evil.test/four' },
+          ],
+        }),
+        { endpoints, attachmentFetch: stubFetch },
+      );
+      expect(calls).toHaveLength(3);
+      expect(content.hasAttachments).toBe(true);
+      expect(content.attachments.map((a) => a.name)).toEqual(['one.png', 'three.txt']);
+      expect(Array.from(content.attachments[0]!.bytes)).toEqual([9, 8, 7]);
+      expect(content.attachmentsFetched).toBe(2);
+      expect(content.attachmentsSkipped).toBe(2);
+      expect(content.bodyMarkdown).toContain('## Attachments\n\n- attachments/one.png\n- attachments/three.txt\n- Not fetched: 2\n');
+      const everything = JSON.stringify({ ...content, attachments: content.attachments.map((a) => a.name) });
+      for (const forbidden of [TOKEN, 'firebasestorage', 'bucket-NEUTRAL', 'evil.test', 'image/png', 'two.png']) {
+        expect(everything).not.toContain(forbidden);
+      }
+    });
+
+    it('a failing fetch never fails the delivery: the body is built and everything is counted skipped', async () => {
+      const content = await prepareDelivery(
+        payloadOf({ message: 'still delivered', slack_files: [{ name: 'a.png', url: fileUrl(1) }] }),
+        { endpoints, attachmentFetch: async () => { throw new Error('network down'); } },
+      );
+      expect(content.bodyMarkdown).toContain('still delivered');
+      expect(content).toMatchObject({ attachments: [], attachmentsFetched: 0, attachmentsSkipped: 1, hasAttachments: true });
+    });
+
+    it('applies injected limits: the count cap leaves the rest skipped', async () => {
+      const content = await prepareDelivery(
+        payloadOf({ message: 'x', slack_files: [1, 3, 4].map((n) => ({ name: `f${n}`, url: fileUrl(n) })) }),
+        { endpoints, attachmentFetch: stubFetch, attachmentLimits: { timeoutMs: 1000, maxBytes: 100, maxCount: 2 } },
+      );
+      expect(calls).toHaveLength(2);
+      expect(content).toMatchObject({ attachmentsFetched: 2, attachmentsSkipped: 1 });
+    });
   });
 
   it('strips control characters but keeps newline and tab in the body projection', async () => {

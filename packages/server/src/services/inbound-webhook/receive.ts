@@ -17,6 +17,7 @@ import { stripControlChars } from '../../lib/pty-notification.js';
 import { createLogger } from '../../lib/logger.js';
 import type { InboundWebhookEndpointRepository } from '../../repositories/webhook-endpoint-repository.js';
 import { PermanentHandlerError } from '../inbound/job-handler.js';
+import { fetchAttachments, type AttachmentFetch, type AttachmentFetchLimits, type FetchedAttachment } from './attachments.js';
 
 const logger = createLogger('inbound-webhook-receive');
 
@@ -280,10 +281,22 @@ export interface DeliveryContent {
   url: string | null;
   deliveryId: string;
   endpoint: DeliveryEndpoint;
+  /** Fetched attachments, fetched once; the action copies them per target. Sanitized unique names. */
+  attachments: FetchedAttachment[];
+  /** Equal to `attachments.length`. 0 when the message carried no files. */
+  attachmentsFetched: number;
+  /** Files listed by the sender that were not fetched, for any reason. 0 when it carried no files. */
+  attachmentsSkipped: number;
+  /** Whether the message listed any files at all (the counts are only reported when true). */
+  hasAttachments: boolean;
 }
 
 export interface PrepareDeliveryDeps {
   endpoints: Pick<InboundWebhookEndpointRepository, 'findWithSecretById'>;
+  /** The fetch used for attachments. Defaults to `outboundFetch` (the OS-CA-aware helper); an injected function overrides it. */
+  attachmentFetch?: AttachmentFetch;
+  /** Attachment limits. Default to the server config. */
+  attachmentLimits?: AttachmentFetchLimits;
 }
 
 function toSingleLine(value: string): string {
@@ -305,17 +318,24 @@ function sanitizeMultiline(value: string): string {
 }
 
 /**
- * Projection of `message`, `slack_permalink`, `slack_channel` and `slack_ts` only. `slack_message`
- * and `slack_files` never enter it: the first is the raw event, the second carries short-lived
- * download-token URLs.
+ * Projection of `message`, `slack_permalink`, `slack_channel` and `slack_ts`, plus the LOCAL names
+ * of the fetched attachments. `slack_message` and the `slack_files` entries never enter it: the
+ * first is the raw event, the second carries short-lived download-token URLs, and a listed
+ * attachment is only ever a file name under `attachments/` (the sanitized name, not the declared
+ * name, mimetype or size).
  */
-function buildBodyMarkdown(body: InboundWebhookBody): string {
+function buildBodyMarkdown(body: InboundWebhookBody, attachments: { names: string[]; skipped: number }): string {
   const lines = ['# Inbound webhook message', '', '## Message', '', sanitizeMultiline(body.message ?? '')];
   const details: string[] = [];
   if (body.slack_permalink !== undefined) details.push(`- Permalink: ${toSingleLine(body.slack_permalink)}`);
   if (body.slack_channel !== undefined) details.push(`- Channel: ${toSingleLine(body.slack_channel)}`);
   if (body.slack_ts !== undefined) details.push(`- Timestamp: ${toSingleLine(body.slack_ts)}`);
   if (details.length > 0) lines.push('', '## Details', '', ...details);
+  if (attachments.names.length > 0 || attachments.skipped > 0) {
+    lines.push('', '## Attachments', '');
+    for (const name of attachments.names) lines.push(`- attachments/${name}`);
+    if (attachments.skipped > 0) lines.push(`- Not fetched: ${attachments.skipped}`);
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -336,12 +356,20 @@ export async function prepareDelivery(
   if (body === null) {
     throw new PermanentHandlerError('Stored inbound webhook payload does not match the body schema');
   }
+  const files = body.slack_files ?? [];
+  const { fetched, skipped } = files.length === 0
+    ? { fetched: [], skipped: 0 }
+    : await fetchAttachments(files, { fetch: deps.attachmentFetch, limits: deps.attachmentLimits });
   return {
-    bodyMarkdown: buildBodyMarkdown(body),
+    bodyMarkdown: buildBodyMarkdown(body, { names: fetched.map((file) => file.name), skipped }),
     instructionMarkdown: endpoint.instructionText,
     summary: toSummary(body.message),
     url: body.slack_permalink ?? null,
     deliveryId: payload.jobId,
     endpoint: { id: endpoint.id, repositoryId: endpoint.repositoryId, label: endpoint.label },
+    attachments: fetched,
+    attachmentsFetched: fetched.length,
+    attachmentsSkipped: skipped,
+    hasAttachments: files.length > 0,
   };
 }

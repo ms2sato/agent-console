@@ -7,7 +7,10 @@
  * `session-data-path.ts`. See `docs/design/session-data-path.md` for the spec.
  */
 import * as path from 'path';
-import { assertValidSegment } from './session-data-path.js';
+import { assertValidSegment, InvalidSessionDataScopeError } from './session-data-path.js';
+
+/** Longest attachment file name in UTF-8 bytes: 255 minus room for the writer's `.tmp` sibling. */
+const MAX_ATTACHMENT_FILE_NAME_BYTES = 250;
 
 /**
  * Discriminates the two `memoryDir` shapes the memory layer (epic #1636
@@ -33,11 +36,11 @@ export class SessionDataPathResolver {
   /**
    * Single writer of an inbound-webhook delivery's per-target file locations:
    * `<messagesDir>/<sessionId>/<workerId>/inbound-webhook/<deliveryId>/` with
-   * the untrusted sender file `body.md` and the operator-trusted
-   * `instruction.md` inside it. The notification handler (which tells the agent
-   * the paths) and the writer of the files both call this, so the two cannot
-   * drift. `deliveryId` is `inbound-webhook:<endpointId>:<webhookId>`, so a
-   * colon is allowed in that one segment; every segment is otherwise the same
+   * the untrusted sender file `body.md`, the operator-trusted `instruction.md`
+   * and the `attachments/` directory inside it. The notification handler (which
+   * tells the agent the paths) and the writer of the files both call this, so
+   * the two cannot drift. `deliveryId` is `inbound-webhook:<endpointId>:<webhookId>`,
+   * so a colon is allowed in that one segment; every segment is otherwise the same
    * single-segment shape as the rest of this resolver.
    *
    * @throws {InvalidSessionDataScopeError} if a segment is not a valid single path segment.
@@ -46,12 +49,39 @@ export class SessionDataPathResolver {
     sessionId: string,
     workerId: string,
     deliveryId: string,
-  ): { dir: string; bodyPath: string; instructionPath: string } {
+  ): { dir: string; bodyPath: string; instructionPath: string; attachmentsDir: string } {
     assertValidSegment(sessionId, 'sessionId');
     assertValidSegment(workerId, 'workerId');
     assertValidSegment(deliveryId.replace(/:/g, '-'), 'deliveryId');
     const dir = path.join(this.getMessagesDir(), sessionId, workerId, 'inbound-webhook', deliveryId);
-    return { dir, bodyPath: path.join(dir, 'body.md'), instructionPath: path.join(dir, 'instruction.md') };
+    return {
+      dir,
+      bodyPath: path.join(dir, 'body.md'),
+      instructionPath: path.join(dir, 'instruction.md'),
+      attachmentsDir: path.join(dir, 'attachments'),
+    };
+  }
+
+  /**
+   * Location of one attachment file inside a delivery's `attachments/` directory. The file name
+   * comes from the sender (already sanitized upstream); it is verified here as well, as a single
+   * path segment: non-empty, not `.` / `..`, no `/`, `\`, NUL or control character, and short
+   * enough that the writer's `.tmp` sibling still fits a 255-byte file name.
+   *
+   * @throws {InvalidSessionDataScopeError} if any segment is not a valid single path segment.
+   */
+  getInboundWebhookAttachmentPath(sessionId: string, workerId: string, deliveryId: string, fileName: string): string {
+    const { attachmentsDir } = this.getInboundWebhookDeliveryPaths(sessionId, workerId, deliveryId);
+    if (
+      fileName === '' ||
+      fileName === '.' ||
+      fileName === '..' ||
+      /[/\\\u0000-\u001f\u007f]/.test(fileName) ||
+      Buffer.byteLength(fileName, 'utf-8') > MAX_ATTACHMENT_FILE_NAME_BYTES
+    ) {
+      throw new InvalidSessionDataScopeError('attachment file name is not a valid single path segment');
+    }
+    return path.join(attachmentsDir, fileName);
   }
 
   /** Read-more files listing what was deferred while the session was paused (one `<resumedAt>.md` per resume). */

@@ -553,6 +553,8 @@ describe('useAppWsEvent wire consumption (external:message inbound event)', () =
         targetRepositoryId: 'repo-1',
         deliveryId: 'inbound-webhook:ep-1:webhook-1',
         instructionExcerpt: 'Triage this message',
+        attachmentsFetched: 2,
+        attachmentsSkipped: 1,
       },
     };
     const onInboundEvent = mock(() => {});

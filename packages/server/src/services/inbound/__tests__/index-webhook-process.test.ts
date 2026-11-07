@@ -3,7 +3,7 @@
  * `inbound-webhook:process` handler it registers is wired to the endpoint repository and the
  * action (real RepositoryManager and SessionManager, capture-only queue).
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import type { InboundWebhookProcessPayload } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs } from '../../../__tests__/utils/mock-fs-helper.js';
 import { createMockPtyFactory } from '../../../__tests__/utils/mock-pty.js';
@@ -92,8 +92,9 @@ describe('initializeInboundIntegration: job handler registration', () => {
     delete process.env.AGENT_CONSOLE_HOME;
   });
 
-  function initialize(): void {
+  function initialize(attachments?: Parameters<typeof initializeInboundIntegration>[0]['inboundWebhookAttachments']): void {
     initializeInboundIntegration({
+      inboundWebhookAttachments: attachments,
       db: getDatabase(),
       jobQueue: asJobQueue({
         registerHandler: <T>(type: string, handler: JobHandler<T>) => {
@@ -146,5 +147,41 @@ describe('initializeInboundIntegration: job handler registration', () => {
     await handler(payloadFor('ep-live'));
 
     expect(lookup).toHaveBeenCalledWith(REPO_ID);
+  });
+
+  it('threads inboundWebhookAttachments into the webhook handler: a listed attachment reaches the INJECTED fetch, not the global one', async () => {
+    await new SqliteInboundWebhookEndpointRepository(getDatabase()).create({
+      id: 'ep-files',
+      label: 'Slack',
+      repositoryId: REPO_ID,
+      instructionText: 'Do it',
+      secret: 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw',
+      now: '2026-11-07T00:00:00.000Z',
+    });
+    const injected = mock(async (_url: string) => new Response('bytes', { status: 200 }));
+    const globalFetch = spyOn(globalThis, 'fetch').mockImplementation(
+      Object.assign(async () => new Response('', { status: 404 }), { preconnect: () => {} }),
+    );
+    try {
+      initialize({
+        attachmentFetch: injected,
+        attachmentLimits: { timeoutMs: 2_000, maxBytes: 1_000, maxCount: 10 },
+      });
+      const handler = registered.get(JOB_TYPES.INBOUND_WEBHOOK_PROCESS) as JobHandler<InboundWebhookProcessPayload>;
+      const payload = {
+        ...payloadFor('ep-files'),
+        rawPayload: JSON.stringify({
+          message: 'hello',
+          slack_files: [{ name: 'a.bin', url: 'https://firebasestorage.googleapis.com/v0/b/bucket-NEUTRAL/o/doc-1?alt=media&token=tok-NEUTRAL-0004' }],
+        }),
+      };
+
+      await handler(payload);
+
+      expect(injected).toHaveBeenCalledTimes(1);
+      expect(globalFetch).not.toHaveBeenCalled();
+    } finally {
+      globalFetch.mockRestore();
+    }
   });
 });
