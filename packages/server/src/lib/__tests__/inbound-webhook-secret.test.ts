@@ -4,6 +4,7 @@ import {
   INBOUND_WEBHOOK_SECRET_BYTES,
   INBOUND_WEBHOOK_SECRET_PREFIX,
   generateInboundWebhookSecret,
+  isPreviousSecretActive,
   previousSecretExpiryFrom,
 } from '../inbound-webhook-secret.js';
 import { ISO8601_GLOB_PATTERN } from '../../database/schema-helpers.js';
@@ -42,5 +43,20 @@ describe('previousSecretExpiryFrom', () => {
     const now = new Date('2026-11-07T12:00:00.000Z');
     previousSecretExpiryFrom(now);
     expect(now.toISOString()).toBe('2026-11-07T12:00:00.000Z');
+  });
+});
+
+describe('isPreviousSecretActive', () => {
+  const now = new Date('2026-11-07T12:00:00.000Z');
+
+  it('is true only while the expiry is strictly in the future', () => {
+    expect(isPreviousSecretActive('2026-11-07T12:00:00.001Z', now)).toBe(true);
+    expect(isPreviousSecretActive('2026-11-07T12:00:00.000Z', now)).toBe(false);
+    expect(isPreviousSecretActive('2026-11-07T11:59:59.999Z', now)).toBe(false);
+  });
+
+  it('is false without an expiry or with an unparsable one', () => {
+    expect(isPreviousSecretActive(null, now)).toBe(false);
+    expect(isPreviousSecretActive('not a date', now)).toBe(false);
   });
 });

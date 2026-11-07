@@ -26,5 +26,6 @@ export {
   type CleanupWorkerOutputPayload,
   type CleanupRepositoryPayload,
   type InboundEventJobPayload,
+  type InboundWebhookProcessPayload,
   type CleanupDefinitionMemoryPayload,
 } from './job-types.js';
