@@ -102,6 +102,31 @@ function isRoutableState(session: Session, pausedIds: ReadonlySet<string>): bool
   return pausedIds.has(session.id) || session.activationState === 'running';
 }
 
+export type OrchestratorSessionClassification =
+  | { eligible: true; paused: boolean }
+  | { eligible: false; reason: 'not-live' | 'not-running' | 'no-agent-worker' };
+
+/**
+ * Can a designated-Orchestrator session receive a delivery? Applies, in this
+ * order: the session must be among the routable sessions, in a routable state
+ * (live and running, or paused), and have an agent-shaped worker to deliver
+ * to. The first failing check names the reason, so a session that is both not
+ * running and has no agent worker reports 'not-running'. `paused` is
+ * membership in `pausedIds`, the same test the routing paths use to decide a
+ * deferral.
+ */
+export function classifyOrchestratorSession(
+  sessionId: string,
+  sessions: readonly Session[],
+  pausedIds: ReadonlySet<string>
+): OrchestratorSessionClassification {
+  const session = sessions.find((s) => s.id === sessionId);
+  if (!session) return { eligible: false, reason: 'not-live' };
+  if (!isRoutableState(session, pausedIds)) return { eligible: false, reason: 'not-running' };
+  if (!canDeliverToAgentWorker(session)) return { eligible: false, reason: 'no-agent-worker' };
+  return { eligible: true, paused: pausedIds.has(sessionId) };
+}
+
 export async function resolveTargets(
   event: InboundSystemEvent,
   deps: TargetResolverDependencies
@@ -286,12 +311,10 @@ async function resolveDesignatedFallbackSessionIds(
 
   for (const repository of matchedRepositories) {
     for (const orchestratorSessionId of repository.orchestratorSessionIds) {
-      const liveSession = sessions.find((s) => s.id === orchestratorSessionId);
-      if (!liveSession) continue;
-      if (!isRoutableState(liveSession, pausedIds)) continue;
-      if (!canDeliverToAgentWorker(liveSession)) continue;
+      const classification = classifyOrchestratorSession(orchestratorSessionId, sessions, pausedIds);
+      if (!classification.eligible) continue;
 
-      if (pausedIds.has(orchestratorSessionId)) {
+      if (classification.paused) {
         logger.info(
           { repositoryName, orchestratorSessionId },
           'Designated orchestrator session is paused; fallback delivery will be deferred to its resume digest'
@@ -361,9 +384,9 @@ async function resolveIssueLabeledTargets(
     }
 
     for (const orchestratorSessionId of repository.orchestratorSessionIds) {
-      const liveSession = sessions.find((s) => s.id === orchestratorSessionId);
+      const classification = classifyOrchestratorSession(orchestratorSessionId, sessions, pausedIds);
 
-      if (!liveSession) {
+      if (!classification.eligible && classification.reason === 'not-live') {
         logger.info(
           { repositoryId: repository.id, orchestratorSessionId },
           'issue:labeled event matched repository but a designated orchestrator session is not a live session'
@@ -386,9 +409,10 @@ async function resolveIssueLabeledTargets(
       // already computed upstream by
       // `SessionConverterService.toPublicSession()`; read it off
       // `liveSession` rather than recomputing it here.
-      if (!isRoutableState(liveSession, pausedIds)) {
+      if (!classification.eligible && classification.reason === 'not-running') {
+        const activationState = sessions.find((s) => s.id === orchestratorSessionId)?.activationState;
         logger.info(
-          { repositoryId: repository.id, orchestratorSessionId, activationState: liveSession.activationState },
+          { repositoryId: repository.id, orchestratorSessionId, activationState },
           'issue:labeled event matched repository but the designated orchestrator session is not running'
         );
         continue;
@@ -403,7 +427,7 @@ async function resolveIssueLabeledTargets(
       // workerId from). Check the same single-writer predicate handle()
       // uses, so this routing decision and the actual delivery capability
       // never drift apart.
-      if (!canDeliverToAgentWorker(liveSession)) {
+      if (!classification.eligible) {
         logger.info(
           { repositoryId: repository.id, orchestratorSessionId },
           'issue:labeled event matched repository but the designated orchestrator session has no agent worker to deliver to'
@@ -411,7 +435,7 @@ async function resolveIssueLabeledTargets(
         continue;
       }
 
-      if (pausedIds.has(orchestratorSessionId)) {
+      if (classification.paused) {
         logger.info(
           { repositoryId: repository.id, orchestratorSessionId },
           'issue:labeled event routed to a paused designated orchestrator session; delivery will be deferred to its resume digest'
