@@ -87,7 +87,6 @@ export function NewInboundWebhookView({ repositoryId }: { repositoryId: string }
 
       {issued ? (
         <SecretRevealPanel
-          key={`${issued.endpointId}:${issued.secret}`}
           endpointLabel={issued.label}
           secret={issued.secret}
           action={
