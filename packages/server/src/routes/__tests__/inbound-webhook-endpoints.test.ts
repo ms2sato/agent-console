@@ -33,7 +33,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const KNOWN_REPOSITORIES = new Set([REPO_ID, OTHER_REPO_ID]);
 const stubRepositoryManager = {
   getRepository: (id: string) => (KNOWN_REPOSITORIES.has(id) ? { id } : undefined),
-} as unknown as RepositoryManager;
+} as Pick<RepositoryManager, 'getRepository'> as RepositoryManager;
 
 function mockUserMode(user: AuthUser | null): UserMode {
   return {

@@ -36,9 +36,6 @@ export function SettingsPage() {
         </p>
       </div>
 
-      {/* Shared accounts are a multi-user-only concept; hide the link entirely
-          when AUTH_MODE=none rather than linking to a page that would just
-          say "not available". */}
       <div className="card text-gray-500 mt-4">
         <p>
           Manage{' '}
@@ -49,6 +46,9 @@ export function SettingsPage() {
         </p>
       </div>
 
+      {/* Shared accounts are a multi-user-only concept; hide the link entirely
+          when AUTH_MODE=none rather than linking to a page that would just
+          say "not available". */}
       {authMode !== 'none' && (
         <div className="card text-gray-500 mt-4">
           <p>
