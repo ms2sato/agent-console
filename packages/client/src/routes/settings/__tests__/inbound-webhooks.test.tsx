@@ -89,12 +89,14 @@ beforeEach(() => {
       return jsonResponse({ endpoint: created, secret: 'whsec_created' }, 201);
     }
     if (method === 'POST' && url.endsWith('/rotate-secret')) {
+      const rotatedId = url.split('/').slice(-2)[0];
       endpoints = endpoints.map((e) =>
-        e.id === 'ep-1'
+        e.id === rotatedId
           ? { ...e, hasPreviousSecret: true, previousSecretExpiresAt: '2099-01-02T00:00:00.000Z' }
           : e,
       );
-      return jsonResponse({ endpoint: endpoints[0], secret: 'whsec_rotated' });
+      const rotated = endpoints.find((e) => e.id === rotatedId);
+      return jsonResponse({ endpoint: rotated, secret: rotatedId === 'ep-1' ? 'whsec_rotated' : `whsec_rotated_${rotatedId}` });
     }
     if (method === 'POST' && url.endsWith('/clear-previous-secret')) {
       endpoints = endpoints.map((e) => ({ ...e, hasPreviousSecret: false, previousSecretExpiresAt: null }));
@@ -216,6 +218,26 @@ describe('InboundWebhooksPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'I have saved the secret' }));
     expect(screen.queryByText(/whsec_rotated/)).toBeNull();
+  });
+
+  it('a second issued secret replaces the first panel without inheriting its "Copied" state', async () => {
+    endpoints = [makeEndpoint(), makeEndpoint({ id: 'ep-2', label: 'Other' })];
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: mock((_t: string) => Promise.resolve()) }, configurable: true });
+    await renderWithRouter(<InboundWebhooksPage />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Rotate secret' })).toHaveLength(2));
+
+    await user.click(screen.getAllByRole('button', { name: 'Rotate secret' })[0]);
+    await waitFor(() => expect(screen.getByTestId('issued-secret').textContent).toBe('whsec_rotated'));
+    await user.click(screen.getByRole('button', { name: 'Copy' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy());
+
+    // Rotate the other endpoint WITHOUT dismissing the first panel.
+    await user.click(screen.getAllByRole('button', { name: 'Rotate secret' })[1]);
+
+    await waitFor(() => expect(screen.getByTestId('issued-secret').textContent).toBe('whsec_rotated_ep-2'));
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Copied' })).toBeNull();
   });
 
   it('End previous secret now calls the endpoint and hides the control', async () => {

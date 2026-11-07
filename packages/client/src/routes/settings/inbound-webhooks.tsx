@@ -130,6 +130,7 @@ export function InboundWebhooksPage() {
 
       {issued && (
         <SecretRevealPanel
+          key={`${issued.endpointId}:${issued.secret}`}
           endpointLabel={issued.label}
           secret={issued.secret}
           onDismiss={() => setIssued(null)}
