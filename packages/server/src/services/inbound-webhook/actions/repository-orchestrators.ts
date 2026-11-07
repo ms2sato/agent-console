@@ -5,7 +5,7 @@
  * It turns the receive half's `DeliveryContent` into an `external:message` event and hands it to
  * the existing inbound-event pipeline (`createInboundEventJobHandler`: target resolution, the
  * notification ledger, the handlers). The one thing it adds around that pipeline is the two
- * per-target files (`body.md`, `instruction.md`), written BEFORE the targets are returned and so
+ * per-target files (`body.md`, `instruction.md` and the `attachments/` copies), written BEFORE the targets are returned and so
  * before any notification names them.
  */
 import type { InboundSystemEvent, Repository, Session } from '@agent-console/shared';
@@ -75,7 +75,33 @@ async function displaySlug(repository: Repository, deps: RepositoryOrchestrators
 }
 
 /**
- * Write both delivery files into the target's own directory and return the target pinned to the
+ * Copy the one in-memory set of fetched attachments into this target's `attachments/` directory.
+ * Best effort per file: a file that cannot be written is skipped for this target only (logged with
+ * ids and the file's position, never its name), and neither the target nor the body is affected.
+ * The event-level counts are not changed by such a failure.
+ */
+async function writeAttachments(
+  resolver: SessionDataPathResolver,
+  sessionId: string,
+  workerId: string,
+  content: DeliveryContent,
+): Promise<void> {
+  const root = resolver.getTrustedRoot();
+  for (const [index, attachment] of content.attachments.entries()) {
+    try {
+      const filePath = resolver.getInboundWebhookAttachmentPath(sessionId, workerId, content.deliveryId, attachment.name);
+      await writeFileInTrustedDir(root, filePath, attachment.bytes);
+    } catch (error) {
+      logger.warn(
+        { sessionId, workerId, deliveryId: content.deliveryId, index, errorName: error instanceof Error ? error.name : 'unknown' },
+        'Failed to write an inbound webhook attachment for a target; skipped for this target',
+      );
+    }
+  }
+}
+
+/**
+ * Write the delivery files into the target's own directory and return the target pinned to the
  * worker the notification will go to. Null (logged, no content) when this target cannot be
  * prepared; it is then left out of the delivery and the others proceed.
  */
@@ -96,6 +122,7 @@ async function prepareTarget(
     const root = found.resolver.getTrustedRoot();
     await writeFileInTrustedDir(root, paths.bodyPath, content.bodyMarkdown);
     await writeFileInTrustedDir(root, paths.instructionPath, content.instructionMarkdown);
+    await writeAttachments(found.resolver, sessionId, workerId, content);
     return { ...target, workerId };
   } catch (error) {
     logger.error(
@@ -135,6 +162,10 @@ export async function deliverToRepositoryOrchestrators(
       deliveryId: content.deliveryId,
       instructionExcerpt: toInstructionExcerpt(content.instructionMarkdown),
       url: content.url ?? undefined,
+      // Event-level counts from the one fetch. A per-target write failure does not change them.
+      ...(content.hasAttachments
+        ? { attachmentsFetched: content.attachmentsFetched, attachmentsSkipped: content.attachmentsSkipped }
+        : {}),
     },
     payload: {},
     summary: content.summary,

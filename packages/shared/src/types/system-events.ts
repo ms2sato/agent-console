@@ -49,6 +49,16 @@ export interface SystemEventMetadata {
    * 120 characters. Used for rendering only; the full text travels as a file.
    */
   instructionExcerpt?: string;
+  /**
+   * Scoped to `external:message`, present only when the message listed attachments. How many of
+   * them were fetched; rendered as `attachments_fetched`. The sender's file URLs never travel.
+   */
+  attachmentsFetched?: number;
+  /**
+   * Scoped to `external:message`, present only when the message listed attachments. How many of
+   * them were not fetched for any reason; rendered as `attachments_skipped`.
+   */
+  attachmentsSkipped?: number;
 }
 
 /**

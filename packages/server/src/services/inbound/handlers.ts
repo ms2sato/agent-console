@@ -275,6 +275,7 @@ class AgentWorkerHandler implements InboundEventHandler {
       );
       return null;
     }
+    const { attachmentsFetched, attachmentsSkipped } = event.metadata;
     return {
       type: event.type,
       source: event.source,
@@ -285,6 +286,10 @@ class AgentWorkerHandler implements InboundEventHandler {
       instruction_excerpt: toInstructionExcerpt(event.metadata.instructionExcerpt ?? ''),
       instruction_path: paths.instructionPath,
       body_path: paths.bodyPath,
+      // Only when the sender listed files: a message without any keeps the earlier text exactly.
+      ...(attachmentsFetched !== undefined && attachmentsSkipped !== undefined
+        ? { attachments_fetched: String(attachmentsFetched), attachments_skipped: String(attachmentsSkipped) }
+        : {}),
     };
   }
 

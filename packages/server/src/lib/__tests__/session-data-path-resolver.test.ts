@@ -171,6 +171,7 @@ describe('SessionDataPathResolver.getInboundWebhookDeliveryPaths', () => {
       dir: '/data/base/messages/s1/w1/inbound-webhook/inbound-webhook:ep1:wh1',
       bodyPath: '/data/base/messages/s1/w1/inbound-webhook/inbound-webhook:ep1:wh1/body.md',
       instructionPath: '/data/base/messages/s1/w1/inbound-webhook/inbound-webhook:ep1:wh1/instruction.md',
+      attachmentsDir: '/data/base/messages/s1/w1/inbound-webhook/inbound-webhook:ep1:wh1/attachments',
     });
   });
 
@@ -178,5 +179,31 @@ describe('SessionDataPathResolver.getInboundWebhookDeliveryPaths', () => {
     for (const [s, w, d] of [['../x', 'w1', 'd1'], ['s1', 'a/b', 'd1'], ['s1', 'w1', '..'], ['s1', 'w1', 'a/../b'], ['s1', 'w1', '']]) {
       expect(() => resolver.getInboundWebhookDeliveryPaths(s!, w!, d!)).toThrow(InvalidSessionDataScopeError);
     }
+  });
+});
+
+describe('SessionDataPathResolver.getInboundWebhookAttachmentPath', () => {
+  const resolver = new SessionDataPathResolver('/data/base', '/data');
+  const DIR = '/data/base/messages/s1/w1/inbound-webhook/inbound-webhook:ep1:wh1/attachments';
+
+  it('places the file inside the delivery attachments directory, which the delivery paths name too', () => {
+    expect(resolver.getInboundWebhookAttachmentPath('s1', 'w1', 'inbound-webhook:ep1:wh1', 'report.pdf')).toBe(`${DIR}/report.pdf`);
+    expect(resolver.getInboundWebhookDeliveryPaths('s1', 'w1', 'inbound-webhook:ep1:wh1').attachmentsDir).toBe(DIR);
+  });
+
+  it('accepts a multi-byte name with spaces', () => {
+    expect(resolver.getInboundWebhookAttachmentPath('s1', 'w1', 'inbound-webhook:ep1:wh1', '\u65e5\u672c \u8a9e.pdf')).toBe(`${DIR}/\u65e5\u672c \u8a9e.pdf`);
+  });
+
+  it('refuses a name that is not one path segment', () => {
+    const bad = ['', '.', '..', '../x', 'a/b', 'a\\b', 'a\u0000b', 'a\nb', 'x'.repeat(251)];
+    for (const name of bad) {
+      expect(() => resolver.getInboundWebhookAttachmentPath('s1', 'w1', 'inbound-webhook:ep1:wh1', name)).toThrow(InvalidSessionDataScopeError);
+    }
+    expect(resolver.getInboundWebhookAttachmentPath('s1', 'w1', 'inbound-webhook:ep1:wh1', 'x'.repeat(250))).toBe(`${DIR}/${'x'.repeat(250)}`);
+  });
+
+  it('still refuses a bad session segment', () => {
+    expect(() => resolver.getInboundWebhookAttachmentPath('../s', 'w1', 'd1', 'a')).toThrow(InvalidSessionDataScopeError);
   });
 });

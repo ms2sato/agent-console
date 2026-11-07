@@ -1,4 +1,9 @@
 /**
+ * Attachments (the second describe below) use an injected `fetch` stub. The attachment host pin
+ * forbids reaching the real Firebase host from a test, so the stub is a recorded PROXY for it:
+ * everything downstream of the fetch (job handler, receive half, per-target writes, notification,
+ * deferral) is the production path, in process.
+ *
  * The action half end to end: real SessionManager (fake PTY), real SQLite, memfs, the real
  * `initializeInboundIntegration` registration and the real inbound pipeline. Fakes sit only at the
  * PTY seam. Direct tests drive the registered `inbound-webhook:process` handler; the route test
@@ -28,6 +33,8 @@ import { AnnotationService } from '../../../annotation-service.js';
 import { initializeInboundIntegration } from '../../../inbound/index.js';
 import { repositoryLookupFromSlug } from '../../../../__tests__/utils/repository-lookup-mock.js';
 import { inboundWebhookDeliveryId } from '../../receive.js';
+import type { AttachmentFetch, AttachmentFetchLimits } from '../../attachments.js';
+import { rootLogger } from '../../../../lib/logger.js';
 
 const TEST_CONFIG_DIR = '/test/config-inbound-webhook-action';
 const TEST_REPO_PATH = '/test/repo-inbound-webhook-action';
@@ -136,13 +143,22 @@ describe('inbound webhook action: repository orchestrators', () => {
   });
 
   /** Registers the real handlers on a capture-only queue and returns the process handler. */
-  function registerOnCapturingQueue(): JobHandler<InboundWebhookProcessPayload> {
+  function registerOnCapturingQueue(
+    attachments?: { attachmentFetch?: AttachmentFetch; attachmentLimits?: AttachmentFetchLimits },
+  ): JobHandler<InboundWebhookProcessPayload> {
     const jobQueue = new JobQueue(db(), { concurrency: 1 });
     const capture = (type: string, handler: JobHandler<never>) => {
       handlers.set(type, handler);
     };
     spyOn(jobQueue, 'registerHandler').mockImplementation(capture as typeof jobQueue.registerHandler);
-    initializeInboundIntegration({ db: db(), jobQueue, sessionManager, repositoryManager, broadcastToApp: () => {} });
+    initializeInboundIntegration({
+      db: db(),
+      jobQueue,
+      sessionManager,
+      repositoryManager,
+      broadcastToApp: () => {},
+      inboundWebhookAttachments: attachments,
+    });
     const handler = handlers.get(JOB_TYPES.INBOUND_WEBHOOK_PROCESS);
     if (!handler) throw new Error('inbound-webhook:process handler was not registered');
     return handler as JobHandler<InboundWebhookProcessPayload>;
@@ -374,5 +390,170 @@ describe('inbound webhook action: repository orchestrators', () => {
       handler({ jobId: inboundWebhookDeliveryId('ep-gone', 'wh-1'), endpointId: 'ep-gone', rawPayload: JSON.stringify(SENDER_BODY), receivedAt: RECEIVED_AT }),
     ).resolves.toBeUndefined();
     expect(deliveries).toEqual([]);
+  });
+  describe('attachments', () => {
+    const ATT_TOKEN = 'tok-NEUTRAL-0003';
+    const ATT_HOST = 'https://firebasestorage.googleapis.com/v0/b/bucket-NEUTRAL/o';
+    const attUrl = (name: string) => `${ATT_HOST}/${name}?alt=media&token=${ATT_TOKEN}`;
+    const BYTES_ONE = Uint8Array.from([0xff, 0xfe, 0x00, 0x01, 0x80]);
+    const BYTES_TWO = Uint8Array.from([0x00, 0x00, 0x7f]);
+    const FILES = [
+      { name: 'one.bin', mimetype: 'application/octet-stream', size: 5, url: attUrl('doc-1') },
+      { name: '../../escape.txt', mimetype: 'text/plain', size: 3, url: attUrl('doc-2') },
+      { name: 'missing.png', mimetype: 'image/png', size: 9, url: attUrl('doc-3') },
+    ];
+    const BODY = { message: 'See attached', slack_files: FILES };
+
+    let fetchCalls: string[];
+    const stubFetch: AttachmentFetch = async (url) => {
+      fetchCalls.push(url);
+      if (url.includes('/doc-1?')) return new Response(BYTES_ONE, { status: 200 });
+      if (url.includes('/doc-2?')) return new Response(BYTES_TWO, { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+    const limits: AttachmentFetchLimits = { timeoutMs: 2_000, maxBytes: 1_000, maxCount: 10 };
+
+    beforeEach(() => {
+      fetchCalls = [];
+    });
+
+    const attachmentFiles = (dir: string): Array<{ name: string; bytes: number[] }> =>
+      fs.existsSync(dir)
+        ? fs.readdirSync(dir).sort().map((name) => ({ name: String(name), bytes: Array.from(fs.readFileSync(`${dir}/${String(name)}`)) }))
+        : [];
+
+    it('a live target: good files land under attachments/ byte for byte, the bad one is only counted, the body and notification still deliver', async () => {
+      const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
+      const { session, worker } = await designatedSession();
+      const deliveries = watchDeliveries();
+      const payload = payloadOf('wh-att-1', BODY);
+
+      await handler(payload);
+
+      const paths = pathsOf(session.id, worker.id, payload.jobId);
+      expect(attachmentFiles(paths.attachmentsDir)).toEqual([
+        { name: 'escape.txt', bytes: Array.from(BYTES_TWO) },
+        { name: 'one.bin', bytes: Array.from(BYTES_ONE) },
+      ]);
+      expect(fs.existsSync(`${paths.dir}/../escape.txt`)).toBe(false);
+      expect(fs.readFileSync(paths.bodyPath, 'utf-8')).toContain('- attachments/one.bin\n- attachments/escape.txt\n- Not fetched: 1\n');
+      expect(deliveries).toHaveLength(1);
+      expect(deliveries[0]).toMatchObject({ bodyExisted: true, instructionExisted: true });
+      expect(deliveries[0]!.fields).toMatchObject({ attachments_fetched: '2', attachments_skipped: '1' });
+      const written = ptyFactory.instances.flatMap((pty) => pty.writtenData).join('');
+      expect(written).toContain(`body_path=${paths.bodyPath} attachments_fetched=2 attachments_skipped=1 intent=triage`);
+    });
+
+    it('the attachment URL token is in no written file (body, instruction, attachment names and bytes), no notification text and no deferred row, for a live and a paused target', async () => {
+      const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
+      const live = await designatedSession();
+      const paused = await designatedSession();
+      await sessionManager.pauseSession(paused.session.id);
+      const deliveries = watchDeliveries();
+      const payload = payloadOf('wh-att-2', BODY);
+
+      await handler(payload);
+
+      expect(deliveries).toHaveLength(2);
+      const rows = await deferredRows(paused.session.id);
+      expect(rows).toHaveLength(1); // positive control for the deferred row
+      const pausedParams = JSON.parse(rows[0]!.paramsJson) as { fields: Record<string, string> };
+      const livePaths = pathsOf(live.session.id, live.worker.id, payload.jobId);
+      const pausedBodyPath = pausedParams.fields.body_path!;
+      const pausedDir = pausedBodyPath.slice(0, pausedBodyPath.lastIndexOf('/'));
+      const targets = [
+        { bodyPath: livePaths.bodyPath, instructionPath: livePaths.instructionPath, attachmentsDir: livePaths.attachmentsDir },
+        { bodyPath: pausedBodyPath, instructionPath: `${pausedDir}/instruction.md`, attachmentsDir: `${pausedDir}/attachments` },
+      ];
+      const haystacks: string[] = [];
+      for (const target of targets) {
+        const files = attachmentFiles(target.attachmentsDir);
+        expect(files.length).toBe(2); // positive control: the attachment directory was really scanned
+        haystacks.push(fs.readFileSync(target.bodyPath, 'utf-8'), fs.readFileSync(target.instructionPath, 'utf-8'));
+        for (const file of files) haystacks.push(file.name, Buffer.from(file.bytes).toString('latin1'));
+      }
+      haystacks.push(ptyFactory.instances.flatMap((pty) => pty.writtenData).join(''));
+      haystacks.push(...deliveries.map((d) => JSON.stringify(d.fields)));
+      haystacks.push(rows[0]!.paramsJson);
+
+      for (const haystack of haystacks) {
+        expect(haystack).not.toContain(ATT_TOKEN);
+        expect(haystack).not.toContain('firebasestorage');
+      }
+      expect(pausedParams.fields).toMatchObject({ attachments_fetched: '2', attachments_skipped: '1' });
+    });
+
+    it('fan-out: each designated session gets its own identical copy and every file is fetched once, not once per target', async () => {
+      const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
+      const first = await designatedSession();
+      const second = await designatedSession();
+      const payload = payloadOf('wh-att-3', BODY);
+
+      await handler(payload);
+
+      expect(fetchCalls).toHaveLength(3);
+      const dirs = [first, second].map((t) => pathsOf(t.session.id, t.worker.id, payload.jobId).attachmentsDir);
+      expect(dirs[0]).not.toBe(dirs[1]);
+      const copies = dirs.map(attachmentFiles);
+      expect(copies[0]!.length).toBe(2);
+      expect(copies[1]).toEqual(copies[0]!);
+    });
+
+    it('a message without slack_files: no attachments directory and none of the count fields', async () => {
+      const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
+      const { session, worker } = await designatedSession();
+      const deliveries = watchDeliveries();
+      const payload = payloadOf('wh-att-4', { message: 'plain' });
+
+      await handler(payload);
+
+      expect(fetchCalls).toEqual([]);
+      expect(fs.existsSync(pathsOf(session.id, worker.id, payload.jobId).attachmentsDir)).toBe(false);
+      expect(Object.keys(deliveries[0]!.fields)).not.toContain('attachments_fetched');
+      expect(Object.keys(deliveries[0]!.fields)).not.toContain('attachments_skipped');
+    });
+
+    it('a message whose files are all refused still delivers, with 0 fetched and every file counted', async () => {
+      const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
+      const { session, worker } = await designatedSession();
+      const deliveries = watchDeliveries();
+      const payload = payloadOf('wh-att-5', { message: 'm', slack_files: [{ name: 'x', url: 'https://files.slack.com/x?t=1' }] });
+
+      await handler(payload);
+
+      expect(fetchCalls).toEqual([]);
+      expect(deliveries[0]!.fields).toMatchObject({ attachments_fetched: '0', attachments_skipped: '1' });
+      expect(attachmentFiles(pathsOf(session.id, worker.id, payload.jobId).attachmentsDir)).toEqual([]);
+    });
+
+    it('a per-target attachment write failure skips the attachments for that target only: the target and its body still deliver, the other target is complete, and the event counts are unchanged', async () => {
+      const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
+      const broken = await designatedSession();
+      const healthy = await designatedSession();
+      const payload = payloadOf('wh-att-6', BODY);
+      const brokenPaths = pathsOf(broken.session.id, broken.worker.id, payload.jobId);
+      // A regular file where the attachments directory belongs: the walker refuses to create under it.
+      fs.mkdirSync(brokenPaths.dir, { recursive: true });
+      fs.writeFileSync(brokenPaths.attachmentsDir, 'not a directory');
+      const deliveries = watchDeliveries();
+      const levels = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
+      const spies = levels.map((level) => spyOn(rootLogger, level));
+      try {
+        await handler(payload);
+
+        const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+        expect(logged).toContain('Failed to write an inbound webhook attachment for a target');
+        for (const secret of [ATT_TOKEN, 'one.bin', 'escape.txt']) expect(logged).not.toContain(secret);
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+
+      expect(deliveries.map((d) => d.sessionId).sort()).toEqual([broken.session.id, healthy.session.id].sort());
+      expect(fs.readFileSync(brokenPaths.bodyPath, 'utf-8')).toContain('- attachments/one.bin');
+      expect(fs.statSync(brokenPaths.attachmentsDir).isFile()).toBe(true);
+      const healthyPaths = pathsOf(healthy.session.id, healthy.worker.id, payload.jobId);
+      expect(attachmentFiles(healthyPaths.attachmentsDir).length).toBe(2);
+      for (const d of deliveries) expect(d.fields).toMatchObject({ attachments_fetched: '2', attachments_skipped: '1' });
+    });
   });
 });

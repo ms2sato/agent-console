@@ -77,6 +77,12 @@ export interface InboundEventPtyNotification extends BasePtyNotificationParams {
     instruction_excerpt?: string;
     instruction_path?: string;
     body_path?: string;
+    /**
+     * `external:message` only, present only when the message listed attachments: how many were
+     * fetched into `<delivery dir>/attachments/` and how many were not (decimal integers).
+     */
+    attachments_fetched?: string;
+    attachments_skipped?: string;
   };
   intent: PtyNotificationIntent;
 }

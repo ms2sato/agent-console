@@ -15,6 +15,7 @@ import { InboundEventNotificationRepository } from '../../repositories/inbound-e
 import { SqliteInboundWebhookEndpointRepository } from '../../repositories/sqlite-inbound-webhook-endpoint-repository.js';
 import { createDeliverySessionLookup } from '../inbound-webhook/actions/repository-orchestrators.js';
 import { createInboundWebhookJobHandler } from '../inbound-webhook/job-handler.js';
+import type { PrepareDeliveryDeps } from '../inbound-webhook/receive.js';
 
 export interface InboundIntegrationOptions {
   db: Kysely<Database>;
@@ -24,6 +25,8 @@ export interface InboundIntegrationOptions {
   broadcastToApp: (message: { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }) => void;
   /** Optional registry instance for testing. If not provided, a new registry is created. */
   parserRegistry?: ServiceParserRegistry;
+  /** Attachment fetch and limits for the signed inbound webhook; default to the global `fetch` and the server config. */
+  inboundWebhookAttachments?: Pick<PrepareDeliveryDeps, 'attachmentFetch' | 'attachmentLimits'>;
 }
 
 /**
@@ -78,6 +81,7 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
     JOB_TYPES.INBOUND_WEBHOOK_PROCESS,
     createInboundWebhookJobHandler({
       endpoints: new SqliteInboundWebhookEndpointRepository(options.db),
+      ...options.inboundWebhookAttachments,
       action: {
         getRepository: (repositoryId) => options.repositoryManager.getRepository(repositoryId),
         resolveTargets,

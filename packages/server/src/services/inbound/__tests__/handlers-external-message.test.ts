@@ -5,6 +5,7 @@ import type { InboundEventHandler, InboundHandlerDependencies } from '../handler
 import { buildPtyNotificationText, type PtyNotificationParams } from '../../../lib/pty-notification.js';
 import { SessionDataPathResolver } from '../../../lib/session-data-path-resolver.js';
 import { INSTRUCTION_EXCERPT_MAX_CHARS } from '../../../lib/inbound-instruction-excerpt.js';
+import { composeDeferredReadMore } from '../../../lib/paused-digest.js';
 import { buildWorktreeSession } from '../../../__tests__/utils/build-test-data.js';
 
 const DELIVERY_ID = 'inbound-webhook:ep1:wh1';
@@ -194,6 +195,58 @@ describe('AgentWorkerHandler: external:message notification', () => {
     );
     expect(outcome).toBe('delivery-failed');
     expect(h.delivered).toEqual([]);
+  });
+});
+
+describe('AgentWorkerHandler: external:message attachment counts', () => {
+  afterEach(() => {
+    setSystemTime();
+  });
+
+  const withCounts = (fetched: number, skipped: number) =>
+    createEvent({ metadata: { attachmentsFetched: fetched, attachmentsSkipped: skipped } });
+
+  it('fixture pin: the exact text for a message that listed attachments, the counts after body_path and before intent', async () => {
+    const text = await render(withCounts(2, 1));
+    expect(text).toBe(
+      `\n[inbound:external:message] timestamp=${FROZEN_NOW} type=external:message source=webhook repo=owner/repo branch=N/A ` +
+        `url=https://example.slack.com/archives/C1/p1 summary="Deploy finished" instruction_excerpt="Triage this message" ` +
+        `instruction_path=${DELIVERY_DIR}/instruction.md body_path=${DELIVERY_DIR}/body.md ` +
+        `attachments_fetched=2 attachments_skipped=1 intent=triage`,
+    );
+  });
+
+  it('carries the keys in order, after body_path and before the appended intent', async () => {
+    const h = harness({ session: session() });
+    await h.handler.handle(withCounts(0, 3), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
+    expect(Object.keys(h.delivered[0]!.fields).slice(-3)).toEqual(['body_path', 'attachments_fetched', 'attachments_skipped']);
+    expect(h.delivered[0]!.fields).toMatchObject({ attachments_fetched: '0', attachments_skipped: '3' });
+  });
+
+  it('a message without the counts keeps the earlier field set exactly (no attachments_* key)', async () => {
+    const h = harness({ session: session() });
+    await h.handler.handle(createEvent(), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
+    expect(Object.keys(h.delivered[0]!.fields)).not.toContain('attachments_fetched');
+    expect(Object.keys(h.delivered[0]!.fields)).not.toContain('attachments_skipped');
+  });
+
+  it('zero fetched and zero skipped is still reported when the counts are present (present is not truthy)', async () => {
+    const text = await render(withCounts(0, 0));
+    expect(text).toContain(' attachments_fetched=0 attachments_skipped=0 intent=triage');
+  });
+
+  it('a paused target: the stored params carry the counts and the resume read-more file renders them', async () => {
+    const h = harness({ session: session(), paused: true });
+    setSystemTime(new Date(FROZEN_NOW));
+    await h.handler.handle(withCounts(2, 1), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
+
+    const stored = JSON.parse(JSON.stringify(h.delivered[0]!)) as PtyNotificationParams;
+    expect(stored.fields).toMatchObject({ attachments_fetched: '2', attachments_skipped: '1' });
+    const readMore = composeDeferredReadMore(
+      [{ id: 'row-1', workerId: 'worker-1', kind: 'inbound-event', params: stored, sourceId: 'job-1', replyToSessionId: null, createdAt: FROZEN_NOW }],
+      { pausedAt: FROZEN_NOW, resumedAt: FROZEN_NOW },
+    );
+    expect(readMore).toContain(`body_path=${DELIVERY_DIR}/body.md attachments_fetched=2 attachments_skipped=1 intent=triage`);
   });
 });
 

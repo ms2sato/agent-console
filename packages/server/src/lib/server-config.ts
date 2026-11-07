@@ -171,6 +171,33 @@ export const serverConfig = {
    */
   FILE_VIEWER_MAX_BYTES: parsePositiveIntWithDefault(process.env.FILE_VIEWER_MAX_BYTES, 1024 * 1024),
   /**
+   * Inbound webhook attachments: time allowed for ONE file (connect, headers and body together).
+   * A file that is not complete by then is skipped, never retried.
+   * Default: 10 seconds
+   */
+  INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS: parsePositiveIntWithDefault(
+    process.env.INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS,
+    10_000,
+  ),
+  /**
+   * Inbound webhook attachments: largest size of ONE file. Checked against the declared size and
+   * `Content-Length` first, and enforced while streaming; a file over the cap is skipped.
+   * Default: 25MiB (25 * 1024 * 1024 bytes)
+   */
+  INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES: parsePositiveIntWithDefault(
+    process.env.INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES,
+    25 * 1024 * 1024,
+  ),
+  /**
+   * Inbound webhook attachments: most files attempted per message, in payload order. The rest are
+   * skipped and counted.
+   * Default: 10
+   */
+  INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT: parsePositiveIntWithDefault(
+    process.env.INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT,
+    10,
+  ),
+  /**
    * Base URL for the application.
    * Used to generate URLs in outbound notifications (e.g., Slack "Open Session" button).
    * If not set, notifications will show a warning about missing configuration.
