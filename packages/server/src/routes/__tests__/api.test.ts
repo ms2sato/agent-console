@@ -307,4 +307,15 @@ describe('API router registration order', () => {
     expect(last?.method).toBe('ALL');
     expect(last?.path).toBe('/*');
   });
+
+  // The same-origin guard must run before the auth routes and authMiddleware,
+  // so it is the first registration and a refused request answers 403, not 401.
+  it('registers the same-origin guard first, ahead of the auth routes', async () => {
+    const { api } = await import('../api.js');
+    const first = api.routes[0];
+    expect(first?.method).toBe('ALL');
+    expect(first?.path).toBe('/*');
+    const authIndex = api.routes.findIndex((r) => r.path.startsWith('/auth'));
+    expect(authIndex).toBeGreaterThan(0);
+  });
 });
