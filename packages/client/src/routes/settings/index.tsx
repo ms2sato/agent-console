@@ -39,6 +39,16 @@ export function SettingsPage() {
       {/* Shared accounts are a multi-user-only concept; hide the link entirely
           when AUTH_MODE=none rather than linking to a page that would just
           say "not available". */}
+      <div className="card text-gray-500 mt-4">
+        <p>
+          Manage{' '}
+          <Link to="/settings/inbound-webhooks" className="text-blue-400 hover:underline">
+            Inbound Webhooks
+          </Link>
+          {' '}that deliver messages from external programs to a repository's Orchestrator (in development).
+        </p>
+      </div>
+
       {authMode !== 'none' && (
         <div className="card text-gray-500 mt-4">
           <p>

@@ -72,6 +72,9 @@ import {
   TodoDetailResponseSchema,
   UsersListResponseSchema,
   ListSharedAccountsResponseSchema,
+  InboundWebhookEndpointsListResponseSchema,
+  InboundWebhookEndpointResponseSchema,
+  InboundWebhookEndpointWithSecretResponseSchema,
   WorkerResponseSchema,
   RestartAllAgentsResponseSchema,
   OrchestratorDesignationResponseSchema,
@@ -140,6 +143,11 @@ import type {
   SuccessResponse,
   RegisterSharedAccountResponse,
   PauseSessionResponse,
+  CreateInboundWebhookEndpointRequest,
+  UpdateInboundWebhookEndpointRequest,
+  InboundWebhookEndpointsListResponse,
+  InboundWebhookEndpointResponse,
+  InboundWebhookEndpointWithSecretResponse,
 } from '@agent-console/shared';
 import * as v from 'valibot';
 
@@ -1501,6 +1509,68 @@ export async function unregisterSharedAccount(username: string): Promise<void> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister shared account');
   }
+}
+
+// ===========================================================================
+// Inbound webhook endpoints
+// ===========================================================================
+
+export async function fetchInboundWebhookEndpoints(): Promise<InboundWebhookEndpointsListResponse> {
+  const res = await api['inbound-webhook-endpoints'].$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch inbound webhook endpoints');
+  }
+  return v.parse(InboundWebhookEndpointsListResponseSchema, await res.json());
+}
+
+/** The response carries the signing secret: the only time it is readable besides rotation. */
+export async function createInboundWebhookEndpoint(
+  request: CreateInboundWebhookEndpointRequest,
+): Promise<InboundWebhookEndpointWithSecretResponse> {
+  const res = await api['inbound-webhook-endpoints'].$post({ json: request });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to create inbound webhook endpoint');
+  }
+  return v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
+}
+
+export async function updateInboundWebhookEndpoint(
+  id: string,
+  request: UpdateInboundWebhookEndpointRequest,
+): Promise<InboundWebhookEndpointResponse> {
+  const res = await api['inbound-webhook-endpoints'][':id'].$patch({ param: { id }, json: request });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update inbound webhook endpoint');
+  }
+  return v.parse(InboundWebhookEndpointResponseSchema, await res.json());
+}
+
+export async function deleteInboundWebhookEndpoint(id: string): Promise<void> {
+  const res = await api['inbound-webhook-endpoints'][':id'].$delete({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to delete inbound webhook endpoint');
+  }
+}
+
+/** The response carries the new signing secret, shown once. */
+export async function rotateInboundWebhookEndpointSecret(
+  id: string,
+): Promise<InboundWebhookEndpointWithSecretResponse> {
+  const res = await api['inbound-webhook-endpoints'][':id']['rotate-secret'].$post({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to rotate secret');
+  }
+  return v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
+}
+
+export async function clearInboundWebhookEndpointPreviousSecret(
+  id: string,
+): Promise<InboundWebhookEndpointResponse> {
+  const res = await api['inbound-webhook-endpoints'][':id']['clear-previous-secret'].$post({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to end previous secret');
+  }
+  return v.parse(InboundWebhookEndpointResponseSchema, await res.json());
 }
 
 // ===========================================================================
