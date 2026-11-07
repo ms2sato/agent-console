@@ -9,6 +9,8 @@ This document defines the WebSocket protocol used for real-time communication be
 | `/ws/app` | App-wide state synchronization (sessions, worker activity) |
 | `/ws/session/:sessionId/worker/:workerId` | Individual worker I/O (terminal input/output) |
 
+Connection establishment: the upgrade request is refused with `403` by the same-origin guard (before authentication) when its `Sec-Fetch-Site` / `Origin` headers mark it as cross-origin; see [Same-origin guard](multi-user-shared-setup.md#same-origin-guard).
+
 ## App Connection (`/ws/app`)
 
 Singleton WebSocket connection for app-wide state synchronization. Persists across route navigation.

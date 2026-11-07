@@ -29,26 +29,40 @@ function originHost(origin: string): string | null {
   }
 }
 
+export interface CrossSiteHeaders {
+  fetchSite: string | undefined;
+  origin: string | undefined;
+  host: string | undefined;
+}
+
+/**
+ * Evaluate the header rule above. Returns the refusal reason, or `null` to
+ * accept. Shared by the /api guard and the WebSocket upgrade guard.
+ */
+export function crossSiteRefusal(headers: CrossSiteHeaders): string | null {
+  const { fetchSite, origin, host } = headers;
+  if (fetchSite !== undefined) {
+    return ACCEPTED_FETCH_SITES.has(fetchSite.toLowerCase()) ? null : 'Sec-Fetch-Site not same-origin';
+  }
+  if (origin !== undefined) {
+    if (host === undefined || originHost(origin) !== host.toLowerCase()) {
+      return 'Origin does not match Host';
+    }
+  }
+  return null;
+}
+
 export function sameOriginGuard() {
   return createMiddleware(async (c, next) => {
     if (SAFE_METHODS.has(c.req.method)) {
       return next();
     }
 
-    const fetchSite = c.req.header('Sec-Fetch-Site');
-    const origin = c.req.header('Origin');
-
-    let refusal: string | null = null;
-    if (fetchSite !== undefined) {
-      if (!ACCEPTED_FETCH_SITES.has(fetchSite.toLowerCase())) {
-        refusal = 'Sec-Fetch-Site not same-origin';
-      }
-    } else if (origin !== undefined) {
-      const host = c.req.header('Host');
-      if (host === undefined || originHost(origin) !== host.toLowerCase()) {
-        refusal = 'Origin does not match Host';
-      }
-    }
+    const refusal = crossSiteRefusal({
+      fetchSite: c.req.header('Sec-Fetch-Site'),
+      origin: c.req.header('Origin'),
+      host: c.req.header('Host'),
+    });
 
     if (refusal !== null) {
       rootLogger.debug(

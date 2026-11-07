@@ -21,7 +21,8 @@ import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnecti
 import { getCookie } from 'hono/cookie';
 import type { Context } from 'hono';
 import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
-import { createLogger } from '../lib/logger.js';
+import { createLogger, rootLogger } from '../lib/logger.js';
+import { crossSiteRefusal, CROSS_SITE_REFUSED_ERROR } from '../middleware/same-origin-guard.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
 import { ForbiddenError, SessionDeletingError, SessionPausingError } from '../lib/errors.js';
@@ -549,6 +550,28 @@ export async function setupWebSocketRoutes(
   const handleAppMessage = createAppMessageHandler(appDeps);
 
   /**
+   * Pre-upgrade same-origin check for WebSocket routes. An upgrade is a GET,
+   * so the /api guard's safe-method pass-through does not apply: the header
+   * rule runs for every handshake. A refusal is an HTTP 403 before the
+   * upgrade, so no socket is created.
+   */
+  function wsSameOriginGuard(c: Context, next: () => Promise<void>): Response | Promise<void> {
+    const refusal = crossSiteRefusal({
+      fetchSite: c.req.header('Sec-Fetch-Site'),
+      origin: c.req.header('Origin'),
+      host: c.req.header('Host'),
+    });
+    if (refusal !== null) {
+      rootLogger.debug(
+        { service: 'same-origin-guard', path: c.req.path, reason: refusal },
+        'Cross-site WebSocket upgrade refused',
+      );
+      return c.json({ error: CROSS_SITE_REFUSED_ERROR }, 403);
+    }
+    return next();
+  }
+
+  /**
    * HTTP-level auth guard for WebSocket routes.
    * Rejects unauthenticated requests with 401 BEFORE the WebSocket upgrade,
    * preventing unauthorized connections from being established.
@@ -599,6 +622,7 @@ export async function setupWebSocketRoutes(
   // App WebSocket endpoint for real-time state synchronization
   app.get(
     '/ws/app',
+    wsSameOriginGuard,
     wsAuthGuard,
     upgradeWebSocket((_c) => {
       return {
@@ -680,6 +704,7 @@ export async function setupWebSocketRoutes(
   // WebSocket endpoint for worker connection
   app.get(
     '/ws/session/:sessionId/worker/:workerId',
+    wsSameOriginGuard,
     wsAuthGuard,
     fileViewerAccessGuard,
     upgradeWebSocket((c) => {

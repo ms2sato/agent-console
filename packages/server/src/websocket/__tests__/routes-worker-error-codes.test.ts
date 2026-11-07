@@ -36,6 +36,7 @@ import { asAppContext } from '../../__tests__/test-utils.js';
 import type { AppContext } from '../../app-context.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
+import { CROSS_SITE_REFUSED_ERROR } from '../../middleware/same-origin-guard.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -1084,6 +1085,55 @@ describe('WebSocket authentication rejection (C4)', () => {
     expect(response.status).toBe(401);
     expect(await response.text()).toBe('Authentication required');
   });
+
+  // Same-origin guard on the upgrade: the next guard (RejectingUserMode) answers 401,
+  // so "not 403" doubles as the order pin that the origin check runs first.
+  const ROUTES = [
+    ['/ws/app', '/ws/app'],
+    ['/ws/session/:id/worker/:id', '/ws/session/some-session/worker/some-worker'],
+  ] as const;
+
+  for (const [label, path] of ROUTES) {
+    describe(`same-origin guard on ${label}`, () => {
+      const call = (headers: Record<string, string>) => app.request(path, { headers });
+
+      it('refuses a mismatching Origin with 403 and a JSON body', async () => {
+        const res = await call({ Host: 'console.test', Origin: 'https://evil.example' });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: CROSS_SITE_REFUSED_ERROR });
+      });
+
+      it('refuses Sec-Fetch-Site: cross-site', async () => {
+        expect((await call({ Host: 'console.test', 'Sec-Fetch-Site': 'cross-site' })).status).toBe(403);
+      });
+
+      it('refuses Sec-Fetch-Site: same-site', async () => {
+        expect((await call({ Host: 'console.test', 'Sec-Fetch-Site': 'same-site' })).status).toBe(403);
+      });
+
+      it('compares the port as part of the host', async () => {
+        expect((await call({ Host: 'console.test', Origin: 'https://console.test:8443' })).status).toBe(403);
+        expect((await call({ Host: 'console.test:8443', Origin: 'https://console.test:8443' })).status).not.toBe(403);
+      });
+
+      it('accepts Sec-Fetch-Site: same-origin', async () => {
+        expect((await call({ Host: 'console.test', 'Sec-Fetch-Site': 'same-origin' })).status).toBe(401);
+      });
+
+      it('accepts a request with neither header', async () => {
+        expect((await call({ Host: 'console.test' })).status).toBe(401);
+      });
+
+      it('refuses an Origin when Host is absent', async () => {
+        const res = await app.request(path, { headers: { Origin: 'https://console.test' } });
+        expect(res.status).toBe(403);
+      });
+
+      it('refuses Origin: null', async () => {
+        expect((await call({ Host: 'console.test', Origin: 'null' })).status).toBe(403);
+      });
+    });
+  }
 });
 
 // =========================================================================

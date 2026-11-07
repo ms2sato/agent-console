@@ -9,3 +9,12 @@ describe('vite dev proxy', () => {
     expect(proxy!['/api'].changeOrigin).toBe(false);
   });
 });
+
+describe('vite dev proxy for WebSocket upgrades', () => {
+  it('keeps the original Host on /ws because the upgrade guard compares the browser Origin host with Host', () => {
+    const proxy = config.server?.proxy as Record<string, { changeOrigin?: boolean }> | undefined;
+    expect(proxy).toBeDefined();
+    expect(proxy!['/ws']).toBeDefined();
+    expect(proxy!['/ws'].changeOrigin ?? false).toBe(false);
+  });
+});
