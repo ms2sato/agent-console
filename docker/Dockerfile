@@ -6,26 +6,56 @@
 # production deployment recipe — production should use systemd + TLS (see
 # docs/multi-user-setup-guide.md).
 #
-# Base image: oven/bun (Debian). Both stages share the same base so the bun-pty
-# native module installed in the runtime stage matches the runtime glibc.
+# Base image: a dated Debian slim tag (no bun in it). All stages share the same
+# base so the bun-pty native module installed in the runtime stage matches the
+# runtime glibc. The tag is pinned to the patch/date, not to a digest.
 #
-# The bun version lives in this ONE ARG, which selects the fixed-tag, directly
-# pullable oven/bun image for both stages. No installer is downloaded at build
-# time: the image's own bun is asserted to be exactly BUN_VERSION instead, so a
-# mismatched base fails the build rather than being silently replaced. The
-# value must equal the repo-root .bun-version (checked by
-# scripts/__tests__/bun-version-pins.test.mjs) and be >= the floor in
-# scripts/check-bun-version.mjs.
+# Bun is NOT taken from the oven/bun image (a new Bun release would otherwise
+# have to wait for that image to be published) and is NOT installed with the
+# `curl | bash` installer. The `bun-fetch` stage downloads the release zip of
+# the version listed in docker/bun-sha256.txt and stops the build unless the zip
+# hashes to the SHA256 written in that file (the repository, not the download
+# server, is the source of truth). Only the verified binary is copied into the
+# other stages, so the final image carries no curl and no unzip.
+#
+# To upgrade Bun, change two files: the repo-root .bun-version and
+# docker/bun-sha256.txt (procedure in that file).
+# scripts/__tests__/bun-version-pins.test.mjs fails if they disagree. The
+# version must also be >= the floor in scripts/check-bun-version.mjs.
 # See docker/README.md ("Building behind a blocked Docker Hub").
 
-ARG BUN_VERSION=1.4.4
+ARG DEBIAN_BASE=debian:trixie-20261027-slim
+
+# ===== Stage 0: download and verify bun (never reaches the final image) =====
+FROM ${DEBIAN_BASE} AS bun-fetch
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY docker/bun-sha256.txt docker/fetch-bun.sh /tmp/
+RUN sh /tmp/fetch-bun.sh /tmp/bun-sha256.txt /out
+
+# ===== Shared base: debian slim + the verified bun =====
+FROM ${DEBIAN_BASE} AS bun-base
+ENV DEBIAN_FRONTEND=noninteractive \
+    BUN_INSTALL_BIN=/usr/local/bin \
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin
+COPY --from=bun-fetch /out/bun /usr/local/bin/bun
+COPY --from=bun-fetch /out/bun-version /usr/local/share/bun-version
+# Same layout the oven/bun image has: `bunx`, and a `node` fallback that is bun
+# itself (scripts that shell out to `node` keep working without a node install).
+RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx \
+ && mkdir -p /usr/local/bun-node-fallback-bin \
+ && ln -s /usr/local/bin/bun /usr/local/bun-node-fallback-bin/node \
+ && test "$(bun --version)" = "$(cat /usr/local/share/bun-version)"
 
 # ===== Stage 1: build the standalone dist bundle =====
-FROM oven/bun:${BUN_VERSION} AS builder
-ARG BUN_VERSION
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN test "$(bun --version)" = "${BUN_VERSION}"
+FROM bun-base AS builder
+# ca-certificates: `bun install` talks to the npm registry over HTTPS.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
@@ -36,10 +66,7 @@ RUN bun install --frozen-lockfile
 RUN bun run build
 
 # ===== Stage 2: runtime as the non-root service user =====
-FROM oven/bun:${BUN_VERSION} AS runtime
-ARG BUN_VERSION
-
-ENV DEBIAN_FRONTEND=noninteractive
+FROM bun-base AS runtime
 
 # Runtime OS dependencies:
 # - sudo:          the server spawns PTYs via `sudo -u <user> -i`
@@ -53,7 +80,7 @@ RUN apt-get update \
       ca-certificates \
       sudo pamtester libpam-modules libpam-runtime login passwd git procps \
  && rm -rf /var/lib/apt/lists/* \
- && test "$(bun --version)" = "${BUN_VERSION}" \
+ && test "$(bun --version)" = "$(cat /usr/local/share/bun-version)" \
  && test -f /etc/pam.d/login
 
 # --- Shared system group (Issue #830) ---

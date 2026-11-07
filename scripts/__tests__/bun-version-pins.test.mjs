@@ -3,14 +3,28 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// `.bun-version` is the single source of the Bun version the repo is built and
-// tested with. Everything else that names a Bun version must agree with it:
-// the Dockerfiles' BUN_VERSION ARG, and every workflow's setup-bun step (which
-// must read the file rather than carry its own literal).
+// Two files decide which Bun the repo is built and tested with: the repo-root
+// `.bun-version` (read by every workflow's setup-bun step) and
+// `docker/bun-sha256.txt` (the version and release-zip SHA256 the Docker images
+// install). Everything else that names a Bun version must agree with them.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel) => readFileSync(join(ROOT, rel), 'utf8');
 const pinned = read('.bun-version').trim();
+
+const registryLines = read('docker/bun-sha256.txt')
+  .split('\n')
+  .filter((l) => l.trim() !== '' && !l.startsWith('#'))
+  .map((l) => l.trim().split(/\s+/));
+
+// The text of one Dockerfile stage, from its FROM line to the next FROM.
+const stage = (text, name) => {
+  const start = text.search(new RegExp(`^FROM .* AS ${name}$`, 'm'));
+  expect(start).toBeGreaterThanOrEqual(0);
+  const rest = text.slice(start + 1);
+  const next = rest.search(/^FROM /m);
+  return next === -1 ? rest : rest.slice(0, next);
+};
 
 describe('Bun version pins', () => {
   it('.bun-version is a plain x.y.z at or above the preinstall floor', () => {
@@ -20,17 +34,43 @@ describe('Bun version pins', () => {
     expect(Bun.semver.order(pinned, floor)).toBeGreaterThanOrEqual(0);
   });
 
+  it('docker/bun-sha256.txt lists exactly .bun-version, for x64 and aarch64, with a sha256 each', () => {
+    expect(registryLines.map(([v, a]) => `${v} ${a}`).sort()).toEqual([`${pinned} aarch64`, `${pinned} x64`]);
+    for (const [, , sha] of registryLines) expect(sha).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it.each(['docker/Dockerfile', 'docker/Dockerfile.systemd'])(
-    '%s BUN_VERSION default equals .bun-version',
+    '%s installs bun only through docker/fetch-bun.sh, from a dated Debian slim tag',
     (file) => {
-      expect(read(file).match(/^ARG BUN_VERSION=(\S+)$/m)?.[1]).toBe(pinned);
+      // Comments may explain what was replaced; only instructions count.
+      const text = read(file)
+        .split('\n')
+        .filter((l) => !l.trimStart().startsWith('#'))
+        .join('\n');
+      expect(text).not.toMatch(/bun\.sh\/install/);
+      expect(text).not.toMatch(/oven\/bun/);
+      expect(text).not.toMatch(/BUN_VERSION|BUN_BASE/);
+      expect(text).toMatch(/^ARG DEBIAN_BASE=debian:trixie-\d{8}-slim$/m);
+      expect(text).toMatch(/RUN sh \/tmp\/fetch-bun\.sh \/tmp\/bun-sha256\.txt \/out$/m);
     },
   );
 
-  it('docker/Dockerfile downloads no installer and asserts the version in every stage', () => {
+  it('docker/Dockerfile asserts the version in the shared base and in the final stage, and leaves curl/unzip out of both', () => {
     const text = read('docker/Dockerfile');
-    expect(text).not.toMatch(/bun\.sh\/install/);
-    expect(text.match(/test "\$\(bun --version\)" = "\$\{BUN_VERSION\}"/g)?.length).toBe(2);
+    const assertion = /test "\$\(bun --version\)" = "\$\(cat \/usr\/local\/share\/bun-version\)"/;
+    expect(stage(text, 'bun-base')).toMatch(assertion);
+    expect(stage(text, 'runtime')).toMatch(assertion);
+    // The final image is the last stage; it must be the one that is asserted.
+    expect(text.trimEnd().split('\n').filter((l) => l.startsWith('FROM ')).pop()).toBe('FROM bun-base AS runtime');
+    for (const name of ['bun-base', 'builder', 'runtime']) {
+      expect(stage(text, name)).not.toMatch(/\b(curl|unzip)\b/);
+    }
+  });
+
+  it('docker/Dockerfile.systemd asserts the installed version against the verified one', () => {
+    expect(read('docker/Dockerfile.systemd')).toMatch(
+      /test "\$\(\/usr\/local\/bin\/bun --version\)" = "\$\(cat \/usr\/local\/share\/bun-version\)"/,
+    );
   });
 
   it('every setup-bun step reads .bun-version and none carries a literal version', () => {

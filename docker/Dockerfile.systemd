@@ -26,18 +26,26 @@
 # Build context is docker/ (not the repo root): the runner's checkout is
 # bind-mounted read-only at /src at run time instead of being copied in.
 
-# The bun version pin lives in this ONE ARG: it selects the oven/bun stage the
-# binary is copied from below (the same pinned base docker/Dockerfile uses).
-ARG BUN_VERSION=1.4.4
+# Bun is installed from the release zip of the version in docker/bun-sha256.txt,
+# which docker/fetch-bun.sh verifies against the SHA256 recorded THERE (the
+# repository, not the download server, is the source of truth) -- rather than
+# `curl https://bun.sh/install | bash`, an unverified script run as root at
+# build time (CodeRabbit review on the landing PR). The download happens in a
+# throwaway stage, so only the verified binary reaches the final image. This is
+# the same mechanism docker/Dockerfile uses (see its header). To upgrade Bun,
+# change the repo-root .bun-version and docker/bun-sha256.txt;
+# scripts/__tests__/bun-version-pins.test.mjs fails if they disagree.
+ARG DEBIAN_BASE=debian:trixie-20261027-slim
 
-# Source stage for the bun binary -- a pinned, registry-published image rather
-# than `curl https://bun.sh/install | bash` (an unverified script run as root
-# at build time; CodeRabbit review on the landing PR). Nothing else from this
-# stage reaches the final image.
-FROM oven/bun:${BUN_VERSION} AS bun
+FROM ${DEBIAN_BASE} AS bun-fetch
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY bun-sha256.txt fetch-bun.sh /tmp/
+RUN sh /tmp/fetch-bun.sh /tmp/bun-sha256.txt /out
 
 FROM ubuntu:24.04
-ARG BUN_VERSION
 
 # `container=docker` lets systemd detect the container (ConditionVirtualization)
 # and skip the units that cannot work here.
@@ -65,16 +73,17 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # bun pinned at the UNIFIED path the setup script's step 7 asserts on and the
-# rendered unit's ExecStart uses (/usr/local/bin/bun), copied from the pinned
-# oven/bun stage above, so a real install can proceed even though the service
+# rendered unit's ExecStart uses (/usr/local/bin/bun), copied from the
+# verified bun-fetch stage above, so a real install can proceed even though the service
 # user in this image has no ~/.bun of its own.
 # Consequence, stated so nobody reads more into a green run than it holds:
 # the setup script's step 6b (copy the service user's ~/.bun/bin/bun to the
 # unified path) warns and skips here, and the elevation smoke's freshness
 # check (service-user bun vs unified bun) reports `skipped` -- the driver
 # logs both as NOT EXERCISED with this reason.
-COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
-RUN test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}"
+COPY --from=bun-fetch /out/bun /usr/local/bin/bun
+COPY --from=bun-fetch /out/bun-version /usr/local/share/bun-version
+RUN test "$(/usr/local/bin/bun --version)" = "$(cat /usr/local/share/bun-version)"
 
 # Users:
 # - alice:    a login-shell user, the elevation smoke's <target-user>.

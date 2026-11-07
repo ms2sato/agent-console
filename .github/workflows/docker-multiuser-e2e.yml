@@ -1,7 +1,7 @@
 name: Docker Multi-User E2E
 
 # Builds the multi-user verification image (docker/Dockerfile) from its committed
-# default base (oven/bun:${BUN_VERSION}, no --build-arg override) to prove clean-pull
+# default base (the pinned Debian slim tag, no --build-arg override) to prove clean-pull
 # reproducibility, then runs scripts/verify-multiuser-docker.sh end to end:
 # authMode / unauth 401 / wrong+right password / alice+bob PTY whoami isolation
 # (7 checks total).
