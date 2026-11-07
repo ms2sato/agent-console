@@ -55,12 +55,12 @@ Agent Console Server
 
 1. **Generalized event routing** - Not tied to specific use cases; handlers determine actions
 2. **Multiple targets** - Single event can trigger multiple handlers (PTY, UI, etc.)
-3. **Always return 200 OK** - See [Error Handling Policy](#error-handling-policy) for rationale
+3. **Always return 200 OK** (except the one signed generic route, `/webhooks/in/:endpointId`) - See [Error Handling Policy](#error-handling-policy) for rationale
 4. **Async processing via queue** - Authenticate and enqueue immediately, process asynchronously
 
 ### Error Handling Policy
 
-**Webhook endpoints always return 200 OK, regardless of internal errors.**
+**Webhook endpoints always return 200 OK, regardless of internal errors** (with one deliberate carve-out for `POST /webhooks/in/:endpointId`, described after the table below).
 
 This is a fundamental webhook receiver principle. Unlike API endpoints (which should return proper error codes), webhook endpoints must not burden the sending service with the receiver's problems.
 
@@ -81,6 +81,8 @@ This is a fundamental webhook receiver principle. Unlike API endpoints (which sh
 | Job enqueue failed | Log error with full raw data (see below) | Likely persistent system failure (DB down) — retries won't help |
 
 **Scope of the always-200 policy.** It covers POST on known webhook paths only. Any other method on a known path answers `405` with `Allow: POST`, and any unknown path under `/webhooks/` answers `404`; both responses are JSON. This is router-wide (the `postOnly` helper plus a trailing catch-all in `routes/webhooks.ts`), so any future webhook route inherits it. Without it those requests would fall through to the SPA fallback and answer `200` with `index.html`. GitHub only POSTs, so the policy for senders is not weakened.
+
+**Carve-out: `POST /webhooks/in/:endpointId` is the one route that does NOT always answer 200.** A generic signed endpoint has a sender that retries on 5xx and on a few 4xx codes and treats every other 4xx as permanent, and the receive path is cheap enough (two small SQLite writes, no network) to fit the sender's 5 s budget, so it answers with real status codes: 404 unknown endpoint, 401 bad signature or stale timestamp, 400 invalid delivery id or body, 413 oversized body, 200 accepted or duplicate, 503 when the transaction fails, 500 for anything unhandled. `/webhooks/github` is unchanged and keeps the always-200 policy. See [Generic Signed Webhook Endpoints](#generic-signed-webhook-endpoints).
 
 **Enqueue failure recovery strategy:**
 
@@ -121,6 +123,7 @@ Inbound integration handles external source events defined in [System Events](./
 | `pr:review_comment` | AgentWorker (notify), UI (alert) |
 | `pr:changes_requested` | AgentWorker (notify), UI (alert) |
 | `pr:comment` | AgentWorker (notify), UI (alert) |
+| `external:message` | AgentWorker (notify the repository's designated Orchestrators; see [Generic Signed Webhook Endpoints](#generic-signed-webhook-endpoints)) |
 
 ### Handler Interface
 
@@ -809,6 +812,118 @@ private parseIssueComment(body: unknown): InboundSystemEvent | null {
   };
 }
 ```
+
+## Generic Signed Webhook Endpoints
+
+A message posted to Slack by a program the operator does not maintain can reach a repository's designated Orchestrator sessions without creating a GitHub Issue. The sender is a Slack dispatcher that posts a signed webhook ([Standard Webhooks](https://www.standardwebhooks.com/) headers); an endpoint is a row an operator creates under a repository. This section is the specification; endpoint management (create, edit, rotate, delete) is documented through the Surfaces table below.
+
+### Shape
+
+```text
+POST /webhooks/in/:endpointId                                   -- RECEIVE HALF (kind-agnostic)
+  -> 404 unknown endpoint
+  -> 401 bad signature (current or previous secret) / stale timestamp / missing signature headers
+  -> 400 invalid webhook-id / malformed body
+  -> 413 oversized body (512 KB)
+  -> one transaction: dedupe row (endpoint_id, webhook_id) + job row; duplicate -> 200, no job
+  -> 200 accepted; 503 if the transaction fails; 500 for anything unhandled
+job INBOUND_WEBHOOK_PROCESS:
+  receive half  -> re-read the endpoint row (gone -> no delivery, the job completes without retry)
+                -> parse the body, build DeliveryContent { bodyMarkdown (sanitized), instructionMarkdown (endpoint.instruction_text as-is), summary, url }
+  action half   -> (kind: repository-orchestrators, the only kind today)
+                   InboundSystemEvent { type: 'external:message', source: 'webhook', metadata: { targetRepositoryId, repositoryName, deliveryId, instructionExcerpt } }
+                -> resolveTargets -> write body.md + instruction.md into each target's messages dir
+                -> existing handler chain -> deliverWorkerNotification (live PTY, embedded, paused deferral)
+```
+
+**Receive half / action half.** The receive half owns everything that does not depend on who acts: endpoint lookup, signature and timestamp verification, body validation, the transactional dedupe and enqueue, the endpoint re-read at process time, and building the delivery content. The action half owns resolving targets, writing the per-target files and delivering. The seam is `DeliveryContent` plus the endpoint row; a later kind implements a different action against the same seam and never touches the receive half. It is a module boundary, not a plugin registry: `services/inbound-webhook/receive.ts` (route and job front) and `services/inbound-webhook/actions/repository-orchestrators.ts`; the job handler (`services/inbound-webhook/job-handler.ts`) calls receive then the one action, and `receive.ts` imports nothing from `actions/`.
+
+### Sender contract and verification
+
+- Headers `webhook-id` (stable across the sender's retries), `webhook-timestamp` (unix seconds) and `webhook-signature` (`v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">`; several space-separated entries are accepted if any matches). The key is the base64-DECODED bytes of the part after `whsec_`. The signed body is the raw request text.
+- Verification order: endpoint lookup, signature against `secret` and then against `previous_secret` while its expiry is strictly in the future (the same predicate the wire view uses), timestamp tolerance of plus or minus 300 s (exactly 300 s is accepted, 301 s refused), then `webhook-id` and body validation.
+- `webhook-id` becomes part of a per-target directory name, so it must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`; anything else is 400 and leaves no row.
+- Body: a JSON object with `message` (string, possibly empty) or `slack_message` (object); other known keys are type-checked, unknown keys are ignored and missing keys are absent. The sender caps the body at 256 KB.
+
+### Idempotency and response codes
+
+1. Endpoint lookup, then signature, timestamp, and body validation as above; none of them leaves a row.
+2. One `db.transaction()`: `INSERT ... ON CONFLICT (endpoint_id, webhook_id) DO NOTHING`; zero rows means a duplicate (200, no job); otherwise `jobQueue.enqueue(INBOUND_WEBHOOK_PROCESS, { jobId, endpointId, rawPayload, receivedAt }, { jobId, executor: trx })`. After commit `jobQueue.wake()` is called, also for a duplicate, so a job committed earlier whose wake was lost is still picked up. A throw inside the transaction persists neither row and answers 503.
+3. `jobId = deliveryId = 'inbound-webhook:' + endpointId + ':' + webhookId` (deterministic, so not stored). It is also the per-target directory name and the key of the existing notification idempotency, so a retried job does not notify an already-notified target again.
+
+| Case | Code |
+|---|---|
+| Unknown `:endpointId` | 404 |
+| Bad signature (both secrets), stale or invalid timestamp, or missing signature headers | 401 |
+| Invalid `webhook-id` or malformed body | 400 |
+| Oversized body | 413 |
+| Duplicate `(endpoint, webhook-id)` | 200 |
+| Accepted, enqueued | 200 |
+| Transaction failed | 503 |
+| Unhandled exception | 500 |
+
+The 401 body is one generic message for every signature or timestamp failure; the reason goes to the server log only. Enqueue-failure and 500 logging carries `endpointId`, `webhookId` and the error only, never `rawPayload`, the signature header or any secret.
+
+### Delivery
+
+- **Targets.** Every live or paused designated Orchestrator session of the bound repository receives the message, same as `issue:labeled` (fan-out); a repository-less session is never a target. Eligibility is the same classification the other designated routes use (`classifyOrchestratorSession`): not live, not running, or without an agent-shaped worker is excluded with an info log naming `external:message`; a paused session is a deferred target and gets one digest row. The routing branch precedes the `repositoryName` guard in `resolveTargets` and makes exactly one `collectRoutableSessions()` call per event.
+- **Notification: fields only.** No sender text and no multi-line operator text appears in the notification, ever, and there is no `body` parameter for this kind. The fields, each value through `formatFieldValue`: `type, source, repo, branch ('N/A'), url (slack permalink or 'N/A'), summary (sender text collapsed to one line, about 160 characters), instruction_excerpt (first non-empty line of the instruction, at most 120 characters), instruction_path, body_path, intent ('triage')`. `instruction.md` is the operator-trusted file; `body.md` is the untrusted sender file; the notification tells the agent which is which by field name. What limits an injected instruction is structural: the blast radius is one repository chosen by the admin, and the operator's instruction sets how the body is treated. This is recorded as accepted risk. The operator's instruction should say to coordinate via `send_session_message` before an action with side effects, since every eligible designated session may act on the same message.
+- **Files.** Written by the action half before delivery, once per target, into `{messagesDir}/{sessionId}/{workerId}/inbound-webhook/{deliveryId}/` through the trusted-directory writer (`lib/trusted-file-write.ts`, the same ancestor-contract walk the inter-session message files use): the files inherit the `2775` data-root contract (readable by the session's OS user in multi-user mode) and session deletion already removes `messages/<sessionId>`. A paused session's deferred row references the paths and the files outlive any pause. `body.md` is a sanitized projection (`message`, `slack_permalink`, `slack_channel` / `slack_ts`); `slack_message` and `slack_files[].url` are never written to any session-visible file. `instruction.md` is `instruction_text` as stored at process time, byte for byte (the endpoint row is re-read, so an edit between receipt and processing is honoured). A write failure for one target drops only that target.
+- **Deleted endpoint.** The job handler re-reads the endpoint; if it is gone (deleted, or cascade-deleted with its repository) it logs and completes the job without delivering. The job queue itself retries every thrown error, so the handler absorbs this case rather than relying on a permanent-error class.
+
+### Data at rest (accepted)
+
+- `jobs.payload` holds the dispatcher's raw body verbatim (including `slack_files[].url` and `slack_message`) for as long as the job row exists, which today is indefinitely (no completed-job retention sweep exists; `cancelJob` only deletes pending/stalled rows). Bounded in practice by the token's ~1 day validity at Firebase. A retention sweep would be a job-queue Issue, not part of this one.
+- Logs never carry the payload (above). Session-visible files never carry the token (above).
+
+### Operator contract
+
+- Only the webhook paths are exposed to the internet. The receive URL shown in the UI, `<internet origin>/webhooks/in/<id>`, is built from the optional server setting `AGENT_CONSOLE_INTERNET_ORIGIN` (exposed as `internetOrigin` on `GET /api/system/health`): it must be the internet-facing origin that the reverse proxy routes to this server, never `AGENT_CONSOLE_PUBLIC_ORIGIN` or `APP_URL`, which are human-facing.
+- The reverse proxy must forward `/webhooks/in/*` (today only `/webhooks/github` may be exposed); a missing route answers 404, which the dispatcher treats as a permanent loss. **Register a URL in the dispatcher only after that forwarding is in place.**
+- During a deploy the proxy must answer 502/503 or refuse the connection on this path; a page answering 200, 401 or 404 loses the message permanently. The dispatcher retries on timeout, connection failure, 408, 429 and 5xx; other 4xx and 3xx are permanent. A secret mismatch is a permanent 401, so rotation updates the receiver first: rotate here, paste the new value into the dispatcher, let the 24 h previous-secret window close.
+
+### Surfaces: decision table
+
+Owner-confirmed 2026-11-07. Decision-table checklist (`.claude/rules/decision-table.md`): this table has no undecided cell; the implementation matches every "do" cell and exposes nothing marked "not here".
+
+Rows are operations on an endpoint; columns are surfaces. Every cell is a recorded decision (`.claude/rules/decision-table.md`). The MCP and embedded-visible columns are one owner ruling applied per row (no MCP tool; secrets stay off every agent-visible surface and endpoint management is an operator action), written once here and referenced as "operator-only". The whole repository-page column, including every cell marked **(owner)**, was confirmed by the owner on 2026-11-07 (TODO 09d1465c); the marks stay as the record of which cells were decided by the Architect or the implementer rather than by an earlier AC.
+
+UI placement decision: a sibling route `/settings/repositories/$repositoryId/inbound-webhooks` (the list), reached from the repository detail page (`/settings/repositories/$repositoryId/`) by a link next to Edit, with the repository in the breadcrumb. Not inside the Edit page: that page is one `react-hook-form` with a single Save, while endpoint operations are immediate mutations with a one-time secret panel; nesting a list with its own buttons inside a form invites submit confusion (the Slack integration lives in the form because it is one record saved with the form; endpoints are a collection).
+
+Edit and create are each their own page (owner decision for edit; create follows for consistency AND because the create form now carries the generate/enter choice and a secret input, which belongs on a page, not above a list): `.../inbound-webhooks/new` and `.../inbound-webhooks/$endpointId/edit`, both using one `EndpointForm` (label, instruction textarea; the create variant adds the secret-source choice). After a successful create with a generated secret the create page itself shows the one-time panel in place of the form, with a "Done" link back to the list; the secret never crosses a navigation. Rotate stays on the list page as a row action that opens a small dialog with the same generate/enter choice; a generated secret shows in the panel on the list page as today.
+
+Entered-secret handling in the client: the secret input is `type="password"` with `autoComplete="off"`, lives only in the form's local state, is cleared on submit and on unmount, and is not passed as a `useMutation` variable (TanStack keeps `variables` in mutation state while observed): the mutation function receives it through a ref/closure argument, the mutations keep `gcTime: 0` and call `reset()` on settle. A test asserts the mutation cache holds no entry carrying the entered string after settle.
+
+| Operation | REST (`/api/repositories/:repositoryId/inbound-webhook-endpoints`, authenticated caller) | Repository settings page (`/settings/repositories/$repositoryId/inbound-webhooks`) | MCP | Embedded-visible |
+|---|---|---|---|---|
+| list (one repository) | do: `GET /` (unknown repository -> 404) | do: endpoint rows (`EndpointRow`), every non-secret field **(owner)** | not here: operator-only | not here: operator-only |
+| list across repositories | not here: owner decision 1, an endpoint is wholly owned by one repository; no global list, no global page | not here: same | not here: same | not here: same |
+| get | do: `GET /:id` (other repository's id -> 404) | not here: the row already shows every non-secret field; no detail page **(owner)** | not here: operator-only | not here: operator-only |
+| create | do: `POST /` (201; body `{ label, instructionText, secret? }`; response carries a generated `secret` once, never an entered one) | do: own page `.../inbound-webhooks/new` (`EndpointForm`: label, instruction textarea, secret source choice "Generate" default / "Enter my own"); a generated secret shown once on that page in `SecretRevealPanel` with Copy, then Done -> list **(owner)** | not here: operator-only | not here: operator-only |
+| update (label, instruction text) | do: `PATCH /:id`; `repositoryId` / `secret` in the body are 400 | do: own page `.../inbound-webhooks/$endpointId/edit` (`EndpointForm` without the secret choice), reached by Edit on the row; Save returns to the list **(owner)** | not here: operator-only | not here: operator-only |
+| rebind repository | not here: ruling below (fixed after creation) | not here: same | not here: same | not here: same |
+| delete | do: `DELETE /:id` (deliveries cascade) | do: Delete on the row behind a `ConfirmDialog` naming the consequence (senders stop being accepted) **(owner)** | not here: operator-only | not here: operator-only |
+| rotate secret | do: `POST /:id/rotate-secret` (optional body `{ secret? }`; response carries a generated `secret` once, never an entered one) | do: Rotate on the row opens a dialog with the generate/enter choice; a generated secret shown once in `SecretRevealPanel` on the list page; every Rotate is disabled while a rotate is pending or an issued secret is unsaved (dismiss re-enables) **(owner)** | not here: operator-only | not here: operator-only |
+| enter own secret (create, rotate) | do: `secret?` on both bodies, validated `whsec_` + base64 of 24..64 bytes, 400 otherwise with a value-free message; response `secretSource: 'entered'` and no secret | do: "Enter my own" on the create page and in the rotate dialog, password input, held only for the request; no panel afterwards, the row shows nothing about the source **(owner)** | not here: operator-only | not here: operator-only |
+| clear previous secret | do: `POST /:id/clear-previous-secret` | do: "End previous secret now" on the row, rendered only while `hasPreviousSecret` **(owner)** | not here: operator-only | not here: operator-only |
+| show receive URL (`<base>/webhooks/in/<id>`) | do: base via `GET /api/system/health` `internetOrigin` (null when `AGENT_CONSOLE_INTERNET_ORIGIN` is unset); no URL field on the endpoint resources | do: on each list row and on the create page's post-create panel, with Copy; path plus a hint when the base URL is unset **(owner)** | not here: operator-only (the agent never needs the sender's URL) | not here: operator-only |
+| reveal secret (read back after issue) | not here: owner ruling 2026-11-07, lost secret means rotate | not here: same | not here: same | not here: same |
+| receive a message (`POST /webhooks/in/:endpointId`) | not here: this route is a public, signature-verified route outside `/api` (sender surface, not an authenticated caller) | not here: nothing to operate; delivery reaches sessions through the notification path | not here: same | not here: same |
+
+**Rulings on the implementer's decisions (design decisions, 2026-11-07; unchanged by the revision unless noted):**
+
+- **Create on its own page, like edit.** Decided by the Architect under the owner's edit-page decision: consistency, and the create form now holds a secret-source choice and a secret input, which should not sit above a list. The list page keeps only row actions (Edit link, Rotate dialog, End previous, Delete).
+- **Repository fixed after creation (PATCH edits label and instruction only).** Confirmed; now also structural, since the endpoint lives under its repository's URL. Rebinding would silently redirect a sender to another repository's Orchestrators and carry the dedupe ledger across repositories; changing the target is delete + create, which forces a new secret into the dispatcher.
+- **Blank or whitespace-only `instructionText` is 400, and the value is not trimmed.** Confirmed (the newline rejection is gone; blank still has no purpose).
+- **`previousSecretExpiresAt` reads null once expired and `hasPreviousSecret` is true only while unexpired.** Confirmed; the receive verifier uses the same strictly-future predicate.
+- **Interface file `repositories/webhook-endpoint-repository.ts`.** Confirmed (keeps `test-trigger.md`'s interface-only exemption).
+- **Unknown repository is 404, missing is 400.** Revised by the move: the repository is now a path segment, so "missing" cannot occur; an unknown `:repositoryId` is 404 `Repository` on list and create, and an id-scoped route for an endpoint not in that repository is 404 `Inbound webhook endpoint`.
+
+### Non-goals
+
+- A "launch" endpoint kind (start an agent with a prompt, not bound to one repository, possibly creating worktrees across repositories) is out of scope. When built, it is NOT represented as `repository_id IS NULL` on `inbound_webhook_endpoints`: it gets its own table, or a `kind` column with per-kind CHECKs, decided then. The receive/action split above is what that kind plugs into.
+- No templates or transformation of the sender's body; the first version projects fields only.
+- Attachments (`slack_files`) are not fetched yet; their URLs are never written anywhere session-visible.
 
 ## Configuration
 

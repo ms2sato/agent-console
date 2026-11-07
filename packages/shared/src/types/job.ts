@@ -61,6 +61,12 @@ export const JOB_TYPES = {
   INBOUND_EVENT_PROCESS: 'inbound-event:process',
 
   /**
+   * Process a verified message received on a generic signed inbound webhook endpoint.
+   * Payload: InboundWebhookProcessPayload
+   */
+  INBOUND_WEBHOOK_PROCESS: 'inbound-webhook:process',
+
+  /**
    * Remove every memory directory of a deleted embedded-agent definition.
    * Payload: CleanupDefinitionMemoryPayload
    */
@@ -183,6 +189,20 @@ export interface InboundEventJobPayload {
 }
 
 /**
+ * Payload for inbound-webhook:process job.
+ *
+ * `jobId` is the deterministic delivery id (`inbound-webhook:<endpointId>:<webhookId>`) and equals
+ * the job's own persisted id. No headers: verification is complete before the job exists.
+ * `rawPayload` is the sender's body verbatim.
+ */
+export interface InboundWebhookProcessPayload {
+  jobId: string;
+  endpointId: string;
+  rawPayload: string;
+  receivedAt: string;
+}
+
+/**
  * Unified job payload type (union of all payload types).
  */
 export type JobPayload =
@@ -191,6 +211,7 @@ export type JobPayload =
   | CleanupRepositoryPayload
   | WorktreeDeletePayload
   | InboundEventJobPayload
+  | InboundWebhookProcessPayload
   | CleanupDefinitionMemoryPayload;
 
 /**

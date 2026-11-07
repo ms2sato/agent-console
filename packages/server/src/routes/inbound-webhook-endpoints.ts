@@ -25,7 +25,11 @@ import {
 } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
 import { NotFoundError } from '../lib/errors.js';
-import { generateInboundWebhookSecret, previousSecretExpiryFrom } from '../lib/inbound-webhook-secret.js';
+import {
+  generateInboundWebhookSecret,
+  isPreviousSecretActive,
+  previousSecretExpiryFrom,
+} from '../lib/inbound-webhook-secret.js';
 import { createLogger } from '../lib/logger.js';
 import { vOptionalJsonValidator, vValidator } from '../middleware/validation.js';
 import type { InboundWebhookEndpointView } from '../repositories/webhook-endpoint-repository.js';
@@ -40,8 +44,7 @@ const BASE = '/:repositoryId/inbound-webhook-endpoints';
  * future; an expired one reads as absent (`hasPreviousSecret` false, expiry null).
  */
 function toWireEndpoint(view: InboundWebhookEndpointView, now: Date): InboundWebhookEndpoint {
-  const hasPreviousSecret =
-    view.previousSecretExpiresAt !== null && Date.parse(view.previousSecretExpiresAt) > now.getTime();
+  const hasPreviousSecret = isPreviousSecretActive(view.previousSecretExpiresAt, now);
   return {
     id: view.id,
     label: view.label,

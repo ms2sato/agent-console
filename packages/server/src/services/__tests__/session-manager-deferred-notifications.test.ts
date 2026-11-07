@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn, setSystemTime } from 'bun:test';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import type { Worker } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -717,6 +718,40 @@ describe('SessionManager: notifications deferred while a session is paused or pa
       const file = fs.readFileSync(paths[0], 'utf-8');
       expect(file).toContain('/messages/2026-01-01T00:00:02.000Z.md');
       expect(file).toContain('/messages/2026-01-01T00:00:03.000Z.md');
+    });
+
+    it('writes the read-more file atomically through the trusted writer: the final content is there and no .tmp residue remains', async () => {
+      const { manager } = await setup();
+      const { session, agent } = await twoWorkerSession(manager);
+      await store(session.id, agent.id, '2026-01-01T00:00:02.000Z');
+      const { calls } = fakeSeam(manager);
+      const deferredDir = manager.getPathResolverForSessionId(session.id)!.getDeferredDir();
+
+      await manager.flushDeferredNotifications(session.id, '2026-01-01T00:00:00.000Z');
+
+      const names = fs.readdirSync(deferredDir);
+      expect(names).toHaveLength(1);
+      expect(names[0]).not.toMatch(/\.tmp$/);
+      expect(fs.readFileSync(`${deferredDir}/${names[0]}`, 'utf-8')).toContain('/messages/2026-01-01T00:00:02.000Z.md');
+      expect(calls).toHaveLength(1);
+    });
+
+    it('a failing rename of the read-more file leaves no .tmp, delivers nothing and keeps the rows', async () => {
+      const { manager } = await setup();
+      const { session, agent } = await twoWorkerSession(manager);
+      await store(session.id, agent.id, '2026-01-01T00:00:02.000Z');
+      const { calls } = fakeSeam(manager);
+      const deferredDir = manager.getPathResolverForSessionId(session.id)!.getDeferredDir();
+      const rename = spyOn(fsPromises, 'rename').mockRejectedValue(new Error('rename refused'));
+      try {
+        await manager.flushDeferredNotifications(session.id);
+      } finally {
+        rename.mockRestore();
+      }
+
+      expect(fs.existsSync(deferredDir) ? fs.readdirSync(deferredDir) : []).toEqual([]);
+      expect(calls).toHaveLength(0);
+      expect(await rowsOf(session.id)).toHaveLength(1);
     });
 
     it('does not delete any row when the read-more file cannot be written', async () => {

@@ -1,9 +1,15 @@
 import { Hono } from 'hono';
-import type { MiddlewareHandler } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { createLogger } from '../lib/logger.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import type { AppBindings } from '../app-context.js';
+import {
+  INBOUND_WEBHOOK_MAX_BODY_BYTES,
+  isValidWebhookId,
+  receiveInboundWebhook,
+  type ReceiveResult,
+} from '../services/inbound-webhook/receive.js';
 
 const logger = createLogger('webhooks');
 
@@ -97,6 +103,73 @@ postOnly(webhooks, '/github',
 
   return c.json({ ok: true });
 });
+
+/**
+ * Generic signed inbound webhook (Standard Webhooks). Public and outside /api: every request is
+ * signature-verified. Deliberate exception to the always-200 policy above, for this route only:
+ * the sender retries on 5xx/408/429 and treats other 4xx as permanent, so the status codes carry
+ * the meaning. See docs/design/integration-inbound.md.
+ */
+function toReceiveResponse(c: Context<AppBindings>, result: ReceiveResult): Response {
+  switch (result.kind) {
+    case 'not_found':
+      return c.json({ error: 'Not Found' }, 404);
+    case 'unauthorized':
+      return c.json({ error: 'Unauthorized' }, 401);
+    case 'invalid_request':
+      return c.json({ error: 'Bad Request' }, 400);
+    case 'duplicate':
+      return c.json({ ok: true, duplicate: true }, 200);
+    case 'accepted':
+      return c.json({ ok: true }, 200);
+    case 'unavailable':
+      return c.json({ error: 'Service Unavailable' }, 503);
+    default: {
+      const _exhaustive: never = result;
+      throw new Error(`Unhandled receive result: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
+}
+
+postOnly(webhooks, '/in/:endpointId',
+  bodyLimit({
+    maxSize: INBOUND_WEBHOOK_MAX_BODY_BYTES,
+    onError: (c) => c.json({ error: 'Payload Too Large' }, 413),
+  }) as MiddlewareHandler<AppBindings>,
+  async (c) => {
+    const appContext = c.get('appContext');
+    // The path always supplies it; an empty id would simply miss the lookup (404).
+    const endpointId = c.req.param('endpointId') ?? '';
+    const webhookId = c.req.header('webhook-id');
+    try {
+      const result = await receiveInboundWebhook(
+        {
+          endpointId,
+          rawBody: await c.req.text(),
+          webhookId,
+          timestamp: c.req.header('webhook-timestamp'),
+          signature: c.req.header('webhook-signature'),
+        },
+        {
+          endpoints: appContext.inboundWebhookEndpointRepository,
+          db: appContext.db,
+          jobQueue: appContext.jobQueue,
+          now: appContext.now,
+        },
+      );
+      return toReceiveResponse(c, result);
+    } catch (error) {
+      // A body streamed past the limit surfaces here as this error; rethrow so the bodyLimit
+      // middleware turns it into its 413 (the class is not exported by hono).
+      if (error instanceof Error && error.name === 'BodyLimitError') throw error;
+      // Only ids and the error: never the body, the headers or any secret.
+      logger.error(
+        { err: error, endpointId, webhookId: webhookId !== undefined && isValidWebhookId(webhookId) ? webhookId : undefined },
+        'Unhandled error while receiving an inbound webhook',
+      );
+      return c.json({ error: 'Internal Server Error' }, 500);
+    }
+  });
 
 // Registration order is the mechanism: this catch-all must stay LAST in this
 // router. Hono matches handlers in registration order, so any webhook route

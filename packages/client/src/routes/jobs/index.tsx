@@ -27,6 +27,7 @@ const JOB_TYPE_LABELS: Record<JobType, string> = {
   [JOB_TYPES.CLEANUP_REPOSITORY]: 'Repository Cleanup',
   [JOB_TYPES.WORKTREE_DELETE]: 'Worktree Deletion',
   [JOB_TYPES.INBOUND_EVENT_PROCESS]: 'Webhook Event',
+  [JOB_TYPES.INBOUND_WEBHOOK_PROCESS]: 'Inbound Webhook Message',
   [JOB_TYPES.CLEANUP_DEFINITION_MEMORY]: 'Agent Memory Cleanup',
 };
 
@@ -205,6 +206,9 @@ function JobsPage() {
             </option>
             <option value={JOB_TYPES.INBOUND_EVENT_PROCESS}>
               {JOB_TYPE_LABELS[JOB_TYPES.INBOUND_EVENT_PROCESS]}
+            </option>
+            <option value={JOB_TYPES.INBOUND_WEBHOOK_PROCESS}>
+              {JOB_TYPE_LABELS[JOB_TYPES.INBOUND_WEBHOOK_PROCESS]}
             </option>
             <option value={JOB_TYPES.CLEANUP_DEFINITION_MEMORY}>
               {JOB_TYPE_LABELS[JOB_TYPES.CLEANUP_DEFINITION_MEMORY]}

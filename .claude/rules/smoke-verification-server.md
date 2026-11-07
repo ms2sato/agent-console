@@ -28,6 +28,12 @@ paths:
   - "scripts/smoke/check-artifact-server-story-e2e.mjs"
   - "scripts/smoke/check-pty-fd-leak.ts"
   - "scripts/smoke/check-webhook-issue-label-routing.ts"
+  - "scripts/smoke/check-inbound-webhook-routing.ts"
+  - "packages/server/src/services/inbound-webhook/**"
+  - "packages/server/src/routes/inbound-webhook-endpoints.ts"
+  - "packages/server/src/lib/trusted-file-write.ts"
+  - "packages/server/src/lib/session-data-path-resolver.ts"
+  - "packages/server/src/lib/pty-notification.ts"
   - "scripts/smoke/check-delegated-ssh-auth-sock.ts"
   - "scripts/smoke/check-multiuser-pty-env.ts"
   - "scripts/smoke/check-embedded-agent-bash-env.ts"
@@ -87,6 +93,22 @@ PRs touching `packages/server/src/routes/webhooks.ts`, `packages/server/src/serv
 This is a real-process regression gate for the shipping webhook->job-queue->handler chain, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns in `test-trigger.md`. It is a manual gate, never a CI job (same as this file's other real-child-process smokes).
 
 **Deliberately NOT given a `#1872`-style `*.run.test.ts` CI wrapper, even though it is free:** it seeds `CLAUDE_CONFIG_DIR` from a copy of the operator's real `~/.claude.json` and spawns real `claude-code-builtin` PTYs, which a GitHub-hosted runner lacks, so "free and deterministic" (#1872's wrapping criterion) is necessary but not sufficient -- it must also be portable. It stays a manual gate.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — free and deterministic, no `claude` CLI, no provider key.
+
+## Additional Verification: Inbound Signed Webhook Shipping-Path E2E
+
+PRs touching `packages/server/src/services/inbound-webhook/**` (the receive half, the job handler, the repository-orchestrators action), `packages/server/src/routes/webhooks.ts` (the `/in/:endpointId` route), `packages/server/src/routes/inbound-webhook-endpoints.ts`, `packages/server/src/services/inbound/**` (in particular the `external:message` branch of `resolve-targets.ts` and `AgentWorkerHandler`'s fields-only notification), `packages/server/src/lib/trusted-file-write.ts`, `getInboundWebhookDeliveryPaths` in `packages/server/src/lib/session-data-path-resolver.ts`, or the inbound-event fields in `packages/server/src/lib/pty-notification.ts`, must run `NODE_ENV=development bun scripts/smoke/check-inbound-webhook-routing.ts` locally before pushing (`NODE_ENV` must be set explicitly -- the script is NODE_ENV-sensitive and exits 2 without it; measured wall-clock about 14 s).
+
+It boots a disposable server as a REAL CHILD PROCESS (the same choice as the labeled-Issue smoke above), registers a disposable git repository with a fake `origin`, creates the endpoint through the real `POST /api/repositories/:id/inbound-webhook-endpoints` and captures the one-time secret from that response, designates three sessions through real `set_orchestrator_session` calls (a live PTY session L, a session P that is then paused, and an embedded-agent session E backed by a stub OpenAI-compatible provider hosted by the script), then drives real signed `POST /webhooks/in/:endpointId` requests through the real route, real job queue and real SQLite. The request signature is computed in the script from the Standard Webhooks specification (own HMAC over `{id}.{timestamp}.{body}`, keyed by the base64-decoded secret), never by importing the production verifier, so a production signer or verifier that drifted from the specification fails the run.
+
+**FREE AND DETERMINISTIC** -- no `claude` CLI, no provider key, no LLM turn. L runs a custom agent whose command is plain `cat`; E talks to the in-process stub.
+
+What one run asserts: (1) L's real worker output file gains the `[inbound:external:message]` tag with the fields-only text (type, source, the real remote slug, the one-line instruction excerpt, both paths, intent), `body.md` and `instruction.md` exist in L's own delivery directory, `instruction.md` equals the stored multi-line CRLF text byte for byte, and neither `body.md` nor the output file carries a `slack_message` key, a `slack_files` URL, a token-looking substring or the instruction's second line. (2) E's NDJSON gains exactly one `user-message` with `notification.kind === 'inbound-event'` carrying the tag, and the stub saw exactly one chat request since the POST (baseline captured before the POST, read only after `state: 'idle'`). (3) P gets no PTY write and exactly one new `kind = 'inbound-event'` row in `deferred_worker_notifications` whose params carry `body_path` and `instruction_path`, with both files present. (4) The negative arms each run against a positive control (the accepted delivery moved every counter they read): a wrong signature is 401 with no deliveries row, an unknown endpoint id is 404, a 301 s old timestamp is 401, an invalid webhook id (`../x`) is 400, and a replay of the accepted id is 200 and creates no second deliveries row, job, ledger row or notification.
+
+Polarity (Q12), measured by breaking the production path one change at a time and restoring byte copies: skipping the per-target file writes, writing the files after the delivery, writing `instruction.md` from the excerpt, letting the verifier accept any signature, and skipping the dedupe insert each turn the run red on the assertion that names it. Teardown deletes the sessions through the real route (the server tears down the PTY shell and the embedded worker itself), kills the child, and only then stops the stub.
+
+**Deliberately NOT given a `*.run.test.ts` CI wrapper:** it is free and deterministic, but it boots a full child server, a real PTY and an embedded-agent loop subprocess, depends on fixed settle sleeps, and takes about 14 s, so it stays a manual gate (the shared note at the top of this file).
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — free and deterministic, no `claude` CLI, no provider key.
 
