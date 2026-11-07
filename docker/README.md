@@ -356,28 +356,28 @@ beyond loopback**; they exist solely for local development and verification.
 
 ## Building behind a blocked Docker Hub
 
-The default `BUN_BASE` (`oven/bun:1.4.4`) is a directly-pullable fixed tag, so a
-clean environment with normal Docker Hub access builds with no extra flags:
+The base image is `oven/bun:${BUN_VERSION}` (default `1.4.4`, a fixed tag that
+must equal the repo-root `.bun-version`), so a clean environment with normal
+Docker Hub access builds with no extra flags:
 
 ```bash
 docker build -f docker/Dockerfile -t agent-console-multiuser-verify .
 ```
 
-If your environment can reach general networks (apt, npm, bun.sh) but **cannot
-pull from Docker Hub's registry** (a common corporate/proxy situation where
-`docker pull` hangs at "resolve image config"), build from a base image you
-already have cached and disable BuildKit so it never round-trips the registry:
+The build downloads no bun installer. Each stage asserts that the image's own
+`bun --version` is exactly `BUN_VERSION`, so a mismatched base fails the build
+instead of being silently replaced. If your environment cannot pull from Docker
+Hub's registry (a common corporate/proxy situation where `docker pull` hangs at
+"resolve image config"), build from a locally cached `oven/bun:1.4.4` and
+disable BuildKit so it never round-trips the registry:
 
 ```bash
-DOCKER_BUILDKIT=0 docker build \
-  --build-arg BUN_BASE=oven/bun:1.3.4 \
-  -f docker/Dockerfile -t agent-console-multiuser-verify .
+DOCKER_BUILDKIT=0 docker build -f docker/Dockerfile -t agent-console-multiuser-verify .
 ```
 
-The in-image step normalizes bun to `BUN_VERSION` (default `1.4.4`) regardless of
-the base tag, so an older cached base still produces a `>= 1.4.4` runtime. bun
-itself is fetched from `bun.sh` and npm packages from the npm registry — neither
-goes through Docker Hub.
+To change the version, edit `.bun-version`, both Dockerfiles' `BUN_VERSION`
+default, and (if it is a new floor) `scripts/check-bun-version.mjs`;
+`scripts/__tests__/bun-version-pins.test.mjs` fails if they disagree.
 
 ## Notes / limitations
 

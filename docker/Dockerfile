@@ -9,29 +9,23 @@
 # Base image: oven/bun (Debian). Both stages share the same base so the bun-pty
 # native module installed in the runtime stage matches the runtime glibc.
 #
-# The default BUN_BASE is a directly-pullable fixed tag so a clean environment
-# (CI, another machine) can `docker build` this without any local cache. The
-# in-image step below normalizes bun to BUN_VERSION (>= 1.4.4, required by
-# the repo's preinstall gate -- see scripts/check-bun-version.mjs for the
-# reasons behind the floor), so you may override BUN_BASE
-# with an older locally-cached base when registry pulls are unavailable, e.g.:
-#   DOCKER_BUILDKIT=0 docker build --build-arg BUN_BASE=oven/bun:1.3.4 ...
+# The bun version lives in this ONE ARG, which selects the fixed-tag, directly
+# pullable oven/bun image for both stages. No installer is downloaded at build
+# time: the image's own bun is asserted to be exactly BUN_VERSION instead, so a
+# mismatched base fails the build rather than being silently replaced. The
+# value must equal the repo-root .bun-version (checked by
+# scripts/__tests__/bun-version-pins.test.mjs) and be >= the floor in
+# scripts/check-bun-version.mjs.
 # See docker/README.md ("Building behind a blocked Docker Hub").
 
-ARG BUN_BASE=oven/bun:1.4.4
 ARG BUN_VERSION=1.4.4
 
 # ===== Stage 1: build the standalone dist bundle =====
-FROM ${BUN_BASE} AS builder
+FROM oven/bun:${BUN_VERSION} AS builder
 ARG BUN_VERSION
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    BUN_INSTALL=/usr/local
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl unzip ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
- && bun --version
+ENV DEBIAN_FRONTEND=noninteractive
+RUN test "$(bun --version)" = "${BUN_VERSION}"
 
 WORKDIR /app
 COPY . .
@@ -42,11 +36,10 @@ RUN bun install --frozen-lockfile
 RUN bun run build
 
 # ===== Stage 2: runtime as the non-root service user =====
-FROM ${BUN_BASE} AS runtime
+FROM oven/bun:${BUN_VERSION} AS runtime
 ARG BUN_VERSION
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    BUN_INSTALL=/usr/local
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Runtime OS dependencies:
 # - sudo:          the server spawns PTYs via `sudo -u <user> -i`
@@ -57,11 +50,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # - procps:        ps/whoami diagnostics inside the container
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      curl unzip ca-certificates \
+      ca-certificates \
       sudo pamtester libpam-modules libpam-runtime login passwd git procps \
  && rm -rf /var/lib/apt/lists/* \
- && curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
- && bun --version \
+ && test "$(bun --version)" = "${BUN_VERSION}" \
  && test -f /etc/pam.d/login
 
 # --- Shared system group (Issue #830) ---

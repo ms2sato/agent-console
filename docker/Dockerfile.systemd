@@ -37,6 +37,7 @@ ARG BUN_VERSION=1.4.4
 FROM oven/bun:${BUN_VERSION} AS bun
 
 FROM ubuntu:24.04
+ARG BUN_VERSION
 
 # `container=docker` lets systemd detect the container (ConditionVirtualization)
 # and skip the units that cannot work here.
@@ -73,7 +74,7 @@ RUN apt-get update \
 # check (service-user bun vs unified bun) reports `skipped` -- the driver
 # logs both as NOT EXERCISED with this reason.
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
-RUN /usr/local/bin/bun --version
+RUN test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}"
 
 # Users:
 # - alice:    a login-shell user, the elevation smoke's <target-user>.
