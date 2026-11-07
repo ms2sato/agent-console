@@ -130,6 +130,13 @@ describe('Inbound webhook endpoint routes', () => {
     return db.selectFrom('inbound_webhook_endpoints').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
   }
 
+  const BACKDATED = '2020-01-01T00:00:00.000Z';
+
+  /** Moves the stored updated_at far into the past so a later write is distinguishable from no write. */
+  async function backdateUpdatedAt(id: string) {
+    await db.updateTable('inbound_webhook_endpoints').set({ updated_at: BACKDATED }).where('id', '=', id).execute();
+  }
+
   describe('authentication', () => {
     it('rejects an unauthenticated request on every route', async () => {
       const unauthenticated = buildApp(repository, null);
@@ -448,7 +455,9 @@ describe('Inbound webhook endpoint routes', () => {
   describe('PATCH /:id', () => {
     it('changes label and instruction text, touches updated_at, and cannot change the secret or repository', async () => {
       const created = await create();
+      await backdateUpdatedAt(created.endpoint.id);
       const before = await storedRow(created.endpoint.id);
+      expect(before.updated_at).toBe(BACKDATED);
 
       const res = await app.request(
         `${base}/${created.endpoint.id}`,
@@ -463,7 +472,7 @@ describe('Inbound webhook endpoint routes', () => {
       expect(after.previous_secret).toBe(before.previous_secret);
       expect(after.repository_id).toBe(REPO_ID);
       expect(after.created_at).toBe(before.created_at);
-      expect(after.updated_at >= before.updated_at).toBe(true);
+      expect(Date.parse(after.updated_at)).toBeGreaterThan(Date.parse(before.updated_at));
     });
 
     it('refuses secret, previousSecret and repositoryId in the body with 400 and changes nothing', async () => {
@@ -489,6 +498,7 @@ describe('Inbound webhook endpoint routes', () => {
   describe('POST /:id/rotate-secret', () => {
     it('moves current to previous with a 24h expiry and returns the new generated secret', async () => {
       const created = await create();
+      await backdateUpdatedAt(created.endpoint.id);
       const beforeMs = Date.now();
       const rotated = await rotate(created.endpoint.id);
       const afterMs = Date.now();
@@ -600,6 +610,7 @@ describe('Inbound webhook endpoint routes', () => {
     it('nulls both previous columns and keeps the current secret', async () => {
       const created = await create();
       const rotated = await rotate(created.endpoint.id);
+      await backdateUpdatedAt(created.endpoint.id);
 
       const res = await app.request(`${base}/${created.endpoint.id}/clear-previous-secret`, json('POST'));
       expect(res.status).toBe(200);
@@ -612,6 +623,7 @@ describe('Inbound webhook endpoint routes', () => {
       expect(row.previous_secret).toBeNull();
       expect(row.previous_secret_expires_at).toBeNull();
       expect(row.secret).toBe(rotated.secret);
+      expect(Date.parse(row.updated_at)).toBeGreaterThan(Date.parse(BACKDATED));
     });
   });
 
