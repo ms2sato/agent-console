@@ -9,7 +9,8 @@ export type InboundEventType =
   | 'pr:merged'             // Pull request was merged
   | 'pr:review_comment'     // PR review comment was posted
   | 'pr:changes_requested'  // PR changes requested
-  | 'pr:comment';           // PR general comment posted
+  | 'pr:comment'            // PR general comment posted
+  | 'external:message';     // Message delivered by a signed generic webhook endpoint
 
 /** All system event types (inbound + outbound triggers) */
 export type SystemEventType = InboundEventType | OutboundTriggerEventType;
@@ -18,6 +19,7 @@ export type SystemEventType = InboundEventType | OutboundTriggerEventType;
 export type EventSource =
   | 'github'    // GitHub webhooks
   | 'gitlab'    // GitLab webhooks
+  | 'webhook'   // Generic signed inbound webhook endpoints
   | 'internal'; // Agent Console internal events
 
 export interface SystemEventMetadata {
@@ -31,6 +33,16 @@ export interface SystemEventMetadata {
   commitSha?: string;
   /** Label names relevant to the event. For `issue:labeled`: the single ADDED label (labeled action) or the full initial label set (opened action). */
   labels?: string[];
+  /**
+   * Scoped to `external:message`. Id of the repository whose designated Orchestrator sessions
+   * receive the event. Used for routing only; never rendered.
+   */
+  targetRepositoryId?: string;
+  /**
+   * Scoped to `external:message`. The operator-authored single-line instruction of the endpoint
+   * the message arrived on. Used for rendering only; never routed on.
+   */
+  instructionText?: string;
 }
 
 /**

@@ -445,6 +445,22 @@ export {
   type ResolveTodoRequest,
 } from './todo.js';
 
+// Inbound webhook endpoint schemas
+export {
+  CreateInboundWebhookEndpointRequestSchema,
+  type CreateInboundWebhookEndpointRequest,
+  UpdateInboundWebhookEndpointRequestSchema,
+  type UpdateInboundWebhookEndpointRequest,
+  InboundWebhookEndpointSchema,
+  type InboundWebhookEndpoint,
+  InboundWebhookEndpointsListResponseSchema,
+  type InboundWebhookEndpointsListResponse,
+  InboundWebhookEndpointResponseSchema,
+  type InboundWebhookEndpointResponse,
+  InboundWebhookEndpointWithSecretResponseSchema,
+  type InboundWebhookEndpointWithSecretResponse,
+} from './inbound-webhook-endpoint.js';
+
 // User directory schemas
 export {
   DirectoryUserSchema,

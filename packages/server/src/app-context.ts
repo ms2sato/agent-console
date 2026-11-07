@@ -34,6 +34,7 @@ import type { UserMode, assertSpawnCwdExists } from './services/user-mode.js';
 import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
 import type { MessageTemplateRepository } from './repositories/message-template-repository.js';
+import type { InboundWebhookEndpointRepository } from './repositories/webhook-endpoint-repository.js';
 import type { ArtifactRepository } from './repositories/artifact-repository.js';
 import type { BookmarkRepository } from './repositories/bookmark-repository.js';
 import type { TodoRepository } from './repositories/todo-repository.js';
@@ -96,6 +97,7 @@ import { generateRepositoryDescription } from './services/repository-description
 import { RepositoryCloneService } from './services/repository-clone-service.js';
 import { getSourceReposDir, getConfigDir } from './lib/config.js';
 import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
+import { SqliteInboundWebhookEndpointRepository } from './repositories/sqlite-inbound-webhook-endpoint-repository.js';
 import { SqliteArtifactRepository } from './repositories/sqlite-artifact-repository.js';
 import { SqliteBookmarkRepository } from './repositories/sqlite-bookmark-repository.js';
 import { SqliteTodoRepository } from './repositories/sqlite-todo-repository.js';
@@ -258,6 +260,9 @@ export interface AppContext {
   /** Message template CRUD repository */
   messageTemplateRepository: MessageTemplateRepository;
 
+  /** Inbound webhook endpoint repository (signed generic webhook receivers; secrets leave only via create/rotate) */
+  inboundWebhookEndpointRepository: InboundWebhookEndpointRepository;
+
   /** HTML artifact metadata + storage repository (see docs/design/html-artifacts.md) */
   artifactRepository: ArtifactRepository;
 
@@ -368,6 +373,7 @@ export async function createAppContext(
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const sharedAccountRepository = new SqliteSharedAccountRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
+  const inboundWebhookEndpointRepository = new SqliteInboundWebhookEndpointRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
   const bookmarkRepository = new SqliteBookmarkRepository(db);
   const todoRepository = new SqliteTodoRepository(db);
@@ -758,6 +764,7 @@ export async function createAppContext(
     generateRepositoryDescription,
     repositoryCloneService,
     messageTemplateRepository,
+    inboundWebhookEndpointRepository,
     artifactRepository,
     bookmarkRepository,
     todoRepository,
@@ -905,6 +912,7 @@ export async function createTestContext(
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const sharedAccountRepository = new SqliteSharedAccountRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
+  const inboundWebhookEndpointRepository = new SqliteInboundWebhookEndpointRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
   const bookmarkRepository = new SqliteBookmarkRepository(db);
   const todoRepository = new SqliteTodoRepository(db);
@@ -1125,6 +1133,7 @@ export async function createTestContext(
     generateRepositoryDescription,
     repositoryCloneService,
     messageTemplateRepository,
+    inboundWebhookEndpointRepository,
     artifactRepository,
     bookmarkRepository,
     todoRepository,

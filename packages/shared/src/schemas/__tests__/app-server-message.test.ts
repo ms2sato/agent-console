@@ -740,6 +740,32 @@ describe('AppServerMessageSchema', () => {
       });
     });
 
+    it('should accept the generic webhook event: external:message type, webhook source, routing and rendering metadata', () => {
+      expectValid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: {
+          type: 'external:message',
+          source: 'webhook',
+          summary: 'A message arrived',
+          metadata: { repositoryName: 'org/repo', targetRepositoryId: 'repo-1', instructionText: 'Run the triage skill' },
+        },
+      });
+    });
+
+    it('should reject an unknown source and an unknown metadata key next to the new webhook members', () => {
+      expectInvalid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: { type: 'external:message', source: 'slack', summary: 's', metadata: {} },
+      });
+      expectInvalid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: { type: 'external:message', source: 'webhook', summary: 's', metadata: { targetRepositoryID: 'repo-1' } },
+      });
+    });
+
     it('should accept metadata omitting labels entirely (optional field boundary)', () => {
       expectValid({
         type: 'inbound-event',

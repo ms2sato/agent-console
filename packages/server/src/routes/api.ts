@@ -18,6 +18,7 @@ import { todos } from './todos.js';
 import { users } from './users.js';
 import { notifications } from './notifications.js';
 import { sharedAccounts } from './shared-accounts.js';
+import { inboundWebhookEndpoints } from './inbound-webhook-endpoints.js';
 import { auth } from './auth.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -74,7 +75,8 @@ const api = new Hono<AppBindings>()
   .route('/todos', todos)
   .route('/users', users)
   .route('/notifications', notifications)
-  .route('/shared-accounts', sharedAccounts);
+  .route('/shared-accounts', sharedAccounts)
+  .route('/inbound-webhook-endpoints', inboundWebhookEndpoints);
 
 export type AppType = typeof api;
 export { api };
