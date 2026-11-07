@@ -27,14 +27,12 @@ const SERVER_HOST = 'console.test';
 describe('Client-Server Boundary: same-origin guard', () => {
   let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
-  let bridgeFetch: typeof fetch;
 
   beforeEach(async () => {
     await setupTestEnvironment();
     const db = await initializeDatabase(':memory:');
     app = await createTestApp({ messageTemplateRepository: new SqliteMessageTemplateRepository(db) });
     bridge = createFetchBridge(app);
-    bridgeFetch = globalThis.fetch;
   });
 
   afterEach(async () => {
@@ -42,12 +40,28 @@ describe('Client-Server Boundary: same-origin guard', () => {
     await cleanupTestEnvironment();
   });
 
-  /** Wraps the bridged fetch so every request carries the given browser-added headers. */
+  /**
+   * Replaces the global fetch with one that forwards to the app carrying the
+   * given browser-added headers. The happy-dom preload's Request drops
+   * browser-controlled names (Origin, Sec-Fetch-*), so the headers are
+   * re-attached on a view of the request that the app reads them from.
+   */
   function withBrowserHeaders(extra: Record<string, string>): void {
-    const wrapped = (input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers);
-      for (const [k, v] of Object.entries({ Host: SERVER_HOST, ...extra })) headers.set(k, v);
-      return bridgeFetch(input, { ...init, headers });
+    const wrapped = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const all = new Map<string, string>(
+        Object.entries({ ...(init?.headers as Record<string, string> | undefined), Host: SERVER_HOST, ...extra }).map(
+          ([k, v]) => [k.toLowerCase(), v],
+        ),
+      );
+      const request = new Request(new URL(String(input), `http://${SERVER_HOST}`), { method: init?.method, body: init?.body });
+      const withHeaders = new Proxy(request, {
+        get(target, prop) {
+          if (prop === 'headers') return { get: (name: string) => all.get(name.toLowerCase()) ?? null, has: (name: string) => all.has(name.toLowerCase()) };
+          const value = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      return app.fetch(withHeaders);
     };
     globalThis.fetch = Object.assign(wrapped, { preconnect: () => {} }) as typeof fetch;
   }
