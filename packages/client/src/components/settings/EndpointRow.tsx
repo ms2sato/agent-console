@@ -7,6 +7,8 @@ interface EndpointRowProps {
   endpoint: InboundWebhookEndpoint;
   repositoryName: string;
   busy: boolean;
+  /** Rotating is refused while another issued secret is pending or unsaved; other actions stay available. */
+  rotateBlocked: boolean;
   onSave: (id: string, changes: { label: string; instructionText: string }) => Promise<void>;
   onRotate: (endpoint: InboundWebhookEndpoint) => void;
   onClearPrevious: (endpoint: InboundWebhookEndpoint) => void;
@@ -17,6 +19,7 @@ export function EndpointRow({
   endpoint,
   repositoryName,
   busy,
+  rotateBlocked,
   onSave,
   onRotate,
   onClearPrevious,
@@ -107,7 +110,7 @@ export function EndpointRow({
             <button type="button" className="btn text-sm" onClick={startEditing} disabled={busy}>
               Edit
             </button>
-            <button type="button" className="btn text-sm" onClick={() => onRotate(endpoint)} disabled={busy}>
+            <button type="button" className="btn text-sm" onClick={() => onRotate(endpoint)} disabled={busy || rotateBlocked}>
               Rotate secret
             </button>
             {endpoint.hasPreviousSecret && (

@@ -7,10 +7,12 @@ import { Spinner } from '../ui/Spinner';
 interface CreateEndpointFormProps {
   repositories: Repository[];
   isPending: boolean;
+  /** Submit is refused while another issued secret is pending or unsaved; the inputs stay editable. */
+  submitBlocked: boolean;
   onSubmit: (request: { label: string; repositoryId: string; instructionText: string }) => Promise<void>;
 }
 
-export function CreateEndpointForm({ repositories, isPending, onSubmit }: CreateEndpointFormProps) {
+export function CreateEndpointForm({ repositories, isPending, submitBlocked, onSubmit }: CreateEndpointFormProps) {
   const [repositoryId, setRepositoryId] = useState('');
   const [label, setLabel] = useState('');
   const [instructionText, setInstructionText] = useState('');
@@ -19,6 +21,7 @@ export function CreateEndpointForm({ repositories, isPending, onSubmit }: Create
   const instructionError = instructionText ? validateInstructionText(instructionText) : null;
   const canSubmit =
     !isPending &&
+    !submitBlocked &&
     repositoryId !== '' &&
     validateLabel(label) === null &&
     validateInstructionText(instructionText) === null;

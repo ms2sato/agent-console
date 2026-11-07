@@ -25,14 +25,14 @@ function makeEndpoint(overrides: Partial<InboundWebhookEndpoint> = {}): InboundW
   };
 }
 
-function setup(endpoint = makeEndpoint(), busy = false, onSave: (id: string, c: { label: string; instructionText: string }) => Promise<void> = async () => {}) {
+function setup(endpoint = makeEndpoint(), busy = false, rotateBlocked = false, onSave: (id: string, c: { label: string; instructionText: string }) => Promise<void> = async () => {}) {
   const handlers = {
     onSave: mock(onSave),
     onRotate: mock((_e: InboundWebhookEndpoint) => {}),
     onClearPrevious: mock((_e: InboundWebhookEndpoint) => {}),
     onDelete: mock((_e: InboundWebhookEndpoint) => {}),
   };
-  render(<EndpointRow endpoint={endpoint} repositoryName="alpha" busy={busy} {...handlers} />);
+  render(<EndpointRow endpoint={endpoint} repositoryName="alpha" busy={busy} rotateBlocked={rotateBlocked} {...handlers} />);
   return handlers;
 }
 
@@ -69,6 +69,18 @@ describe('EndpointRow', () => {
     expect(screen.getByText(/Previous secret still valid until/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'End previous secret now' }));
     expect(h.onClearPrevious).toHaveBeenCalledWith(endpoint);
+  });
+
+  it('disables only Rotate when rotation is blocked; the other actions stay available', async () => {
+    const user = userEvent.setup();
+    const endpoint = makeEndpoint({ hasPreviousSecret: true, previousSecretExpiresAt: '2099-01-02T00:00:00.000Z' });
+    const h = setup(endpoint, false, true);
+    expect((screen.getByRole('button', { name: 'Rotate secret' }) as HTMLButtonElement).disabled).toBe(true);
+    for (const name of ['Edit', 'End previous secret now', 'Delete']) {
+      expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false);
+    }
+    await user.click(screen.getByRole('button', { name: 'Rotate secret' }));
+    expect(h.onRotate).not.toHaveBeenCalled();
   });
 
   it('disables every action while busy', () => {
@@ -108,7 +120,7 @@ describe('EndpointRow', () => {
 
   it('stays in edit mode when Save rejects', async () => {
     const user = userEvent.setup();
-    const h = setup(makeEndpoint(), false, async () => {
+    const h = setup(makeEndpoint(), false, false, async () => {
       throw new Error('nope');
     });
     await user.click(screen.getByRole('button', { name: 'Edit' }));

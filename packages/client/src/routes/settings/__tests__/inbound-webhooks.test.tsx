@@ -59,6 +59,8 @@ function makeEndpoint(overrides: Partial<InboundWebhookEndpoint> = {}): InboundW
 
 let endpoints: InboundWebhookEndpoint[] = [];
 let listStatus = 200;
+/** When set, a rotate request does not answer until this resolves. */
+let rotateGate: Promise<void> | null = null;
 let calls: Array<{ method: string; url: string; body: unknown }> = [];
 
 async function readBody(input: RequestInfo | URL, init?: RequestInit): Promise<unknown> {
@@ -69,6 +71,7 @@ async function readBody(input: RequestInfo | URL, init?: RequestInit): Promise<u
 beforeEach(() => {
   endpoints = [makeEndpoint()];
   listStatus = 200;
+  rotateGate = null;
   calls = [];
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -89,6 +92,7 @@ beforeEach(() => {
       return jsonResponse({ endpoint: created, secret: 'whsec_created' }, 201);
     }
     if (method === 'POST' && url.endsWith('/rotate-secret')) {
+      if (rotateGate) await rotateGate;
       const rotatedId = url.split('/').slice(-2)[0];
       endpoints = endpoints.map((e) =>
         e.id === rotatedId
@@ -220,24 +224,72 @@ describe('InboundWebhooksPage', () => {
     expect(screen.queryByText(/whsec_rotated/)).toBeNull();
   });
 
-  it('a second issued secret replaces the first panel without inheriting its "Copied" state', async () => {
-    endpoints = [makeEndpoint(), makeEndpoint({ id: 'ep-2', label: 'Other' })];
-    const user = userEvent.setup();
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText: mock((_t: string) => Promise.resolve()) }, configurable: true });
-    await renderWithRouter(<InboundWebhooksPage />);
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Rotate secret' })).toHaveLength(2));
+  describe('one issued secret at a time', () => {
+    const createButton = () => screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement;
+    const rotateButtons = () => screen.getAllByRole('button', { name: 'Rotate secret' }) as HTMLButtonElement[];
+    const rotatePosts = () => calls.filter((c) => c.method === 'POST' && c.url.endsWith('/rotate-secret'));
 
-    await user.click(screen.getAllByRole('button', { name: 'Rotate secret' })[0]);
-    await waitFor(() => expect(screen.getByTestId('issued-secret').textContent).toBe('whsec_rotated'));
-    await user.click(screen.getByRole('button', { name: 'Copy' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy());
+    async function renderTwoEndpoints() {
+      endpoints = [makeEndpoint(), makeEndpoint({ id: 'ep-2', label: 'Other' })];
+      const user = userEvent.setup();
+      await renderWithRouter(<InboundWebhooksPage />);
+      await waitFor(() => expect(rotateButtons()).toHaveLength(2));
+      await fillCreateForm(user, 'New one', 'Do the thing');
+      return user;
+    }
 
-    // Rotate the other endpoint WITHOUT dismissing the first panel.
-    await user.click(screen.getAllByRole('button', { name: 'Rotate secret' })[1]);
+    it('(a) while a secret panel is displayed, Create and every Rotate are disabled; dismissing re-enables them', async () => {
+      const user = await renderTwoEndpoints();
+      expect(createButton().disabled).toBe(false);
+      expect(rotateButtons().every((b) => !b.disabled)).toBe(true);
 
-    await waitFor(() => expect(screen.getByTestId('issued-secret').textContent).toBe('whsec_rotated_ep-2'));
-    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Copied' })).toBeNull();
+      await user.click(rotateButtons()[0]);
+      await waitFor(() => expect(screen.getByTestId('issued-secret').textContent).toBe('whsec_rotated'));
+
+      expect(createButton().disabled).toBe(true);
+      expect(rotateButtons().every((b) => b.disabled)).toBe(true);
+      // Other row actions stay available.
+      expect((screen.getAllByRole('button', { name: 'Edit' })[0] as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getAllByRole('button', { name: 'Delete' })[0] as HTMLButtonElement).disabled).toBe(false);
+
+      await user.click(screen.getByRole('button', { name: 'I have saved the secret' }));
+      await waitFor(() => expect(createButton().disabled).toBe(false));
+      expect(rotateButtons().every((b) => !b.disabled)).toBe(true);
+    });
+
+    it('(b) while a rotate request is pending, Create and every Rotate are disabled and only one secret is shown', async () => {
+      let release!: () => void;
+      rotateGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const user = await renderTwoEndpoints();
+
+      await user.click(rotateButtons()[0]);
+      await waitFor(() => expect(rotatePosts()).toHaveLength(1));
+
+      expect(createButton().disabled).toBe(true);
+      expect(rotateButtons().every((b) => b.disabled)).toBe(true);
+      expect(screen.queryAllByTestId('issued-secret')).toHaveLength(0);
+
+      release();
+      await waitFor(() => expect(screen.getByTestId('issued-secret').textContent).toBe('whsec_rotated'));
+      expect(screen.getAllByTestId('issued-secret')).toHaveLength(1);
+    });
+
+    it('(c) clicking a disabled Rotate or submitting a blocked Create sends no second request', async () => {
+      const user = await renderTwoEndpoints();
+      await user.click(rotateButtons()[0]);
+      await waitFor(() => expect(screen.getByTestId('issued-secret').textContent).toBe('whsec_rotated'));
+      expect(rotatePosts()).toHaveLength(1);
+
+      await user.click(rotateButtons()[1]);
+      fireEvent.click(rotateButtons()[1]);
+      fireEvent.submit(createButton().closest('form') as HTMLFormElement);
+
+      expect(rotatePosts()).toHaveLength(1);
+      expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+      expect(screen.getByTestId('issued-secret').textContent).toBe('whsec_rotated');
+    });
   });
 
   it('End previous secret now calls the endpoint and hides the control', async () => {

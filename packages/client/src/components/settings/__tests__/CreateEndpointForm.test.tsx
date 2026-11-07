@@ -13,9 +13,9 @@ const repositories = [
 
 type Submit = (r: { label: string; repositoryId: string; instructionText: string }) => Promise<void>;
 
-function setup(onSubmit: Submit = async () => {}, isPending = false) {
+function setup(onSubmit: Submit = async () => {}, isPending = false, submitBlocked = false) {
   const submit = mock(onSubmit);
-  render(<CreateEndpointForm repositories={repositories} isPending={isPending} onSubmit={submit} />);
+  render(<CreateEndpointForm repositories={repositories} isPending={isPending} submitBlocked={submitBlocked} onSubmit={submit} />);
   return submit;
 }
 
@@ -112,6 +112,18 @@ describe('CreateEndpointForm', () => {
     await fill(user, 'L', '   ');
     expect(screen.getByText('Instruction text is required')).toBeTruthy();
     expect(createButton().disabled).toBe(true);
+  });
+
+  it('refuses to submit while blocked by an unsaved secret, yet keeps the inputs editable', async () => {
+    const user = userEvent.setup();
+    const submit = setup(async () => {}, false, true);
+    await fill(user, 'Alerts', 'Triage it');
+    expect(createButton().disabled).toBe(true);
+    expect(instruction().disabled).toBe(false);
+    expect((screen.getByLabelText('Label') as HTMLInputElement).disabled).toBe(false);
+
+    fireEvent.submit(createButton().closest('form') as HTMLFormElement);
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it('disables the controls while a create is pending', () => {

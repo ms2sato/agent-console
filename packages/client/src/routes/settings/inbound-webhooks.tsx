@@ -72,6 +72,8 @@ export function InboundWebhooksPage() {
     }
   };
 
+  // An issued secret is shown once: no second create or rotate may replace it before it is saved.
+  const secretIssuanceBlocked = create.isPending || rotate.isPending || issued !== null;
   const busy = rotate.isPending || update.isPending || remove.isPending || clearPrevious.isPending;
   const endpoints = endpointsQuery.data?.endpoints ?? [];
 
@@ -107,6 +109,7 @@ export function InboundWebhooksPage() {
             endpoint={endpoint}
             repositoryName={repositoryName(endpoint.repositoryId)}
             busy={busy}
+            rotateBlocked={secretIssuanceBlocked}
             onSave={handleSave}
             onRotate={handleRotate}
             onClearPrevious={handleClearPrevious}
@@ -137,7 +140,12 @@ export function InboundWebhooksPage() {
         />
       )}
 
-      <CreateEndpointForm repositories={repositories} isPending={create.isPending} onSubmit={handleCreate} />
+      <CreateEndpointForm
+        repositories={repositories}
+        isPending={create.isPending}
+        submitBlocked={secretIssuanceBlocked}
+        onSubmit={handleCreate}
+      />
 
       {list}
 
