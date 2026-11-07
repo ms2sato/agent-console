@@ -499,6 +499,45 @@ describe('inbound webhook action: repository orchestrators', () => {
       expect(copies[1]).toEqual(copies[0]!);
     });
 
+    describe('names that collide with the writer staging file (<name>.tmp)', () => {
+      const BYTES_A = Uint8Array.from([0x41, 0x41, 0x41]);
+      const BYTES_B = Uint8Array.from([0x42, 0x00, 0xff]);
+      const orders: Array<[string, string[], string[]]> = [
+        ['a.tmp, then a', ['a.tmp', 'a'], ['a.tmp', 'a-2']],
+        ['a, then a.tmp', ['a', 'a.tmp'], ['a', 'a-2.tmp']],
+      ];
+
+      for (const [label, declared, written] of orders) {
+        it(`${label}: both files exist with their OWN bytes and body.md lists exactly the written names`, async () => {
+          const bytesByUrl = new Map<string, Uint8Array>();
+          const files = declared.map((name, i) => {
+            const url = attUrl(`stage-${i}`);
+            bytesByUrl.set(url, i === 0 ? BYTES_A : BYTES_B);
+            return { name, url };
+          });
+          const handler = registerOnCapturingQueue({
+            attachmentFetch: async (url) => new Response(bytesByUrl.get(url) ?? new Uint8Array(0), { status: 200 }),
+            attachmentLimits: limits,
+          });
+          const { session, worker } = await designatedSession();
+          const payload = payloadOf(`wh-stage-${label.replace(/\W+/g, '-')}`, { message: 'collide', slack_files: files });
+
+          await handler(payload);
+
+          const paths = pathsOf(session.id, worker.id, payload.jobId);
+          expect(attachmentFiles(paths.attachmentsDir)).toEqual(
+            [
+              { name: written[0]!, bytes: Array.from(BYTES_A) },
+              { name: written[1]!, bytes: Array.from(BYTES_B) },
+            ].sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0)),
+          );
+          const listed = [...fs.readFileSync(paths.bodyPath, 'utf-8').matchAll(/^- attachments\/(.+)$/gm)].map((m) => m[1]);
+          expect(listed).toEqual(written);
+          expect(listed.every((name) => fs.existsSync(`${paths.attachmentsDir}/${name}`))).toBe(true);
+        });
+      }
+    });
+
     it('a message without slack_files: no attachments directory and none of the count fields', async () => {
       const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
       const { session, worker } = await designatedSession();

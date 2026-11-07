@@ -108,7 +108,7 @@ What one run asserts: (1) L's real worker output file gains the `[inbound:extern
 
 Polarity (Q12), measured by breaking the production path one change at a time and restoring byte copies: skipping the per-target file writes, writing the files after the delivery, writing `instruction.md` from the excerpt, letting the verifier accept any signature, and skipping the dedupe insert each turn the run red on the assertion that names it. Teardown deletes the sessions through the real route (the server tears down the PTY shell and the embedded worker itself), kills the child, and only then stops the stub.
 
-**Deliberately NOT given a `*.run.test.ts` CI wrapper:** it is free and deterministic, but it boots a full child server, a real PTY and an embedded-agent loop subprocess, depends on fixed settle sleeps, and takes about 14 s, so it stays a manual gate (the shared note at the top of this file).
+**Deliberately NOT given a `*.run.test.ts` CI wrapper:** it is free and deterministic, but it boots a full child server, a real PTY and an embedded-agent loop subprocess, depends on fixed settle sleeps, and takes about 16 s, so it stays a manual gate (the shared note at the top of this file).
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — free and deterministic, no `claude` CLI, no provider key.
 

@@ -293,7 +293,7 @@ export interface DeliveryContent {
 
 export interface PrepareDeliveryDeps {
   endpoints: Pick<InboundWebhookEndpointRepository, 'findWithSecretById'>;
-  /** The fetch used for attachments. Defaults to the global `fetch`. */
+  /** The fetch used for attachments. Defaults to `outboundFetch` (the OS-CA-aware helper); an injected function overrides it. */
   attachmentFetch?: AttachmentFetch;
   /** Attachment limits. Default to the server config. */
   attachmentLimits?: AttachmentFetchLimits;

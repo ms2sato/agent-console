@@ -45,7 +45,7 @@ export interface AttachmentFetchLimits {
   maxCount: number;
 }
 
-/** What `fetch` is used for here; the global `fetch` satisfies it. */
+/** What `fetch` is used for here. The default is `outboundFetch`, which satisfies it; an injected function overrides it. */
 export type AttachmentFetch = (
   url: string,
   init: { redirect: 'manual'; signal: AbortSignal },
@@ -152,22 +152,39 @@ export function sanitizeAttachmentName(raw: string | undefined): string {
   return fitName(stem, ext);
 }
 
+/** The trusted writer stages each file as `<name>.tmp` and renames it, so that sibling is in use too. */
+const STAGING_SUFFIX = '.tmp';
+
 /**
  * Make `names` unique, in order: the second occurrence of `a.png` becomes `a-2.png`, the third
  * `a-3.png`. Comparison ignores case, so the result is also unique on a case-insensitive disk.
+ *
+ * Each chosen name also reserves its staging sibling, symmetrically. A candidate is unavailable
+ * when it equals a chosen name, equals a chosen name plus `.tmp`, or equals a chosen name minus a
+ * trailing `.tmp`. Without that, listing `a.tmp` and `a` lets the staging file of `a` overwrite the
+ * already written `a.tmp`, so the second file replaces the first under a name the body still lists.
  */
 export function uniqueAttachmentNames(names: string[]): string[] {
-  const taken = new Set<string>();
+  const chosen = new Set<string>();
+  const unavailable = (candidate: string): boolean => {
+    const key = candidate.toLowerCase();
+    return (
+      chosen.has(key) ||
+      chosen.has(key + STAGING_SUFFIX) ||
+      (key.endsWith(STAGING_SUFFIX) && chosen.has(key.slice(0, -STAGING_SUFFIX.length)))
+    );
+  };
   return names.map((name) => {
     let candidate = name;
-    if (taken.has(candidate.toLowerCase())) {
+    if (unavailable(candidate)) {
       const { stem, ext } = splitExtension(name);
+      // Terminates: each pass tries a different number, and `chosen` is finite.
       for (let n = 2; ; n++) {
         candidate = fitName(stem, ext, `-${n}`);
-        if (!taken.has(candidate.toLowerCase())) break;
+        if (!unavailable(candidate)) break;
       }
     }
-    taken.add(candidate.toLowerCase());
+    chosen.add(candidate.toLowerCase());
     return candidate;
   });
 }

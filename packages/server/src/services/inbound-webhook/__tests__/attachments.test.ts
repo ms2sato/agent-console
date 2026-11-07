@@ -431,6 +431,53 @@ describe('uniqueAttachmentNames and its use in fetchAttachments', () => {
     expect(second).not.toBe(first);
   });
 
+  describe('the staging sibling (<name>.tmp) is reserved symmetrically', () => {
+    it("['a.tmp', 'a']: the second name cannot be the staging file of the first", () => {
+      expect(uniqueAttachmentNames(['a.tmp', 'a'])).toEqual(['a.tmp', 'a-2']);
+    });
+
+    it("['a', 'a.tmp']: the second name cannot be the staging file of the first", () => {
+      expect(uniqueAttachmentNames(['a', 'a.tmp'])).toEqual(['a', 'a-2.tmp']);
+    });
+
+    it("['a', 'a.tmp', 'a']: three names, no pair is a name and its staging file", () => {
+      expect(uniqueAttachmentNames(['a', 'a.tmp', 'a'])).toEqual(['a', 'a-2.tmp', 'a-3']);
+    });
+
+    it("['a.tmp', 'a.tmp']: a plain duplicate of a .tmp name is numbered before the extension", () => {
+      expect(uniqueAttachmentNames(['a.tmp', 'a.tmp'])).toEqual(['a.tmp', 'a-2.tmp']);
+    });
+
+    it('compares ignoring case: A.TMP reserves a and a.tmp reserves A', () => {
+      expect(uniqueAttachmentNames(['a', 'A.TMP'])).toEqual(['a', 'A-2.TMP']);
+      expect(uniqueAttachmentNames(['A.TMP', 'a'])).toEqual(['A.TMP', 'a-2']);
+    });
+
+    it('also reserves across two stagings: x.tmp and x.tmp.tmp are never both chosen', () => {
+      expect(uniqueAttachmentNames(['x.tmp', 'x.tmp.tmp'])).toEqual(['x.tmp', 'x.tmp-2.tmp']);
+    });
+
+    it('no chosen name is another chosen name plus .tmp, for every order of a mixed set', () => {
+      const inputs = ['a', 'a.tmp', 'a.tmp.tmp', 'b', 'b.tmp'];
+      for (const order of [inputs, [...inputs].reverse(), [inputs[1]!, inputs[0]!, inputs[4]!, inputs[3]!, inputs[2]!]]) {
+        const result = uniqueAttachmentNames(order).map((n) => n.toLowerCase());
+        expect(new Set(result).size).toBe(result.length);
+        for (const name of result) expect(result).not.toContain(`${name}.tmp`);
+      }
+    });
+
+    it('terminates at the length cap with a .tmp name and keeps the cap and the extension', () => {
+      const stem = 'c'.repeat(96); // 96 + '.tmp' = exactly 100 code points
+      const result = uniqueAttachmentNames([stem, `${stem}.tmp`, `${stem}.tmp`]);
+      expect(result[0]).toBe(stem);
+      expect(result.every((n) => Array.from(n).length <= 100)).toBe(true);
+      expect(new Set(result).size).toBe(3);
+      expect(result[1]!.endsWith('.tmp')).toBe(true);
+      expect(result[2]!.endsWith('.tmp')).toBe(true);
+      for (const name of result) expect(result).not.toContain(`${name}.tmp`);
+    });
+  });
+
   it('three files with the same declared name arrive with three distinct names', async () => {
     const { impl } = recordingFetch(okBytes('x'));
     const files = [1, 2, 3].map((n) => entry(n, { name: 'same.png' }));

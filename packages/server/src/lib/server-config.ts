@@ -170,6 +170,15 @@ export const serverConfig = {
    * Default: 1MiB (1024 * 1024 bytes)
    */
   FILE_VIEWER_MAX_BYTES: parsePositiveIntWithDefault(process.env.FILE_VIEWER_MAX_BYTES, 1024 * 1024),
+  /*
+   * Memory bound of the three INBOUND_WEBHOOK_ATTACHMENT_* limits below. Every file fetched for one
+   * message is held in memory until all target sessions have their copy, so one job can hold up to
+   * MAX_COUNT x MAX_BYTES (10 x 25 MiB = 250 MiB by default). The job queue runs 4 jobs at a time by
+   * default (`jobConcurrency` in app-context.ts), so the per-process worst case is that times the
+   * concurrency, about 1 GiB. This is an accepted bound: the fan-out is one repository's designated
+   * sessions and attachments are few and small in practice. Raising MAX_COUNT or MAX_BYTES scales it
+   * linearly. There is deliberately no total-bytes cap.
+   */
   /**
    * Inbound webhook attachments: time allowed for ONE file (connect, headers and body together).
    * A file that is not complete by then is skipped, never retried.

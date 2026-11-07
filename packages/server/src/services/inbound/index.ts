@@ -25,7 +25,7 @@ export interface InboundIntegrationOptions {
   broadcastToApp: (message: { type: 'inbound-event'; sessionId: string; event: InboundEventSummary }) => void;
   /** Optional registry instance for testing. If not provided, a new registry is created. */
   parserRegistry?: ServiceParserRegistry;
-  /** Attachment fetch and limits for the signed inbound webhook; default to the global `fetch` and the server config. */
+  /** Attachment fetch and limits for the signed inbound webhook. The fetch defaults to `outboundFetch` (the OS-CA-aware helper) and an injected one overrides it; the limits default to the server config. */
   inboundWebhookAttachments?: Pick<PrepareDeliveryDeps, 'attachmentFetch' | 'attachmentLimits'>;
 }
 
