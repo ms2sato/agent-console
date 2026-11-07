@@ -5,6 +5,7 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import type { InboundWebhookEndpoint } from '@agent-console/shared';
 import { EndpointRow } from '../EndpointRow';
 
@@ -102,7 +103,7 @@ describe('EndpointRow', () => {
     await user.click(saveButton());
 
     await waitFor(() => expect(h.onSave).toHaveBeenCalledWith('ep-1', { label: 'Renamed', instructionText: 'New text' }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
+    await waitForAbsent(() => screen.queryByRole('button', { name: 'Save' }));
   });
 
   it('stays in edit mode when Save rejects', async () => {

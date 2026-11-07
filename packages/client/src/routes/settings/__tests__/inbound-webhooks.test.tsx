@@ -7,6 +7,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 import { screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 
 import type { InboundWebhookEndpoint } from '@agent-console/shared';
 import { InboundWebhooksPage } from '../inbound-webhooks';
@@ -224,7 +225,7 @@ describe('InboundWebhooksPage', () => {
 
     await user.click(await screen.findByRole('button', { name: 'End previous secret now' }));
 
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'End previous secret now' })).toBeNull());
+    await waitForAbsent(() => screen.queryByRole('button', { name: 'End previous secret now' }));
     expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/ep-1/clear-previous-secret'))).toBe(true);
     expect(screen.queryByText(/Previous secret still valid until/)).toBeNull();
   });
