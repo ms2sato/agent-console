@@ -508,14 +508,15 @@ describe('Inbound webhook endpoint routes', () => {
       expect(Date.parse(row.updated_at)).toBeGreaterThanOrEqual(beforeMs);
     });
 
-    it('accepts no body (no content type), no body (JSON content type), a blank body, {} and { secret }', async () => {
+    it('accepts an empty body, a blank body, {} and { secret } when the content type is JSON', async () => {
       const created = await create();
       const url = `${base}/${created.endpoint.id}/rotate-secret`;
       const requests: Array<[string, RequestInit]> = [
-        ['no body, no content type', { method: 'POST' }],
-        ['no body, JSON content type', { method: 'POST', headers: { 'Content-Type': 'application/json' } }],
+        ['empty body, JSON content type', { method: 'POST', headers: { 'Content-Type': 'application/json' } }],
         ['blank body, JSON content type', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '' }],
         ['empty object', json('POST', {})],
+        ['charset parameter', { method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8' }, body: '{}' }],
+        ['+json media type', { method: 'POST', headers: { 'Content-Type': 'application/vnd.api+json' }, body: '{}' }],
         ['entered secret', json('POST', { secret: secretOfBytes(32, 3) })],
       ];
       for (const [name, init] of requests) {
@@ -524,6 +525,39 @@ describe('Inbound webhook endpoint routes', () => {
         const parsed = v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
         expect(parsed.secretSource, name).toBe(name === 'entered secret' ? 'entered' : 'generated');
       }
+    });
+
+    it('refuses a missing or non-JSON content type with 400, changes nothing, and echoes and logs nothing sent', async () => {
+      const created = await create();
+      const url = `${base}/${created.endpoint.id}/rotate-secret`;
+      const attacker = secretOfBytes(32, 13);
+      const body = JSON.stringify({ secret: attacker });
+      const attempts: Array<[string, RequestInit]> = [
+        ['text/plain with a JSON-shaped body', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body }],
+        ['form-urlencoded', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `secret=${attacker}` }],
+        ['no content type, JSON-shaped body', { method: 'POST', body }],
+        ['no content type, no body', { method: 'POST' }],
+        ['text/plain, blank body (forced generated rotation)', { method: 'POST', headers: { 'Content-Type': 'text/plain' } }],
+      ];
+      const spies = (['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const).map((level) => spyOn(rootLogger, level));
+      try {
+        for (const [name, init] of attempts) {
+          const res = await app.request(url, init);
+          expect(res.status, name).toBe(400);
+          const text = await res.text();
+          expect(text, name).not.toContain(attacker);
+          expect(text, name).toContain('Content-Type must be application/json');
+        }
+        const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+        expect(logged).toContain('Content-Type must be application/json'); // positive control: the refusal was logged
+        expect(logged).not.toContain(attacker);
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+      const row = await storedRow(created.endpoint.id);
+      expect(row.secret).toBe(created.secret);
+      expect(row.previous_secret).toBeNull();
+      expect(row.previous_secret_expires_at).toBeNull();
     });
 
     it('rejects malformed JSON and an unknown key with 400', async () => {

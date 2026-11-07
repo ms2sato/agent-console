@@ -185,6 +185,15 @@ async function getLastFetchBody(): Promise<unknown> {
   return arg1?.body ? JSON.parse(arg1.body) : undefined;
 }
 
+// Helper to get a header from the fetch call (Hono RPC client may pass a Request, or a URL plus init)
+function getLastFetchHeader(name: string): string | null {
+  const calls = mockFetch.mock.calls as unknown[][];
+  const arg0 = calls[calls.length - 1]?.[0];
+  const arg1 = calls[calls.length - 1]?.[1] as { headers?: HeadersInit } | undefined;
+  if (arg0 instanceof Request) return arg0.headers.get(name);
+  return new Headers(arg1?.headers).get(name);
+}
+
 /**
  * Asserts a body the client actually sent is accepted by the server's own
  * wire schema (UpdateEmbeddedAgentWorkerRequestSchema). Checks the issues
@@ -3049,6 +3058,16 @@ describe('API Client', () => {
       const result = await rotateInboundWebhookEndpointSecret('repo-1', 'ep-1', 'whsec_mine');
       expect(await getLastFetchBody()).toEqual({ secret: 'whsec_mine' });
       expect(result).toEqual({ endpoint, secretSource: 'entered' });
+    });
+
+    it('rotateInboundWebhookEndpointSecret sends Content-Type application/json for the generated and the entered call', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'generated', secret: 'whsec_new' }));
+      await rotateInboundWebhookEndpointSecret('repo-1', 'ep-1');
+      expect(getLastFetchHeader('content-type')).toMatch(/^application\/json/);
+
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'entered' }));
+      await rotateInboundWebhookEndpointSecret('repo-1', 'ep-1', 'whsec_mine');
+      expect(getLastFetchHeader('content-type')).toMatch(/^application\/json/);
     });
 
     it('rotateInboundWebhookEndpointSecret rejects a generated response without a secret and surfaces errors', async () => {

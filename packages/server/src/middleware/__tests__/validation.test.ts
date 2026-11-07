@@ -92,16 +92,39 @@ describe('vOptionalJsonValidator middleware', () => {
 
   const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
-  it('accepts no body and no content type as an empty object', async () => {
-    expect(await post({})).toEqual({ status: 200, body: { valid: {} } });
-  });
-
-  it('accepts no body with a JSON content type (where validator("json") answers 400)', async () => {
+  it('accepts an empty body with a JSON content type (where validator("json") answers 400)', async () => {
     expect(await post({ headers: JSON_HEADERS })).toEqual({ status: 200, body: { valid: {} } });
   });
 
   it('accepts a blank body with a JSON content type', async () => {
     expect(await post({ headers: JSON_HEADERS, body: '  ' })).toEqual({ status: 200, body: { valid: {} } });
+  });
+
+  it('accepts JSON content types with parameters, in any case, and +json suffix types', async () => {
+    for (const contentType of ['application/json; charset=utf-8', 'APPLICATION/JSON', 'application/vnd.api+json', 'application/json;charset=UTF-8']) {
+      expect(await post({ headers: { 'Content-Type': contentType }, body: '{"name":"ab"}' })).toEqual({
+        status: 200,
+        body: { valid: { name: 'ab' } },
+      });
+    }
+  });
+
+  it('refuses a missing or non-JSON content type with a fixed message, before reading the body', async () => {
+    const sent = 'SENT-VALUE-xyz';
+    const attempts: Array<[string, RequestInit]> = [
+      ['no content type, no body', { method: 'POST' }],
+      ['no content type, JSON-shaped body', { body: `{"name":"${sent}"}` }],
+      ['text/plain', { headers: { 'Content-Type': 'text/plain' }, body: `{"name":"${sent}"}` }],
+      ['form-urlencoded', { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `name=${sent}` }],
+      ['text/plain with an empty body', { headers: { 'Content-Type': 'text/plain' } }],
+      ['lookalike type', { headers: { 'Content-Type': 'application/jsonx' }, body: '{}' }],
+      ['json only in a parameter', { headers: { 'Content-Type': 'text/plain; x=application/json' }, body: '{}' }],
+    ];
+    for (const [name, init] of attempts) {
+      const result = await post(init);
+      expect(result.status, name).toBe(400);
+      expect(result.body.error, name).toBe('Content-Type must be application/json');
+    }
   });
 
   it('accepts {} and a valid body', async () => {
