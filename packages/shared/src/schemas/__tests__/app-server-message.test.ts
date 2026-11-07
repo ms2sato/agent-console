@@ -748,8 +748,21 @@ describe('AppServerMessageSchema', () => {
           type: 'external:message',
           source: 'webhook',
           summary: 'A message arrived',
-          metadata: { repositoryName: 'org/repo', targetRepositoryId: 'repo-1', instructionText: 'Run the triage skill' },
+          metadata: {
+            repositoryName: 'org/repo',
+            targetRepositoryId: 'repo-1',
+            deliveryId: 'inbound-webhook:ep-1:w-1',
+            instructionExcerpt: 'Run the triage skill',
+          },
         },
+      });
+    });
+
+    it('should reject instructionText in metadata (the full instruction travels as a file)', () => {
+      expectInvalid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: { type: 'external:message', source: 'webhook', summary: 's', metadata: { instructionText: 'Run the triage skill' } },
       });
     });
 

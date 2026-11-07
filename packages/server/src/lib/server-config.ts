@@ -419,6 +419,26 @@ export const serverConfig = {
     const raw = process.env.AGENT_CONSOLE_PUBLIC_ORIGIN?.trim();
     return raw ? raw.replace(/\/+$/, '') : undefined;
   })(),
+
+  /**
+   * The internet-facing origin that the reverse proxy routes to this server
+   * (e.g. 'https://hooks.example.com'). Used to show an inbound webhook
+   * endpoint's full receive URL (`<origin>/webhooks/in/<id>`) to the admin who
+   * registers it with the sending side.
+   *
+   * Only the webhook paths are exposed to the internet, so
+   * `AGENT_CONSOLE_PUBLIC_ORIGIN` and `APP_URL` are human-facing values that
+   * are NOT reachable by a sender: they must never be substituted for this one,
+   * and nothing falls back to them.
+   *
+   * Empty string is treated as unset, whitespace is trimmed and trailing
+   * slash(es) are stripped, the same conventions as
+   * `AGENT_CONSOLE_PUBLIC_ORIGIN`. Unset means the UI shows the path only.
+   */
+  AGENT_CONSOLE_INTERNET_ORIGIN: (() => {
+    const raw = process.env.AGENT_CONSOLE_INTERNET_ORIGIN?.trim();
+    return raw ? raw.replace(/\/+$/, '') : undefined;
+  })(),
 } as const;
 
 /**

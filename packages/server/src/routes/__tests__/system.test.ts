@@ -4,6 +4,7 @@ import * as v from 'valibot';
 import { SystemHealthResponseSchema } from '@agent-console/shared';
 import type { AppBindings } from '../../app-context.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
+import { serverConfig } from '../../lib/server-config.js';
 
 // Import mock-fs-helper to set up memfs mocks
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -236,15 +237,36 @@ describe('System API - open-in-vscode', () => {
 });
 
 describe('System API - health', () => {
-  it('serves a body that parses through SystemHealthResponseSchema', async () => {
+  // `serverConfig` is a readonly constant; the route reads it on every request.
+  const config = serverConfig as { AGENT_CONSOLE_INTERNET_ORIGIN: string | undefined };
+  const originalInternetOrigin = config.AGENT_CONSOLE_INTERNET_ORIGIN;
+
+  afterEach(() => {
+    config.AGENT_CONSOLE_INTERNET_ORIGIN = originalInternetOrigin;
+  });
+
+  async function getHealth() {
     const { system } = await import(`../system.js?v=${++importCounter}`);
     const app = new Hono<AppBindings>();
     app.route('/api/system', system);
 
     const res = await app.request('/api/system/health');
     expect(res.status).toBe(200);
+    return v.parse(SystemHealthResponseSchema, await res.json());
+  }
 
-    const parsed = v.parse(SystemHealthResponseSchema, await res.json());
+  it('serves a body that parses through SystemHealthResponseSchema', async () => {
+    const parsed = await getHealth();
     expect(typeof parsed.webhookSecretConfigured).toBe('boolean');
+  });
+
+  it('reports internetOrigin as the configured origin when set', async () => {
+    config.AGENT_CONSOLE_INTERNET_ORIGIN = 'https://hooks.example.com';
+    expect((await getHealth()).internetOrigin).toBe('https://hooks.example.com');
+  });
+
+  it('reports internetOrigin as null when unset', async () => {
+    config.AGENT_CONSOLE_INTERNET_ORIGIN = undefined;
+    expect((await getHealth()).internetOrigin).toBeNull();
   });
 });

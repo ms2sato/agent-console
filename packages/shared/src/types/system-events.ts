@@ -39,10 +39,16 @@ export interface SystemEventMetadata {
    */
   targetRepositoryId?: string;
   /**
-   * Scoped to `external:message`. The operator-authored single-line instruction of the endpoint
-   * the message arrived on. Used for rendering only; never routed on.
+   * Scoped to `external:message`. Name of the per-target file directory for the delivery
+   * (`inbound-webhook:<endpointId>:<webhookId>`); the handler derives the body and instruction
+   * file paths from it. Never routed on.
    */
-  instructionText?: string;
+  deliveryId?: string;
+  /**
+   * Scoped to `external:message`. First non-empty line of the endpoint's instruction text, at most
+   * 120 characters. Used for rendering only; the full text travels as a file.
+   */
+  instructionExcerpt?: string;
 }
 
 /**

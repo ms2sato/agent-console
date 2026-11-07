@@ -551,7 +551,8 @@ describe('useAppWsEvent wire consumption (external:message inbound event)', () =
       metadata: {
         repositoryName: 'org/repo',
         targetRepositoryId: 'repo-1',
-        instructionText: 'Triage this message',
+        deliveryId: 'inbound-webhook:ep-1:webhook-1',
+        instructionExcerpt: 'Triage this message',
       },
     };
     const onInboundEvent = mock(() => {});

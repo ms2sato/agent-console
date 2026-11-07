@@ -265,6 +265,42 @@ describe('server-config', () => {
       expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://localhost:6340');
     });
 
+    it('should default AGENT_CONSOLE_INTERNET_ORIGIN to undefined when not set', async () => {
+      delete process.env.AGENT_CONSOLE_INTERNET_ORIGIN;
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_INTERNET_ORIGIN).toBeUndefined();
+    });
+
+    it('should treat empty and whitespace-only AGENT_CONSOLE_INTERNET_ORIGIN as unset', async () => {
+      for (const value of ['', '   ']) {
+        process.env.AGENT_CONSOLE_INTERNET_ORIGIN = value;
+
+        const { serverConfig } = await importServerConfig();
+
+        expect(serverConfig.AGENT_CONSOLE_INTERNET_ORIGIN).toBeUndefined();
+      }
+    });
+
+    it('should trim and strip trailing slashes from AGENT_CONSOLE_INTERNET_ORIGIN', async () => {
+      process.env.AGENT_CONSOLE_INTERNET_ORIGIN = '  https://hooks.example.com///  ';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_INTERNET_ORIGIN).toBe('https://hooks.example.com');
+    });
+
+    it('should not fall back to AGENT_CONSOLE_PUBLIC_ORIGIN or APP_URL for AGENT_CONSOLE_INTERNET_ORIGIN', async () => {
+      delete process.env.AGENT_CONSOLE_INTERNET_ORIGIN;
+      process.env.AGENT_CONSOLE_PUBLIC_ORIGIN = 'http://192.168.1.12:6340';
+      process.env.APP_URL = 'http://app.internal:3457';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_INTERNET_ORIGIN).toBeUndefined();
+    });
+
     it('should default EMBEDDED_AGENT_BUN_PATH to process.execPath when not set (Issue #1291)', async () => {
       delete process.env.EMBEDDED_AGENT_BUN_PATH;
 

@@ -62,6 +62,7 @@ const api = new Hono<AppBindings>()
   .route('/sessions', workers)
   .route('/repositories', repositories)
   .route('/repositories', worktrees)
+  .route('/repositories', inboundWebhookEndpoints)
   .route('/agents', agents)
   .route('/embedded-agents', embeddedAgents)
   .route('/jobs', jobs)
@@ -75,8 +76,7 @@ const api = new Hono<AppBindings>()
   .route('/todos', todos)
   .route('/users', users)
   .route('/notifications', notifications)
-  .route('/shared-accounts', sharedAccounts)
-  .route('/inbound-webhook-endpoints', inboundWebhookEndpoints);
+  .route('/shared-accounts', sharedAccounts);
 
 export type AppType = typeof api;
 export { api };

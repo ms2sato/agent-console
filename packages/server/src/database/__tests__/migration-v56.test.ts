@@ -40,6 +40,11 @@ async function ddlOf(db: Kysely<Database>, table: string): Promise<string> {
   return (await sql<{ sql: string }>`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ${table}`.execute(db)).rows[0]!.sql;
 }
 
+/** The names of the table's named constraints, in declaration order. */
+function constraintNames(ddl: string): string[] {
+  return [...ddl.matchAll(/CONSTRAINT\s+(\w+)/g)].map((m) => m[1]!);
+}
+
 async function seedRepository(db: Kysely<Database>, id = 'repo-1'): Promise<void> {
   await db.insertInto('repositories').values({ id, name: id, path: `/tmp/${id}` }).execute();
 }
@@ -125,7 +130,13 @@ describe('migration v56 (inbound webhook endpoints)', () => {
     try {
       await migrateToV56(db);
       const endpointsDdl = await ddlOf(db, ENDPOINTS);
-      expect(endpointsDdl).toContain('iwe_instruction_text_check');
+      expect(constraintNames(endpointsDdl)).toEqual([
+        'iwe_instruction_text_length_check',
+        'iwe_created_at_check',
+        'iwe_updated_at_check',
+        'iwe_previous_secret_expires_at_check',
+      ]);
+      expect(endpointsDdl).toContain('iwe_instruction_text_length_check CHECK (length(instruction_text) <= 4000)');
       expect(endpointsDdl).toContain(`iwe_created_at_check CHECK (created_at GLOB '${ISO8601_GLOB_PATTERN}')`);
       expect(endpointsDdl).toContain(`iwe_updated_at_check CHECK (updated_at GLOB '${ISO8601_GLOB_PATTERN}')`);
       expect(endpointsDdl).toContain(
@@ -134,6 +145,7 @@ describe('migration v56 (inbound webhook endpoints)', () => {
       expect(endpointsDdl).toContain('REFERENCES repositories(id) ON DELETE CASCADE');
 
       const deliveriesDdl = await ddlOf(db, DELIVERIES);
+      expect(constraintNames(deliveriesDdl)).toEqual(['iwd_received_at_check']);
       expect(deliveriesDdl).toContain(`iwd_received_at_check CHECK (received_at GLOB '${ISO8601_GLOB_PATTERN}')`);
       expect(deliveriesDdl).toContain('REFERENCES inbound_webhook_endpoints(id) ON DELETE CASCADE');
     } finally {
@@ -171,39 +183,49 @@ describe('migration v56 (inbound webhook endpoints)', () => {
       return db;
     }
 
-    it('accepts a valid endpoint, including an empty and a 300-char instruction', async () => {
+    it('accepts a valid endpoint, including an empty and a 4000-char instruction', async () => {
       const db = await freshDb();
       try {
         await insertEndpoint(db, { id: 'a' });
         await insertEndpoint(db, { id: 'b', instruction_text: '' });
-        await insertEndpoint(db, { id: 'c', instruction_text: 'x'.repeat(300) });
+        await insertEndpoint(db, { id: 'c', instruction_text: 'x'.repeat(4000) });
         expect(await countRows(db, ENDPOINTS)).toBe(3);
       } finally {
         await db.destroy();
       }
     });
 
-    it('iwe_instruction_text_check rejects LF and CR anywhere in the text, and accepts a tab', async () => {
+    it('iwe_instruction_text_length_check rejects 4001 characters', async () => {
       const db = await freshDb();
       try {
-        for (const [i, text] of ['a\nb', 'a\rb', '\nleading', 'trailing\n', 'trailing\r', '\r\n', 'a\r\nb'].entries()) {
-          await expect(insertEndpoint(db, { id: `bad-${i}`, instruction_text: text })).rejects.toThrow(/iwe_instruction_text_check|CHECK constraint failed/);
-        }
+        await expect(insertEndpoint(db, { id: 'long', instruction_text: 'x'.repeat(4001) })).rejects.toThrow(
+          /iwe_instruction_text_length_check|CHECK constraint failed/,
+        );
         expect(await countRows(db, ENDPOINTS)).toBe(0);
-
-        await insertEndpoint(db, { id: 'tab', instruction_text: 'a\tb' });
-        expect(await countRows(db, ENDPOINTS)).toBe(1);
       } finally {
         await db.destroy();
       }
     });
 
-    it('iwe_instruction_text_check also fires on UPDATE', async () => {
+    it('accepts a 4000-character instruction containing LF, CR and CRLF, stored as-is', async () => {
+      const db = await freshDb();
+      try {
+        const text = `a\nb\rc\r\nd${'x'.repeat(4000 - 8)}`;
+        expect(text.length).toBe(4000);
+        await insertEndpoint(db, { id: 'multi', instruction_text: text });
+        const row = await db.selectFrom('inbound_webhook_endpoints').select('instruction_text').where('id', '=', 'multi').executeTakeFirstOrThrow();
+        expect(row.instruction_text).toBe(text);
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    it('iwe_instruction_text_length_check also fires on UPDATE', async () => {
       const db = await freshDb();
       try {
         await insertEndpoint(db);
         await expect(
-          db.updateTable('inbound_webhook_endpoints').set({ instruction_text: 'two\nlines' }).where('id', '=', 'ep-1').execute(),
+          db.updateTable('inbound_webhook_endpoints').set({ instruction_text: 'x'.repeat(4001) }).where('id', '=', 'ep-1').execute(),
         ).rejects.toThrow(/CHECK constraint failed/);
       } finally {
         await db.destroy();

@@ -44,25 +44,39 @@ export interface UpdateInboundWebhookEndpointParams {
   instructionText?: string;
 }
 
+/**
+ * Every management method takes the owning `repositoryId` and filters by it in the query, so an
+ * endpoint of another repository is indistinguishable from a missing one (null / false). There is
+ * no cross-repository list. The one exception is `findWithSecretById`, the receive route's lookup:
+ * a sender addresses an endpoint by its id alone and the repository is an outcome of the lookup.
+ */
 export interface InboundWebhookEndpointRepository {
-  /** Every endpoint, oldest first. */
-  list(): Promise<InboundWebhookEndpointView[]>;
+  /** Every endpoint of one repository, oldest first. */
+  list(repositoryId: string): Promise<InboundWebhookEndpointView[]>;
 
-  /** @returns The endpoint, or null when no row has this id. */
-  findById(id: string): Promise<InboundWebhookEndpointView | null>;
+  /** @returns The endpoint, or null when the repository has no endpoint with this id. */
+  findById(repositoryId: string, id: string): Promise<InboundWebhookEndpointView | null>;
 
-  /** The verifier's lookup: the endpoint with its secrets, or null when no row has this id. */
+  /**
+   * The verifier's lookup: the endpoint with its secrets, or null when no row has this id. Not
+   * scoped to a repository (see the interface comment).
+   */
   findWithSecretById(id: string): Promise<InboundWebhookEndpointWithSecret | null>;
 
   /**
-   * Insert an endpoint. A `repositoryId` that matches no repository, or an
-   * `instructionText` containing a line break, makes the database throw (FK /
-   * CHECK); callers validate both first.
+   * Insert an endpoint. A `repositoryId` that matches no repository, or an `instructionText` longer
+   * than the column's length CHECK, makes the database throw (FK / CHECK); callers validate both
+   * first.
    */
   create(params: CreateInboundWebhookEndpointParams): Promise<InboundWebhookEndpointWithSecret>;
 
   /** Update label and/or instruction text and touch `updated_at`. Never touches the secrets. */
-  update(id: string, updates: UpdateInboundWebhookEndpointParams, now: string): Promise<InboundWebhookEndpointView | null>;
+  update(
+    repositoryId: string,
+    id: string,
+    updates: UpdateInboundWebhookEndpointParams,
+    now: string,
+  ): Promise<InboundWebhookEndpointView | null>;
 
   /**
    * Replace the secret: in ONE statement the old current secret becomes
@@ -71,6 +85,7 @@ export interface InboundWebhookEndpointRepository {
    * then-current one.
    */
   rotateSecret(
+    repositoryId: string,
     id: string,
     newSecret: string,
     previousSecretExpiresAt: string,
@@ -78,8 +93,8 @@ export interface InboundWebhookEndpointRepository {
   ): Promise<InboundWebhookEndpointWithSecret | null>;
 
   /** End the rotation window early: both previous columns become NULL. */
-  clearPreviousSecret(id: string, now: string): Promise<InboundWebhookEndpointView | null>;
+  clearPreviousSecret(repositoryId: string, id: string, now: string): Promise<InboundWebhookEndpointView | null>;
 
   /** Delete an endpoint (its delivery ledger cascades). @returns true when a row was deleted. */
-  delete(id: string): Promise<boolean>;
+  delete(repositoryId: string, id: string): Promise<boolean>;
 }

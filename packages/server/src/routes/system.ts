@@ -16,6 +16,7 @@ const system = new Hono<AppBindings>()
     return c.json({
       webhookSecretConfigured: Boolean(serverConfig.GITHUB_WEBHOOK_SECRET),
       appUrl: serverConfig.APP_URL || null,
+      internetOrigin: serverConfig.AGENT_CONSOLE_INTERNET_ORIGIN ?? null,
     });
   })
   // Open a file or directory in the default application (Finder/Explorer)

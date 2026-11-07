@@ -12,8 +12,10 @@ describe('shared index exports', () => {
     const mod = await import('../index.js');
     expect(mod.CreateInboundWebhookEndpointRequestSchema).toBeDefined();
     expect(mod.UpdateInboundWebhookEndpointRequestSchema).toBeDefined();
+    expect(mod.InboundWebhookSecretSchema).toBeDefined();
+    expect(mod.RotateInboundWebhookSecretRequestSchema).toBeDefined();
     expect(mod.InboundWebhookEndpointSchema).toBeDefined();
-    expect(mod.INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH).toBe(300);
+    expect(mod.INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH).toBe(4000);
   });
 
   it('should re-export SchemaVersionMessageSchema that parses a valid schema-version frame', async () => {

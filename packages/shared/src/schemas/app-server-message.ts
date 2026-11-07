@@ -352,7 +352,8 @@ const SystemEventMetadataSchema = v.strictObject({
   commitSha: v.optional(v.string()),
   labels: v.optional(v.array(v.string())),
   targetRepositoryId: v.optional(v.string()),
-  instructionText: v.optional(v.string()),
+  deliveryId: v.optional(v.string()),
+  instructionExcerpt: v.optional(v.string()),
 });
 
 const InboundEventSummarySchema = v.strictObject({

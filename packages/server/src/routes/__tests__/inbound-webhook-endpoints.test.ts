@@ -58,7 +58,7 @@ function buildApp(repository: InboundWebhookEndpointRepository, user: AuthUser |
   });
   app.use('*', authMiddleware);
   app.onError(onApiError);
-  app.route('/api/inbound-webhook-endpoints', inboundWebhookEndpoints);
+  app.route('/api/repositories', inboundWebhookEndpoints);
   return app;
 }
 
@@ -66,9 +66,28 @@ function json(method: string, body?: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) };
 }
 
-const VALID_CREATE = { label: 'Slack', repositoryId: REPO_ID, instructionText: 'Run the triage skill' };
+const VALID_CREATE = { label: 'Slack', instructionText: 'Run the triage skill' };
 
 type WithSecret = v.InferOutput<typeof InboundWebhookEndpointWithSecretResponseSchema>;
+type Generated = Extract<WithSecret, { secretSource: 'generated' }>;
+type Entered = Extract<WithSecret, { secretSource: 'entered' }>;
+
+/** `whsec_` plus base64 of `bytes` filler bytes (canonical by construction). */
+function secretOfBytes(bytes: number, fill = 9): string {
+  return `whsec_${Buffer.alloc(bytes, fill).toString('base64')}`;
+}
+
+/**
+ * A secret that lax base64 decoders accept but that is not canonical: the last data character
+ * carries non-zero trailing bits, so decoding and re-encoding gives a different string.
+ */
+function nonCanonicalSecret(): string {
+  const canonical = secretOfBytes(32);
+  const lastData = canonical.length - 2; // 32 bytes encode with a single trailing '='
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const bumped = alphabet[alphabet.indexOf(canonical[lastData]!) + 1]!;
+  return canonical.slice(0, lastData) + bumped + canonical.slice(lastData + 1);
+}
 
 describe('Inbound webhook endpoint routes', () => {
   let db: Kysely<Database>;
@@ -88,12 +107,23 @@ describe('Inbound webhook endpoint routes', () => {
     await db.destroy();
   });
 
-  const base = '/api/inbound-webhook-endpoints';
+  const baseOf = (repositoryId: string) => `/api/repositories/${repositoryId}/inbound-webhook-endpoints`;
+  const base = baseOf(REPO_ID);
 
-  async function create(body: Record<string, unknown> = VALID_CREATE): Promise<WithSecret> {
-    const res = await app.request(base, json('POST', body));
+  async function create(body: Record<string, unknown> = VALID_CREATE, repositoryId = REPO_ID): Promise<Generated> {
+    const res = await app.request(baseOf(repositoryId), json('POST', body));
     expect(res.status).toBe(201);
-    return v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
+    const parsed = v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
+    if (parsed.secretSource !== 'generated') throw new Error('expected a generated secret');
+    return parsed;
+  }
+
+  async function rotate(id: string, body?: Record<string, unknown>, repositoryId = REPO_ID): Promise<Generated> {
+    const res = await app.request(`${baseOf(repositoryId)}/${id}/rotate-secret`, json('POST', body));
+    expect(res.status).toBe(200);
+    const parsed = v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
+    if (parsed.secretSource !== 'generated') throw new Error('expected a generated secret');
+    return parsed;
   }
 
   async function storedRow(id: string) {
@@ -110,14 +140,39 @@ describe('Inbound webhook endpoint routes', () => {
       expect((await unauthenticated.request(`${base}/x`, json('DELETE'))).status).toBe(401);
       expect((await unauthenticated.request(`${base}/x/rotate-secret`, json('POST'))).status).toBe(401);
       expect((await unauthenticated.request(`${base}/x/clear-previous-secret`, json('POST'))).status).toBe(401);
-      expect(await repository.list()).toEqual([]);
+      expect(await repository.list(REPO_ID)).toEqual([]);
+    });
+  });
+
+  describe('the old global mount is gone', () => {
+    it('/api/inbound-webhook-endpoints is not served', async () => {
+      expect((await app.request('/api/inbound-webhook-endpoints')).status).toBe(404);
+    });
+  });
+
+  describe('unknown repository', () => {
+    it('list and create answer 404 and write nothing', async () => {
+      const createSpy = spyOn(repository, 'create');
+      const listSpy = spyOn(repository, 'list');
+      const unknown = baseOf('no-such-repo');
+
+      const listRes = await app.request(unknown);
+      expect(listRes.status).toBe(404);
+      expect(((await listRes.json()) as { error: string }).error).toContain('Repository');
+      expect(listSpy).not.toHaveBeenCalled();
+
+      const createRes = await app.request(unknown, json('POST', VALID_CREATE));
+      expect(createRes.status).toBe(404);
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(await db.selectFrom('inbound_webhook_endpoints').selectAll().execute()).toEqual([]);
     });
   });
 
   describe('POST / (create)', () => {
-    it('returns 201 with the endpoint and a whsec_ secret that decodes to 32 bytes', async () => {
-      const { endpoint, secret } = await create();
+    it('returns 201 with the endpoint and a generated whsec_ secret that decodes to 32 bytes', async () => {
+      const { endpoint, secret, secretSource } = await create();
 
+      expect(secretSource).toBe('generated');
       expect(endpoint).toMatchObject({
         label: 'Slack',
         repositoryId: REPO_ID,
@@ -131,12 +186,18 @@ describe('Inbound webhook endpoint routes', () => {
       expect((await storedRow(endpoint.id)).secret).toBe(secret);
     });
 
-    it('response keys carry the secret only at the top level, never inside the endpoint', async () => {
+    it('a generated-secret response has exactly the keys endpoint, secretSource and secret', async () => {
       const res = await app.request(base, json('POST', VALID_CREATE));
       const body = (await res.json()) as Record<string, unknown>;
-      expect(Object.keys(body).sort()).toEqual(['endpoint', 'secret']);
+      expect(Object.keys(body).sort()).toEqual(['endpoint', 'secret', 'secretSource']);
       expect(Object.keys(body.endpoint as object)).not.toContain('secret');
       expect(Object.keys(body.endpoint as object)).not.toContain('previousSecret');
+    });
+
+    it('binds the endpoint to the repository in the path', async () => {
+      const { endpoint } = await create(VALID_CREATE, OTHER_REPO_ID);
+      expect(endpoint.repositoryId).toBe(OTHER_REPO_ID);
+      expect((await storedRow(endpoint.id)).repository_id).toBe(OTHER_REPO_ID);
     });
 
     it('trims the label', async () => {
@@ -144,16 +205,11 @@ describe('Inbound webhook endpoint routes', () => {
       expect(endpoint.label).toBe('Slack');
     });
 
-    it('refuses a missing repositoryId with 400 and writes nothing', async () => {
-      const res = await app.request(base, json('POST', { label: 'Slack', instructionText: 'x' }));
+    it('refuses repositoryId in the body with 400 and writes nothing', async () => {
+      const res = await app.request(base, json('POST', { ...VALID_CREATE, repositoryId: OTHER_REPO_ID }));
       expect(res.status).toBe(400);
-      expect(await repository.list()).toEqual([]);
-    });
-
-    it('refuses an unknown repositoryId with 404 and writes nothing', async () => {
-      const res = await app.request(base, json('POST', { ...VALID_CREATE, repositoryId: 'no-such-repo' }));
-      expect(res.status).toBe(404);
-      expect(await repository.list()).toEqual([]);
+      expect(await repository.list(REPO_ID)).toEqual([]);
+      expect(await repository.list(OTHER_REPO_ID)).toEqual([]);
     });
 
     it('refuses an empty or blank label, an over-long label, and unknown keys', async () => {
@@ -161,11 +217,11 @@ describe('Inbound webhook endpoint routes', () => {
         { ...VALID_CREATE, label: '' },
         { ...VALID_CREATE, label: '   ' },
         { ...VALID_CREATE, label: 'x'.repeat(101) },
-        { ...VALID_CREATE, secret: 'whsec_mine' },
+        { ...VALID_CREATE, previousSecret: 'whsec_mine' },
       ]) {
         expect((await app.request(base, json('POST', body))).status).toBe(400);
       }
-      expect(await repository.list()).toEqual([]);
+      expect(await repository.list(REPO_ID)).toEqual([]);
     });
 
     it('accepts a 100-char label', async () => {
@@ -184,13 +240,10 @@ describe('Inbound webhook endpoint routes', () => {
     });
 
     const REFUSED: Array<[string, string]> = [
-      ['an LF', 'two\nlines'],
-      ['a CR', 'two\rlines'],
-      ['a trailing LF', 'one line\n'],
-      ['a CRLF', 'a\r\nb'],
-      ['301 characters', 'x'.repeat(301)],
+      ['4001 characters', 'x'.repeat(4001)],
       ['an empty string', ''],
-      ['only whitespace', '   '],
+      ['only spaces', '   '],
+      ['only line breaks', '\n\r\n\t '],
     ];
 
     for (const [name, instructionText] of REFUSED) {
@@ -198,11 +251,12 @@ describe('Inbound webhook endpoint routes', () => {
         const res = await app.request(base, json('POST', { ...VALID_CREATE, instructionText }));
         expect(res.status).toBe(400);
         expect(createSpy).not.toHaveBeenCalled();
-        expect(await repository.list()).toEqual([]);
+        expect(await repository.list(REPO_ID)).toEqual([]);
       });
 
       it(`update refuses ${name} with 400 before the repository is called`, async () => {
         const { endpoint } = await create();
+        updateSpy.mockClear();
         const res = await app.request(`${base}/${endpoint.id}`, json('PATCH', { instructionText }));
         expect(res.status).toBe(400);
         expect(updateSpy).not.toHaveBeenCalled();
@@ -210,19 +264,143 @@ describe('Inbound webhook endpoint routes', () => {
       });
     }
 
-    it('accepts exactly 300 characters, and keeps interior whitespace and tabs as written', async () => {
-      const { endpoint } = await create({ ...VALID_CREATE, instructionText: 'x'.repeat(300) });
-      expect(endpoint.instructionText).toHaveLength(300);
-      const tabbed = await create({ ...VALID_CREATE, instructionText: 'use\tthe  skill' });
-      expect(tabbed.endpoint.instructionText).toBe('use\tthe  skill');
+    it('accepts exactly 4000 characters', async () => {
+      const { endpoint } = await create({ ...VALID_CREATE, instructionText: 'x'.repeat(4000) });
+      expect(endpoint.instructionText).toHaveLength(4000);
+      expect((await storedRow(endpoint.id)).instruction_text).toHaveLength(4000);
+    });
+
+    it('stores a multi-line instruction byte for byte (LF, CR, CRLF, edge line breaks, tabs, no trimming)', async () => {
+      const text = '\n  line1\nline2\r\nline3\rline4\tend  \n';
+      const { endpoint } = await create({ ...VALID_CREATE, instructionText: text });
+      expect(endpoint.instructionText).toBe(text);
+      expect((await storedRow(endpoint.id)).instruction_text).toBe(text);
+
+      const patched = 'a\r\nb\rc\nd';
+      const res = await app.request(`${base}/${endpoint.id}`, json('PATCH', { instructionText: patched }));
+      expect(res.status).toBe(200);
+      expect((await storedRow(endpoint.id)).instruction_text).toBe(patched);
+    });
+  });
+
+  describe('entered secret', () => {
+    it('create stores the entered secret as-is and answers secretSource entered with no secret in the response text', async () => {
+      const entered = secretOfBytes(32, 5);
+      const res = await app.request(base, json('POST', { ...VALID_CREATE, secret: entered }));
+      expect(res.status).toBe(201);
+      const text = await res.text();
+
+      expect(text).not.toContain(entered);
+      expect(text).not.toContain(entered.slice('whsec_'.length));
+      const parsed = v.parse(InboundWebhookEndpointWithSecretResponseSchema, JSON.parse(text)) as Entered;
+      expect(parsed.secretSource).toBe('entered');
+      expect(Object.keys(JSON.parse(text)).sort()).toEqual(['endpoint', 'secretSource']);
+      expect((await storedRow(parsed.endpoint.id)).secret).toBe(entered);
+      expect((await repository.findWithSecretById(parsed.endpoint.id))?.secret).toBe(entered);
+    });
+
+    it('rotate stores the entered secret as-is, moves the old one to previous, and echoes nothing', async () => {
+      const created = await create();
+      const entered = secretOfBytes(40, 6);
+      const res = await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST', { secret: entered }));
+      expect(res.status).toBe(200);
+      const text = await res.text();
+
+      expect(text).not.toContain(entered);
+      expect(text).not.toContain(created.secret);
+      expect(Object.keys(JSON.parse(text)).sort()).toEqual(['endpoint', 'secretSource']);
+      expect(v.parse(InboundWebhookEndpointWithSecretResponseSchema, JSON.parse(text)).secretSource).toBe('entered');
+
+      const row = await storedRow(created.endpoint.id);
+      expect(row.secret).toBe(entered);
+      expect(row.previous_secret).toBe(created.secret);
+      expect(row.previous_secret_expires_at).not.toBeNull();
+    });
+
+    it('the non-canonical test value really is lax-decodable (presence control)', () => {
+      const lax = nonCanonicalSecret();
+      const base64 = lax.slice('whsec_'.length);
+      expect(Buffer.from(base64, 'base64').length).toBe(32);
+      expect(Buffer.from(base64, 'base64').toString('base64')).not.toBe(base64);
+    });
+
+    const ACCEPTED: Array<[string, string]> = [
+      ['24 bytes', secretOfBytes(24)],
+      ['64 bytes', secretOfBytes(64)],
+    ];
+    const REJECTED: Array<[string, string]> = [
+      ['a missing prefix', Buffer.alloc(32, 9).toString('base64')],
+      ['non-base64 characters', 'whsec_ENTERED!!not*base64@@value##'],
+      ['whitespace inside', `${secretOfBytes(32).slice(0, 20)} ${secretOfBytes(32).slice(20)}`],
+      ['23 bytes', secretOfBytes(23)],
+      ['65 bytes', secretOfBytes(65)],
+      ['a lax-decodable but non-canonical string', nonCanonicalSecret()],
+    ];
+
+    for (const [name, secret] of ACCEPTED) {
+      it(`create accepts ${name}`, async () => {
+        const res = await app.request(base, json('POST', { ...VALID_CREATE, secret }));
+        expect(res.status).toBe(201);
+        expect(await res.text()).not.toContain(secret);
+      });
+
+      it(`rotate accepts ${name}`, async () => {
+        const created = await create();
+        const res = await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST', { secret }));
+        expect(res.status).toBe(200);
+        expect(await res.text()).not.toContain(secret);
+        expect((await storedRow(created.endpoint.id)).secret).toBe(secret);
+      });
+    }
+
+    for (const [name, secret] of REJECTED) {
+      it(`create rejects ${name} with 400 that does not echo the value, and writes nothing`, async () => {
+        const res = await app.request(base, json('POST', { ...VALID_CREATE, secret }));
+        expect(res.status).toBe(400);
+        expect(await res.text()).not.toContain(secret);
+        expect(await repository.list(REPO_ID)).toEqual([]);
+      });
+
+      it(`rotate rejects ${name} with 400 that does not echo the value, and changes nothing`, async () => {
+        const created = await create();
+        const res = await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST', { secret }));
+        expect(res.status).toBe(400);
+        expect(await res.text()).not.toContain(secret);
+        const row = await storedRow(created.endpoint.id);
+        expect(row.secret).toBe(created.secret);
+        expect(row.previous_secret).toBeNull();
+      });
+    }
+
+    it('a rejected secret is in neither the 400 body nor any log call (every level spied)', async () => {
+      const entered = 'whsec_ENTERED-SENTINEL not*base64';
+      const spies = (['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const).map((level) => spyOn(rootLogger, level));
+      try {
+        const created = await create();
+        const createRes = await app.request(base, json('POST', { ...VALID_CREATE, secret: entered }));
+        const rotateRes = await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST', { secret: entered }));
+        expect(createRes.status).toBe(400);
+        expect(rotateRes.status).toBe(400);
+        expect(await createRes.text()).not.toContain('ENTERED-SENTINEL');
+        expect(await rotateRes.text()).not.toContain('ENTERED-SENTINEL');
+
+        const calls = spies.flatMap((spy) => spy.mock.calls);
+        const logged = JSON.stringify(calls);
+        // Positive control: the 400 path did log (onApiError warns with the validation message).
+        expect(logged).toContain('API error');
+        expect(logged).toContain('Secret must');
+        expect(logged).not.toContain('ENTERED-SENTINEL');
+        expect(logged).not.toContain(entered);
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
     });
   });
 
   describe('GET / and GET /:id never expose a secret', () => {
     it('list and get bodies contain neither the field names nor the secret values (raw text)', async () => {
       const created = await create();
-      const rotated = await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST'));
-      const { secret: currentSecret } = v.parse(InboundWebhookEndpointWithSecretResponseSchema, await rotated.json());
+      const { secret: currentSecret } = await rotate(created.endpoint.id);
       const previousSecret = created.secret;
 
       const listText = await (await app.request(base)).text();
@@ -241,7 +419,7 @@ describe('Inbound webhook endpoint routes', () => {
 
     it('update, clear-previous responses carry no secret either', async () => {
       const created = await create();
-      await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST'));
+      await rotate(created.endpoint.id);
       const patchText = await (await app.request(`${base}/${created.endpoint.id}`, json('PATCH', { label: 'renamed' }))).text();
       const clearText = await (await app.request(`${base}/${created.endpoint.id}/clear-previous-secret`, json('POST'))).text();
       for (const text of [patchText, clearText]) {
@@ -250,13 +428,13 @@ describe('Inbound webhook endpoint routes', () => {
       }
     });
 
-    it('list is empty on a fresh database and lists every endpoint otherwise', async () => {
+    it('list is empty on a fresh database and lists only the path repository\'s endpoints', async () => {
       const empty = v.parse(InboundWebhookEndpointsListResponseSchema, await (await app.request(base)).json());
       expect(empty.endpoints).toEqual([]);
       const a = await create();
-      const b = await create({ ...VALID_CREATE, repositoryId: OTHER_REPO_ID });
+      await create(VALID_CREATE, OTHER_REPO_ID);
       const listed = v.parse(InboundWebhookEndpointsListResponseSchema, await (await app.request(base)).json());
-      expect(listed.endpoints.map((e) => e.id).sort()).toEqual([a.endpoint.id, b.endpoint.id].sort());
+      expect(listed.endpoints.map((e) => e.id)).toEqual([a.endpoint.id]);
     });
 
     it('get returns the endpoint', async () => {
@@ -309,13 +487,11 @@ describe('Inbound webhook endpoint routes', () => {
   });
 
   describe('POST /:id/rotate-secret', () => {
-    it('moves current to previous with a 24h expiry and returns the new secret', async () => {
+    it('moves current to previous with a 24h expiry and returns the new generated secret', async () => {
       const created = await create();
       const beforeMs = Date.now();
-      const res = await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST'));
+      const rotated = await rotate(created.endpoint.id);
       const afterMs = Date.now();
-      expect(res.status).toBe(200);
-      const rotated = v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
 
       expect(rotated.secret).not.toBe(created.secret);
       expect(rotated.secret.startsWith('whsec_')).toBe(true);
@@ -332,16 +508,36 @@ describe('Inbound webhook endpoint routes', () => {
       expect(Date.parse(row.updated_at)).toBeGreaterThanOrEqual(beforeMs);
     });
 
+    it('accepts no body (no content type), no body (JSON content type), a blank body, {} and { secret }', async () => {
+      const created = await create();
+      const url = `${base}/${created.endpoint.id}/rotate-secret`;
+      const requests: Array<[string, RequestInit]> = [
+        ['no body, no content type', { method: 'POST' }],
+        ['no body, JSON content type', { method: 'POST', headers: { 'Content-Type': 'application/json' } }],
+        ['blank body, JSON content type', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '' }],
+        ['empty object', json('POST', {})],
+        ['entered secret', json('POST', { secret: secretOfBytes(32, 3) })],
+      ];
+      for (const [name, init] of requests) {
+        const res = await app.request(url, init);
+        expect(res.status, name).toBe(200);
+        const parsed = v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
+        expect(parsed.secretSource, name).toBe(name === 'entered secret' ? 'entered' : 'generated');
+      }
+    });
+
+    it('rejects malformed JSON and an unknown key with 400', async () => {
+      const created = await create();
+      const url = `${base}/${created.endpoint.id}/rotate-secret`;
+      expect((await app.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{nope' })).status).toBe(400);
+      expect((await app.request(url, json('POST', { repositoryId: OTHER_REPO_ID }))).status).toBe(400);
+      expect((await storedRow(created.endpoint.id)).secret).toBe(created.secret);
+    });
+
     it('rotating twice replaces the previous secret with the then-current one', async () => {
       const created = await create();
-      const first = v.parse(
-        InboundWebhookEndpointWithSecretResponseSchema,
-        await (await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST'))).json(),
-      );
-      const second = v.parse(
-        InboundWebhookEndpointWithSecretResponseSchema,
-        await (await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST'))).json(),
-      );
+      const first = await rotate(created.endpoint.id);
+      const second = await rotate(created.endpoint.id);
 
       const row = await storedRow(created.endpoint.id);
       expect(row.secret).toBe(second.secret);
@@ -351,7 +547,7 @@ describe('Inbound webhook endpoint routes', () => {
 
     it('an expired previous secret reads as absent', async () => {
       const created = await create();
-      await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST'));
+      await rotate(created.endpoint.id);
       await db
         .updateTable('inbound_webhook_endpoints')
         .set({ previous_secret_expires_at: new Date(Date.now() - 1000).toISOString() })
@@ -369,10 +565,7 @@ describe('Inbound webhook endpoint routes', () => {
   describe('POST /:id/clear-previous-secret', () => {
     it('nulls both previous columns and keeps the current secret', async () => {
       const created = await create();
-      const rotated = v.parse(
-        InboundWebhookEndpointWithSecretResponseSchema,
-        await (await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST'))).json(),
-      );
+      const rotated = await rotate(created.endpoint.id);
 
       const res = await app.request(`${base}/${created.endpoint.id}/clear-previous-secret`, json('POST'));
       expect(res.status).toBe(200);
@@ -404,7 +597,7 @@ describe('Inbound webhook endpoint routes', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ success: true });
 
-      expect(await repository.findById(doomed.endpoint.id)).toBeNull();
+      expect(await repository.findById(REPO_ID, doomed.endpoint.id)).toBeNull();
       expect((await db.selectFrom('inbound_webhook_deliveries').select('endpoint_id').execute()).map((r) => r.endpoint_id)).toEqual([
         kept.endpoint.id,
       ]);
@@ -424,25 +617,83 @@ describe('Inbound webhook endpoint routes', () => {
     });
   });
 
+  describe("another repository's endpoint is 404 and stays unchanged", () => {
+    let foreignId: string;
+    let foreignBefore: Awaited<ReturnType<typeof storedRow>>;
+
+    beforeEach(async () => {
+      // The endpoint lives under OTHER_REPO_ID; every request below addresses it under REPO_ID.
+      const foreign = await create(VALID_CREATE, OTHER_REPO_ID);
+      foreignId = foreign.endpoint.id;
+      await rotate(foreignId, undefined, OTHER_REPO_ID);
+      foreignBefore = await storedRow(foreignId);
+    });
+
+    async function expectForeignUntouched() {
+      expect(await storedRow(foreignId)).toEqual(foreignBefore);
+    }
+
+    it('get', async () => {
+      const res = await app.request(`${base}/${foreignId}`);
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as { error: string }).error).toContain('Inbound webhook endpoint');
+      await expectForeignUntouched();
+    });
+
+    it('patch', async () => {
+      const res = await app.request(`${base}/${foreignId}`, json('PATCH', { label: 'hijack', instructionText: 'hijack' }));
+      expect(res.status).toBe(404);
+      await expectForeignUntouched();
+    });
+
+    it('delete', async () => {
+      const res = await app.request(`${base}/${foreignId}`, json('DELETE'));
+      expect(res.status).toBe(404);
+      await expectForeignUntouched();
+    });
+
+    it('rotate-secret (generated and entered)', async () => {
+      const generated = await app.request(`${base}/${foreignId}/rotate-secret`, json('POST'));
+      expect(generated.status).toBe(404);
+      const entered = await app.request(`${base}/${foreignId}/rotate-secret`, json('POST', { secret: secretOfBytes(32, 4) }));
+      expect(entered.status).toBe(404);
+      await expectForeignUntouched();
+    });
+
+    it('clear-previous-secret', async () => {
+      const res = await app.request(`${base}/${foreignId}/clear-previous-secret`, json('POST'));
+      expect(res.status).toBe(404);
+      await expectForeignUntouched();
+    });
+
+    it('the owning repository still reaches it (control)', async () => {
+      expect((await app.request(`${baseOf(OTHER_REPO_ID)}/${foreignId}`)).status).toBe(200);
+    });
+  });
+
   describe('repository deletion', () => {
     it('deleting the repository removes its endpoint', async () => {
       const created = await create();
       await db.deleteFrom('repositories').where('id', '=', REPO_ID).execute();
-      expect((await app.request(`${base}/${created.endpoint.id}`)).status).toBe(404);
+      expect(await db.selectFrom('inbound_webhook_endpoints').select('id').where('id', '=', created.endpoint.id).execute()).toEqual([]);
     });
   });
 
   describe('logging', () => {
-    it('no log call during create, rotate, update, clear or delete carries a secret', async () => {
+    it('no log call during create, rotate, update, clear or delete carries a secret, generated or entered', async () => {
       const spies = (['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const).map((level) => spyOn(rootLogger, level));
       try {
+        const enteredOnCreate = secretOfBytes(32, 11);
+        const enteredOnRotate = secretOfBytes(32, 12);
+
         const created = await create();
-        const rotated = v.parse(
-          InboundWebhookEndpointWithSecretResponseSchema,
-          await (await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST'))).json(),
-        );
+        const rotated = await rotate(created.endpoint.id);
         await app.request(`${base}/${created.endpoint.id}`, json('PATCH', { label: 'renamed' }));
         await app.request(`${base}/${created.endpoint.id}/clear-previous-secret`, json('POST'));
+        const enteredCreate = await app.request(base, json('POST', { ...VALID_CREATE, secret: enteredOnCreate }));
+        expect(enteredCreate.status).toBe(201);
+        const rotatedEntered = await app.request(`${base}/${created.endpoint.id}/rotate-secret`, json('POST', { secret: enteredOnRotate }));
+        expect(rotatedEntered.status).toBe(200);
         await app.request(`${base}/${created.endpoint.id}`, json('DELETE'));
 
         const calls = spies.flatMap((spy) => spy.mock.calls);
@@ -451,6 +702,8 @@ describe('Inbound webhook endpoint routes', () => {
         const logged = JSON.stringify(calls);
         expect(logged).not.toContain(created.secret);
         expect(logged).not.toContain(rotated.secret);
+        expect(logged).not.toContain(enteredOnCreate);
+        expect(logged).not.toContain(enteredOnRotate);
         expect(logged).not.toContain('whsec_');
         expect(logged).toContain(created.endpoint.id);
       } finally {

@@ -6,7 +6,7 @@ import {
 
 describe('inbound webhook endpoint limits', () => {
   it('pin the approved values', () => {
-    expect(INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH).toBe(300);
+    expect(INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH).toBe(4000);
     expect(INBOUND_WEBHOOK_LABEL_MAX_LENGTH).toBe(100);
   });
 });

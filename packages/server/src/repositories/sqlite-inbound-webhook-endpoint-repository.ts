@@ -43,21 +43,23 @@ function toWithSecret(row: InboundWebhookEndpointRow): InboundWebhookEndpointWit
 export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEndpointRepository {
   constructor(private db: Kysely<Database>) {}
 
-  async list(): Promise<InboundWebhookEndpointView[]> {
+  async list(repositoryId: string): Promise<InboundWebhookEndpointView[]> {
     const rows = await this.db
       .selectFrom('inbound_webhook_endpoints')
       .select(VIEW_COLUMNS)
+      .where('repository_id', '=', repositoryId)
       .orderBy('created_at', 'asc')
       .orderBy('id', 'asc')
       .execute();
     return rows.map(toView);
   }
 
-  async findById(id: string): Promise<InboundWebhookEndpointView | null> {
+  async findById(repositoryId: string, id: string): Promise<InboundWebhookEndpointView | null> {
     const row = await this.db
       .selectFrom('inbound_webhook_endpoints')
       .select(VIEW_COLUMNS)
       .where('id', '=', id)
+      .where('repository_id', '=', repositoryId)
       .executeTakeFirst();
     return row ? toView(row) : null;
   }
@@ -93,6 +95,7 @@ export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEnd
   }
 
   async update(
+    repositoryId: string,
     id: string,
     updates: UpdateInboundWebhookEndpointParams,
     now: string,
@@ -105,6 +108,7 @@ export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEnd
         ...(updates.instructionText !== undefined ? { instruction_text: updates.instructionText } : {}),
       })
       .where('id', '=', id)
+      .where('repository_id', '=', repositoryId)
       .returning(VIEW_COLUMNS)
       .executeTakeFirst();
 
@@ -114,6 +118,7 @@ export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEnd
   }
 
   async rotateSecret(
+    repositoryId: string,
     id: string,
     newSecret: string,
     previousSecretExpiresAt: string,
@@ -130,6 +135,7 @@ export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEnd
         updated_at: now,
       }))
       .where('id', '=', id)
+      .where('repository_id', '=', repositoryId)
       .returningAll()
       .executeTakeFirst();
 
@@ -138,11 +144,12 @@ export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEnd
     return toWithSecret(row);
   }
 
-  async clearPreviousSecret(id: string, now: string): Promise<InboundWebhookEndpointView | null> {
+  async clearPreviousSecret(repositoryId: string, id: string, now: string): Promise<InboundWebhookEndpointView | null> {
     const row = await this.db
       .updateTable('inbound_webhook_endpoints')
       .set({ previous_secret: null, previous_secret_expires_at: null, updated_at: now })
       .where('id', '=', id)
+      .where('repository_id', '=', repositoryId)
       .returning(VIEW_COLUMNS)
       .executeTakeFirst();
 
@@ -151,8 +158,12 @@ export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEnd
     return toView(row);
   }
 
-  async delete(id: string): Promise<boolean> {
-    const result = await this.db.deleteFrom('inbound_webhook_endpoints').where('id', '=', id).execute();
+  async delete(repositoryId: string, id: string): Promise<boolean> {
+    const result = await this.db
+      .deleteFrom('inbound_webhook_endpoints')
+      .where('id', '=', id)
+      .where('repository_id', '=', repositoryId)
+      .execute();
     const deleted = (result[0]?.numDeletedRows ?? 0n) > 0n;
     if (deleted) {
       logger.debug({ endpointId: id }, 'Inbound webhook endpoint deleted');

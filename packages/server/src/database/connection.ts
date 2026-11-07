@@ -3888,9 +3888,10 @@ export async function migrateToV55(database: Kysely<Database>): Promise<void> {
  * Migration v56: Create `inbound_webhook_endpoints` and `inbound_webhook_deliveries`.
  *
  * An endpoint is a signed generic webhook receiver bound to one repository; its
- * `instruction_text` is the single-line, operator-authored instruction delivered
- * with each message (the single-line property is a CHECK backstop, the REST layer
- * rejects first). `secret` is stored in plaintext because HMAC verification needs
+ * `instruction_text` is the multi-line, operator-authored instruction delivered
+ * with each message as its own file, stored as-is (line breaks included); the
+ * 4000-character length CHECK is a backstop, the REST layer rejects first.
+ * `secret` is stored in plaintext because HMAC verification needs
  * it; it is returned only by the create and rotate responses. `previous_secret`
  * stays valid until `previous_secret_expires_at` during a rotation. The deliveries
  * table is the dedupe ledger keyed by the sender's webhook id, and is never pruned.
@@ -3908,7 +3909,7 @@ export async function migrateToV55(database: Kysely<Database>): Promise<void> {
  *   previous_secret_expires_at  TEXT,
  *   created_at                  TEXT NOT NULL,
  *   updated_at                  TEXT NOT NULL,
- *   CONSTRAINT iwe_instruction_text_check CHECK (instruction_text NOT GLOB '*' || char(10) || '*' AND instruction_text NOT GLOB '*' || char(13) || '*'),
+ *   CONSTRAINT iwe_instruction_text_length_check CHECK (length(instruction_text) <= 4000),
  *   CONSTRAINT iwe_created_at_check CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'),
  *   CONSTRAINT iwe_updated_at_check CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'),
  *   CONSTRAINT iwe_previous_secret_expires_at_check CHECK (previous_secret_expires_at IS NULL OR previous_secret_expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
@@ -3941,7 +3942,7 @@ export async function migrateToV56(database: Kysely<Database>): Promise<void> {
       previous_secret_expires_at  TEXT,
       created_at                  TEXT NOT NULL,
       updated_at                  TEXT NOT NULL,
-      CONSTRAINT iwe_instruction_text_check CHECK (instruction_text NOT GLOB '*' || char(10) || '*' AND instruction_text NOT GLOB '*' || char(13) || '*'),
+      CONSTRAINT iwe_instruction_text_length_check CHECK (length(instruction_text) <= 4000),
       CONSTRAINT iwe_created_at_check CHECK (created_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}'),
       CONSTRAINT iwe_updated_at_check CHECK (updated_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}'),
       CONSTRAINT iwe_previous_secret_expires_at_check CHECK (previous_secret_expires_at IS NULL OR previous_secret_expires_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
