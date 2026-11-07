@@ -150,7 +150,7 @@ export function InboundWebhooksListView({ repositoryId }: { repositoryId: string
         { label: 'Inbound Webhooks' },
       ]} />
 
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold">Inbound Webhooks</h1>
         <Link
           to="/settings/repositories/$repositoryId/inbound-webhooks/new"
@@ -160,7 +160,6 @@ export function InboundWebhooksListView({ repositoryId }: { repositoryId: string
           New endpoint
         </Link>
       </div>
-      <p className="text-sm text-yellow-300 mb-6">Receiving is not active yet (in development).</p>
 
       {issued && (
         <SecretRevealPanel

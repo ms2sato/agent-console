@@ -37,14 +37,15 @@ const rotateButtons = () => screen.getAllByRole('button', { name: 'Rotate secret
 const rotatePosts = () => server.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/rotate-secret'));
 
 describe('InboundWebhooksListView', () => {
-  it('lists endpoints with label, multi-line instruction, receive URL, Edit link and the in-development note', async () => {
+  it('lists endpoints with label, multi-line instruction, receive URL and Edit link, and carries no "not active" note', async () => {
     server.endpoints = [makeEndpoint({ instructionText: 'line one\nline two' })];
     await renderList();
 
     await waitFor(() => expect(screen.getByText('Slack alerts')).toBeTruthy());
     expect(screen.getByTestId('endpoint-instruction').textContent).toBe('line one\nline two');
     expect(screen.getByTestId('endpoint-instruction').className).toContain('whitespace-pre-wrap');
-    expect(screen.getByText(/Receiving is not active yet \(in development\)/)).toBeTruthy();
+    expect(screen.queryByText(/not active yet/i)).toBeNull();
+    expect(screen.queryByText(/in development/i)).toBeNull();
     expect(screen.getByRole('link', { name: 'Edit' }).getAttribute('href')).toBe(
       '/settings/repositories/repo-1/inbound-webhooks/ep-1/edit',
     );

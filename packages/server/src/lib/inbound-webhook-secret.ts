@@ -21,3 +21,12 @@ export function generateInboundWebhookSecret(): string {
 export function previousSecretExpiryFrom(now: Date): string {
   return new Date(now.getTime() + INBOUND_WEBHOOK_PREVIOUS_SECRET_GRACE_MS).toISOString();
 }
+
+/**
+ * Whether a previous secret is still honoured at `now`: it has an expiry and that expiry is
+ * strictly in the future. The single writer of this rule; the management wire and the verifier
+ * both call it.
+ */
+export function isPreviousSecretActive(expiresAt: string | null, now: Date): boolean {
+  return expiresAt !== null && Date.parse(expiresAt) > now.getTime();
+}

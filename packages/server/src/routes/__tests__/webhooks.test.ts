@@ -109,8 +109,15 @@ describe('Webhooks route fallthrough (method and path guards)', () => {
     expect(JSON.parse(text)).toEqual({ error: 'Not Found' });
   });
 
-  it('GET /webhooks/in/anything answers a JSON 404', async () => {
+  it('GET /webhooks/in/anything answers a JSON 405 with Allow: POST (the inbound route owns the path)', async () => {
     const res = await app.request('/webhooks/in/anything');
+    expect(res.status).toBe(405);
+    expect(res.headers.get('Allow')).toBe('POST');
+    expect(await res.json()).toEqual({ error: 'Method Not Allowed' });
+  });
+
+  it('GET /webhooks/in (no endpoint id) still answers the JSON 404', async () => {
+    const res = await app.request('/webhooks/in');
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not Found' });
   });

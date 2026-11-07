@@ -162,3 +162,21 @@ describe('SessionDataPathResolver.getMemoryDir', () => {
     expect((caught as Error).message).toBe('definitionId "." is not a valid single path segment');
   });
 });
+
+describe('SessionDataPathResolver.getInboundWebhookDeliveryPaths', () => {
+  const resolver = new SessionDataPathResolver('/data/base', '/data');
+
+  it('places the delivery under messages/<session>/<worker>/inbound-webhook/<deliveryId>/ with the two files', () => {
+    expect(resolver.getInboundWebhookDeliveryPaths('s1', 'w1', 'inbound-webhook:ep1:wh1')).toEqual({
+      dir: '/data/base/messages/s1/w1/inbound-webhook/inbound-webhook:ep1:wh1',
+      bodyPath: '/data/base/messages/s1/w1/inbound-webhook/inbound-webhook:ep1:wh1/body.md',
+      instructionPath: '/data/base/messages/s1/w1/inbound-webhook/inbound-webhook:ep1:wh1/instruction.md',
+    });
+  });
+
+  it('refuses a segment that would escape the directory', () => {
+    for (const [s, w, d] of [['../x', 'w1', 'd1'], ['s1', 'a/b', 'd1'], ['s1', 'w1', '..'], ['s1', 'w1', 'a/../b'], ['s1', 'w1', '']]) {
+      expect(() => resolver.getInboundWebhookDeliveryPaths(s!, w!, d!)).toThrow(InvalidSessionDataScopeError);
+    }
+  });
+});

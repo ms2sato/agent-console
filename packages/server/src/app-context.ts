@@ -120,6 +120,9 @@ export interface AppContext {
   /** Background job queue for async task processing */
   jobQueue: JobQueue;
 
+  /** Wall clock for request-time decisions (signature tolerance, expiry). Injected so tests can pin it. */
+  now: () => Date;
+
   /**
    * File-based worker output persistence (buffering, archival, restore
    * reads). Exposed on `AppContext` so `shutdownAppContext` can flush and
@@ -765,6 +768,7 @@ export async function createAppContext(
     repositoryCloneService,
     messageTemplateRepository,
     inboundWebhookEndpointRepository,
+    now: () => new Date(),
     artifactRepository,
     bookmarkRepository,
     todoRepository,
@@ -1134,6 +1138,7 @@ export async function createTestContext(
     repositoryCloneService,
     messageTemplateRepository,
     inboundWebhookEndpointRepository,
+    now: () => new Date(),
     artifactRepository,
     bookmarkRepository,
     todoRepository,

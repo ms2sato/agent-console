@@ -5,17 +5,20 @@ import type {
   PtyNotificationIntent,
   Session,
 } from '@agent-console/shared';
+import type { InboundEventPtyNotification } from '../../lib/pty-notification.js';
 import { canReceiveSessionMessages } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { triggerRefresh } from '../git-diff-service.js';
 import { createLogger } from '../../lib/logger.js';
+import type { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { toInstructionExcerpt } from '../../lib/inbound-instruction-excerpt.js';
 
 /** Event types that AgentWorkerHandler actually handles */
-type AgentWorkerEventType = 'ci:completed' | 'ci:failed' | 'issue:labeled' | 'pr:merged' | 'pr:review_comment' | 'pr:changes_requested' | 'pr:comment';
+type AgentWorkerEventType = 'ci:completed' | 'ci:failed' | 'issue:labeled' | 'pr:merged' | 'pr:review_comment' | 'pr:changes_requested' | 'pr:comment' | 'external:message';
 
 /** Set of valid AgentWorkerEventType values for runtime validation */
 const AGENT_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<AgentWorkerEventType>([
-  'ci:completed', 'ci:failed', 'issue:labeled', 'pr:merged', 'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+  'ci:completed', 'ci:failed', 'issue:labeled', 'pr:merged', 'pr:review_comment', 'pr:changes_requested', 'pr:comment', 'external:message',
 ]);
 
 function isAgentWorkerEventType(type: string): type is AgentWorkerEventType {
@@ -68,6 +71,16 @@ export function canDeliverToAgentWorker(session: Session): boolean {
 }
 
 /**
+ * The worker an inbound notification is delivered to when the target names
+ * none: the first agent-shaped worker in `session.workers` order. Single
+ * writer: the handler and anything that must name the same worker beforehand
+ * (the per-target delivery files) both call this.
+ */
+export function findDeliverableWorkerId(session: Session): string | undefined {
+  return session.workers.find(canReceiveSessionMessages)?.id;
+}
+
+/**
  * The result of a handler's attempt to act on an inbound event for one
  * target, distinguishing "nothing to do here" from "should have delivered
  * and could not" -- job-handler.ts maps these to the notification
@@ -106,7 +119,10 @@ export interface InboundEventHandler {
  * Minimal SessionManager interface required by inbound handlers.
  * Narrowed to only the methods actually used, reducing coupling.
  */
-type InboundSessionManager = Pick<SessionManager, 'getSession' | 'resolvePausedMessageTarget' | 'deliverWorkerNotification'>;
+type InboundSessionManager = Pick<SessionManager, 'getSession' | 'resolvePausedMessageTarget' | 'deliverWorkerNotification'> &
+  // Only `external:message` needs a live session's data path resolver (to name its delivery files);
+  // a paused session's resolver comes from `resolvePausedMessageTarget`.
+  Partial<Pick<SessionManager, 'getPathResolverForSessionId'>>;
 
 export interface InboundHandlerDependencies {
   sessionManager: InboundSessionManager;
@@ -127,7 +143,7 @@ class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
   readonly supportedEvents: InboundEventType[] = [
     'ci:completed', 'ci:failed', 'issue:labeled', 'pr:merged',
-    'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+    'pr:review_comment', 'pr:changes_requested', 'pr:comment', 'external:message',
   ];
 
   constructor(private sessionManager: InboundSessionManager) {}
@@ -140,10 +156,14 @@ class AgentWorkerHandler implements InboundEventHandler {
     // is "an outcome, never a rejection", so a failed lookup is a failed
     // delivery attempt.
     let session: Session | undefined;
+    let pausedResolver: SessionDataPathResolver | undefined;
     try {
-      session =
-        this.sessionManager.getSession(target.sessionId) ??
-        (await this.sessionManager.resolvePausedMessageTarget(target.sessionId))?.session;
+      session = this.sessionManager.getSession(target.sessionId);
+      if (!session) {
+        const paused = await this.sessionManager.resolvePausedMessageTarget(target.sessionId);
+        session = paused?.session;
+        pausedResolver = paused?.resolver;
+      }
     } catch (err) {
       handlerLogger.error(
         { err, sessionId: target.sessionId, eventType: event.type },
@@ -157,7 +177,7 @@ class AgentWorkerHandler implements InboundEventHandler {
 
     // First match in `session.workers` order, deterministic, same as
     // today's `find`.
-    const workerId = target.workerId ?? session.workers.find(canReceiveSessionMessages)?.id;
+    const workerId = target.workerId ?? findDeliverableWorkerId(session);
     if (!workerId) return 'not-applicable';
 
     const sessionId = target.sessionId;
@@ -168,6 +188,22 @@ class AgentWorkerHandler implements InboundEventHandler {
         'Unexpected event type received by AgentWorkerHandler',
       );
       return 'not-applicable';
+    }
+
+    let fields: InboundEventPtyNotification['fields'];
+    if (event.type === 'external:message') {
+      const built = this.buildExternalMessageFields(event, sessionId, workerId, pausedResolver);
+      if (!built) return 'delivery-failed';
+      fields = built;
+    } else {
+      fields = {
+        type: event.type,
+        source: event.source,
+        repo: event.metadata.repositoryName ?? 'unknown',
+        branch: event.metadata.branch ?? 'unknown',
+        url: event.metadata.url ?? 'N/A',
+        summary: event.summary,
+      };
     }
 
     // The seam's PTY branch never throws (writePtyNotification's own
@@ -182,14 +218,7 @@ class AgentWorkerHandler implements InboundEventHandler {
       result = await this.sessionManager.deliverWorkerNotification(sessionId, workerId, {
         kind: 'inbound-event',
         tag: `inbound:${event.type}`,
-        fields: {
-          type: event.type,
-          source: event.source,
-          repo: event.metadata.repositoryName ?? 'unknown',
-          branch: event.metadata.branch ?? 'unknown',
-          url: event.metadata.url ?? 'N/A',
-          summary: event.summary,
-        },
+        fields,
         intent: this.resolveIntent(event.type),
       }, { sourceId: opts.jobId });
     } catch (err) {
@@ -213,6 +242,52 @@ class AgentWorkerHandler implements InboundEventHandler {
     return 'handled';
   }
 
+  /**
+   * Fields-only notification for `external:message`: neither the sender's text
+   * nor the multi-line operator instruction is ever a field value. The agent
+   * reads them from the two per-target files named by `body_path` (untrusted,
+   * sender) and `instruction_path` (operator-trusted); only a one-line excerpt
+   * of the instruction rides in a field. Returns null (logged) when the
+   * per-target paths cannot be derived, which is a failed delivery.
+   */
+  private buildExternalMessageFields(
+    event: InboundSystemEvent,
+    sessionId: string,
+    workerId: string,
+    pausedResolver: SessionDataPathResolver | undefined,
+  ): InboundEventPtyNotification['fields'] | null {
+    const deliveryId = event.metadata.deliveryId;
+    const resolver = pausedResolver ?? this.sessionManager.getPathResolverForSessionId?.(sessionId);
+    if (!deliveryId || !resolver) {
+      handlerLogger.warn(
+        { sessionId, workerId, eventType: event.type, hasDeliveryId: Boolean(deliveryId), hasResolver: Boolean(resolver) },
+        'Cannot derive the delivery file paths for an external:message event',
+      );
+      return null;
+    }
+    let paths: ReturnType<SessionDataPathResolver['getInboundWebhookDeliveryPaths']>;
+    try {
+      paths = resolver.getInboundWebhookDeliveryPaths(sessionId, workerId, deliveryId);
+    } catch (err) {
+      handlerLogger.warn(
+        { err, sessionId, workerId, eventType: event.type },
+        'Invalid delivery file path segment for an external:message event',
+      );
+      return null;
+    }
+    return {
+      type: event.type,
+      source: event.source,
+      repo: event.metadata.repositoryName ?? 'unknown',
+      branch: 'N/A',
+      url: event.metadata.url ?? 'N/A',
+      summary: event.summary,
+      instruction_excerpt: toInstructionExcerpt(event.metadata.instructionExcerpt ?? ''),
+      instruction_path: paths.instructionPath,
+      body_path: paths.bodyPath,
+    };
+  }
+
   private resolveIntent(type: AgentWorkerEventType): PtyNotificationIntent {
     switch (type) {
       case 'ci:completed':
@@ -223,6 +298,7 @@ class AgentWorkerHandler implements InboundEventHandler {
       case 'pr:review_comment':
       case 'pr:changes_requested':
       case 'pr:comment':
+      case 'external:message':
         return 'triage';
       default: {
         const _exhaustive: never = type;

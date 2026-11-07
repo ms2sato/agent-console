@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { access, rename, rm, writeFile } from 'fs/promises';
+import { access } from 'fs/promises';
 import * as path from 'path';
 import type { Kysely } from 'kysely';
 import type { Database } from '../database/schema.js';
@@ -59,7 +59,7 @@ import { parseEnvVars } from '../lib/env-parser.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import { ensureTrustedDirChain, resolveAncestorContract } from '../lib/trusted-dir.js';
+import { writeFileInTrustedDir } from '../lib/trusted-file-write.js';
 import { composeDeferredReadMore, composePausedDigest, type PausedDigestEntry } from '../lib/paused-digest.js';
 import { PAUSE_DISPOSITION, MAX_DEFERRED_NOTIFICATIONS_PER_SESSION } from './pause-disposition.js';
 import type { DeferredWorkerNotificationRepository } from '../repositories/deferred-worker-notification-repository.js';
@@ -459,15 +459,7 @@ function parseStoredParams(paramsJson: string): PtyNotificationParams | null {
 
 /** Write the read-more file atomically, creating its directory through the trusted-dir walker. */
 async function writeDeferredReadMore(resolver: SessionDataPathResolver, filePath: string, content: string): Promise<void> {
-  await ensureTrustedDirChain(resolver.getTrustedRoot(), path.dirname(filePath), resolveAncestorContract());
-  const tmpPath = `${filePath}.tmp`;
-  await writeFile(tmpPath, content, 'utf-8');
-  try {
-    await rename(tmpPath, filePath);
-  } catch (err) {
-    await rm(tmpPath, { force: true }).catch(() => {});
-    throw err;
-  }
+  await writeFileInTrustedDir(resolver.getTrustedRoot(), filePath, content);
 }
 
 export class SessionManager {

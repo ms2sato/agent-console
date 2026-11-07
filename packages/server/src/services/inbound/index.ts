@@ -12,6 +12,9 @@ import { ServiceParserRegistry } from './parser-registry.js';
 import { createCICompletionChecker } from './ci-completion-checker.js';
 import { resolveTargets as resolveTargetsImpl } from './resolve-targets.js';
 import { InboundEventNotificationRepository } from '../../repositories/inbound-event-notification-repository.js';
+import { SqliteInboundWebhookEndpointRepository } from '../../repositories/sqlite-inbound-webhook-endpoint-repository.js';
+import { createDeliverySessionLookup } from '../inbound-webhook/actions/repository-orchestrators.js';
+import { createInboundWebhookJobHandler } from '../inbound-webhook/job-handler.js';
 
 export interface InboundIntegrationOptions {
   db: Kysely<Database>;
@@ -58,14 +61,30 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
       getAllRepositories: () => options.repositoryManager.getAllRepositories(),
     });
 
+  const notificationRepository = new InboundEventNotificationRepository(options.db);
+
   options.jobQueue.registerHandler(
     JOB_TYPES.INBOUND_EVENT_PROCESS,
     createInboundEventJobHandler({
       getServiceParser: (serviceId) => parserRegistry.get(serviceId),
       resolveTargets,
       handlers,
-      notificationRepository: new InboundEventNotificationRepository(options.db),
+      notificationRepository,
       ciCompletionChecker: createCICompletionChecker(),
+    })
+  );
+
+  options.jobQueue.registerHandler(
+    JOB_TYPES.INBOUND_WEBHOOK_PROCESS,
+    createInboundWebhookJobHandler({
+      endpoints: new SqliteInboundWebhookEndpointRepository(options.db),
+      action: {
+        getRepository: (repositoryId) => options.repositoryManager.getRepository(repositoryId),
+        resolveTargets,
+        lookupDeliverySession: createDeliverySessionLookup(options.sessionManager),
+        handlers,
+        notificationRepository,
+      },
     })
   );
 

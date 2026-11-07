@@ -643,3 +643,52 @@ describe('buildPtyNotificationText -- body and timestamp override', () => {
     expect(result).toContain('count=3 omitted=0 path=/data/deferred/x.md summary="3 notifications arrived while paused" intent=triage');
   });
 });
+
+describe('buildPtyNotificationText: external:message fields', () => {
+  const baseFields = {
+    type: 'external:message' as const,
+    source: 'webhook',
+    repo: 'owner/repo',
+    branch: 'N/A',
+    url: 'N/A',
+    summary: 'A message',
+  };
+
+  it('renders the three optional fields in order between summary and intent, all on the header line, never as a body line', () => {
+    const text = buildPtyNotificationText({
+      kind: 'inbound-event',
+      tag: 'inbound:external:message',
+      fields: {
+        ...baseFields,
+        instruction_excerpt: 'Triage this message',
+        instruction_path: '/data/instruction.md',
+        body_path: '/data/body.md',
+      },
+      intent: 'triage',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(text).toBe(
+      '\n[inbound:external:message] timestamp=2026-01-01T00:00:00.000Z type=external:message source=webhook repo=owner/repo ' +
+        'branch=N/A url=N/A summary="A message" instruction_excerpt="Triage this message" ' +
+        'instruction_path=/data/instruction.md body_path=/data/body.md intent=triage',
+    );
+    expect(text.split('\n')).toHaveLength(2);
+  });
+
+  it('leaves an event of any other type byte-identical when the optional fields are absent', () => {
+    const text = buildPtyNotificationText({
+      kind: 'inbound-event',
+      tag: 'inbound:ci:failed',
+      fields: { type: 'ci:failed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://x/y', summary: 'CI failed' },
+      intent: 'triage',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(text).toBe(
+      '\n[inbound:ci:failed] timestamp=2026-01-01T00:00:00.000Z type=ci:failed source=github repo=owner/repo branch=main url=https://x/y summary="CI failed" intent=triage',
+    );
+    expect(text).not.toContain('instruction_');
+    expect(text).not.toContain('body_path');
+  });
+});

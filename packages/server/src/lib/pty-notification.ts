@@ -69,6 +69,14 @@ export interface InboundEventPtyNotification extends BasePtyNotificationParams {
     branch: string;
     url: string;
     summary: string;
+    /**
+     * `external:message` only (fields-only delivery; the sender text and the
+     * multi-line operator instruction travel as files, never as fields):
+     * a one-line excerpt of the instruction and the absolute paths of the two files.
+     */
+    instruction_excerpt?: string;
+    instruction_path?: string;
+    body_path?: string;
   };
   intent: PtyNotificationIntent;
 }
