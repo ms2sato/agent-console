@@ -35,7 +35,7 @@ describe('previousSecretExpiryFrom', () => {
     const expiry = previousSecretExpiryFrom(now);
     expect(expiry).toBe('2026-11-08T12:00:00.000Z');
     expect(INBOUND_WEBHOOK_PREVIOUS_SECRET_GRACE_MS).toBe(24 * 60 * 60 * 1000);
-    expect(new RegExp(`^${ISO8601_GLOB_PATTERN.replaceAll('[0-9]', '\\d').replace('*', '.*')}$`).test(expiry)).toBe(true);
+    expect(new RegExp(`^${ISO8601_GLOB_PATTERN.replaceAll('[0-9]', '\\d').replaceAll('*', '.*')}$`).test(expiry)).toBe(true);
   });
 
   it('does not mutate its argument', () => {
