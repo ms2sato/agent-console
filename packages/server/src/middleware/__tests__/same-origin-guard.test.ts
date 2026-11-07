@@ -96,6 +96,16 @@ describe('sameOriginGuard', () => {
       expect((await send(app, routes[0], { Origin: 'null' })).status).toBe(403);
     });
 
+    it('refuses an Origin when the request carries no Host header', async () => {
+      const route = routes[0];
+      const origin = `https://${HOST}`;
+      // Control: the same Origin with a matching Host is not refused.
+      expect((await send(app, route, { Origin: origin })).status).not.toBe(403);
+      // Sent without Host (not through send(), which adds the default one).
+      const res = await app.request(route.path, { method: route.method, headers: { Origin: origin } });
+      expect(res.status).toBe(403);
+    });
+
     it('prefers Sec-Fetch-Site over Origin when both are present', async () => {
       const res = await send(app, routes[0], { 'Sec-Fetch-Site': 'same-origin', Origin: FOREIGN_ORIGIN });
       expect(res.status).not.toBe(403);
