@@ -511,3 +511,59 @@ describe('useAppWsEvent wire consumption (fully populated derived entities)', ()
     }
   });
 });
+
+/**
+ * An inbound webhook message event carries the new `external:message` type,
+ * the `webhook` source and the routing / rendering metadata members. It must
+ * pass the strict wire schema in the real parse path and reach the callback
+ * unchanged.
+ */
+describe('useAppWsEvent wire consumption (external:message inbound event)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+  let consoleSpies: Array<ReturnType<typeof spyOn>>;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    consoleSpies = [
+      spyOn(console, 'log').mockImplementation(() => {}),
+      spyOn(console, 'error').mockImplementation(() => {}),
+    ];
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', { value: originalLocation, writable: true });
+    for (const spy of consoleSpies) spy.mockRestore();
+  });
+
+  it('an inbound-event frame with type external:message, source webhook and its metadata reaches onInboundEvent', () => {
+    const event = {
+      type: 'external:message',
+      source: 'webhook',
+      summary: 'A message from an external program',
+      metadata: {
+        repositoryName: 'org/repo',
+        targetRepositoryId: 'repo-1',
+        instructionText: 'Triage this message',
+      },
+    };
+    const onInboundEvent = mock(() => {});
+    renderHook(() => useAppWsEvent({ onInboundEvent }));
+    const ws = MockWebSocket.getLastInstance();
+
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'inbound-event', sessionId: 'session-1', event }));
+    });
+
+    expect(onInboundEvent).toHaveBeenCalledTimes(1);
+    expect(onInboundEvent).toHaveBeenCalledWith('session-1', event);
+  });
+});

@@ -4,6 +4,7 @@ import type { AppBindings } from '../../app-context.js';
 import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from '../../__tests__/test-utils.js';
 import type { ConfigResponse, SkillDefinition } from '@agent-console/shared';
 import type { MessageTemplateRepository } from '../../repositories/message-template-repository.js';
+import type { InboundWebhookEndpointRepository } from '../../repositories/webhook-endpoint-repository.js';
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { UserMode } from '../../services/user-mode.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
@@ -24,6 +25,17 @@ describe('API route mounting', () => {
 
   afterEach(async () => {
     await cleanupTestEnvironment();
+  });
+
+  it('should mount inbound-webhook-endpoints route at /api/inbound-webhook-endpoints', async () => {
+    app = await createTestApp({
+      inboundWebhookEndpointRepository: { list: async () => [] } as Pick<InboundWebhookEndpointRepository, 'list'> as InboundWebhookEndpointRepository,
+    });
+    const res = await app.request('/api/inbound-webhook-endpoints');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { endpoints: unknown[] };
+    expect(body.endpoints).toEqual([]);
   });
 
   it('should mount skills route at /api/skills', async () => {

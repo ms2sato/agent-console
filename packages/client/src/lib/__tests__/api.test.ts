@@ -63,6 +63,12 @@ import {
   deleteMessageTemplate,
   reorderMessageTemplates,
   registerSharedAccount,
+  fetchInboundWebhookEndpoints,
+  createInboundWebhookEndpoint,
+  updateInboundWebhookEndpoint,
+  deleteInboundWebhookEndpoint,
+  rotateInboundWebhookEndpointSecret,
+  clearInboundWebhookEndpointPreviousSecret,
   resumeSession,
   pauseSession,
   openInVSCode,
@@ -2923,6 +2929,116 @@ describe('API Client', () => {
         json: mock(() => Promise.resolve({ error: 'boom' })),
       } as unknown as Response);
       await expect(deleteMessageTemplate('t1')).rejects.toThrow('boom');
+    });
+  });
+
+  describe('inbound webhook endpoint api', () => {
+    const endpoint = {
+      id: 'ep-1',
+      label: 'Alerts',
+      repositoryId: 'repo-1',
+      instructionText: 'Triage',
+      hasPreviousSecret: false,
+      previousSecretExpiresAt: null,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const failed = (status: number, error: string) =>
+      createMockResponse({ error }, { status, ok: false });
+
+    it('fetchInboundWebhookEndpoints GETs the list and parses it', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoints: [endpoint] }));
+      const result = await fetchInboundWebhookEndpoints();
+      expect(getLastFetchUrl()).toContain('/api/inbound-webhook-endpoints');
+      expect(getLastFetchMethod()).toBe('GET');
+      expect(result).toEqual({ endpoints: [endpoint] });
+    });
+
+    it('fetchInboundWebhookEndpoints rejects a body with an unknown endpoint field (strict schema)', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoints: [{ ...endpoint, secret: 'whsec_leak' }] }));
+      await expect(fetchInboundWebhookEndpoints()).rejects.toThrow();
+    });
+
+    it('fetchInboundWebhookEndpoints surfaces the server error message', async () => {
+      mockFetch.mockResolvedValue(failed(500, 'db down'));
+      await expect(fetchInboundWebhookEndpoints()).rejects.toThrow('db down');
+    });
+
+    it('createInboundWebhookEndpoint POSTs the request and returns endpoint and secret', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secret: 'whsec_x' }, { status: 201 }));
+      const request = { label: 'Alerts', repositoryId: 'repo-1', instructionText: 'Triage' };
+      const result = await createInboundWebhookEndpoint(request);
+      expect(getLastFetchUrl()).toContain('/api/inbound-webhook-endpoints');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(await getLastFetchBody()).toEqual(request);
+      expect(result).toEqual({ endpoint, secret: 'whsec_x' });
+    });
+
+    it('createInboundWebhookEndpoint rejects a response without a secret and surfaces errors', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint }));
+      await expect(
+        createInboundWebhookEndpoint({ label: 'a', repositoryId: 'r', instructionText: 'x' }),
+      ).rejects.toThrow();
+      mockFetch.mockResolvedValue(failed(404, 'Repository not found'));
+      await expect(
+        createInboundWebhookEndpoint({ label: 'a', repositoryId: 'r', instructionText: 'x' }),
+      ).rejects.toThrow('Repository not found');
+    });
+
+    it('updateInboundWebhookEndpoint PATCHes /:id with the changes', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint }));
+      const result = await updateInboundWebhookEndpoint('ep-1', { label: 'New' });
+      expect(getLastFetchUrl()).toContain('/api/inbound-webhook-endpoints/ep-1');
+      expect(getLastFetchMethod()).toBe('PATCH');
+      expect(await getLastFetchBody()).toEqual({ label: 'New' });
+      expect(result).toEqual({ endpoint });
+    });
+
+    it('updateInboundWebhookEndpoint surfaces the server error message', async () => {
+      mockFetch.mockResolvedValue(failed(400, 'Instruction text must be a single line'));
+      await expect(updateInboundWebhookEndpoint('ep-1', { instructionText: 'a' })).rejects.toThrow(
+        'Instruction text must be a single line',
+      );
+    });
+
+    it('deleteInboundWebhookEndpoint DELETEs /:id and resolves without parsing', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+      await deleteInboundWebhookEndpoint('ep-1');
+      expect(getLastFetchUrl()).toContain('/api/inbound-webhook-endpoints/ep-1');
+      expect(getLastFetchMethod()).toBe('DELETE');
+    });
+
+    it('deleteInboundWebhookEndpoint surfaces the server error message', async () => {
+      mockFetch.mockResolvedValue(failed(404, 'Inbound webhook endpoint not found'));
+      await expect(deleteInboundWebhookEndpoint('ep-1')).rejects.toThrow('Inbound webhook endpoint not found');
+    });
+
+    it('rotateInboundWebhookEndpointSecret POSTs /:id/rotate-secret and returns the new secret', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secret: 'whsec_new' }));
+      const result = await rotateInboundWebhookEndpointSecret('ep-1');
+      expect(getLastFetchUrl()).toContain('/api/inbound-webhook-endpoints/ep-1/rotate-secret');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(result.secret).toBe('whsec_new');
+    });
+
+    it('rotateInboundWebhookEndpointSecret rejects a missing secret and surfaces errors', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint }));
+      await expect(rotateInboundWebhookEndpointSecret('ep-1')).rejects.toThrow();
+      mockFetch.mockResolvedValue(failed(404, 'gone'));
+      await expect(rotateInboundWebhookEndpointSecret('ep-1')).rejects.toThrow('gone');
+    });
+
+    it('clearInboundWebhookEndpointPreviousSecret POSTs /:id/clear-previous-secret and parses the endpoint', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint }));
+      const result = await clearInboundWebhookEndpointPreviousSecret('ep-1');
+      expect(getLastFetchUrl()).toContain('/api/inbound-webhook-endpoints/ep-1/clear-previous-secret');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(result).toEqual({ endpoint });
+    });
+
+    it('clearInboundWebhookEndpointPreviousSecret surfaces the server error message', async () => {
+      mockFetch.mockResolvedValue(failed(404, 'gone'));
+      await expect(clearInboundWebhookEndpointPreviousSecret('ep-1')).rejects.toThrow('gone');
     });
   });
 });

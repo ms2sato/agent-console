@@ -8,6 +8,14 @@ describe('shared index exports', () => {
     expect(mod.SCHEMA_VERSION).toMatch(/^[0-9a-f]{16}$/);
   });
 
+  it('should re-export the inbound webhook endpoint schemas and limits', async () => {
+    const mod = await import('../index.js');
+    expect(mod.CreateInboundWebhookEndpointRequestSchema).toBeDefined();
+    expect(mod.UpdateInboundWebhookEndpointRequestSchema).toBeDefined();
+    expect(mod.InboundWebhookEndpointSchema).toBeDefined();
+    expect(mod.INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH).toBe(300);
+  });
+
   it('should re-export SchemaVersionMessageSchema that parses a valid schema-version frame', async () => {
     const mod = await import('../index.js');
     expect(mod.SchemaVersionMessageSchema).toBeDefined();

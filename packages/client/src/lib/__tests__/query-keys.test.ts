@@ -10,6 +10,7 @@ import {
   notificationKeys,
   todoKeys,
   userKeys,
+  inboundWebhookEndpointKeys,
 } from '../query-keys';
 
 describe('Query Keys', () => {
@@ -23,6 +24,7 @@ describe('Query Keys', () => {
         ...worktreeKeys.root(),
         ...systemKeys.health(),
         ...notificationKeys.status(),
+        ...inboundWebhookEndpointKeys.all(),
       ];
 
       const keyStrings = allKeys.map(String);
@@ -284,6 +286,13 @@ describe('Query Keys', () => {
     it('memoRoot is not the root of the other session families', () => {
       expect(sessionKeys.memoRoot()).not.toEqual(sessionKeys.root());
       expect(sessionKeys.prLink('s').slice(0, 1)).not.toEqual([...sessionKeys.memoRoot()]);
+    });
+  });
+
+  describe('inboundWebhookEndpointKeys', () => {
+    it('all() is the list key and does not collide with the repositories key', () => {
+      expect(inboundWebhookEndpointKeys.all()).toEqual(['inbound-webhook-endpoints']);
+      expect(inboundWebhookEndpointKeys.all()).not.toEqual(repositoryKeys.all());
     });
   });
 });
