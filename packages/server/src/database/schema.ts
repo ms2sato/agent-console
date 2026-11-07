@@ -951,7 +951,7 @@ export interface InboundWebhookEndpointsTable {
   label: string;
   /** Repository whose designated Orchestrator sessions receive the messages (rows cascade with it) */
   repository_id: string;
-  /** Single-line operator-authored instruction (a CHECK rejects LF and CR) */
+  /** Multi-line operator-authored instruction, stored as-is (a CHECK caps it at 4000 characters) */
   instruction_text: string;
   /** Current signing secret (`whsec_<base64>`) */
   secret: string;

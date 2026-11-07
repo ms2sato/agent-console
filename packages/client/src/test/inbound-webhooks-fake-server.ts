@@ -141,7 +141,7 @@ export function installFakeServer(): FakeServer {
     return jsonResponse({}, 404);
   });
 
-  globalThis.fetch = Object.assign(server.mockFetch, { preconnect: () => {} }) as unknown as typeof fetch;
+  globalThis.fetch = Object.assign(server.mockFetch, { preconnect: () => {} }) as typeof fetch;
   server.restore = () => {
     globalThis.fetch = originalFetch;
   };
