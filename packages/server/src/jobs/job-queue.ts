@@ -22,6 +22,22 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('job-queue');
 
+/**
+ * Error indicating a permanent failure that should not be retried.
+ *
+ * A handler throws this when a job can never succeed (an unparseable payload, an unknown
+ * service, a deleted target). The queue ends such a job as `stalled` on its first attempt
+ * instead of retrying it up to `maxAttempts`.
+ */
+export class PermanentHandlerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PermanentHandlerError';
+  }
+}
+
+const PRUNE_BATCH_SIZE = 500;
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -126,6 +142,13 @@ export interface JobQueueOptions {
    * (logging a warning and resolving). Default: 10000
    */
   stopTimeoutMs?: number;
+  /**
+   * Completed jobs whose `completed_at` is older than this are deleted by the retention
+   * sweep. Default: 30 days
+   */
+  completedRetentionMs?: number;
+  /** Interval between retention sweeps. Default: 6 hours */
+  pruneIntervalMs?: number;
 }
 
 // =============================================================================
@@ -140,6 +163,7 @@ export interface JobQueueTestAPI {
   claimNextJob(): Promise<JobRecord | null>;
   calculateBackoff(attempts: number): number;
   retryTimers: Map<string, Timer>;
+  pruneTimer: Timer | null;
 }
 
 // =============================================================================
@@ -166,6 +190,9 @@ export class JobQueue {
   /** tryProcess claim loops still running; a claim may complete after stop() begins. */
   private claiming = new Set<Promise<void>>();
   private readonly stopTimeoutMs: number;
+  private readonly completedRetentionMs: number;
+  private readonly pruneIntervalMs: number;
+  private pruneTimer: Timer | null = null;
 
   // Retry configuration
   private readonly backoffBase = 1000; // 1 second
@@ -175,11 +202,15 @@ export class JobQueue {
   private readonly defaultMaxAttempts = 5;
   private readonly defaultConcurrency = 4;
   private readonly defaultStopTimeoutMs = 10_000;
+  private readonly defaultCompletedRetentionMs = 30 * 24 * 60 * 60_000;
+  private readonly defaultPruneIntervalMs = 6 * 60 * 60_000;
 
   constructor(db: Kysely<Database>, options?: JobQueueOptions) {
     this.db = db;
     this.concurrency = options?.concurrency ?? this.defaultConcurrency;
     this.stopTimeoutMs = options?.stopTimeoutMs ?? this.defaultStopTimeoutMs;
+    this.completedRetentionMs = options?.completedRetentionMs ?? this.defaultCompletedRetentionMs;
+    this.pruneIntervalMs = options?.pruneIntervalMs ?? this.defaultPruneIntervalMs;
     logger.info({ concurrency: this.concurrency }, 'JobQueue initialized');
   }
 
@@ -272,6 +303,13 @@ export class JobQueue {
       logger.info({ count: Number(result.numUpdatedRows) }, 'Recovered crashed jobs');
     }
 
+    // Retention sweep: once now, then on an interval. Never throws out of start().
+    await this.pruneCompletedSafely();
+    this.pruneTimer = setInterval(() => {
+      void this.pruneCompletedSafely();
+    }, this.pruneIntervalMs);
+    this.pruneTimer.unref();
+
     // Set up event listeners
     this.emitter.on('job:added', () => this.tryProcess());
     this.emitter.on('job:completed', () => this.tryProcess());
@@ -304,6 +342,10 @@ export class JobQueue {
       clearTimeout(timer);
     }
     this.retryTimers.clear();
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = null;
+    }
     this.emitter.removeAllListeners();
 
     await this.drainInFlight();
@@ -344,6 +386,51 @@ export class JobQueue {
       }
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  // ===========================================================================
+  // Retention
+  // ===========================================================================
+
+  /**
+   * Delete `completed` jobs whose `completed_at` is older than the retention window.
+   * Only `completed` rows are touched; `stalled` rows need a person and are kept.
+   * @returns The number of deleted rows
+   */
+  async pruneCompleted(now: number = Date.now()): Promise<number> {
+    const cutoff = now - this.completedRetentionMs;
+    let total = 0;
+    for (;;) {
+      const result = await this.db
+        .deleteFrom('jobs')
+        .where('id', 'in', (qb) =>
+          qb
+            .selectFrom('jobs')
+            .select('id')
+            .where('status', '=', JOB_STATUS.COMPLETED)
+            .where('completed_at', '<', cutoff)
+            .orderBy('completed_at')
+            .limit(PRUNE_BATCH_SIZE),
+        )
+        .executeTakeFirst();
+      const deleted = Number(result.numDeletedRows);
+      total += deleted;
+      if (deleted < PRUNE_BATCH_SIZE) break;
+    }
+    if (total > 0) {
+      logger.info({ deleted: total, cutoff }, 'Pruned completed jobs');
+    } else {
+      logger.debug({ deleted: 0, cutoff }, 'No completed jobs to prune');
+    }
+    return total;
+  }
+
+  private async pruneCompletedSafely(): Promise<void> {
+    try {
+      await this.pruneCompleted();
+    } catch (error) {
+      logger.error({ err: error }, 'Failed to prune completed jobs');
     }
   }
 
@@ -611,6 +698,24 @@ export class JobQueue {
     const attempts = job.attempts + 1;
     const now = Date.now();
 
+    if (error instanceof PermanentHandlerError) {
+      // The job can never succeed: end it on this attempt, no retry timer.
+      await this.db
+        .updateTable('jobs')
+        .set({
+          status: JOB_STATUS.STALLED,
+          attempts,
+          last_error: error.message,
+        })
+        .where('id', '=', job.id)
+        .execute();
+      logger.warn(
+        { jobId: job.id, type: job.type, attempts, error: error.message },
+        'Job stalled: permanent handler error'
+      );
+      return;
+    }
+
     logger.warn(
       { jobId: job.id, type: job.type, attempts, error: error.message },
       'Job failed'
@@ -715,10 +820,15 @@ export class JobQueue {
    * @internal This property is for testing only. Do not use in production code.
    */
   get __testOnly(): JobQueueTestAPI {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
     return {
       claimNextJob: this.claimNextJob.bind(this),
       calculateBackoff: this.calculateBackoff.bind(this),
       retryTimers: this.retryTimers,
+      get pruneTimer() {
+        return self.pruneTimer;
+      },
     };
   }
 }

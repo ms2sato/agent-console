@@ -366,7 +366,10 @@ export async function createAppContext(
 
   // 2. Create job queue and worker output file manager
   const workerOutputFileManager = new WorkerOutputFileManager();
-  const jobQueue = new JobQueueClass(db, { concurrency: jobConcurrency });
+  const jobQueue = new JobQueueClass(db, {
+    concurrency: jobConcurrency,
+    completedRetentionMs: serverConfig.JOB_COMPLETED_RETENTION_DAYS * 24 * 60 * 60_000,
+  });
   registerJobHandlers(jobQueue, workerOutputFileManager);
   await jobQueue.start();
   logger.info('JobQueue initialized and started');

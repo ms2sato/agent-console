@@ -1,8 +1,8 @@
-import { describe, it, expect, mock, spyOn } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import type { InboundWebhookProcessPayload } from '@agent-console/shared';
 import { createInboundWebhookJobHandler } from '../job-handler.js';
+import { PermanentHandlerError } from '../../../jobs/index.js';
 import { inboundWebhookDeliveryId } from '../receive.js';
-import { rootLogger } from '../../../lib/logger.js';
 import type { RepositoryOrchestratorsDeps } from '../actions/repository-orchestrators.js';
 
 const PAYLOAD: InboundWebhookProcessPayload = {
@@ -47,26 +47,20 @@ describe('createInboundWebhookJobHandler', () => {
     expect(getRepository).toHaveBeenCalledWith('repo-9');
   });
 
-  it('a missing endpoint ends the job normally (no throw, no retry) and never reaches the action', async () => {
+  it('a missing endpoint throws PermanentHandlerError and never reaches the action', async () => {
     const { action, getRepository } = actionDeps();
-    const warn = spyOn(rootLogger, 'warn');
-    try {
-      const handler = createInboundWebhookJobHandler({ endpoints: { findWithSecretById: async () => null }, action });
-      await expect(handler(PAYLOAD)).resolves.toBeUndefined();
-      expect(getRepository).not.toHaveBeenCalled();
-      expect(JSON.stringify(warn.mock.calls)).toContain('Inbound webhook job ended without delivery');
-    } finally {
-      warn.mockRestore();
-    }
+    const handler = createInboundWebhookJobHandler({ endpoints: { findWithSecretById: async () => null }, action });
+    await expect(handler(PAYLOAD)).rejects.toBeInstanceOf(PermanentHandlerError);
+    expect(getRepository).not.toHaveBeenCalled();
   });
 
-  it('a stored payload that no longer parses ends the job the same way', async () => {
+  it('a stored payload that no longer parses throws PermanentHandlerError the same way', async () => {
     const { action, getRepository } = actionDeps();
     const handler = createInboundWebhookJobHandler({
       endpoints: { findWithSecretById: async () => endpointRow('repo-9') },
       action,
     });
-    await expect(handler({ ...PAYLOAD, rawPayload: '{broken' })).resolves.toBeUndefined();
+    await expect(handler({ ...PAYLOAD, rawPayload: '{broken' })).rejects.toBeInstanceOf(PermanentHandlerError);
     expect(getRepository).not.toHaveBeenCalled();
   });
 

@@ -11,6 +11,7 @@ import { mockProcess, resetProcessMock } from '../../../__tests__/utils/mock-pro
 import { resetGitMocks } from '../../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../../database/connection.js';
 import { JOB_TYPES, type JobQueue, type JobHandler } from '../../../jobs/index.js';
+import { JobQueue as JobQueueClass } from '../../../jobs/job-queue.js';
 import { SessionManager } from '../../session-manager.js';
 import { RepositoryManager } from '../../repository-manager.js';
 import { AgentManager } from '../../agent-manager.js';
@@ -121,14 +122,31 @@ describe('initializeInboundIntegration: job handler registration', () => {
     expect([...registered.keys()].sort()).toEqual([JOB_TYPES.INBOUND_EVENT_PROCESS, JOB_TYPES.INBOUND_WEBHOOK_PROCESS].sort());
   });
 
-  it('the webhook handler completes without throwing for a deleted endpoint and never reaches the repository lookup', async () => {
-    initialize();
+  it('a deleted endpoint ends the job stalled on its first attempt through the real queue, never reaching the repository lookup', async () => {
+    const queue = new JobQueueClass(getDatabase());
+    initializeInboundIntegration({
+      db: getDatabase(),
+      jobQueue: queue,
+      sessionManager,
+      repositoryManager,
+      broadcastToApp: () => {},
+    });
     const lookup = spyOn(repositoryManager, 'getRepository');
-    const handler = registered.get(JOB_TYPES.INBOUND_WEBHOOK_PROCESS) as JobHandler<InboundWebhookProcessPayload>;
-
-    await expect(handler(payloadFor('ep-deleted'))).resolves.toBeUndefined();
-
-    expect(lookup).not.toHaveBeenCalled();
+    try {
+      const id = await queue.enqueue(JOB_TYPES.INBOUND_WEBHOOK_PROCESS, payloadFor('ep-deleted'));
+      await queue.start();
+      const deadline = Date.now() + 5000;
+      let job = await queue.getJob(id);
+      while (job?.status !== 'stalled' && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+        job = await queue.getJob(id);
+      }
+      expect(job?.status).toBe('stalled');
+      expect(job?.attempts).toBe(1);
+      expect(lookup).not.toHaveBeenCalled();
+    } finally {
+      await queue.stop();
+    }
   });
 
   it('the webhook handler reaches the action for a live endpoint', async () => {

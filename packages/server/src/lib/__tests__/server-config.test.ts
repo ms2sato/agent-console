@@ -683,6 +683,7 @@ describe('INBOUND_WEBHOOK_ATTACHMENT_* limits (positive-int contract)', () => {
     { key: 'INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS', fallback: 10_000, explicit: '2500', explicitValue: 2500 },
     { key: 'INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES', fallback: 25 * 1024 * 1024, explicit: '4096', explicitValue: 4096 },
     { key: 'INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT', fallback: 10, explicit: '3', explicitValue: 3 },
+    { key: 'JOB_COMPLETED_RETENTION_DAYS', fallback: 30, explicit: '7', explicitValue: 7 },
   ] as const;
 
   for (const { key, fallback, explicit, explicitValue } of limits) {

@@ -6,6 +6,7 @@
  */
 export {
   JobQueue,
+  PermanentHandlerError,
   JOB_STATUS,
   JOB_STATUSES,
   type JobHandler,

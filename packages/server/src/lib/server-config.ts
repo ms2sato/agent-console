@@ -180,6 +180,12 @@ export const serverConfig = {
    * linearly. There is deliberately no total-bytes cap.
    */
   /**
+   * Days a `completed` job row is kept before the queue's retention sweep deletes it.
+   * `stalled` rows are never swept.
+   * Default: 30
+   */
+  JOB_COMPLETED_RETENTION_DAYS: parsePositiveIntWithDefault(process.env.JOB_COMPLETED_RETENTION_DAYS, 30),
+  /**
    * Inbound webhook attachments: time allowed for ONE file (connect, headers and body together).
    * A file that is not complete by then is skipped, never retried.
    * Default: 10 seconds
