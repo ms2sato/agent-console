@@ -678,6 +678,46 @@ describe('FILE_VIEWER_MAX_BYTES (positive-int contract)', () => {
   });
 });
 
+describe('INBOUND_WEBHOOK_ATTACHMENT_* limits (positive-int contract)', () => {
+  const limits = [
+    { key: 'INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS', fallback: 10_000, explicit: '2500', explicitValue: 2500 },
+    { key: 'INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES', fallback: 25 * 1024 * 1024, explicit: '4096', explicitValue: 4096 },
+    { key: 'INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT', fallback: 10, explicit: '3', explicitValue: 3 },
+  ] as const;
+
+  for (const { key, fallback, explicit, explicitValue } of limits) {
+    it(`${key}: defaults to ${fallback} when unset`, async () => {
+      delete process.env[key];
+      const { serverConfig } = await importServerConfig();
+      expect(serverConfig[key]).toBe(fallback);
+    });
+
+    it(`${key}: uses an explicit valid value`, async () => {
+      process.env[key] = explicit;
+      const { serverConfig } = await importServerConfig();
+      expect(serverConfig[key]).toBe(explicitValue);
+    });
+
+    it(`${key}: falls back to the default on an empty, non-numeric, zero or negative value`, async () => {
+      for (const raw of ['', 'abc', '0', '-5']) {
+        process.env[key] = raw;
+        const { serverConfig } = await importServerConfig();
+        expect(serverConfig[key]).toBe(fallback);
+      }
+    });
+  }
+
+  it('the three limits are independent: overriding one leaves the others at their defaults', async () => {
+    process.env.INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT = '3';
+    delete process.env.INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS;
+    delete process.env.INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES;
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.INBOUND_WEBHOOK_ATTACHMENT_MAX_COUNT).toBe(3);
+    expect(serverConfig.INBOUND_WEBHOOK_ATTACHMENT_TIMEOUT_MS).toBe(10_000);
+    expect(serverConfig.INBOUND_WEBHOOK_ATTACHMENT_MAX_BYTES).toBe(25 * 1024 * 1024);
+  });
+});
+
 describe('WORKER_OUTPUT_MAX_SEGMENTS (NaN-guard contract, not positive-only)', () => {
   it('falls back to the default when unset', async () => {
     delete process.env.WORKER_OUTPUT_MAX_SEGMENTS;

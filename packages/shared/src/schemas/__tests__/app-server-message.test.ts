@@ -758,6 +758,39 @@ describe('AppServerMessageSchema', () => {
       });
     });
 
+    describe('attachment counts', () => {
+      const frame = (metadata: Record<string, unknown>) => ({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: { type: 'external:message', source: 'webhook', summary: 'A message arrived', metadata },
+      });
+
+      it('should accept attachmentsFetched and attachmentsSkipped as zero and as positive integers', () => {
+        expectValid(frame({ attachmentsFetched: 0, attachmentsSkipped: 0 }));
+        expectValid(frame({ attachmentsFetched: 2, attachmentsSkipped: 1 }));
+        expectValid(frame({ attachmentsFetched: 10 }));
+        expectValid(frame({ attachmentsSkipped: 3 }));
+      });
+
+      it('should keep both counts on the parsed output', () => {
+        const output = expectValid(frame({ attachmentsFetched: 2, attachmentsSkipped: 1 }));
+        if (output.type !== 'inbound-event') throw new Error('expected an inbound-event frame');
+        expect(output.event.metadata).toMatchObject({ attachmentsFetched: 2, attachmentsSkipped: 1 });
+      });
+
+      it('should reject a negative, a fractional and a string count, on either key', () => {
+        for (const key of ['attachmentsFetched', 'attachmentsSkipped']) {
+          for (const bad of [-1, 1.5, '2', null]) {
+            expectInvalid(frame({ [key]: bad }));
+          }
+        }
+      });
+
+      it('should reject an unknown extra key next to the counts', () => {
+        expectInvalid(frame({ attachmentsFetched: 1, attachmentsSkipped: 0, attachmentsTotal: 1 }));
+      });
+    });
+
     it('should reject instructionText in metadata (the full instruction travels as a file)', () => {
       expectInvalid({
         type: 'inbound-event',
