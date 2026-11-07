@@ -32,9 +32,9 @@ case "$machine" in
 esac
 
 version="$(awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "$registry")"
-# Two entries for the same version and architecture are refused outright:
-# `sha256sum -c` skips a malformed line with only a warning, so a bogus first
-# hash followed by a genuine second one would otherwise pass.
+# Two entries for the same version and architecture are refused outright: an
+# ambiguous registry is not a registry, and a bogus first hash next to a genuine
+# second one must never be able to pass.
 expected="$(awk -v v="$version" -v a="$arch" '$1 == v && $2 == a { count++; hash = $3 } END { if (count > 1) exit 1; print hash }' "$registry")" \
   || { echo "fetch-bun: duplicate entry for bun '$version' on $arch in $registry" >&2; exit 1; }
 if [ -z "$version" ] || [ -z "$expected" ]; then
@@ -46,8 +46,19 @@ work="$(mktemp -d)"
 trap 'rm -r "$work"' EXIT
 
 curl -fsSL -o "$work/bun.zip" "$base_url/bun-v$version/bun-linux-$arch.zip"
-echo "$expected  $work/bun.zip" | sha256sum -c - >&2 \
-  || { echo "fetch-bun: SHA256 mismatch for bun $version ($arch); refusing to install" >&2; exit 1; }
+
+# GNU coreutils (the Debian/Ubuntu build stages) has sha256sum; macOS, where the
+# tests may run, has shasum instead. Either way the digest is compared as a plain
+# string against the registry value.
+if command -v sha256sum > /dev/null 2>&1; then
+  actual="$(sha256sum "$work/bun.zip" | awk '{ print $1 }')"
+else
+  actual="$(shasum -a 256 "$work/bun.zip" | awk '{ print $1 }')"
+fi
+if [ "$actual" != "$expected" ]; then
+  echo "fetch-bun: SHA256 mismatch for bun $version ($arch): expected $expected, got $actual; refusing to install" >&2
+  exit 1
+fi
 
 unzip -q "$work/bun.zip" -d "$work/unzipped"
 mkdir -p "$out"
