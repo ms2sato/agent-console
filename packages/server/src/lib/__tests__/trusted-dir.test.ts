@@ -27,7 +27,7 @@
  * comment records which mutation it catches.
  */
 import { describe, it, expect, afterEach } from 'bun:test';
-import { mkdir, rm, symlink, writeFile, lstat, stat, chmod, readdir } from 'fs/promises';
+import { mkdir, rm, symlink, writeFile, lstat, stat, chmod, readdir, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -40,6 +40,7 @@ import {
   type TrustedDirStats,
   type TrustedSegmentContract,
 } from '../trusted-dir.js';
+import { writeFileInTrustedDir } from '../trusted-file-write.js';
 
 const tempDirs: string[] = [];
 
@@ -375,5 +376,58 @@ describe('ensureTrustedDirChain -- uid / gid / mode contract via the deps.lstat 
     const deps = depsWithLstatOverride(first, { uid: process.geteuid!() + 1 });
     await ensureTrustedDirChain(root, join(first, 'outputs'), { expectedUid: null, expectedGid: null, mode: null }, deps);
     expect((await lstat(join(first, 'outputs'))).isDirectory()).toBe(true);
+  });
+});
+
+// The binary branch of the trusted writer, on a real disk: bytes that are not valid UTF-8 survive
+// a nested-directory write unchanged, and what the walker creates inherits the data root's
+// contract (no explicit mode, so the kernel's setgid-and-umask rules decide, as for messages/).
+// Reach, measured by editing trusted-file-write.ts and running this file alone: re-encoding the
+// bytes as UTF-8 fails only "writes bytes that are not valid UTF-8 ... byte for byte"; replacing the
+// walker with `mkdir -p` at an explicit mode 0755 fails only "under a 2775 setgid root ...".
+describe('writeFileInTrustedDir -- binary content (real fs)', () => {
+  it('writes bytes that are not valid UTF-8 into a nested directory under the root byte for byte, leaving no temp file', async () => {
+    await assertRealFs('binary write into a nested trusted directory');
+    const root = await freshRoot('binary-nested');
+    const target = join(root, 'messages', 's1', 'w1', 'inbound-webhook', 'd1', 'attachments', 'blob.bin');
+    const bytes = Uint8Array.from({ length: 256 }, (_unused, i) => 255 - i);
+    await writeFileInTrustedDir(root, target, bytes);
+    expect(Array.from(await readFile(target))).toEqual(Array.from(bytes));
+    expect(await readdir(join(root, 'messages', 's1', 'w1', 'inbound-webhook', 'd1', 'attachments'))).toEqual(['blob.bin']);
+  });
+
+  it('under a 2775 setgid root and umask 0002, created directories and the file inherit the root group and the 2775 / 0664 modes', async () => {
+    if (process.platform !== 'linux' || typeof process.getgid !== 'function') {
+      console.warn('Skipping binary setgid inheritance test: not Linux or no process.getgid');
+      return;
+    }
+    if (process.geteuid!() === 0) {
+      console.warn('Skipping binary setgid inheritance test: running as root (permission checks bypassed)');
+      return;
+    }
+    await assertRealFs('binary write setgid inheritance');
+    const root = await freshRoot('binary-setgid');
+    const chmodExit = await Bun.spawn(['chmod', '2775', root], { stdout: 'pipe', stderr: 'pipe' }).exited;
+    if (chmodExit !== 0 || ((await lstat(root)).mode & 0o2000) === 0) {
+      console.warn('Skipping binary setgid inheritance test: filesystem did not apply the setgid bit');
+      return;
+    }
+    const rootGid = (await lstat(root)).gid;
+    const prevUmask = process.umask(0o002);
+    try {
+      const dir = join(root, 'messages', 's1', 'attachments');
+      const target = join(dir, 'blob.bin');
+      await writeFileInTrustedDir(root, target, Uint8Array.from([0xff, 0xfe, 0x00, 0x01]));
+      for (const created of [join(root, 'messages'), join(root, 'messages', 's1'), dir]) {
+        const st = await lstat(created);
+        expect(st.mode & 0o7777).toBe(0o2775);
+        expect(st.gid).toBe(rootGid);
+      }
+      const fileSt = await lstat(target);
+      expect(fileSt.mode & 0o7777).toBe(0o664);
+      expect(fileSt.gid).toBe(rootGid);
+    } finally {
+      process.umask(prevUmask);
+    }
   });
 });
