@@ -80,6 +80,8 @@ This is a fundamental webhook receiver principle. Unlike API endpoints (which sh
 | Service parser not registered | Log warning | Permanent code issue — retries are futile |
 | Job enqueue failed | Log error with full raw data (see below) | Likely persistent system failure (DB down) — retries won't help |
 
+**Scope of the always-200 policy.** It covers POST on known webhook paths only. Any other method on a known path answers `405` with `Allow: POST`, and any unknown path under `/webhooks/` answers `404`; both responses are JSON. This is router-wide (the `postOnly` helper plus a trailing catch-all in `routes/webhooks.ts`), so any future webhook route inherits it. Without it those requests would fall through to the SPA fallback and answer `200` with `index.html`. GitHub only POSTs, so the policy for senders is not weakened.
+
 **Enqueue failure recovery strategy:**
 
 When job enqueue fails, the event has not been persisted anywhere. The endpoint must:

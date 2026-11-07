@@ -60,3 +60,74 @@ describe('Webhooks route', () => {
     });
   });
 });
+
+describe('Webhooks route fallthrough (method and path guards)', () => {
+  let app: Hono<AppBindings>;
+  let testContext: AppContext;
+
+  beforeEach(async () => {
+    testContext = await createTestContext({ skipJobQueueStart: true });
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', testContext);
+      await next();
+    });
+    app.route('/webhooks', webhooks);
+    // Mirrors index.ts's production SPA fallback shape: `app.get('*', ...)`.
+    // Anything the webhooks router does not answer itself lands here and
+    // returns 200 HTML, which is what these cases must prove cannot happen.
+    app.get('*', (c) => c.html('<html>SPA index.html</html>'));
+  });
+
+  afterEach(async () => {
+    await shutdownAppContext(testContext);
+  });
+
+  it('GET /webhooks/github answers a JSON 405 with Allow: POST, not the SPA page', async () => {
+    const res = await app.request('/webhooks/github');
+    expect(res.status).toBe(405);
+    expect(res.headers.get('Allow')).toBe('POST');
+    const text = await res.text();
+    expect(text).not.toContain('<html');
+    expect(JSON.parse(text)).toEqual({ error: 'Method Not Allowed' });
+  });
+
+  for (const method of ['HEAD', 'PUT', 'DELETE']) {
+    it(`${method} /webhooks/github answers 405`, async () => {
+      const res = await app.request('/webhooks/github', { method });
+      expect(res.status).toBe(405);
+      expect(res.headers.get('Allow')).toBe('POST');
+    });
+  }
+
+  it('GET /webhooks/unknown answers a JSON 404, not the SPA page', async () => {
+    const res = await app.request('/webhooks/unknown');
+    expect(res.status).toBe(404);
+    const text = await res.text();
+    expect(text).not.toContain('<html');
+    expect(JSON.parse(text)).toEqual({ error: 'Not Found' });
+  });
+
+  it('GET /webhooks/in/anything answers a JSON 404', async () => {
+    const res = await app.request('/webhooks/in/anything');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not Found' });
+  });
+
+  it('POST /webhooks/unknown answers a JSON 404', async () => {
+    const res = await app.request('/webhooks/unknown', { method: 'POST', body: '{}' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not Found' });
+  });
+
+  it('POST /webhooks/github still answers 200 { ok: true }', async () => {
+    const res = await app.request('/webhooks/github', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'opened' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+});
