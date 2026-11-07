@@ -193,6 +193,8 @@ async function createSession(baseUrl: string, body: Record<string, unknown>): Pr
 // ever reach a notification field.
 const INSTRUCTION = 'Triage the message\r\nSECOND-LINE-MARKER must stay out of the notification\r\n\r\nlast line\n';
 const EXCERPT = 'Triage the message';
+// The sender's attachment host, matched as a pattern: these are absence checks on session-visible text, not URL validation.
+const FILE_HOST_PATTERN = /files\.slack\.com/;
 const TOKEN_LOOKING = 'tok-SMOKE-TOKENLIKE-SUBSTRING';
 const RAW_EVENT_TEXT = 'RAW-SLACK-EVENT-TEXT';
 const TAG = '[inbound:external:message]';
@@ -519,7 +521,7 @@ async function main(): Promise<void> {
       expect(newL.includes(needle), `(1) L's notification carries ${what}`, needle);
     }
     expect(
-      !newL.includes('SECOND-LINE-MARKER') && !newL.includes(TOKEN_LOOKING) && !newL.includes('files.slack.com') && !newL.includes(RAW_EVENT_TEXT) && !newL.includes('slack_message'),
+      !newL.includes('SECOND-LINE-MARKER') && !newL.includes(TOKEN_LOOKING) && !FILE_HOST_PATTERN.test(newL) && !newL.includes(RAW_EVENT_TEXT) && !newL.includes('slack_message'),
       "(1) L's output carries neither the instruction's second line nor any sender-only key, raw event text, file URL or token",
       newL.slice(-600),
     );
@@ -531,7 +533,7 @@ async function main(): Promise<void> {
     const bodyL = readSafe(pathsL.bodyPath);
     expect(bodyL.includes('Deploy finished'), '(1) body.md carries the sender message (positive control for the absence checks below)', bodyL.slice(0, 300));
     expect(
-      !bodyL.includes('slack_message') && !bodyL.includes('slack_files') && !bodyL.includes('files.slack.com') && !bodyL.includes(TOKEN_LOOKING) && !bodyL.includes(RAW_EVENT_TEXT),
+      !bodyL.includes('slack_message') && !bodyL.includes('slack_files') && !FILE_HOST_PATTERN.test(bodyL) && !bodyL.includes(TOKEN_LOOKING) && !bodyL.includes(RAW_EVENT_TEXT),
       '(1) body.md carries no slack_message key, no slack_files URL and no token-looking substring',
       bodyL.slice(0, 600),
     );
