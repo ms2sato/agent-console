@@ -127,10 +127,84 @@ export function classifyOrchestratorSession(
   return { eligible: true, paused: pausedIds.has(sessionId) };
 }
 
+/**
+ * Targets for an `external:message` event: every live or paused session in the
+ * repository's designated-Orchestrator set, each as a `'match'` target (the
+ * designated session is the sole intended recipient, not a fallback). Every
+ * exclusion is logged at info with the repository and session ids; a paused
+ * session is kept and logged as a deferral. Deduplicated by session id.
+ * Takes the `routable` sessions already collected for the event so the paused
+ * provider is read once per event.
+ */
+export function resolveOrchestratorSessionTargets(
+  repository: Repository,
+  routable: RoutableSessions
+): EventTarget[] {
+  const { sessions, pausedIds } = routable;
+  const targets = new Map<string, EventTarget>();
+
+  for (const orchestratorSessionId of repository.orchestratorSessionIds) {
+    const classification = classifyOrchestratorSession(orchestratorSessionId, sessions, pausedIds);
+
+    if (!classification.eligible) {
+      switch (classification.reason) {
+        case 'not-live':
+          logger.info(
+            { repositoryId: repository.id, orchestratorSessionId },
+            'external:message event targets a repository whose designated orchestrator session is not a live session'
+          );
+          break;
+        case 'not-running':
+          logger.info(
+            {
+              repositoryId: repository.id,
+              orchestratorSessionId,
+              activationState: sessions.find((s) => s.id === orchestratorSessionId)?.activationState,
+            },
+            'external:message event targets a repository whose designated orchestrator session is not running'
+          );
+          break;
+        case 'no-agent-worker':
+          logger.info(
+            { repositoryId: repository.id, orchestratorSessionId },
+            'external:message event targets a repository whose designated orchestrator session has no agent worker to deliver to'
+          );
+          break;
+        default: {
+          const _exhaustive: never = classification.reason;
+          throw new Error(`Unhandled classification reason: ${_exhaustive}`);
+        }
+      }
+      continue;
+    }
+
+    if (classification.paused) {
+      logger.info(
+        { repositoryId: repository.id, orchestratorSessionId },
+        'external:message event routed to a paused designated orchestrator session; delivery will be deferred to its resume digest'
+      );
+    }
+    if (!targets.has(orchestratorSessionId)) {
+      targets.set(orchestratorSessionId, { sessionId: orchestratorSessionId, provenance: 'match' });
+    }
+  }
+
+  return [...targets.values()];
+}
+
 export async function resolveTargets(
   event: InboundSystemEvent,
   deps: TargetResolverDependencies
 ): Promise<EventTarget[]> {
+  // `external:message` is addressed by repository id, not by remote name, so
+  // it is routed before the repositoryName guard below.
+  if (event.type === 'external:message') {
+    const repo = event.metadata.targetRepositoryId ? deps.getRepository(event.metadata.targetRepositoryId) : undefined;
+    if (!repo) return [];
+    const routable = await collectRoutableSessions(deps, event.metadata.repositoryName ?? repo.id);
+    return resolveOrchestratorSessionTargets(repo, routable);
+  }
+
   const repositoryName = event.metadata.repositoryName;
   if (!repositoryName) {
     return [];

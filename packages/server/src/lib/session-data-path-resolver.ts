@@ -30,6 +30,30 @@ export class SessionDataPathResolver {
     return path.join(this.baseDir, 'messages');
   }
 
+  /**
+   * Single writer of an inbound-webhook delivery's per-target file locations:
+   * `<messagesDir>/<sessionId>/<workerId>/inbound-webhook/<deliveryId>/` with
+   * the untrusted sender file `body.md` and the operator-trusted
+   * `instruction.md` inside it. The notification handler (which tells the agent
+   * the paths) and the writer of the files both call this, so the two cannot
+   * drift. `deliveryId` is `inbound-webhook:<endpointId>:<webhookId>`, so a
+   * colon is allowed in that one segment; every segment is otherwise the same
+   * single-segment shape as the rest of this resolver.
+   *
+   * @throws {InvalidSessionDataScopeError} if a segment is not a valid single path segment.
+   */
+  getInboundWebhookDeliveryPaths(
+    sessionId: string,
+    workerId: string,
+    deliveryId: string,
+  ): { dir: string; bodyPath: string; instructionPath: string } {
+    assertValidSegment(sessionId, 'sessionId');
+    assertValidSegment(workerId, 'workerId');
+    assertValidSegment(deliveryId.replace(/:/g, '-'), 'deliveryId');
+    const dir = path.join(this.getMessagesDir(), sessionId, workerId, 'inbound-webhook', deliveryId);
+    return { dir, bodyPath: path.join(dir, 'body.md'), instructionPath: path.join(dir, 'instruction.md') };
+  }
+
   /** Read-more files listing what was deferred while the session was paused (one `<resumedAt>.md` per resume). */
   getDeferredDir(): string {
     return path.join(this.baseDir, 'deferred');
