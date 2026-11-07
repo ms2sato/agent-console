@@ -21,11 +21,15 @@ import { sharedAccounts } from './shared-accounts.js';
 import { inboundWebhookEndpoints } from './inbound-webhook-endpoints.js';
 import { auth } from './auth.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { sameOriginGuard } from '../middleware/same-origin-guard.js';
 import { serverConfig } from '../lib/server-config.js';
 import { AUTH_COOKIE_NAME } from '../lib/auth-constants.js';
 import type { AppBindings } from '../app-context.js';
 
 const api = new Hono<AppBindings>()
+  // Same-origin guard runs first so it also covers /auth/* and is evaluated
+  // before authentication (a refused request answers 403, not 401).
+  .use('*', sameOriginGuard())
   // Auth routes and /config are mounted BEFORE auth middleware
   // so they are accessible without authentication.
   // /config is needed by the client to determine the auth mode before authenticating.

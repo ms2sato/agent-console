@@ -307,4 +307,33 @@ describe('API router registration order', () => {
     expect(last?.method).toBe('ALL');
     expect(last?.path).toBe('/*');
   });
+
+  // The same-origin guard must run before the auth routes and authMiddleware,
+  // so it is the first registration and a refused request answers 403, not 401.
+  it('registers the same-origin guard first, ahead of the auth routes', async () => {
+    const { api } = await import('../api.js');
+    const first = api.routes[0];
+    expect(first?.method).toBe('ALL');
+    expect(first?.path).toBe('/*');
+    const authIndex = api.routes.findIndex((r) => r.path.startsWith('/auth'));
+    expect(authIndex).toBeGreaterThan(0);
+  });
+
+  it('answers 403 (not 401) to a cross-site request when the caller is unauthenticated', async () => {
+    const app = await createTestApp({
+      userMode: { authenticate: () => null } as Pick<UserMode, 'authenticate'> as UserMode,
+    });
+    const foreign = await app.request('/api/message-templates', {
+      method: 'POST',
+      headers: { Host: 'console.test', Origin: 'https://evil.example' },
+    });
+    expect(foreign.status).toBe(403);
+
+    // Control: the same request without the cross-site marker reaches authMiddleware.
+    const control = await app.request('/api/message-templates', {
+      method: 'POST',
+      headers: { Host: 'console.test', 'Sec-Fetch-Site': 'same-origin' },
+    });
+    expect(control.status).toBe(401);
+  });
 });

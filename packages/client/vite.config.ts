@@ -22,7 +22,9 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: `http://127.0.0.1:${serverPort}`,
-        changeOrigin: true,
+        // Keep the browser's original Host: the server's same-origin guard
+        // compares a request's Origin host with its Host header.
+        changeOrigin: false,
       },
       '/ws': {
         target: `ws://127.0.0.1:${serverPort}`,
