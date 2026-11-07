@@ -130,58 +130,69 @@ describe('sameOriginGuard', () => {
   });
 
   describe('handler is never reached on refusal', () => {
-    // A bodyless POST and a POST with a required JSON body. The spy is the
-    // router-level error path: reaching a handler is observed through the
-    // side effect on the message-template repository.
-    it('does not call the repository for a refused bodyless and a refused JSON request', async () => {
-      let calls = 0;
-      const repo = {
-        create: async () => { calls++; return { id: 'x' }; },
-        findAll: async () => { calls++; return []; },
-        reorder: async () => { calls++; },
-        update: async () => { calls++; return null; },
-        delete: async () => { calls++; return false; },
-      };
-      const spied = await createTestApp({ messageTemplateRepository: repo as never });
-      const jsonRoute = { method: 'POST', path: '/api/message-templates' };
-      const bodylessRoute = { method: 'DELETE', path: '/api/message-templates/placeholder-id' };
+    // Two routes, each with its own spy and its own positive control: a
+    // bodyless POST and a POST with a required JSON body. Reaching a handler
+    // is observed through the repository it calls first.
+    const refusalHeaders = [{ Origin: FOREIGN_ORIGIN }, { 'Sec-Fetch-Site': 'cross-site' }] as Array<Record<string, string>>;
 
-      for (const headers of [{ Origin: FOREIGN_ORIGIN }, { 'Sec-Fetch-Site': 'cross-site' }] as Array<Record<string, string>>) {
-        const a = await spied.request(jsonRoute.path, {
-          method: jsonRoute.method,
+    it('does not reach a bodyless POST handler on refusal, and does without the headers', async () => {
+      const lookups: string[] = [];
+      const todoRepository = { findById: async (id: string) => { lookups.push(id); return null; } };
+      const spied = await createTestApp({ todoRepository: todoRepository as never });
+      const route = { method: 'POST', path: '/api/todos/placeholder-id/dismiss' };
+
+      for (const headers of refusalHeaders) {
+        expect((await send(spied, route, headers)).status).toBe(403);
+      }
+      expect(lookups).toEqual([]);
+
+      // Control: without the headers the handler runs (its own 404 for an unknown id).
+      const control = await send(spied, route, {});
+      expect(control.status).toBe(404);
+      expect(lookups).toEqual(['placeholder-id']);
+    });
+
+    it('does not reach a JSON-body POST handler on refusal, and creates exactly once without the headers', async () => {
+      let created = 0;
+      const messageTemplateRepository = {
+        findAll: async () => [],
+        create: async () => {
+          created++;
+          return { id: 'x', title: 't', content: 'c', sortOrder: 0, createdAt: 'now', updatedAt: 'now' };
+        },
+      };
+      const spied = await createTestApp({ messageTemplateRepository: messageTemplateRepository as never });
+      const post = (headers: Record<string, string>) =>
+        spied.request('/api/message-templates', {
+          method: 'POST',
           headers: { Host: HOST, 'Content-Type': 'application/json', ...headers },
           body: JSON.stringify({ title: 't', content: 'c' }),
         });
-        const b = await send(spied, bodylessRoute, headers);
-        expect(a.status).toBe(403);
-        expect(b.status).toBe(403);
-      }
-      expect(calls).toBe(0);
 
-      // Control: without the headers the spy is reachable.
-      await spied.request(jsonRoute.path, {
-        method: jsonRoute.method,
-        headers: { Host: HOST, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 't', content: 'c' }),
-      });
-      await send(spied, bodylessRoute, {});
-      expect(calls).toBeGreaterThan(0);
+      for (const headers of refusalHeaders) {
+        expect((await post(headers)).status).toBe(403);
+      }
+      expect(created).toBe(0);
+
+      // Control: without the headers the handler runs and creates once.
+      expect((await post({})).status).toBe(201);
+      expect(created).toBe(1);
     });
   });
 
   describe('per request body type', () => {
     const form = new FormData();
     form.append('title', 't');
-    const bodies: Array<{ name: string; contentType?: string; body?: string | FormData }> = [
-      { name: 'application/json', contentType: 'application/json', body: JSON.stringify({ title: 't', content: 'c' }) },
-      { name: 'multipart/form-data', body: form },
-      { name: 'application/x-www-form-urlencoded', contentType: 'application/x-www-form-urlencoded', body: 'title=t&content=c' },
-      { name: 'text/plain', contentType: 'text/plain', body: 'title=t' },
-      { name: 'empty body' },
+    const bodies: Array<{ name: string; contentType?: string; body?: string | FormData; controlStatus: number }> = [
+      { name: 'application/json', contentType: 'application/json', body: JSON.stringify({ title: 't', content: 'c' }), controlStatus: 201 },
+      { name: 'multipart/form-data', body: form, controlStatus: 400 },
+      { name: 'application/x-www-form-urlencoded', contentType: 'application/x-www-form-urlencoded', body: 'title=t&content=c', controlStatus: 400 },
+      { name: 'text/plain', contentType: 'text/plain', body: 'title=t', controlStatus: 400 },
+      { name: 'empty body', controlStatus: 400 },
     ];
 
     for (const b of bodies) {
-      it(`${b.name}: foreign Origin is refused with no side effect; without Origin it is not refused`, async () => {
+      it(`${b.name}: foreign Origin is refused with no side effect; without Origin the route answers itself`, async () => {
         let created = 0;
         const repo = {
           create: async () => { created++; return { id: 'x', title: 't', content: 'c' }; },
@@ -200,7 +211,10 @@ describe('sameOriginGuard', () => {
         expect(created).toBe(0);
 
         const control = await spied.request('/api/message-templates', { method: 'POST', headers, body: b.body });
-        expect(control.status).not.toBe(403);
+        // The headerless request reaches the route: JSON is created; the other
+        // body types get the route's own validation answer (400), never the guard's 403.
+        expect(control.status).toBe(b.controlStatus);
+        expect(created).toBe(b.controlStatus === 201 ? 1 : 0);
       });
     }
   });
