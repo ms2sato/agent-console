@@ -61,6 +61,11 @@ export const NODE_ENV_SENSITIVE_SMOKES: readonly { basename: string; reason: str
     reason:
       "boots the real index.ts as a child process inheriting NODE_ENV via ...process.env; the same static-file-serving branch is observable in the child's boot.",
   },
+  {
+    basename: 'check-inbound-webhook-routing.ts',
+    reason:
+      "boots the real index.ts as a child process inheriting NODE_ENV via ...process.env; the same static-file-serving branch is observable in the child's boot.",
+  },
 ];
 
 const SENSITIVE_BASENAMES = new Set(NODE_ENV_SENSITIVE_SMOKES.map((s) => s.basename));
