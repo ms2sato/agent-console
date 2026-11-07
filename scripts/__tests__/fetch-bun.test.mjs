@@ -112,6 +112,18 @@ describe('docker/fetch-bun.sh', () => {
     expect(existsSync(join(out, 'bun'))).toBe(false);
   });
 
+  it('rejects a registry with two entries for the same version and architecture, even when the second one is genuine', () => {
+    // `sha256sum -c` skips a malformed line with only a warning, so a bogus first
+    // hash followed by the genuine one would otherwise be accepted.
+    const genuine = sha256(join(dirs.releases, `bun-v${VERSION}`, 'bun-linux-x64.zip'));
+    const registry = registryFile('dup.txt', [`${VERSION} x64 ${'0'.repeat(64)}`, `${VERSION} x64 ${genuine}`]);
+    const out = freshOut('dup');
+    const r = run({ registry, out });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('duplicate entry');
+    expect(existsSync(join(out, 'bun'))).toBe(false);
+  });
+
   it('stops when the registry has no entry for the running architecture', () => {
     const registry = registryFile('noarch.txt', [`${VERSION} x64 ${'0'.repeat(64)}`]);
     const r = run({ registry, out: freshOut('noarch'), arch: 'aarch64' });

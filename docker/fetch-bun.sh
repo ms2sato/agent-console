@@ -32,7 +32,11 @@ case "$machine" in
 esac
 
 version="$(awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "$registry")"
-expected="$(awk -v v="$version" -v a="$arch" '$1 == v && $2 == a { print $3 }' "$registry")"
+# Two entries for the same version and architecture are refused outright:
+# `sha256sum -c` skips a malformed line with only a warning, so a bogus first
+# hash followed by a genuine second one would otherwise pass.
+expected="$(awk -v v="$version" -v a="$arch" '$1 == v && $2 == a { count++; hash = $3 } END { if (count > 1) exit 1; print hash }' "$registry")" \
+  || { echo "fetch-bun: duplicate entry for bun '$version' on $arch in $registry" >&2; exit 1; }
 if [ -z "$version" ] || [ -z "$expected" ]; then
   echo "fetch-bun: $registry has no entry for bun '$version' on $arch" >&2
   exit 1
