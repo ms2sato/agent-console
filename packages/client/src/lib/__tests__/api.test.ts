@@ -63,6 +63,13 @@ import {
   deleteMessageTemplate,
   reorderMessageTemplates,
   registerSharedAccount,
+  fetchInboundWebhookEndpoints,
+  fetchInboundWebhookEndpoint,
+  createInboundWebhookEndpoint,
+  updateInboundWebhookEndpoint,
+  deleteInboundWebhookEndpoint,
+  rotateInboundWebhookEndpointSecret,
+  clearInboundWebhookEndpointPreviousSecret,
   resumeSession,
   pauseSession,
   openInVSCode,
@@ -176,6 +183,15 @@ async function getLastFetchBody(): Promise<unknown> {
     return text ? JSON.parse(text) : undefined;
   }
   return arg1?.body ? JSON.parse(arg1.body) : undefined;
+}
+
+// Helper to get a header from the fetch call (Hono RPC client may pass a Request, or a URL plus init)
+function getLastFetchHeader(name: string): string | null {
+  const calls = mockFetch.mock.calls as unknown[][];
+  const arg0 = calls[calls.length - 1]?.[0];
+  const arg1 = calls[calls.length - 1]?.[1] as { headers?: HeadersInit } | undefined;
+  if (arg0 instanceof Request) return arg0.headers.get(name);
+  return new Headers(arg1?.headers).get(name);
 }
 
 /**
@@ -2808,18 +2824,23 @@ describe('API Client', () => {
       });
 
       describe('fetchSystemHealth', () => {
-        it('parses both appUrl cases', async () => {
-          const withUrl = { webhookSecretConfigured: true, appUrl: 'https://example.com' };
+        it('parses both appUrl cases and both internetOrigin cases', async () => {
+          const withUrl = { webhookSecretConfigured: true, appUrl: 'https://example.com', internetOrigin: 'https://hooks.example.com' };
           mockFetch.mockResolvedValue(createMockResponse(withUrl));
           expect(await fetchSystemHealth()).toEqual(withUrl);
 
-          const withoutUrl = { webhookSecretConfigured: false, appUrl: null };
+          const withoutUrl = { webhookSecretConfigured: false, appUrl: null, internetOrigin: null };
           mockFetch.mockResolvedValue(createMockResponse(withoutUrl));
           expect(await fetchSystemHealth()).toEqual(withoutUrl);
         });
 
         it('rejects a body missing appUrl', async () => {
-          mockFetch.mockResolvedValue(createMockResponse({ webhookSecretConfigured: true }));
+          mockFetch.mockResolvedValue(createMockResponse({ webhookSecretConfigured: true, internetOrigin: null }));
+          await expect(fetchSystemHealth()).rejects.toThrow();
+        });
+
+        it('rejects a body missing internetOrigin', async () => {
+          mockFetch.mockResolvedValue(createMockResponse({ webhookSecretConfigured: true, appUrl: null }));
           await expect(fetchSystemHealth()).rejects.toThrow();
         });
       });
@@ -2923,6 +2944,150 @@ describe('API Client', () => {
         json: mock(() => Promise.resolve({ error: 'boom' })),
       } as unknown as Response);
       await expect(deleteMessageTemplate('t1')).rejects.toThrow('boom');
+    });
+  });
+
+  describe('inbound webhook endpoint api', () => {
+    const endpoint = {
+      id: 'ep-1',
+      label: 'Alerts',
+      repositoryId: 'repo-1',
+      instructionText: 'Triage\nsecond line',
+      hasPreviousSecret: false,
+      previousSecretExpiresAt: null,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const BASE = '/api/repositories/repo-1/inbound-webhook-endpoints';
+    const failed = (status: number, error: string) =>
+      createMockResponse({ error }, { status, ok: false });
+
+    it('fetchInboundWebhookEndpoints GETs the repository-nested list and parses it', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoints: [endpoint] }));
+      const result = await fetchInboundWebhookEndpoints('repo-1');
+      expect(getLastFetchUrl()).toContain(BASE);
+      expect(getLastFetchMethod()).toBe('GET');
+      expect(result).toEqual({ endpoints: [endpoint] });
+    });
+
+    it('fetchInboundWebhookEndpoints rejects an unknown endpoint field (strict schema) and surfaces errors', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoints: [{ ...endpoint, secret: 'whsec_leak' }] }));
+      await expect(fetchInboundWebhookEndpoints('repo-1')).rejects.toThrow();
+      mockFetch.mockResolvedValue(failed(404, 'Repository not found'));
+      await expect(fetchInboundWebhookEndpoints('repo-1')).rejects.toThrow('Repository not found');
+    });
+
+    it('fetchInboundWebhookEndpoint GETs /:id of the repository and parses it', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint }));
+      const result = await fetchInboundWebhookEndpoint('repo-1', 'ep-1');
+      expect(getLastFetchUrl()).toContain(`${BASE}/ep-1`);
+      expect(getLastFetchMethod()).toBe('GET');
+      expect(result).toEqual({ endpoint });
+    });
+
+    it('createInboundWebhookEndpoint POSTs label and instruction (no repositoryId in the body) and narrows a generated secret', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ endpoint, secretSource: 'generated', secret: 'whsec_x' }, { status: 201 }),
+      );
+      const request = { label: 'Alerts', instructionText: 'Triage\nsecond line' };
+      const result = await createInboundWebhookEndpoint('repo-1', request);
+      expect(getLastFetchUrl()).toContain(BASE);
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(await getLastFetchBody()).toEqual(request);
+      expect(result.secretSource).toBe('generated');
+      if (result.secretSource === 'generated') expect(result.secret).toBe('whsec_x');
+    });
+
+    it('createInboundWebhookEndpoint sends an entered secret and parses an entered response that has no secret', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'entered' }, { status: 201 }));
+      const result = await createInboundWebhookEndpoint('repo-1', { label: 'a', instructionText: 'x', secret: 'whsec_mine' });
+      expect(await getLastFetchBody()).toEqual({ label: 'a', instructionText: 'x', secret: 'whsec_mine' });
+      expect(result).toEqual({ endpoint, secretSource: 'entered' });
+    });
+
+    it('createInboundWebhookEndpoint rejects generated without a secret, entered with one, and surfaces errors', async () => {
+      const request = { label: 'a', instructionText: 'x' };
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'generated' }));
+      await expect(createInboundWebhookEndpoint('repo-1', request)).rejects.toThrow();
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'entered', secret: 'whsec_echo' }));
+      await expect(createInboundWebhookEndpoint('repo-1', request)).rejects.toThrow();
+      mockFetch.mockResolvedValue(failed(400, 'Secret must be canonical base64'));
+      await expect(createInboundWebhookEndpoint('repo-1', request)).rejects.toThrow('Secret must be canonical base64');
+    });
+
+    it('updateInboundWebhookEndpoint PATCHes /:id with the changes', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint }));
+      const result = await updateInboundWebhookEndpoint('repo-1', 'ep-1', { label: 'New' });
+      expect(getLastFetchUrl()).toContain(`${BASE}/ep-1`);
+      expect(getLastFetchMethod()).toBe('PATCH');
+      expect(await getLastFetchBody()).toEqual({ label: 'New' });
+      expect(result).toEqual({ endpoint });
+    });
+
+    it('updateInboundWebhookEndpoint surfaces the server error message', async () => {
+      mockFetch.mockResolvedValue(failed(400, 'Instruction text is required'));
+      await expect(updateInboundWebhookEndpoint('repo-1', 'ep-1', { instructionText: ' ' })).rejects.toThrow(
+        'Instruction text is required',
+      );
+    });
+
+    it('deleteInboundWebhookEndpoint DELETEs /:id and resolves without parsing', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+      await deleteInboundWebhookEndpoint('repo-1', 'ep-1');
+      expect(getLastFetchUrl()).toContain(`${BASE}/ep-1`);
+      expect(getLastFetchMethod()).toBe('DELETE');
+    });
+
+    it('deleteInboundWebhookEndpoint surfaces the server error message', async () => {
+      mockFetch.mockResolvedValue(failed(404, 'Inbound webhook endpoint not found'));
+      await expect(deleteInboundWebhookEndpoint('repo-1', 'ep-1')).rejects.toThrow('Inbound webhook endpoint not found');
+    });
+
+    it('rotateInboundWebhookEndpointSecret POSTs /:id/rotate-secret with an empty body for a generated secret', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'generated', secret: 'whsec_new' }));
+      const result = await rotateInboundWebhookEndpointSecret('repo-1', 'ep-1');
+      expect(getLastFetchUrl()).toContain(`${BASE}/ep-1/rotate-secret`);
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(await getLastFetchBody()).toEqual({});
+      expect(result.secretSource).toBe('generated');
+      if (result.secretSource === 'generated') expect(result.secret).toBe('whsec_new');
+    });
+
+    it('rotateInboundWebhookEndpointSecret sends an entered secret and parses the secret-less response', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'entered' }));
+      const result = await rotateInboundWebhookEndpointSecret('repo-1', 'ep-1', 'whsec_mine');
+      expect(await getLastFetchBody()).toEqual({ secret: 'whsec_mine' });
+      expect(result).toEqual({ endpoint, secretSource: 'entered' });
+    });
+
+    it('rotateInboundWebhookEndpointSecret sends Content-Type application/json for the generated and the entered call', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'generated', secret: 'whsec_new' }));
+      await rotateInboundWebhookEndpointSecret('repo-1', 'ep-1');
+      expect(getLastFetchHeader('content-type')).toMatch(/^application\/json/);
+
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'entered' }));
+      await rotateInboundWebhookEndpointSecret('repo-1', 'ep-1', 'whsec_mine');
+      expect(getLastFetchHeader('content-type')).toMatch(/^application\/json/);
+    });
+
+    it('rotateInboundWebhookEndpointSecret rejects a generated response without a secret and surfaces errors', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint, secretSource: 'generated' }));
+      await expect(rotateInboundWebhookEndpointSecret('repo-1', 'ep-1')).rejects.toThrow();
+      mockFetch.mockResolvedValue(failed(404, 'gone'));
+      await expect(rotateInboundWebhookEndpointSecret('repo-1', 'ep-1')).rejects.toThrow('gone');
+    });
+
+    it('clearInboundWebhookEndpointPreviousSecret POSTs /:id/clear-previous-secret and parses the endpoint', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ endpoint }));
+      const result = await clearInboundWebhookEndpointPreviousSecret('repo-1', 'ep-1');
+      expect(getLastFetchUrl()).toContain(`${BASE}/ep-1/clear-previous-secret`);
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(result).toEqual({ endpoint });
+    });
+
+    it('clearInboundWebhookEndpointPreviousSecret surfaces the server error message', async () => {
+      mockFetch.mockResolvedValue(failed(404, 'gone'));
+      await expect(clearInboundWebhookEndpointPreviousSecret('repo-1', 'ep-1')).rejects.toThrow('gone');
     });
   });
 });

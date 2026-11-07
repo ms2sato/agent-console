@@ -28,6 +28,8 @@ export const SystemOpenVSCodeRequestSchema = v.strictObject({
 export const SystemHealthResponseSchema = v.strictObject({
   webhookSecretConfigured: v.boolean(),
   appUrl: v.nullable(v.string()),
+  /** Internet-facing origin the reverse proxy routes to this server, or null when unset. */
+  internetOrigin: v.nullable(v.string()),
 });
 
 // Inferred types from schemas

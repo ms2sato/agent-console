@@ -72,6 +72,9 @@ import {
   TodoDetailResponseSchema,
   UsersListResponseSchema,
   ListSharedAccountsResponseSchema,
+  InboundWebhookEndpointsListResponseSchema,
+  InboundWebhookEndpointResponseSchema,
+  InboundWebhookEndpointWithSecretResponseSchema,
   WorkerResponseSchema,
   RestartAllAgentsResponseSchema,
   OrchestratorDesignationResponseSchema,
@@ -140,6 +143,11 @@ import type {
   SuccessResponse,
   RegisterSharedAccountResponse,
   PauseSessionResponse,
+  CreateInboundWebhookEndpointRequest,
+  UpdateInboundWebhookEndpointRequest,
+  InboundWebhookEndpointsListResponse,
+  InboundWebhookEndpointResponse,
+  InboundWebhookEndpointWithSecretResponse,
 } from '@agent-console/shared';
 import * as v from 'valibot';
 
@@ -1501,6 +1509,104 @@ export async function unregisterSharedAccount(username: string): Promise<void> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister shared account');
   }
+}
+
+// ===========================================================================
+// Inbound webhook endpoints (nested under their repository)
+// ===========================================================================
+
+export async function fetchInboundWebhookEndpoints(
+  repositoryId: string,
+): Promise<InboundWebhookEndpointsListResponse> {
+  const res = await api.repositories[':repositoryId']['inbound-webhook-endpoints'].$get({ param: { repositoryId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch inbound webhook endpoints');
+  }
+  return v.parse(InboundWebhookEndpointsListResponseSchema, await res.json());
+}
+
+export async function fetchInboundWebhookEndpoint(
+  repositoryId: string,
+  id: string,
+): Promise<InboundWebhookEndpointResponse> {
+  const res = await api.repositories[':repositoryId']['inbound-webhook-endpoints'][':id'].$get({
+    param: { repositoryId, id },
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch inbound webhook endpoint');
+  }
+  return v.parse(InboundWebhookEndpointResponseSchema, await res.json());
+}
+
+/**
+ * Narrow the result on `secretSource`: only `'generated'` carries a `secret`
+ * (readable once); an entered secret is never echoed back.
+ */
+export async function createInboundWebhookEndpoint(
+  repositoryId: string,
+  request: CreateInboundWebhookEndpointRequest,
+): Promise<InboundWebhookEndpointWithSecretResponse> {
+  const res = await api.repositories[':repositoryId']['inbound-webhook-endpoints'].$post({
+    param: { repositoryId },
+    json: request,
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to create inbound webhook endpoint');
+  }
+  return v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
+}
+
+export async function updateInboundWebhookEndpoint(
+  repositoryId: string,
+  id: string,
+  request: UpdateInboundWebhookEndpointRequest,
+): Promise<InboundWebhookEndpointResponse> {
+  const res = await api.repositories[':repositoryId']['inbound-webhook-endpoints'][':id'].$patch({
+    param: { repositoryId, id },
+    json: request,
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update inbound webhook endpoint');
+  }
+  return v.parse(InboundWebhookEndpointResponseSchema, await res.json());
+}
+
+export async function deleteInboundWebhookEndpoint(repositoryId: string, id: string): Promise<void> {
+  const res = await api.repositories[':repositoryId']['inbound-webhook-endpoints'][':id'].$delete({
+    param: { repositoryId, id },
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to delete inbound webhook endpoint');
+  }
+}
+
+/** With no `secret` the server generates one; the result narrows on `secretSource` like create. */
+export async function rotateInboundWebhookEndpointSecret(
+  repositoryId: string,
+  id: string,
+  secret?: string,
+): Promise<InboundWebhookEndpointWithSecretResponse> {
+  const res = await api.repositories[':repositoryId']['inbound-webhook-endpoints'][':id']['rotate-secret'].$post({
+    param: { repositoryId, id },
+    json: secret === undefined ? {} : { secret },
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to rotate secret');
+  }
+  return v.parse(InboundWebhookEndpointWithSecretResponseSchema, await res.json());
+}
+
+export async function clearInboundWebhookEndpointPreviousSecret(
+  repositoryId: string,
+  id: string,
+): Promise<InboundWebhookEndpointResponse> {
+  const res = await api.repositories[':repositoryId']['inbound-webhook-endpoints'][':id']['clear-previous-secret'].$post({
+    param: { repositoryId, id },
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to end previous secret');
+  }
+  return v.parse(InboundWebhookEndpointResponseSchema, await res.json());
 }
 
 // ===========================================================================

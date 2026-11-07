@@ -10,6 +10,7 @@ import {
   notificationKeys,
   todoKeys,
   userKeys,
+  inboundWebhookEndpointKeys,
 } from '../query-keys';
 
 describe('Query Keys', () => {
@@ -23,6 +24,7 @@ describe('Query Keys', () => {
         ...worktreeKeys.root(),
         ...systemKeys.health(),
         ...notificationKeys.status(),
+        ...inboundWebhookEndpointKeys.all('repo-1'),
       ];
 
       const keyStrings = allKeys.map(String);
@@ -284,6 +286,19 @@ describe('Query Keys', () => {
     it('memoRoot is not the root of the other session families', () => {
       expect(sessionKeys.memoRoot()).not.toEqual(sessionKeys.root());
       expect(sessionKeys.prLink('s').slice(0, 1)).not.toEqual([...sessionKeys.memoRoot()]);
+    });
+  });
+
+  describe('inboundWebhookEndpointKeys', () => {
+    it('all() is scoped to the repository and does not collide with the repositories key', () => {
+      expect(inboundWebhookEndpointKeys.all('repo-1')).toEqual(['inbound-webhook-endpoints', 'repo-1']);
+      expect(inboundWebhookEndpointKeys.all('repo-1')).not.toEqual(inboundWebhookEndpointKeys.all('repo-2'));
+      expect(inboundWebhookEndpointKeys.all('repo-1')).not.toEqual(repositoryKeys.all());
+    });
+
+    it('detail() carries repository and endpoint ids and is not a prefix match of the list key', () => {
+      expect(inboundWebhookEndpointKeys.detail('repo-1', 'ep-1')).toEqual(['inbound-webhook-endpoint', 'repo-1', 'ep-1']);
+      expect(inboundWebhookEndpointKeys.detail('repo-1', 'ep-1')[0]).not.toBe(inboundWebhookEndpointKeys.all('repo-1')[0]);
     });
   });
 });

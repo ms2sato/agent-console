@@ -115,6 +115,23 @@ describe('AppContext', () => {
       expect(accounts[0]?.username).toBe('shared-wiring-check');
     });
 
+    it('wires inboundWebhookEndpointRepository to the same database as the rest of the context', async () => {
+      appContext = await createTestContext();
+
+      await appContext.db.insertInto('repositories').values({ id: 'repo-wiring', name: 'repo-wiring', path: '/tmp/repo-wiring' }).execute();
+      await appContext.inboundWebhookEndpointRepository.create({
+        id: 'ep-wiring',
+        label: 'wiring',
+        repositoryId: 'repo-wiring',
+        instructionText: 'x',
+        secret: 'whsec_wiring',
+        now: '2026-11-07T00:00:00.000Z',
+      });
+
+      const row = await appContext.db.selectFrom('inbound_webhook_endpoints').select('id').executeTakeFirst();
+      expect(row?.id).toBe('ep-wiring');
+    });
+
     it('should allow custom sessionRepository override', async () => {
       // Create a mock session repository
       const mockRepository = {

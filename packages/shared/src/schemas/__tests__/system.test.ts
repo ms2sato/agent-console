@@ -69,23 +69,30 @@ describe('SystemOpenVSCodeRequestSchema', () => {
 });
 
 describe('SystemHealthResponseSchema', () => {
-  it('parses both appUrl cases', () => {
+  it('parses both appUrl cases and both internetOrigin cases', () => {
     expect(
-      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, appUrl: 'https://example.test' }).success,
+      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, appUrl: 'https://example.test', internetOrigin: null }).success,
     ).toBe(true);
     expect(
-      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: false, appUrl: null }).success,
+      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: false, appUrl: null, internetOrigin: 'https://hooks.example.test' }).success,
     ).toBe(true);
   });
 
-  it('rejects a missing field', () => {
-    expect(v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true }).success).toBe(false);
-    expect(v.safeParse(SystemHealthResponseSchema, { appUrl: null }).success).toBe(false);
+  it('rejects a missing field, internetOrigin included', () => {
+    expect(v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, internetOrigin: null }).success).toBe(false);
+    expect(v.safeParse(SystemHealthResponseSchema, { appUrl: null, internetOrigin: null }).success).toBe(false);
+    expect(v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, appUrl: null }).success).toBe(false);
+  });
+
+  it('rejects a non-string, non-null internetOrigin', () => {
+    expect(
+      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, appUrl: null, internetOrigin: 5 }).success,
+    ).toBe(false);
   });
 
   it('rejects an extra key', () => {
     expect(
-      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, appUrl: null, extra: 1 }).success,
+      v.safeParse(SystemHealthResponseSchema, { webhookSecretConfigured: true, appUrl: null, internetOrigin: null, extra: 1 }).success,
     ).toBe(false);
   });
 });

@@ -29,6 +29,8 @@ export interface Database {
   mcp_server_path_permissions: McpServerPathPermissionsTable;
   shared_accounts: SharedAccountsTable;
   deferred_worker_notifications: DeferredWorkerNotificationsTable;
+  inbound_webhook_endpoints: InboundWebhookEndpointsTable;
+  inbound_webhook_deliveries: InboundWebhookDeliveriesTable;
 }
 
 /**
@@ -935,3 +937,46 @@ export interface DeferredWorkerNotificationsTable {
 
 /** Deferred worker notification row as returned from SELECT queries */
 export type DeferredWorkerNotificationRow = Selectable<DeferredWorkerNotificationsTable>;
+
+/**
+ * Inbound Webhook Endpoints table schema.
+ * A signed generic webhook receiver bound to one repository. `secret` and
+ * `previous_secret` are plaintext (HMAC needs them) and are returned only by the
+ * create and rotate responses.
+ */
+export interface InboundWebhookEndpointsTable {
+  /** Primary key - opaque random id, used literally in the receiving URL */
+  id: string;
+  /** Operator-facing display name */
+  label: string;
+  /** Repository whose designated Orchestrator sessions receive the messages (rows cascade with it) */
+  repository_id: string;
+  /** Multi-line operator-authored instruction, stored as-is (a CHECK caps it at 4000 characters) */
+  instruction_text: string;
+  /** Current signing secret (`whsec_<base64>`) */
+  secret: string;
+  /** Previous signing secret, valid until `previous_secret_expires_at` */
+  previous_secret: string | null;
+  /** Expiry of `previous_secret` as ISO 8601 string */
+  previous_secret_expires_at: string | null;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: string;
+  /** Last update timestamp as ISO 8601 string */
+  updated_at: string;
+}
+
+/** Inbound webhook endpoint row as returned from SELECT queries */
+export type InboundWebhookEndpointRow = Selectable<InboundWebhookEndpointsTable>;
+
+/**
+ * Inbound Webhook Deliveries table schema: the dedupe ledger keyed by the
+ * sender's webhook id (rows cascade with their endpoint, never pruned).
+ */
+export interface InboundWebhookDeliveriesTable {
+  /** Owning endpoint (rows cascade with it) */
+  endpoint_id: string;
+  /** Sender-assigned delivery id (the `webhook-id` header) */
+  webhook_id: string;
+  /** Receipt timestamp as ISO 8601 string */
+  received_at: string;
+}

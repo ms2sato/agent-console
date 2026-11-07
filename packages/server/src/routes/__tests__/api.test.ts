@@ -4,6 +4,8 @@ import type { AppBindings } from '../../app-context.js';
 import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from '../../__tests__/test-utils.js';
 import type { ConfigResponse, SkillDefinition } from '@agent-console/shared';
 import type { MessageTemplateRepository } from '../../repositories/message-template-repository.js';
+import type { InboundWebhookEndpointRepository } from '../../repositories/webhook-endpoint-repository.js';
+import type { RepositoryManager } from '../../services/repository-manager.js';
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { UserMode } from '../../services/user-mode.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
@@ -24,6 +26,26 @@ describe('API route mounting', () => {
 
   afterEach(async () => {
     await cleanupTestEnvironment();
+  });
+
+  it('should mount inbound-webhook-endpoints route at /api/repositories/:repositoryId/inbound-webhook-endpoints', async () => {
+    app = await createTestApp({
+      repositoryManager: { getRepository: (id: string) => (id === 'repo-1' ? { id } : undefined) } as Pick<RepositoryManager, 'getRepository'> as RepositoryManager,
+      inboundWebhookEndpointRepository: { list: async () => [] } as Pick<InboundWebhookEndpointRepository, 'list'> as InboundWebhookEndpointRepository,
+    });
+    const res = await app.request('/api/repositories/repo-1/inbound-webhook-endpoints');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { endpoints: unknown[] };
+    expect(body.endpoints).toEqual([]);
+
+    expect((await app.request('/api/repositories/unknown/inbound-webhook-endpoints')).status).toBe(404);
+  });
+
+  it('should not mount the former global /api/inbound-webhook-endpoints route', async () => {
+    const res = await app.request('/api/inbound-webhook-endpoints');
+
+    expect(res.status).toBe(404);
   });
 
   it('should mount skills route at /api/skills', async () => {

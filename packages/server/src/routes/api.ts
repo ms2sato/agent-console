@@ -18,6 +18,7 @@ import { todos } from './todos.js';
 import { users } from './users.js';
 import { notifications } from './notifications.js';
 import { sharedAccounts } from './shared-accounts.js';
+import { inboundWebhookEndpoints } from './inbound-webhook-endpoints.js';
 import { auth } from './auth.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -61,6 +62,7 @@ const api = new Hono<AppBindings>()
   .route('/sessions', workers)
   .route('/repositories', repositories)
   .route('/repositories', worktrees)
+  .route('/repositories', inboundWebhookEndpoints)
   .route('/agents', agents)
   .route('/embedded-agents', embeddedAgents)
   .route('/jobs', jobs)

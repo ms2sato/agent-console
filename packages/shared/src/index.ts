@@ -20,6 +20,7 @@ export * from './types/conditional-wakeup.js';
 export * from './types/interactive-process.js';
 export * from './types/message-contracts.js';
 export * from './types/todo.js';
+export * from './types/inbound-webhook-endpoint.js';
 export * from './utils/ndjson-lines.js';
 export * from './utils/agent-capabilities.js';
 export * from './utils/worker-predicates.js';

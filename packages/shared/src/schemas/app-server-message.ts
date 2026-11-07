@@ -340,9 +340,10 @@ export type Repository = v.InferOutput<typeof RepositorySchema>;
 const InboundEventTypeSchema = v.picklist([
   'ci:completed', 'ci:failed', 'issue:closed', 'issue:labeled',
   'pr:merged', 'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+  'external:message',
 ]);
 
-const EventSourceSchema = v.picklist(['github', 'gitlab', 'internal']);
+const EventSourceSchema = v.picklist(['github', 'gitlab', 'webhook', 'internal']);
 
 const SystemEventMetadataSchema = v.strictObject({
   repositoryName: v.optional(v.string()),
@@ -350,6 +351,9 @@ const SystemEventMetadataSchema = v.strictObject({
   url: v.optional(v.string()),
   commitSha: v.optional(v.string()),
   labels: v.optional(v.array(v.string())),
+  targetRepositoryId: v.optional(v.string()),
+  deliveryId: v.optional(v.string()),
+  instructionExcerpt: v.optional(v.string()),
 });
 
 const InboundEventSummarySchema = v.strictObject({

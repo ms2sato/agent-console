@@ -246,7 +246,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
  * migration function's own `PRAGMA user_version = N` and the dispatch guards
  * stay literal: they ARE the migrations.
  */
-export const LATEST_SCHEMA_VERSION = 55;
+export const LATEST_SCHEMA_VERSION = 56;
 
 /**
  * Run database migrations based on PRAGMA user_version.
@@ -483,6 +483,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 55) {
     await migrateToV55(database);
+  }
+
+  if (currentVersion < 56) {
+    await migrateToV56(database);
   }
 }
 
@@ -3878,4 +3882,85 @@ export async function migrateToV55(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 55`.execute(database);
 
   logger.info('Migration to v55 completed');
+}
+
+/**
+ * Migration v56: Create `inbound_webhook_endpoints` and `inbound_webhook_deliveries`.
+ *
+ * An endpoint is a signed generic webhook receiver bound to one repository; its
+ * `instruction_text` is the multi-line, operator-authored instruction delivered
+ * with each message as its own file, stored as-is (line breaks included); the
+ * 4000-character length CHECK is a backstop, the REST layer rejects first.
+ * `secret` is stored in plaintext because HMAC verification needs
+ * it; it is returned only by the create and rotate responses. `previous_secret`
+ * stays valid until `previous_secret_expires_at` during a rotation. The deliveries
+ * table is the dedupe ledger keyed by the sender's webhook id, and is never pruned.
+ *
+ * Owner-approved DDL (the GLOB literals below are what `ISO8601_GLOB_PATTERN`
+ * renders; the migration emits them from the constant):
+ * ```sql
+ * CREATE TABLE IF NOT EXISTS inbound_webhook_endpoints (
+ *   id                          TEXT PRIMARY KEY,
+ *   label                       TEXT NOT NULL,
+ *   repository_id               TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+ *   instruction_text            TEXT NOT NULL,
+ *   secret                      TEXT NOT NULL,
+ *   previous_secret             TEXT,
+ *   previous_secret_expires_at  TEXT,
+ *   created_at                  TEXT NOT NULL,
+ *   updated_at                  TEXT NOT NULL,
+ *   CONSTRAINT iwe_instruction_text_length_check CHECK (length(instruction_text) <= 4000),
+ *   CONSTRAINT iwe_created_at_check CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'),
+ *   CONSTRAINT iwe_updated_at_check CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'),
+ *   CONSTRAINT iwe_previous_secret_expires_at_check CHECK (previous_secret_expires_at IS NULL OR previous_secret_expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
+ * );
+ * CREATE INDEX IF NOT EXISTS idx_iwe_repository ON inbound_webhook_endpoints (repository_id);
+ *
+ * CREATE TABLE IF NOT EXISTS inbound_webhook_deliveries (
+ *   endpoint_id  TEXT NOT NULL REFERENCES inbound_webhook_endpoints(id) ON DELETE CASCADE,
+ *   webhook_id   TEXT NOT NULL,
+ *   received_at  TEXT NOT NULL,
+ *   PRIMARY KEY (endpoint_id, webhook_id),
+ *   CONSTRAINT iwd_received_at_check CHECK (received_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
+ * );
+ * PRAGMA user_version = 56;
+ * ```
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV56(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v56: Creating inbound_webhook_endpoints and inbound_webhook_deliveries tables');
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS inbound_webhook_endpoints (
+      id                          TEXT PRIMARY KEY,
+      label                       TEXT NOT NULL,
+      repository_id               TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+      instruction_text            TEXT NOT NULL,
+      secret                      TEXT NOT NULL,
+      previous_secret             TEXT,
+      previous_secret_expires_at  TEXT,
+      created_at                  TEXT NOT NULL,
+      updated_at                  TEXT NOT NULL,
+      CONSTRAINT iwe_instruction_text_length_check CHECK (length(instruction_text) <= 4000),
+      CONSTRAINT iwe_created_at_check CHECK (created_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}'),
+      CONSTRAINT iwe_updated_at_check CHECK (updated_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}'),
+      CONSTRAINT iwe_previous_secret_expires_at_check CHECK (previous_secret_expires_at IS NULL OR previous_secret_expires_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
+    )
+  `.execute(database);
+  await sql`CREATE INDEX IF NOT EXISTS idx_iwe_repository ON inbound_webhook_endpoints (repository_id)`.execute(database);
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS inbound_webhook_deliveries (
+      endpoint_id  TEXT NOT NULL REFERENCES inbound_webhook_endpoints(id) ON DELETE CASCADE,
+      webhook_id   TEXT NOT NULL,
+      received_at  TEXT NOT NULL,
+      PRIMARY KEY (endpoint_id, webhook_id),
+      CONSTRAINT iwd_received_at_check CHECK (received_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
+    )
+  `.execute(database);
+
+  await sql`PRAGMA user_version = 56`.execute(database);
+
+  logger.info('Migration to v56 completed');
 }
