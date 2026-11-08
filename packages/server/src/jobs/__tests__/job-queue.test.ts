@@ -1357,6 +1357,36 @@ describe('JobQueue', () => {
       expect(slow.__testOnly.pruneTimer).toBeNull();
     });
 
+    it('a start() superseded by stop() and a second start() leaves exactly one prune interval', async () => {
+      const PRUNE_MS = 12_345;
+      const q = new JobQueue(db, { completedRetentionMs: RETENTION, pruneIntervalMs: PRUNE_MS });
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      let blocked = false;
+      let calls = 0;
+      (q as any).pruneCompleted = async () => {
+        if (calls++ === 0) {
+          blocked = true;
+          await gate;
+        }
+        return 0;
+      };
+      const intervals = spyOn(globalThis, 'setInterval');
+      try {
+        const start1 = q.start();
+        await waitFor(() => blocked);
+        await q.stop();
+        await q.start();
+        release();
+        await start1;
+        const pruneIntervals = intervals.mock.calls.filter((c) => c[1] === PRUNE_MS);
+        expect(pruneIntervals.length).toBe(1);
+      } finally {
+        intervals.mockRestore();
+        await q.stop();
+      }
+    });
+
     it('logs a sweep failure at error and still resolves start()', async () => {
       const failing = new JobQueue(db, { completedRetentionMs: RETENTION });
       (failing as any).db = new Proxy(db, {
