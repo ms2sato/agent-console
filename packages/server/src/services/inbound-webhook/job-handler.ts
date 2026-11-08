@@ -4,15 +4,11 @@
  * action for the endpoint kind (today only the repository's designated Orchestrators).
  */
 import type { InboundWebhookProcessPayload } from '@agent-console/shared';
-import { createLogger } from '../../lib/logger.js';
-import { PermanentHandlerError } from '../inbound/job-handler.js';
 import {
   deliverToRepositoryOrchestrators,
   type RepositoryOrchestratorsDeps,
 } from './actions/repository-orchestrators.js';
 import { prepareDelivery, type PrepareDeliveryDeps } from './receive.js';
-
-const logger = createLogger('inbound-webhook-job');
 
 export interface InboundWebhookJobDeps extends PrepareDeliveryDeps {
   action: RepositoryOrchestratorsDeps;
@@ -20,21 +16,7 @@ export interface InboundWebhookJobDeps extends PrepareDeliveryDeps {
 
 export function createInboundWebhookJobHandler(deps: InboundWebhookJobDeps) {
   return async (payload: InboundWebhookProcessPayload): Promise<void> => {
-    let content;
-    try {
-      content = await prepareDelivery(payload, deps);
-    } catch (error) {
-      // The job queue retries any throw, and a deleted endpoint or a payload that no longer
-      // parses can never succeed on retry. End the job here instead of letting it retry to a stall.
-      if (error instanceof PermanentHandlerError) {
-        logger.warn(
-          { jobId: payload.jobId, endpointId: payload.endpointId, reason: error.message },
-          'Inbound webhook job ended without delivery',
-        );
-        return;
-      }
-      throw error;
-    }
+    const content = await prepareDelivery(payload, deps);
     await deliverToRepositoryOrchestrators(content, payload.receivedAt, deps.action);
   };
 }

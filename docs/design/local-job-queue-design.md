@@ -113,6 +113,8 @@ enqueue() → [pending] → [processing] → [completed] ✓      │
                         │      manual retry ───────────────┘
                         │
                         └──────────────────────────────────┘
+
+processing → handler throws PermanentHandlerError → [stalled] ✗   (first attempt, no retry)
 ```
 
 ### Status Definitions
@@ -122,7 +124,7 @@ enqueue() → [pending] → [processing] → [completed] ✓      │
 | `pending` | Waiting to be processed (includes retry-waiting jobs) |
 | `processing` | Currently being executed |
 | `completed` | Successfully finished |
-| `stalled` | Max attempts reached, requires manual intervention |
+| `stalled` | Max attempts reached, or the handler threw `PermanentHandlerError`; requires manual intervention |
 
 ## Database Schema
 
@@ -636,20 +638,25 @@ interface JobQueueConfig {
   backoffBase: number        // Default: 1000 (1 second)
   backoffMax: number         // Default: 300000 (5 minutes)
 
-  // Cleanup (optional future feature)
-  completedRetention: number // How long to keep completed jobs (ms)
+  // Retention
+  completedRetention: number // How long to keep completed jobs. Default: 30 days
+                             // (JOB_COMPLETED_RETENTION_DAYS); swept at start() and every 6 hours
 }
 ```
+
+### Permanent failures and retention
+
+- A handler that throws `PermanentHandlerError` (defined in `jobs/job-queue.ts`) ends the job as `stalled` on its first attempt: `attempts` is 1, `last_error` is set, no retry timer is scheduled and one `warn` line is logged. A manual retry runs the handler once more and stalls again at the next attempt.
+- The retention sweep (`JobQueue.pruneCompleted`) deletes only `completed` rows whose `completed_at` is older than the retention window, in batches of 500. `stalled`, `pending` and `processing` rows are never swept.
 
 ## Future Considerations
 
 ### Job Queue Enhancements
-1. **Job cleanup**: Automatically delete completed jobs after a retention period
-2. **Job dependencies**: Allow jobs to depend on other jobs completing first
-3. **Scheduled jobs**: Add `scheduledAt` for delayed execution
-4. **Job progress**: Support progress reporting for long-running jobs
-5. **WebSocket notifications**: Real-time UI updates when job status changes
-6. **Bulk operations**: Retry all stalled, cancel all pending of type X
+1. **Job dependencies**: Allow jobs to depend on other jobs completing first
+2. **Scheduled jobs**: Add `scheduledAt` for delayed execution
+3. **Job progress**: Support progress reporting for long-running jobs
+4. **WebSocket notifications**: Real-time UI updates when job status changes
+5. **Bulk operations**: Retry all stalled, cancel all pending of type X
 
 ### Prerequisite: SQLite Migration
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { EventEmitter } from 'events';
 import { sql } from 'kysely';
 import type { JobType } from '@agent-console/shared';
-import { JobQueue } from '../job-queue.js';
+import { JobQueue, PermanentHandlerError } from '../job-queue.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import type { Database } from '../../database/schema.js';
 import type { Kysely } from 'kysely';
@@ -215,6 +215,63 @@ describe('JobQueue', () => {
   // ===========================================================================
 
   describe('retry behavior', () => {
+    it('ends a PermanentHandlerError job as stalled on its first attempt with one warn line and no retry timer', async () => {
+      let calls = 0;
+      jobQueue.registerHandler(testType('test:job'), async () => {
+        calls++;
+        throw new PermanentHandlerError('x');
+      });
+      const warn = spyOn(rootLogger, 'warn');
+      try {
+        const id = await jobQueue.enqueue(testType('test:job'), {}, { maxAttempts: 5 });
+        await jobQueue.start();
+        await waitFor(async () => (await jobQueue.getJob(id))?.status === 'stalled');
+        await new Promise((r) => setTimeout(r, 100));
+
+        const job = await jobQueue.getJob(id);
+        expect(job?.status).toBe('stalled');
+        expect(job?.attempts).toBe(1);
+        expect(job?.last_error).toBe('x');
+        expect(calls).toBe(1);
+        expect(jobQueue.__testOnly.retryTimers.size).toBe(0);
+        const jobWarns = warn.mock.calls.filter((c) => JSON.stringify(c).includes(id));
+        expect(jobWarns.length).toBe(1);
+        expect(jobWarns[0]![1]).toBe('Job stalled: permanent handler error');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a PermanentHandlerError with maxAttempts 1 reports the permanent path, not the max-attempts one', async () => {
+      jobQueue.registerHandler(testType('test:job'), async () => {
+        throw new PermanentHandlerError('never works');
+      });
+      const errorLog = spyOn(rootLogger, 'error');
+      try {
+        const id = await jobQueue.enqueue(testType('test:job'), {}, { maxAttempts: 1 });
+        await jobQueue.start();
+        await waitFor(async () => (await jobQueue.getJob(id))?.status === 'stalled');
+        const job = await jobQueue.getJob(id);
+        expect(job?.attempts).toBe(1);
+        expect(job?.last_error).toBe('never works');
+        expect(JSON.stringify(errorLog.mock.calls)).not.toContain('Job stalled after max attempts');
+      } finally {
+        errorLog.mockRestore();
+      }
+    });
+
+    it('control: a plain Error becomes pending with a retry timer', async () => {
+      jobQueue.registerHandler(testType('test:job'), async () => {
+        throw new Error('Temporary failure');
+      });
+      const id = await jobQueue.enqueue(testType('test:job'), {}, { maxAttempts: 3 });
+      await jobQueue.start();
+      await waitFor(async () => (await jobQueue.getJob(id))?.attempts === 1);
+      const job = await jobQueue.getJob(id);
+      expect(job?.status).toBe('pending');
+      expect(jobQueue.__testOnly.retryTimers.size).toBe(1);
+    });
+
     it('should retry failed job', async () => {
       let attempts = 0;
       jobQueue.registerHandler(testType('test:job'), async () => {
@@ -1165,4 +1222,190 @@ describe('JobQueue', () => {
     });
   });
 
+
+  // ===========================================================================
+  // Retention
+  // ===========================================================================
+
+  describe('pruneCompleted', () => {
+    const RETENTION = 1000;
+    const NOW = 1_000_000;
+    const CUTOFF = NOW - RETENTION;
+
+    async function seed(id: string, status: string, completedAt: number | null, extra: Record<string, number | null> = {}): Promise<void> {
+      await db
+        .insertInto('jobs')
+        .values({
+          id,
+          type: 'test:job' as JobType,
+          payload: '{}',
+          status: status as never,
+          priority: 0,
+          attempts: 0,
+          max_attempts: 5,
+          next_retry_at: 0,
+          last_error: null,
+          created_at: 0,
+          started_at: null,
+          completed_at: completedAt,
+          ...extra,
+        })
+        .execute();
+    }
+
+    beforeEach(() => {
+      jobQueue = new JobQueue(db, { completedRetentionMs: RETENTION });
+    });
+
+    it('returns 0 and logs no info line when there are no completed rows', async () => {
+      const info = spyOn(rootLogger, 'info');
+      try {
+        expect(await jobQueue.pruneCompleted(NOW)).toBe(0);
+        expect(JSON.stringify(info.mock.calls)).not.toContain('Pruned completed jobs');
+      } finally {
+        info.mockRestore();
+      }
+    });
+
+    it('deletes only rows strictly older than the cutoff', async () => {
+      await seed('before', 'completed', CUTOFF - 1);
+      await seed('at', 'completed', CUTOFF);
+      await seed('after', 'completed', CUTOFF + 1);
+
+      expect(await jobQueue.pruneCompleted(NOW)).toBe(1);
+      expect(await jobQueue.getJob('before')).toBeNull();
+      expect(await jobQueue.getJob('at')).not.toBeNull();
+      expect(await jobQueue.getJob('after')).not.toBeNull();
+    });
+
+    it('keeps pending, processing and stalled rows however old, and ignores a NULL completed_at', async () => {
+      await seed('p', 'pending', null, { created_at: 1 });
+      await seed('r', 'processing', null, { created_at: 1, started_at: 1 });
+      await seed('s', 'stalled', null, { created_at: 1 });
+      await seed('s-old', 'stalled', 1);
+      await seed('c-null', 'completed', null);
+
+      expect(await jobQueue.pruneCompleted(NOW)).toBe(0);
+      expect(await jobQueue.countJobs()).toBe(5);
+    });
+
+    it('loops over batches until everything old is gone', async () => {
+      const rows = Array.from({ length: 1001 }, (_, i) => ({
+        id: `old-${i}`,
+        type: 'test:job' as JobType,
+        payload: '{}',
+        status: 'completed' as const,
+        priority: 0,
+        attempts: 0,
+        max_attempts: 5,
+        next_retry_at: 0,
+        last_error: null,
+        created_at: 0,
+        started_at: null,
+        completed_at: 1,
+      }));
+      for (let i = 0; i < rows.length; i += 200) {
+        await db.insertInto('jobs').values(rows.slice(i, i + 200)).execute();
+      }
+
+      expect(await jobQueue.pruneCompleted(NOW)).toBe(1001);
+      expect(await jobQueue.countJobs({ status: 'completed' })).toBe(0);
+    });
+
+    it('keeps a job that completes while the sweep is awaited', async () => {
+      await seed('old', 'completed', 1);
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      jobQueue.registerHandler(testType('test:job'), async () => { await gate; });
+      const liveId = await jobQueue.enqueue(testType('test:job'), {});
+      const now = Date.now();
+      await jobQueue.start();
+      const sweep = jobQueue.pruneCompleted(now);
+      release();
+      await sweep;
+      await waitFor(async () => (await jobQueue.getJob(liveId))?.status === 'completed');
+      await jobQueue.pruneCompleted(now);
+      expect(await jobQueue.getJob(liveId)).not.toBeNull();
+      expect(await jobQueue.getJob('old')).toBeNull();
+    });
+
+    it('start() sweeps before it resolves', async () => {
+      await seed('stale', 'completed', Date.now() - 2 * RETENTION);
+      await seed('fresh', 'completed', Date.now());
+      await jobQueue.start();
+      expect(await jobQueue.getJob('stale')).toBeNull();
+      expect(await jobQueue.getJob('fresh')).not.toBeNull();
+    });
+
+    it('stop() clears the prune interval', async () => {
+      await jobQueue.start();
+      expect(jobQueue.__testOnly.pruneTimer).not.toBeNull();
+      await jobQueue.stop();
+      expect(jobQueue.__testOnly.pruneTimer).toBeNull();
+    });
+
+    it('a start() superseded by stop() during its initial sweep creates no prune interval', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      const slow = new JobQueue(db, { completedRetentionMs: RETENTION });
+      (slow as any).pruneCompleted = async () => { await gate; return 0; };
+      const starting = slow.start();
+      await new Promise((r) => setTimeout(r, 20));
+      await slow.stop();
+      release();
+      await starting;
+      expect(slow.__testOnly.pruneTimer).toBeNull();
+    });
+
+    it('a start() superseded by stop() and a second start() leaves exactly one prune interval', async () => {
+      const PRUNE_MS = 12_345;
+      const q = new JobQueue(db, { completedRetentionMs: RETENTION, pruneIntervalMs: PRUNE_MS });
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      let blocked = false;
+      let calls = 0;
+      (q as any).pruneCompleted = async () => {
+        if (calls++ === 0) {
+          blocked = true;
+          await gate;
+        }
+        return 0;
+      };
+      const intervals = spyOn(globalThis, 'setInterval');
+      try {
+        const start1 = q.start();
+        await waitFor(() => blocked);
+        await q.stop();
+        await q.start();
+        release();
+        await start1;
+        const pruneIntervals = intervals.mock.calls.filter((c) => c[1] === PRUNE_MS);
+        expect(pruneIntervals.length).toBe(1);
+      } finally {
+        intervals.mockRestore();
+        await q.stop();
+      }
+    });
+
+    it('logs a sweep failure at error and still resolves start()', async () => {
+      const failing = new JobQueue(db, { completedRetentionMs: RETENTION });
+      (failing as any).db = new Proxy(db, {
+        get(target, prop) {
+          if (prop === 'deleteFrom') {
+            return () => { throw new Error('sweep boom'); };
+          }
+          const value = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      const errorLog = spyOn(rootLogger, 'error');
+      try {
+        await expect(failing.start()).resolves.toBeUndefined();
+        expect(JSON.stringify(errorLog.mock.calls)).toContain('Failed to prune completed jobs');
+      } finally {
+        errorLog.mockRestore();
+        await failing.stop();
+      }
+    });
+  });
 });

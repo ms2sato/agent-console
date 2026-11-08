@@ -17,7 +17,7 @@ import { createMockPtyFactory } from '../../../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../../../__tests__/utils/mock-process-helper.js';
 import { resetGitMocks } from '../../../../__tests__/utils/mock-git-helper.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../../../database/connection.js';
-import { JobQueue, JOB_TYPES, type JobHandler } from '../../../../jobs/index.js';
+import { JobQueue, JOB_TYPES, PermanentHandlerError, type JobHandler } from '../../../../jobs/index.js';
 import { SessionManager } from '../../../session-manager.js';
 import { RepositoryManager } from '../../../repository-manager.js';
 import { AgentManager } from '../../../agent-manager.js';
@@ -359,20 +359,20 @@ describe('inbound webhook action: repository orchestrators', () => {
     expect(fs.readFileSync(pathsOf(session.id, worker.id, payload.jobId).instructionPath, 'utf-8')).toBe(edited);
   });
 
-  it('a deleted endpoint ends the job without delivery and without files', async () => {
+  it('a deleted endpoint throws PermanentHandlerError without delivery and without files', async () => {
     const handler = registerOnCapturingQueue();
     const { session, worker } = await designatedSession();
     const deliveries = watchDeliveries();
     const payload = payloadOf();
     await db().deleteFrom('inbound_webhook_endpoints').where('id', '=', ENDPOINT_ID).execute();
 
-    await expect(handler(payload)).resolves.toBeUndefined();
+    await expect(handler(payload)).rejects.toBeInstanceOf(PermanentHandlerError);
 
     expect(deliveries).toEqual([]);
     expect(fs.existsSync(pathsOf(session.id, worker.id, payload.jobId).dir)).toBe(false);
   });
 
-  it('a cascade-deleted endpoint (its repository deleted) ends the job the same way', async () => {
+  it('a cascade-deleted endpoint (its repository deleted) throws PermanentHandlerError the same way', async () => {
     const handler = registerOnCapturingQueue();
     await db().insertInto('repositories').values({ id: 'repo-gone', name: 'gone', path: '/tmp/gone' }).execute();
     await endpoints.create({
@@ -388,7 +388,7 @@ describe('inbound webhook action: repository orchestrators', () => {
 
     await expect(
       handler({ jobId: inboundWebhookDeliveryId('ep-gone', 'wh-1'), endpointId: 'ep-gone', rawPayload: JSON.stringify(SENDER_BODY), receivedAt: RECEIVED_AT }),
-    ).resolves.toBeUndefined();
+    ).rejects.toBeInstanceOf(PermanentHandlerError);
     expect(deliveries).toEqual([]);
   });
   describe('attachments', () => {

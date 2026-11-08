@@ -170,6 +170,12 @@ export const serverConfig = {
    * Default: 1MiB (1024 * 1024 bytes)
    */
   FILE_VIEWER_MAX_BYTES: parsePositiveIntWithDefault(process.env.FILE_VIEWER_MAX_BYTES, 1024 * 1024),
+  /**
+   * Days a `completed` job row is kept before the queue's retention sweep deletes it.
+   * `stalled` rows are never swept.
+   * Default: 30
+   */
+  JOB_COMPLETED_RETENTION_DAYS: parsePositiveIntWithDefault(process.env.JOB_COMPLETED_RETENTION_DAYS, 30),
   /*
    * Memory bound of the three INBOUND_WEBHOOK_ATTACHMENT_* limits below. Every file fetched for one
    * message is held in memory until all target sessions have their copy, so one job can hold up to

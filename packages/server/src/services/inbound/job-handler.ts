@@ -2,7 +2,7 @@ import type {
   InboundSystemEvent,
 } from '@agent-console/shared';
 import { createLogger } from '../../lib/logger.js';
-import type { InboundEventJobPayload } from '../../jobs/index.js';
+import { PermanentHandlerError, type InboundEventJobPayload } from '../../jobs/index.js';
 import type { InboundEventNotification, NewInboundEventNotification } from '../../database/schema.js';
 import type { ServiceParser } from './service-parser.js';
 import type { InboundEventHandler, EventTarget } from './handlers.js';
@@ -10,20 +10,8 @@ import type { CICompletionChecker } from './ci-completion-checker.js';
 
 const logger = createLogger('inbound-event-job');
 
-/**
- * Error indicating a permanent failure that should not be retried.
- *
- * Use this for errors like:
- * - Invalid payload that will never parse successfully
- * - Unknown event types that won't become known after retry
- * - Database schema violations
- */
-export class PermanentHandlerError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PermanentHandlerError';
-  }
-}
+// Defined in the job queue (which must not import from services/); re-exported for existing importers.
+export { PermanentHandlerError };
 
 /**
  * Whether `error` is the notifications table's FOREIGN KEY constraint

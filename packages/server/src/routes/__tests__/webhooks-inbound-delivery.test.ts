@@ -183,7 +183,7 @@ describe('POST /webhooks/in/:endpointId through the real queue', () => {
     expect(fs.readFileSync(paths.instructionPath, 'utf-8')).toBe(INSTRUCTION);
   });
 
-  it('a deleted endpoint ends its queued job as completed on the first attempt, not retried', async () => {
+  it('a deleted endpoint ends its queued job as stalled on the first attempt, not retried', async () => {
     await jobQueue.stop();
     const res = await post('Ev-gone', JSON.stringify(SENDER_BODY));
     expect(res.status).toBe(200);
@@ -191,7 +191,7 @@ describe('POST /webhooks/in/:endpointId through the real queue', () => {
     await jobQueue.start();
 
     const jobId = inboundWebhookDeliveryId(ENDPOINT_ID, 'Ev-gone');
-    await until(async () => (await jobQueue.getJob(jobId))?.status === 'completed');
-    expect((await jobQueue.getJob(jobId))?.attempts).toBe(0);
+    await until(async () => (await jobQueue.getJob(jobId))?.status === 'stalled');
+    expect((await jobQueue.getJob(jobId))?.attempts).toBe(1);
   });
 });

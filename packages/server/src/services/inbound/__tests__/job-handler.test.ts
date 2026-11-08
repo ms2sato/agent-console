@@ -3,7 +3,8 @@ import type { Kysely } from 'kysely';
 import type { ServiceParser } from '../service-parser.js';
 import type { InboundEventHandler } from '../handlers.js';
 import type { InboundEventNotification, NewInboundEventNotification } from '../../../database/schema.js';
-import { createInboundEventJobHandler } from '../job-handler.js';
+import { createInboundEventJobHandler, PermanentHandlerError } from '../job-handler.js';
+import { PermanentHandlerError as QueuePermanentHandlerError } from '../../../jobs/index.js';
 import { rootLogger } from '../../../lib/logger.js';
 // Aliased: job-handler.ts's own dependency-interface `InboundEventNotificationRepository`
 // (3 methods) shares its name with the CLASS of the same name imported below
@@ -1663,5 +1664,11 @@ describe('createInboundEventJobHandler', () => {
         await db.destroy();
       }
     });
+  });
+});
+
+describe('PermanentHandlerError re-export', () => {
+  it('is the same class the job queue recognises (one definition)', () => {
+    expect(PermanentHandlerError).toBe(QueuePermanentHandlerError);
   });
 });
