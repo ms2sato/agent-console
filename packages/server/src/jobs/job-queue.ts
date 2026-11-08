@@ -193,6 +193,8 @@ export class JobQueue {
   private readonly completedRetentionMs: number;
   private readonly pruneIntervalMs: number;
   private pruneTimer: Timer | null = null;
+  /** Bumped by every start() and stop(), so a start() superseded while sweeping creates no interval. */
+  private lifecycleGeneration = 0;
 
   // Retry configuration
   private readonly backoffBase = 1000; // 1 second
@@ -288,6 +290,7 @@ export class JobQueue {
     }
 
     this.running = true;
+    const generation = ++this.lifecycleGeneration;
 
     // Recover jobs that were processing when server crashed
     const result = await this.db
@@ -305,6 +308,7 @@ export class JobQueue {
 
     // Retention sweep: once now, then on an interval. Never throws out of start().
     await this.pruneCompletedSafely();
+    if (this.lifecycleGeneration !== generation) return;
     this.pruneTimer = setInterval(() => {
       void this.pruneCompletedSafely();
     }, this.pruneIntervalMs);
@@ -336,6 +340,7 @@ export class JobQueue {
     }
 
     this.running = false;
+    this.lifecycleGeneration++;
 
     // Clear all retry timers
     for (const timer of this.retryTimers.values()) {

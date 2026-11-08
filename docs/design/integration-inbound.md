@@ -828,7 +828,7 @@ POST /webhooks/in/:endpointId                                   -- RECEIVE HALF 
   -> one transaction: dedupe row (endpoint_id, webhook_id) + job row; duplicate -> 200, no job
   -> 200 accepted; 503 if the transaction fails; 500 for anything unhandled
 job INBOUND_WEBHOOK_PROCESS:
-  receive half  -> re-read the endpoint row (gone -> no delivery, the job completes without retry)
+  receive half  -> re-read the endpoint row (gone -> no delivery, PermanentHandlerError, the job ends stalled on the first attempt)
                 -> parse the body, fetch the attachments once into memory (best effort), build DeliveryContent { bodyMarkdown (sanitized), instructionMarkdown (endpoint.instruction_text as-is), attachments, attachment counts, summary, url }
   action half   -> (kind: repository-orchestrators, the only kind today)
                    InboundSystemEvent { type: 'external:message', source: 'webhook', metadata: { targetRepositoryId, repositoryName, deliveryId, instructionExcerpt } }

@@ -1344,6 +1344,19 @@ describe('JobQueue', () => {
       expect(jobQueue.__testOnly.pruneTimer).toBeNull();
     });
 
+    it('a start() superseded by stop() during its initial sweep creates no prune interval', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      const slow = new JobQueue(db, { completedRetentionMs: RETENTION });
+      (slow as any).pruneCompleted = async () => { await gate; return 0; };
+      const starting = slow.start();
+      await new Promise((r) => setTimeout(r, 20));
+      await slow.stop();
+      release();
+      await starting;
+      expect(slow.__testOnly.pruneTimer).toBeNull();
+    });
+
     it('logs a sweep failure at error and still resolves start()', async () => {
       const failing = new JobQueue(db, { completedRetentionMs: RETENTION });
       (failing as any).db = new Proxy(db, {
