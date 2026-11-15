@@ -13,11 +13,11 @@ import * as v from 'valibot';
 import { JOB_TYPES, type InboundWebhookProcessPayload, type JobQueue } from '../../jobs/index.js';
 import type { Database } from '../../database/schema.js';
 import { INBOUND_WEBHOOK_SECRET_PREFIX, isPreviousSecretActive } from '../../lib/inbound-webhook-secret.js';
-import { stripControlChars } from '../../lib/pty-notification.js';
 import { createLogger } from '../../lib/logger.js';
 import type { InboundWebhookEndpointRepository } from '../../repositories/webhook-endpoint-repository.js';
 import { PermanentHandlerError } from '../inbound/job-handler.js';
 import { fetchAttachments, type AttachmentFetch, type AttachmentFetchLimits, type FetchedAttachment } from './attachments.js';
+import { projectSlackContent, sanitizeMultiline, toSingleLine } from './slack-content.js';
 
 const logger = createLogger('inbound-webhook-receive');
 
@@ -271,11 +271,14 @@ export interface DeliveryEndpoint {
 
 /** What the receive half hands to an action. Content, not files. */
 export interface DeliveryContent {
-  /** Sanitized projection of the untrusted sender message. */
+  /**
+   * Sanitized projection of the untrusted sender message: its text, the Slack content projection
+   * (blocks and attachments, text only), permalink, channel, timestamp and fetched attachment names.
+   */
   bodyMarkdown: string;
   /** The operator's `instruction_text` as stored at the process-time re-read, byte for byte. */
   instructionMarkdown: string;
-  /** Sender text on one line, at most ~160 characters. */
+  /** Sender text on one line, at most ~160 characters: `message`, or the first projected content line when `message` is empty. */
   summary: string;
   /** The Slack permalink, or null. */
   url: string | null;
@@ -299,10 +302,6 @@ export interface PrepareDeliveryDeps {
   attachmentLimits?: AttachmentFetchLimits;
 }
 
-function toSingleLine(value: string): string {
-  return stripControlChars(value).replace(/\s+/g, ' ').trim();
-}
-
 /** Single line, cut at SUMMARY_MAX_CODE_POINTS with `...` appended, never inside a surrogate pair. */
 function toSummary(message: string | undefined): string {
   const line = toSingleLine(message ?? '');
@@ -312,20 +311,23 @@ function toSummary(message: string | undefined): string {
   return `${codePoints.slice(0, SUMMARY_MAX_CODE_POINTS).join('')}...`;
 }
 
-/** Keep \n and \t; drop every other control character. */
-function sanitizeMultiline(value: string): string {
-  return stripControlChars(value).replace(/\r/g, '');
-}
-
 /**
- * Projection of `message`, `slack_permalink`, `slack_channel` and `slack_ts`, plus the LOCAL names
- * of the fetched attachments. `slack_message` and the `slack_files` entries never enter it: the
- * first is the raw event, the second carries short-lived download-token URLs, and a listed
- * attachment is only ever a file name under `attachments/` (the sanitized name, not the declared
- * name, mimetype or size).
+ * Projection of `message`, `slack_permalink`, `slack_channel` and `slack_ts`, a text-only
+ * projection of `slack_message.blocks` / `slack_message.attachments` (the `## Content` section,
+ * between `## Message` and `## Details`; see `slack-content.ts`), plus the LOCAL names of the
+ * fetched attachments. The `slack_message` object itself, every other key of it, and the
+ * `slack_files` entries never enter it: the first is the raw event, the second carries short-lived
+ * download-token URLs, and a listed attachment is only ever a file name under `attachments/` (the
+ * sanitized name, not the declared name, mimetype or size). With no section, the output is
+ * identical to a message without `slack_message`.
  */
-function buildBodyMarkdown(body: InboundWebhookBody, attachments: { names: string[]; skipped: number }): string {
+function buildBodyMarkdown(
+  body: InboundWebhookBody,
+  section: string[] | null,
+  attachments: { names: string[]; skipped: number },
+): string {
   const lines = ['# Inbound webhook message', '', '## Message', '', sanitizeMultiline(body.message ?? '')];
+  if (section !== null) lines.push('', ...section);
   const details: string[] = [];
   if (body.slack_permalink !== undefined) details.push(`- Permalink: ${toSingleLine(body.slack_permalink)}`);
   if (body.slack_channel !== undefined) details.push(`- Channel: ${toSingleLine(body.slack_channel)}`);
@@ -360,10 +362,26 @@ export async function prepareDelivery(
   const { fetched, skipped } = files.length === 0
     ? { fetched: [], skipped: 0 }
     : await fetchAttachments(files, { fetch: deps.attachmentFetch, limits: deps.attachmentLimits });
+  const projection = projectSlackContent(body.slack_message, body.slack_message_truncated === true);
+  if (body.slack_message !== undefined) {
+    // Counts only, never a payload string.
+    logger.info(
+      {
+        deliveryId: payload.jobId,
+        endpointId: endpoint.id,
+        ...projection.counts,
+        senderTruncated: body.slack_message_truncated === true,
+      },
+      'Slack content projected',
+    );
+  }
+  const summary = toSingleLine(body.message ?? '') !== ''
+    ? toSummary(body.message)
+    : toSummary(projection.firstLine ?? undefined);
   return {
-    bodyMarkdown: buildBodyMarkdown(body, { names: fetched.map((file) => file.name), skipped }),
+    bodyMarkdown: buildBodyMarkdown(body, projection.section, { names: fetched.map((file) => file.name), skipped }),
     instructionMarkdown: endpoint.instructionText,
-    summary: toSummary(body.message),
+    summary,
     url: body.slack_permalink ?? null,
     deliveryId: payload.jobId,
     endpoint: { id: endpoint.id, repositoryId: endpoint.repositoryId, label: endpoint.label },

@@ -1,0 +1,167 @@
+{
+  "message": "arata daily (acme): 新規 3 件、最大 critical",
+  "slack_message": {
+    "text": "arata daily (acme): 新規 3 件、最大 critical",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "<!channel>",
+          "verbatim": true
+        },
+        "block_id": "b1"
+      },
+      {
+        "type": "header",
+        "text": {
+          "type": "plain_text",
+          "text": "🚨 arata daily — acme",
+          "emoji": true
+        },
+        "block_id": "b2"
+      },
+      {
+        "type": "section",
+        "fields": [
+          {
+            "type": "mrkdwn",
+            "text": "*期間* 10/20 09:00 〜 10/21 09:00 (UTC)",
+            "verbatim": true
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*新規* 🚨 critical 1 ・ 🟠 medium 2",
+            "verbatim": true
+          },
+          {
+            "type": "mrkdwn",
+            "text": "変化 1 件 ・ 再発 1 件",
+            "verbatim": true
+          },
+          {
+            "type": "mrkdwn",
+            "text": "解消 1 件 ・ 未対応 1 件",
+            "verbatim": true
+          },
+          {
+            "type": "mrkdwn",
+            "text": "本日報告済み 1 件",
+            "verbatim": true
+          },
+          {
+            "type": "mrkdwn",
+            "text": "情報 1 件 (件数のみ)",
+            "verbatim": true
+          }
+        ],
+        "block_id": "b3"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "まず対応 3 件 (最も重いのは「summary of arn:aws:iam::1:root|203.0.113.1」)、確認推奨 2 件。",
+          "verbatim": true
+        },
+        "block_id": "b4"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "⚠️ *取れていないもの* (結果が欠けている可能性があります)\n*取れなかったソース*\n• trail-us: `QUERY_LIMIT` 取れた期間 2026-10-20T20:00:00Z 〜 2026-10-21T09:00:00Z\n*形式の解釈率の警告*\n• app (json): 解釈率 0.50、閾値 0.40 `FORMAT_DRIFT`\n*スキップしたチェック*: login_bruteforce (no http_access source)",
+          "verbatim": true
+        },
+        "block_id": "b5"
+      },
+      {
+        "type": "divider",
+        "block_id": "b6"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "*まず対応*",
+          "verbatim": true
+        },
+        "block_id": "b7"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "🚨 *summary of arn:aws:iam::1:root|203.0.113.1* `id: f-002`\n→ 封じ込め (侵害の疑い): ルートのパスワードを変える、ルートのアクセスキーがあれば無効化・削除する",
+          "verbatim": true
+        },
+        "block_id": "b8"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "🚨 *summary of arn:aws:iam::1:root|192.0.2.1* (再発) `id: f-009`\n→ 封じ込め (侵害の疑い): ルートのパスワードを変える、ルートのアクセスキーがあれば無効化・削除する",
+          "verbatim": true
+        },
+        "block_id": "b9"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "🔴 *summary of a-&gt;b* (変化) `id: f-003`\n→ 封じ込め (侵害の疑い): ロールの信頼ポリシーから不審な主体を外す",
+          "verbatim": true
+        },
+        "block_id": "b10"
+      },
+      {
+        "type": "divider",
+        "block_id": "b11"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "*確認推奨*",
+          "verbatim": true
+        },
+        "block_id": "b12"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "🟠 *summary of 198.51.100.7* `id: f-010`",
+          "verbatim": true
+        },
+        "block_id": "b13"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "🟠 *summary of arn:aws:iam::1:user/x* `id: f-001`",
+          "verbatim": true
+        },
+        "block_id": "b14"
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "全文と対処手順: `arata review` ・ `arata help ai playbook <check>`",
+            "verbatim": true
+          },
+          {
+            "type": "mrkdwn",
+            "text": "<dir>/report.md",
+            "verbatim": true
+          }
+        ],
+        "block_id": "b15"
+      }
+    ]
+  }
+}
