@@ -152,6 +152,26 @@ describe('projectSlackContent: blocks', () => {
     expect(neither.counts.notShown).toBe(1);
   });
 
+  it('counts a section whose text is only whitespace as not shown', () => {
+    const projection = projectSlackContent({ blocks: [section('  \n\t ')] }, false);
+    expect(projection.counts).toMatchObject({ blocksSeen: 1, chunks: 0, notShown: 1 });
+    expect(projection.section?.join('\n')).toBe(withNote('', '(1 block without projectable text not shown.)'));
+  });
+
+  it('drops a blank field from a section without leaving an empty line between the real ones', () => {
+    const f = (text: string) => ({ type: 'mrkdwn', text });
+    const projection = projectSlackContent({ blocks: [{ type: 'section', fields: [f('F1'), f('   '), f('F2')] }] }, false);
+    expect(projection.section?.join('\n')).toBe(withNote('', 'F1', 'F2'));
+    expect(projection.counts.notShown).toBe(0);
+  });
+
+  it('counts a header whose text is only whitespace as not shown', () => {
+    const projection = projectSlackContent({ blocks: [{ type: 'header', text: { type: 'plain_text', text: '   ' } }] }, false);
+    expect(projection.counts).toMatchObject({ blocksSeen: 1, chunks: 0, notShown: 1 });
+    expect(projection.section?.join('\n')).toBe(withNote('', '(1 block without projectable text not shown.)'));
+    expect(projection.firstLine).toBeNull();
+  });
+
   it('(d) renders only the text elements of a context block', () => {
     const output = sectionOf({
       blocks: [{
@@ -193,10 +213,14 @@ describe('projectSlackContent: blocks', () => {
 
   it('(j) strips control characters but keeps newline and tab; a header collapses to one line', () => {
     const output = sectionOf({
-      blocks: [section('a\u001b[31mb\u0000c\u009bd\re\nf\tg'), { type: 'header', text: { text: 'h1\nh2\u0007\th3' } }],
+      blocks: [section('a\u001b[31mb\u0000c\u009bd\re\u000bv\u000cw\nf\tg'), { type: 'header', text: { text: 'h1\nh2\u0007\th3\u000b\u000ch4' } }],
     });
-    expect(output).toBe(withNote('', 'a[31mbcde\nf\tg', '', '### h1 h2 h3'));
+    expect(output).toBe(withNote('', 'a[31mbcdevw\nf\tg', '', '### h1 h2 h3 h4'));
     expect(output).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+  });
+
+  it('(j) renders the exact vertical tab, form feed and CR input as abcd, newline, e, tab, f', () => {
+    expect(sectionOf({ blocks: [section('a\u000bb\u000cc\rd\ne\tf')] })).toBe(withNote('', 'abcd\ne\tf'));
   });
 
   it('(k) keeps mrkdwn tokens and entities byte for byte', () => {
@@ -246,6 +270,16 @@ describe('projectSlackContent: legacy attachments', () => {
     const projection = projectSlackContent({ attachments: [{}, { text: 'A1' }], blocks: [section('B1')] }, false);
     expect(projection.section?.join('\n')).toBe(withNote('', 'B1', '', 'A1', '', '(1 block without projectable text not shown.)'));
     expect(projection.counts).toEqual({ blocksSeen: 1, attachmentsSeen: 2, chunks: 2, notShown: 1, cut: false });
+  });
+});
+
+describe('projectSlackContent: nested not-shown counting', () => {
+  it('counts an attachment with only unprojectable nested blocks once, and each one next to its own text', () => {
+    const nested = [{ type: 'image' }, { type: 'actions' }];
+    const alone = projectSlackContent({ attachments: [{ blocks: nested }] }, false);
+    expect(alone.counts).toMatchObject({ attachmentsSeen: 1, chunks: 0, notShown: 1 });
+    const withText = projectSlackContent({ attachments: [{ text: 't', blocks: nested }] }, false);
+    expect(withText.counts).toMatchObject({ attachmentsSeen: 1, chunks: 1, notShown: 2 });
   });
 });
 
@@ -332,5 +366,7 @@ describe('sanitizers', () => {
 
   it('sanitizeMultiline keeps newline and tab, drops CR and other controls', () => {
     expect(sanitizeMultiline('a\r\nb\tc\u0000d')).toBe('a\nb\tcd');
+    expect(sanitizeMultiline('a\u000bb\u000cc')).toBe('abc');
+    expect(sanitizeMultiline('a\u000bb\u000cc\rd\ne\tf')).toBe('abcd\ne\tf');
   });
 });

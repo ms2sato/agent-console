@@ -639,11 +639,23 @@ describe('prepareDelivery', () => {
 
   it('strips control characters but keeps newline and tab in the body projection', async () => {
     const content = await prepareDelivery(
-      payloadOf({ message: 'a\u001b[31mb\u0000c\u009bd\re\nf\tg' }),
+      payloadOf({ message: 'a\u001b[31mb\u0000c\u009bd\re\u000bv\u000cw\nf\tg' }),
       { endpoints },
     );
-    expect(content.bodyMarkdown).toContain('a[31mbcde\nf\tg');
+    expect(content.bodyMarkdown).toContain('a[31mbcdevw\nf\tg');
     expect(content.bodyMarkdown).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+  });
+
+  it('renders the exact VT, FF and CR input as abcd, newline, e, tab, f in both ## Message and ## Content', async () => {
+    const raw = 'a\u000bb\u000cc\rd\ne\tf';
+    const content = await prepareDelivery(
+      payloadOf({ message: raw, slack_message: { blocks: [{ type: 'section', text: { type: 'mrkdwn', text: raw } }] } }),
+      { endpoints },
+    );
+    const body = content.bodyMarkdown;
+    expect(body).toContain('## Message\n\nabcd\ne\tf\n');
+    const projected = body.slice(body.indexOf('## Content'));
+    expect(projected).toContain('\n\nabcd\ne\tf\n');
   });
 
   it('uses a fixed summary when the sender text is empty', async () => {

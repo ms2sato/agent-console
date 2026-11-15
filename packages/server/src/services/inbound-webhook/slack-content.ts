@@ -51,9 +51,9 @@ export function toSingleLine(value: string): string {
   return stripControlChars(value).replace(/\s+/g, ' ').trim();
 }
 
-/** Keep \n and \t; drop every other control character. */
+/** Keep \n and \t; drop every other control character, including vertical tab and form feed. */
 export function sanitizeMultiline(value: string): string {
-  return stripControlChars(value).replace(/\r/g, '');
+  return stripControlChars(value).replace(/[\r\v\f]/g, '');
 }
 
 // ---------------------------------------------------------------------------

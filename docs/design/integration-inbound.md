@@ -875,7 +875,7 @@ The 401 body is one generic message for every signature or timestamp failure; th
 
 A sender that formats with Block Kit carries its readable content in `slack_message.blocks` (legacy senders: `slack_message.attachments`), not in `message`. `body.md` therefore carries a text-only projection of those two arrays in a `## Content` section, between `## Message` and `## Details`. It is a projection, not a dump: only strings found in the positions listed below are written, each through the same sanitiser as `## Message`; no other key of `slack_message` reaches a session-visible file. The receiver only displays this text and never derives counts, severity or routing from it.
 
-Projection table (`.claude/rules/decision-table.md`: every cell is a decision; none is left to the implementer). A "text object" is any object whose `text` is a string; its `type`, `emoji`, `verbatim` and every other key are ignored.
+Projection table (`.claude/rules/decision-table.md`: every cell is a decision; none is left to the implementer). A "text object" is any object whose `text` is a string; its `type`, `emoji`, `verbatim` and every other key are ignored. A text that is empty or whitespace-only after sanitising counts as absent, wherever it appears (a block whose only text is blank is therefore "not shown, counted", and no blank line is written for a blank field).
 
 | Source | Rendering in `## Content` |
 |---|---|
@@ -899,7 +899,7 @@ Layout: chunks are separated by one blank line; lines inside a chunk by `\n`. Th
 
 Summary: when `message` is empty after whitespace collapsing, the notification `summary` is the first non-empty projected line (a divider and the fixed lines are not candidates), through the same cut; otherwise it is `message` as before.
 
-Logging: one `info` record per delivery that carries `slack_message`, counts only (`blocksSeen`, `attachmentsSeen`, `chunks`, `notShown`, `cut`, `senderTruncated`) with the delivery id; never text.
+Logging: one `info` record per delivery that carries `slack_message`, counts only (`blocksSeen`, `attachmentsSeen`, `chunks`, `notShown`, `cut`, `senderTruncated`) with the delivery id; never text. `blocksSeen` / `attachmentsSeen` count top-level entries. An attachment that renders nothing counts as one not-shown entry, whatever it contains; when it does render, each of its nested blocks that is not shown adds one.
 
 Surfaces: this adds no operation on any surface; the Surfaces table above is unchanged.
 
