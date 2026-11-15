@@ -131,7 +131,7 @@ function resolveChromiumExecutablePath() {
     return envOverride;
   }
   const candidates = [
-    // Linux, GitHub Actions ubuntu-latest hosted runners ship Google Chrome preinstalled.
+    // Linux, GitHub Actions ubuntu-24.04 hosted runners ship Google Chrome preinstalled.
     '/usr/bin/google-chrome-stable',
     '/usr/bin/google-chrome',
     // macOS.
