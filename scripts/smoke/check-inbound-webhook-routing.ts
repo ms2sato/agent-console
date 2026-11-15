@@ -211,6 +211,9 @@ const EXCERPT = 'Triage the message';
 const FILE_HOST_PATTERN = /files\.slack\.com/;
 const TOKEN_LOOKING = 'tok-SMOKE-TOKENLIKE-SUBSTRING';
 const RAW_EVENT_TEXT = 'RAW-SLACK-EVENT-TEXT';
+// A Block Kit section's text: it must reach body.md under `## Content` and nothing else; its block_id is a non-content key.
+const BLOCK_MARKER = 'SMOKE-BLOCK-CONTENT-MARKER';
+const BLOCK_ID_MARKER = 'SMOKE-BLOCK-ID';
 // Arm (5): a host outside the allowlist that can never resolve (RFC 2606 `.invalid`), matched as a pattern.
 const REFUSED_FILE_HOST_PATTERN = /attachments-NEUTRAL\.invalid/;
 const REFUSED_FILE_TOKEN = 'tok-NEUTRAL-0001';
@@ -233,7 +236,11 @@ const SENDER_BODY = {
   slack_ts: '1700000000.000100',
   slack_permalink: 'https://example.slack.com/archives/C123/p1700000000000100',
   slack_files: [{ name: 'a.png', url: `https://files.slack.com/files-pri/T1-F1/a.png?t=${TOKEN_LOOKING}` }],
-  slack_message: { text: RAW_EVENT_TEXT, user: 'U1' },
+  slack_message: {
+    text: RAW_EVENT_TEXT,
+    user: 'U1',
+    blocks: [{ type: 'section', block_id: BLOCK_ID_MARKER, text: { type: 'mrkdwn', text: BLOCK_MARKER } }],
+  },
 };
 
 async function main(): Promise<void> {
@@ -552,8 +559,8 @@ async function main(): Promise<void> {
       expect(newL.includes(needle), `(1) L's notification carries ${what}`, needle);
     }
     expect(
-      !newL.includes('SECOND-LINE-MARKER') && !newL.includes(TOKEN_LOOKING) && !FILE_HOST_PATTERN.test(newL) && !newL.includes(RAW_EVENT_TEXT) && !newL.includes('slack_message'),
-      "(1) L's output carries neither the instruction's second line nor any sender-only key, raw event text, file URL or token",
+      !newL.includes('SECOND-LINE-MARKER') && !newL.includes(TOKEN_LOOKING) && !FILE_HOST_PATTERN.test(newL) && !newL.includes(RAW_EVENT_TEXT) && !newL.includes('slack_message') && !newL.includes(BLOCK_MARKER),
+      "(1) L's output carries neither the instruction's second line nor any sender-only key, raw event text, block content, file URL or token",
       newL.slice(-600),
     );
     expect(existsSync(pathsL.bodyPath) && existsSync(pathsL.instructionPath), '(1) body.md and instruction.md exist in L\'s delivery directory');
@@ -564,7 +571,12 @@ async function main(): Promise<void> {
     const bodyL = readSafe(pathsL.bodyPath);
     expect(bodyL.includes('Deploy finished'), '(1) body.md carries the sender message (positive control for the absence checks below)', bodyL.slice(0, 300));
     expect(
-      !bodyL.includes('slack_message') && !bodyL.includes('slack_files') && !FILE_HOST_PATTERN.test(bodyL) && !bodyL.includes(TOKEN_LOOKING) && !bodyL.includes(RAW_EVENT_TEXT),
+      bodyL.includes('## Content') && bodyL.includes(BLOCK_MARKER),
+      '(1) body.md carries the block text under `## Content` (the projection of slack_message.blocks)',
+      bodyL.slice(0, 600),
+    );
+    expect(
+      !bodyL.includes('slack_message') && !bodyL.includes(BLOCK_ID_MARKER) && !bodyL.includes('slack_files') && !FILE_HOST_PATTERN.test(bodyL) && !bodyL.includes(TOKEN_LOOKING) && !bodyL.includes(RAW_EVENT_TEXT),
       '(1) body.md carries no slack_message key, no slack_files URL and no token-looking substring',
       bodyL.slice(0, 600),
     );

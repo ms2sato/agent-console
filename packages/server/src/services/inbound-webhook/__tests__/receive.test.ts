@@ -7,6 +7,9 @@ import { createDatabaseForTest } from '../../../database/connection.js';
 import { JobQueue, JOB_TYPES } from '../../../jobs/index.js';
 import { SqliteInboundWebhookEndpointRepository } from '../../../repositories/sqlite-inbound-webhook-endpoint-repository.js';
 import { PermanentHandlerError } from '../../inbound/job-handler.js';
+import { rootLogger } from '../../../lib/logger.js';
+// Fictional values from a public repository's sender fixture.
+import golden from './fixtures/slack-blocks-golden.json';
 import {
   inboundWebhookDeliveryId,
   isTimestampWithinTolerance,
@@ -459,21 +462,109 @@ describe('prepareDelivery', () => {
     expect(content.bodyMarkdown).not.toContain('Details');
   });
 
-  it('never projects slack_message or slack_files, even when the payload carries them', async () => {
+  it('never projects slack_message.text, non-content keys of slack_message, or slack_files, even when the payload carries them', async () => {
     const token = 'TOKEN-SENTINEL-123';
     const content = await prepareDelivery(
       payloadOf({
         message: 'plain',
-        slack_message: { text: 'RAW-EVENT-SENTINEL', blocks: [] },
+        slack_message: { text: 'RAW-EVENT-SENTINEL', user: 'USER-SENTINEL', bot_id: 'BOT-SENTINEL', blocks: [{ type: 'rich_text', block_id: 'BLOCK-ID-SENTINEL' }] },
         slack_files: [{ name: 'a.png', mimetype: 'image/png', size: 5, url: `https://firebasestorage.googleapis.com/v0/b/x/o/a?alt=media&token=${token}` }],
       }),
       // The file is not fetchable here, so no local name is listed either.
       { endpoints, attachmentFetch: async () => new Response('', { status: 404 }) },
     );
     const everything = JSON.stringify(content);
-    for (const forbidden of ['RAW-EVENT-SENTINEL', token, 'firebasestorage', 'slack_message', 'slack_files', 'a.png']) {
+    for (const forbidden of ['RAW-EVENT-SENTINEL', 'USER-SENTINEL', 'BOT-SENTINEL', 'BLOCK-ID-SENTINEL', token, 'firebasestorage', 'slack_message', 'slack_files', 'a.png']) {
       expect(everything).not.toContain(forbidden);
     }
+  });
+
+  describe('slack content projection', () => {
+    it('leaves the body byte-identical when there is nothing to project', async () => {
+      const plain = await prepareDelivery(payloadOf({ message: 'hi' }), { endpoints });
+      expect(plain.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n');
+      const withEvent = await prepareDelivery(payloadOf({ message: 'hi', slack_message: { text: 'x', user: 'U1' } }), { endpoints });
+      expect(withEvent.bodyMarkdown).toBe(plain.bodyMarkdown);
+    });
+
+    it('places ## Content between ## Message and ## Details, and keeps the message as the summary', async () => {
+      const content = await prepareDelivery(
+        payloadOf({ ...golden, slack_channel: 'C1', slack_ts: '1.2' }),
+        { endpoints },
+      );
+      const body = content.bodyMarkdown;
+      const message = body.indexOf('## Message');
+      const projected = body.indexOf('## Content');
+      const details = body.indexOf('## Details');
+      expect(message).toBeGreaterThanOrEqual(0);
+      expect(projected).toBeGreaterThan(message);
+      expect(details).toBeGreaterThan(projected);
+      expect(body).toContain('\n\n## Content\n\n');
+      expect(body).toContain('### 🚨 arata daily — acme');
+      expect(content.summary).toBe(golden.message);
+    });
+
+    it('takes the summary from the first projected line when the message is empty or blank', async () => {
+      for (const message of ['', '   ']) {
+        const content = await prepareDelivery(payloadOf({ message, slack_message: golden.slack_message }), { endpoints });
+        expect(content.summary).toBe('<!channel>');
+      }
+      const headerFirst = await prepareDelivery(
+        payloadOf({ slack_message: { blocks: [{ type: 'divider' }, { type: 'header', text: { text: 'Head' } }] } }),
+        { endpoints },
+      );
+      expect(headerFirst.summary).toBe('Head');
+    });
+
+    it('falls back to the fixed summary when nothing is projected', async () => {
+      expect((await prepareDelivery(payloadOf({ slack_message: {} }), { endpoints })).summary).toBe('Inbound webhook message');
+      expect((await prepareDelivery(payloadOf({ slack_message: { blocks: [{ type: 'divider' }] } }), { endpoints })).summary).toBe('Inbound webhook message');
+    });
+
+    it('does not fail the delivery on malformed blocks and shows the count line', async () => {
+      const content = await prepareDelivery(
+        payloadOf({ slack_message: { blocks: [null, { type: 'section' }] } }),
+        { endpoints },
+      );
+      expect(content.bodyMarkdown).toContain('(2 blocks without projectable text not shown.)');
+      expect(content.summary).toBe('Inbound webhook message');
+    });
+
+    it('renders the section when the sender shortened the message, even with no slack_message', async () => {
+      const content = await prepareDelivery(payloadOf({ message: 'hi', slack_message_truncated: true }), { endpoints });
+      expect(content.bodyMarkdown).toContain('## Content');
+      expect(content.bodyMarkdown).toContain('The sender shortened the Slack message');
+    });
+
+    it('logs counts only, once, and only when slack_message is present', async () => {
+      const sentinel = 'LOG-SENTINEL-XYZ';
+      const infoSpy = spyOn(rootLogger, 'info');
+      try {
+        await prepareDelivery(
+          payloadOf({ message: sentinel, slack_message: { text: sentinel, blocks: [{ type: 'section', text: { text: sentinel } }, { type: 'image', title: sentinel }] } }),
+          { endpoints },
+        );
+        const projected = infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'));
+        expect(projected).toHaveLength(1);
+        expect(projected[0]![0]).toEqual({
+          deliveryId: 'inbound-webhook:ep-1:Ev1',
+          endpointId: 'ep-1',
+          blocksSeen: 2,
+          attachmentsSeen: 0,
+          chunks: 1,
+          notShown: 1,
+          cut: false,
+          senderTruncated: false,
+        });
+        expect(JSON.stringify(infoSpy.mock.calls)).not.toContain(sentinel);
+
+        infoSpy.mockClear();
+        await prepareDelivery(payloadOf({ message: 'no event' }), { endpoints });
+        expect(infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'))).toHaveLength(0);
+      } finally {
+        infoSpy.mockRestore();
+      }
+    });
   });
 
   describe('attachments', () => {
