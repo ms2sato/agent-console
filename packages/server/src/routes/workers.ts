@@ -118,10 +118,13 @@ const RenameWorkerRequestSchema = v.strictObject({
 //     `await mkdir(dir, { mode: 0o2750 })` issues `mkdirat(..., 0750)`
 //     (setgid dropped) and `await chmod(dir, 0o2750)` issues
 //     `fchmodat(..., 0750)` (likewise). The kernel and the underlying
-//     filesystem both honour setgid when called directly (e.g. shell
-//     `mkdir --mode=2750` or `chmod 2750` produce `drwxr-s---`), but the
-//     Bun bindings never pass the bit through.
-//   - GNU chmod (coreutils) does pass the bit through. We therefore shell
+//     filesystem both honour setgid via chmod(2) and by inheritance from a
+//     setgid parent directory, but the Bun bindings never pass the bit
+//     through. (The mode argument of the `mkdir` program is tool-dependent
+//     and is not used here: measured, GNU coreutils 9.4 / 9.7 pass special
+//     bits and uutils coreutils 0.10.0 drops them.)
+//   - The spawned chmod program passes the bit through on both GNU and
+//     uutils coreutils (measured). We therefore shell
 //     out to /bin/chmod via Bun.spawn under the multi-user (mode > 0o777)
 //     branch only. Cost is one spawn per upload on the multi-user
 //     multipart path, which is already disk-bound. The single-user 0o700

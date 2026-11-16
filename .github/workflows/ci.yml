@@ -18,6 +18,10 @@ on:
 
 jobs:
   test:
+    # The runner version is pinned on purpose: the `ubuntu-latest` label moved
+    # to a new image under an unchanged commit and turned main red. Move the pin
+    # only when the production host's OS moves AND a full-suite run on the new
+    # image is green.
     runs-on: ubuntu-24.04
 
     steps:
