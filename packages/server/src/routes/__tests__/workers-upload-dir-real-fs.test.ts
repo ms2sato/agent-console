@@ -10,9 +10,11 @@
  * own `fs.mkdir({ mode })` and `fs.chmod(dir, mode)` strip the special
  * bits in the JS layer BEFORE the syscall (verified by strace: setgid
  * 0o2000 / setuid 0o4000 / sticky 0o1000 are all dropped). The kernel
- * itself honours setgid when invoked directly (shell
- * `mkdir --mode=2750` → `drwxr-s---`), but Bun's bindings never pass
- * the bit through. The bug PR #831 introduced shipped to a real Ubuntu
+ * itself honours setgid via chmod(2) and by inheritance from a setgid
+ * parent directory, but Bun's bindings never pass the bit through.
+ * (The mode argument of the `mkdir` program is tool-dependent and is
+ * not used: GNU coreutils pass special bits, uutils coreutils 0.10.0
+ * drops them.) The bug PR #831 introduced shipped to a real Ubuntu
  * 24.04 host precisely because the memfs-based test could not exercise
  * Bun's JS-layer mode stripping.
  *
@@ -32,8 +34,10 @@
  *   1. Kernel-level probe (always runs): uses `Bun.spawn` to invoke
  *      shell mkdir / chmod / stat. `Bun.spawn` is not subject to
  *      `mock.module`. Asserts that the Linux kernel + the host
- *      filesystem honour setgid (the precondition for the workaround
- *      to work at all).
+ *      filesystem honour setgid via chmod(2) and by inheritance from a
+ *      setgid parent at mkdir(2) (the preconditions for the workaround
+ *      and for the data-root contract), with a negative control showing
+ *      the reading instrument can report absence.
  *
  *   2. Bun JS-layer probe (asserts real fs via `assertRealFs`): asserts
  *      that Bun's own `fs.mkdir({ mode: 0o2750 })` produces 0o750 — i.e.
@@ -92,43 +96,76 @@ describe('Upload directory real-fs contract (#830 regression)', () => {
   /**
    * Kernel-level precondition probe — always runs (uses Bun.spawn so
    * unaffected by memfs hooks). Asserts that the Linux kernel + the
-   * host filesystem honour setgid at mkdir time AND via chmod. If a
-   * future host's filesystem or kernel drops setgid, the workaround
-   * cannot succeed; that case surfaces here rather than silently
-   * shipping mode 0o750 again.
+   * host filesystem honour setgid via chmod(2) AND by inheritance from a
+   * setgid parent at mkdir(2). If a future host's filesystem or kernel
+   * drops setgid, the workaround cannot succeed; that case surfaces here
+   * rather than silently shipping mode 0o750 again.
+   *
+   * The mode argument of the `mkdir` program is deliberately NOT probed:
+   * it is tool-dependent (GNU coreutils pass special bits, uutils
+   * coreutils 0.10.0 drops them) and production never uses it.
    */
   it.skipIf(!SUPPORTS_SETGID_CONTRACT)(
-    'kernel + host fs honour setgid on mkdir(2) and chmod(1)',
+    'kernel + host fs honour setgid via chmod(1) and by inheritance at mkdir(2)',
     async () => {
       const mk = await spawnCheck(['mktemp', '-d', '-p', os.tmpdir(), 'ac-kernel-probe.XXXXXX']);
       expect(mk.exitCode).toBe(0);
       const parent = mk.stdout.trim();
-      const direct = pathJoin(parent, 'direct');
       const viaChmod = pathJoin(parent, 'viaChmod');
+      const viaChmodChild = pathJoin(viaChmod, 'child');
+      const plain = pathJoin(parent, 'plain');
+      const plainChild = pathJoin(plain, 'child');
+
+      const statModeGid = async (path: string): Promise<{ mode: number; gid: string }> => {
+        const st = await spawnCheck(['stat', '-c', '%a:%g', path]);
+        expect(st.exitCode).toBe(0);
+        const [mode, gid] = st.stdout.trim().split(':');
+        return { mode: parseInt(mode, 8), gid };
+      };
 
       try {
-        // Probe A: shell `mkdir --mode=2750` — the kernel mkdirat(2)
-        // syscall, given mode 02750, produces a directory with the
-        // setgid bit set. Demonstrates that the kernel and the
-        // underlying filesystem support setgid.
-        const md = await spawnCheck(['mkdir', '--mode=2750', direct]);
+        // Step 1: shell `chmod 2750` after a plain `mkdir`. This is the
+        // syscall path the production workaround uses to set the bit
+        // after Bun's mkdir drops it.
+        const md = await spawnCheck(['mkdir', viaChmod]);
         expect(md.exitCode).toBe(0);
-        const stA = await spawnCheck(['stat', '-c', '%a', direct]);
-        expect(stA.exitCode).toBe(0);
-        expect(stA.stdout.trim()).toBe('2750');
-
-        // Probe B: shell `chmod 2750` after a plain `mkdir`. This is
-        // the syscall path the production workaround uses to set the
-        // bit after Bun's mkdir drops it.
-        const md2 = await spawnCheck(['mkdir', viaChmod]);
-        expect(md2.exitCode).toBe(0);
         const cm = await spawnCheck(['chmod', '2750', viaChmod]);
         expect(cm.exitCode).toBe(0);
         const stB = await spawnCheck(['stat', '-c', '%a', viaChmod]);
         expect(stB.exitCode).toBe(0);
         expect(stB.stdout.trim()).toBe('2750');
+
+        // Step 2: inheritance. A plain `mkdir` (no mode argument) under a
+        // setgid parent gets the setgid bit and the parent's group from
+        // the kernel. Only the setgid bit is asserted: the low bits
+        // depend on the umask.
+        const mdChild = await spawnCheck(['mkdir', viaChmodChild]);
+        expect(mdChild.exitCode).toBe(0);
+        const parentStat = await statModeGid(viaChmod);
+        const childStat = await statModeGid(viaChmodChild);
+        expect(childStat.mode & 0o2000).not.toBe(0);
+        expect(childStat.gid).toBe(parentStat.gid);
+
+        // Step 3: negative control. Under a parent WITHOUT setgid the
+        // child has no setgid bit, showing the reading instrument can
+        // report absence. If the temp directory is itself setgid, `plain`
+        // inherits it and the control cannot be built on this host.
+        const mdPlain = await spawnCheck(['mkdir', plain]);
+        expect(mdPlain.exitCode).toBe(0);
+        const plainStat = await statModeGid(plain);
+        if ((plainStat.mode & 0o2000) !== 0) {
+          throw new Error(
+            `negative control cannot be built: ${os.tmpdir()} is itself setgid, so a plain directory created under it already carries the setgid bit`,
+          );
+        }
+        const mdPlainChild = await spawnCheck(['mkdir', plainChild]);
+        expect(mdPlainChild.exitCode).toBe(0);
+        const plainChildStat = await statModeGid(plainChild);
+        expect(plainChildStat.mode & 0o2000).toBe(0);
       } finally {
-        await spawnCheck(['rmdir', direct]);
+        await spawnCheck(['rmdir', plainChild]);
+        await spawnCheck(['rmdir', plain]);
+        await spawnCheck(['rmdir', viaChmodChild]);
         await spawnCheck(['rmdir', viaChmod]);
         await spawnCheck(['rmdir', parent]);
       }
