@@ -1,6 +1,5 @@
 import { serveStatic, upgradeWebSocket, websocket } from 'hono/bun';
 import { Hono } from 'hono';
-import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
 import { webhooks } from './routes/webhooks.js';
 import { artifactsViewer } from './routes/artifacts-viewer.js';
@@ -9,7 +8,7 @@ import { createWorktreeWithSession } from './services/worktree-creation-service.
 import { deleteWorktree } from './services/worktree-deletion-service.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
-import { resolveHttpResLevel } from './lib/http-log-level.js';
+import { createHttpLogger } from './lib/http-logger.js';
 import {
   serverConfig,
   shouldWarnInsecureAuthCookie,
@@ -120,10 +119,7 @@ app.onError(onApiError);
 // set response headers, which fails on the immutable 101 Switching Protocols
 // response. This causes WebSocket upgrades to hang or fail intermittently.
 // See: https://github.com/honojs/hono/issues/2535
-const httpLogger = pinoLogger({
-  pino: rootLogger.child({ service: 'http' }),
-  http: { onResLevel: (c) => resolveHttpResLevel(c.res.status) },
-});
+const httpLogger = createHttpLogger(rootLogger);
 app.use('*', async (c, next) => {
   if (c.req.path.startsWith('/ws/')) {
     return next();
