@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { Hono } from 'hono';
 import pino from 'pino';
-import { createHttpLogger } from '../http-logger.js';
+import { createHttpLogger, redactHeaders } from '../http-logger.js';
 
 function setup() {
   const lines: string[] = [];
@@ -49,7 +49,7 @@ describe('createHttpLogger credential redaction', () => {
     expect(entry.res.headers['content-type']).toContain('text/plain');
   });
 
-  it('matches credential header names case-insensitively', async () => {
+  it('redacts proxy-authorization and upper-case request header names through a real request', async () => {
     const { app, lines, parsed } = setup();
     await app.request('/login', {
       headers: {
@@ -64,5 +64,34 @@ describe('createHttpLogger credential redaction', () => {
     expect(entry.req.headers.cookie).toBe('[REDACTED]');
     expect(entry.req.headers.authorization).toBe('[REDACTED]');
     expect(entry.req.headers['proxy-authorization']).toBe('[REDACTED]');
+  });
+
+  it('does not log the query string', async () => {
+    const { app, lines, parsed } = setup();
+    await app.request('/login?x=SENTINEL5');
+
+    expect(lines.join('')).not.toContain('SENTINEL5');
+    const entry = parsed().find((e) => e.req && e.res);
+    expect(entry.req.url).toBe('/login');
+  });
+});
+
+describe('redactHeaders', () => {
+  it('matches header names case-insensitively on a plain object and keeps keys unchanged', () => {
+    expect(
+      redactHeaders({
+        Cookie: 'a',
+        'SET-COOKIE': 'b',
+        'Proxy-Authorization': 'c',
+        AUTHORIZATION: 'd',
+        'X-Other': 'keep',
+      }),
+    ).toEqual({
+      Cookie: '[REDACTED]',
+      'SET-COOKIE': '[REDACTED]',
+      'Proxy-Authorization': '[REDACTED]',
+      AUTHORIZATION: '[REDACTED]',
+      'X-Other': 'keep',
+    });
   });
 });
