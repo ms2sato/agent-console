@@ -354,8 +354,13 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
   // The name the form was loaded with. Held in state so later prop changes (e.g. an optimistic
   // cache update) cannot make an unedited draft look like an edit.
   const [loadedName] = useState(repository.name);
+  // The form state holds the raw name until the field is blurred; the blur handler then reads the
+  // value back from the <input type="text">, whose value sanitization strips CR and LF. Either
+  // form of the loaded name is "unchanged".
+  const loadedNameAsInputHolds = loadedName.replace(/[\r\n]/g, '');
+  const isLoadedName = (name: string) => name === loadedName || name === loadedNameAsInputHolds;
   const resolver: Resolver<EditRepositoryFormData> = (values, context, options) =>
-    valibotResolver(values.name === loadedName ? UnchangedNameFormSchema : ChangedNameFormSchema)(
+    valibotResolver(isLoadedName(values.name) ? UnchangedNameFormSchema : ChangedNameFormSchema)(
       values,
       context,
       options,
@@ -459,7 +464,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     // Send empty string as-is; server will convert to null for database storage
     updateMutation.mutate({
       // Omitted when unchanged: the server then does not re-validate a legacy name.
-      ...(data.name === loadedName ? {} : { name: data.name }),
+      ...(isLoadedName(data.name) ? {} : { name: data.name }),
       description: data.description?.trim() ?? '',
       setupCommand: data.setupCommand?.trim() ?? '',
       cleanupCommand: data.cleanupCommand?.trim() ?? '',

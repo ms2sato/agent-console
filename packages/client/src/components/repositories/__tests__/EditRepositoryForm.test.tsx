@@ -726,6 +726,51 @@ describe('EditRepositoryForm', () => {
       expect(body.description).toBe('edited');
     });
 
+    it('submits without name when a loaded name containing a newline is left alone and another field is edited', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository({ name: 'line one\nline two' });
+      setupMockFetch(createMockResponse({ repository }));
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      // The input holds the name without CR/LF, as a browser's text input does.
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('line oneline two');
+
+      await user.type(screen.getByLabelText('Description'), 'edited');
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+      const body = getRepositoryUpdateRequestBody();
+      expect(body).not.toHaveProperty('name');
+      expect(body.description).toBe('edited');
+    });
+
+    it('submits without name when the Name field of a newline-containing loaded name is only tabbed through and another field is edited', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository({ name: 'line one\nline two' });
+      setupMockFetch(createMockResponse({ repository }));
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      const nameInput = screen.getByLabelText('Name') as HTMLInputElement;
+      expect(nameInput.value).toBe('line oneline two');
+      nameInput.focus();
+      await user.tab();
+      expect(document.activeElement).not.toBe(nameInput);
+
+      await user.type(screen.getByLabelText('Description'), 'edited');
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+      const body = getRepositoryUpdateRequestBody();
+      expect(body).not.toHaveProperty('name');
+      expect(body.description).toBe('edited');
+    });
+
     it('shows the field error when a loaded over-length name is changed to another over-length name', async () => {
       const user = userEvent.setup();
       const repository = createTestRepository({ name: 'L'.repeat(REPOSITORY_DISPLAY_NAME_MAX_LENGTH + 20) });

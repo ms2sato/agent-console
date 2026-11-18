@@ -65,6 +65,7 @@ describe('Repository rename wiring in setupWebSocketRoutes', () => {
   let testRegistry: WebSocketConnectionRegistry;
   let sessionManager: SessionManager;
   let installedCallbacks: Parameters<RepositoryManager['setLifecycleCallbacks']>[0] | null = null;
+  let originalConfigHome: string | undefined;
 
   beforeEach(async () => {
     await closeDatabase();
@@ -72,6 +73,7 @@ describe('Repository rename wiring in setupWebSocketRoutes', () => {
     setupMemfs({
       [`${TEST_CONFIG_DIR}/.keep`]: '',
     });
+    originalConfigHome = process.env.AGENT_CONSOLE_HOME;
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
     ptyFactory.reset();
@@ -123,8 +125,16 @@ describe('Repository rename wiring in setupWebSocketRoutes', () => {
       testJobQueue = null;
     }
 
-    await closeDatabase();
-    cleanupMemfs();
+    try {
+      await closeDatabase();
+      cleanupMemfs();
+    } finally {
+      if (originalConfigHome === undefined) {
+        delete process.env.AGENT_CONSOLE_HOME;
+      } else {
+        process.env.AGENT_CONSOLE_HOME = originalConfigHome;
+      }
+    }
   });
 
   it('onRepositoryNameChanged broadcasts session-updated for the live sessions of that repository only', async () => {
@@ -148,13 +158,17 @@ describe('Repository rename wiring in setupWebSocketRoutes', () => {
     const mockWs = createMockWs();
     testRegistry.addAppClient(mockWs);
 
-    await installedCallbacks!.onRepositoryNameChanged({ id: 'repo-1', name: 'Renamed' } as Repository);
+    try {
+      await installedCallbacks!.onRepositoryNameChanged({ id: 'repo-1', name: 'Renamed' } as Repository);
 
-    const updatedIds = mockWs.sentMessages
-      .map((m) => JSON.parse(m) as { type: string; session?: { id: string } })
-      .filter((m) => m.type === 'session-updated')
-      .map((m) => m.session?.id);
-    expect(updatedIds).toEqual([renamedSession.id]);
-    expect(updatedIds).not.toContain(unrelatedSession.id);
+      const updatedIds = mockWs.sentMessages
+        .map((m) => JSON.parse(m) as { type: string; session?: { id: string } })
+        .filter((m) => m.type === 'session-updated')
+        .map((m) => m.session?.id);
+      expect(updatedIds).toEqual([renamedSession.id]);
+      expect(updatedIds).not.toContain(unrelatedSession.id);
+    } finally {
+      testRegistry.removeAppClient(mockWs);
+    }
   });
 });
