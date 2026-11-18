@@ -13,6 +13,7 @@ import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
+import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-repository.js';
 import type { RepositoryRepository } from '../../repositories/repository-repository.js';
 import { isMultiUserAuthMode, type RunAsUserOpts, type RunAsUserResult } from '../privilege-elevation.js';
 import { buildManualFallbackCommands, buildMissingRefspecMessage } from '../repository-manager.js';
@@ -1186,6 +1187,137 @@ describe('RepositoryManager', () => {
 
         expect(mockGit.deriveRepositorySlug).toHaveBeenCalledTimes(1);
         expect(mockGit.deriveRepositorySlug).toHaveBeenCalledWith(repo.path, path.basename(repo.path));
+      });
+    });
+
+    describe('recorded old-slug directories and the claim guard (unregister removal set)', () => {
+      const reposDir = () => path.join(TEST_CONFIG_DIR, 'repositories');
+
+      async function addWorktreeRow(repositoryId: string, worktreePath: string, indexNumber = 1): Promise<void> {
+        await new SqliteWorktreeRepository(getDatabase()).save({
+          id: `wt-row-${repositoryId}-${indexNumber}`,
+          repositoryId,
+          path: worktreePath,
+          indexNumber,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      async function latestCleanupPayload(excludeJobIds: string[] = []): Promise<{ id: string; payload: CleanupRepositoryPayload }> {
+        const jobs = (await testJobQueue!.getJobs({ type: 'cleanup:repository' })).filter(
+          (j) => !excludeJobIds.includes(j.id),
+        );
+        expect(jobs).toHaveLength(1);
+        return { id: jobs[0]!.id, payload: JSON.parse(jobs[0]!.payload) as CleanupRepositoryPayload };
+      }
+
+      // Reach: dropping the worktree-derived set (extraRepoDirs never populated)
+      // fails this test (and only the extraRepoDirs assertions in it).
+      it('carries the directory an old-slug worktree row was placed under, and ignores the main-checkout row', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('org/new'));
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        await addWorktreeRow(repo.id, path.join(reposDir(), 'org', 'old', 'worktrees', 'wt-001-x'), 1);
+        await addWorktreeRow(repo.id, TEST_REPO_DIR, 2);
+        await addWorktreeRow(repo.id, path.join(reposDir(), 'org', 'new', 'worktrees', 'wt-003-z'), 3);
+
+        await manager.unregisterRepository(repo.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.repoDir).toBe(path.join(reposDir(), 'org', 'new'));
+        expect(payload.extraRepoDirs).toEqual([path.join(reposDir(), 'org', 'old')]);
+      });
+
+      it('leaves extraRepoDirs unset when the repository has no worktree rows (today\'s payload)', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        await manager.unregisterRepository(repo.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect('extraRepoDirs' in payload).toBe(false);
+      });
+
+      it('skips a recorded old-slug directory that another registered repository claims by worktree row', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation((p: string, fb: string) =>
+          Promise.resolve(p === TEST_REPO_DIR ? 'org/new' : fb),
+        );
+        fs.mkdirSync('/y/other/.git', { recursive: true });
+        fs.writeFileSync('/y/other/.git/HEAD', 'ref: refs/heads/main');
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        const other = await manager.registerRepository('/y/other');
+        const oldDir = path.join(reposDir(), 'org', 'old');
+        await addWorktreeRow(repo.id, path.join(oldDir, 'worktrees', 'wt-001-x'), 1);
+        await addWorktreeRow(other.id, path.join(oldDir, 'worktrees', 'wt-001-y'), 1);
+
+        await manager.unregisterRepository(repo.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.extraRepoDirs ?? []).not.toContain(oldDir);
+      });
+
+      // Reach: removing the claim guard (claimedDirs not passed to the builder)
+      // fails the registered-B half of this test; the control half passes
+      // either way, which is what makes the failing half attributable.
+      it('does not address another registered repository\'s flat directory, and does when that repository is not registered (control)', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation((p: string, fb: string) =>
+          Promise.resolve(p === '/x/foo' ? 'org/foo' : fb),
+        );
+        for (const root of ['/x/foo', '/y/foo']) {
+          fs.mkdirSync(`${root}/.git`, { recursive: true });
+          fs.writeFileSync(`${root}/.git/HEAD`, 'ref: refs/heads/main');
+        }
+        const flatDir = path.join(reposDir(), 'foo');
+        fs.mkdirSync(path.join(flatDir, 'outputs'), { recursive: true });
+
+        const manager = await getRepositoryManager();
+
+        // Control: only A registered -> the flat basename directory IS a target.
+        const a1 = await manager.registerRepository('/x/foo');
+        await manager.unregisterRepository(a1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.sessionDataDirs).toContain(flatDir);
+
+        // Measured case: B (checkout /y/foo, no remote, slug 'foo') is registered.
+        const a2 = await manager.registerRepository('/x/foo');
+        await manager.registerRepository('/y/foo');
+        await manager.unregisterRepository(a2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.sessionDataDirs).not.toContain(flatDir);
+        expect(guarded.payload.extraRepoDirs ?? []).not.toContain(flatDir);
+        expect(guarded.payload.repoDir).toBe(path.join(reposDir(), 'org', 'foo'));
+      });
+
+      // Reach: always setting repoDir to the canonical path string (ignoring
+      // the claim) fails the claimed half of this test; the control half
+      // passes either way.
+      it('sets repoDir to null when another registered repository claims the canonical directory (same remote registered twice), and to the path otherwise (control)', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('org/shared'));
+        fs.mkdirSync('/y/twin/.git', { recursive: true });
+        fs.writeFileSync('/y/twin/.git/HEAD', 'ref: refs/heads/main');
+        const sharedDir = path.join(reposDir(), 'org', 'shared');
+        const manager = await getRepositoryManager();
+
+        // Control: only one registered -> repoDir is the string path.
+        const solo = await manager.registerRepository(TEST_REPO_DIR);
+        await manager.unregisterRepository(solo.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.repoDir).toBe(sharedDir);
+
+        // Measured case: the twin (same remote, same slug) stays registered.
+        const first = await manager.registerRepository(TEST_REPO_DIR);
+        await manager.registerRepository('/y/twin');
+        await addWorktreeRow(first.id, path.join(sharedDir, 'worktrees', 'wt-001-x'), 1);
+        await manager.unregisterRepository(first.id);
+        const claimed = await latestCleanupPayload([control.id]);
+        expect(claimed.payload.repoDir).toBeNull();
+        expect(claimed.payload.sessionDataDirs ?? []).not.toContain(sharedDir);
+        expect(claimed.payload.extraRepoDirs ?? []).not.toContain(sharedDir);
       });
     });
 

@@ -133,10 +133,10 @@ export function registerJobHandlers(
   // encapsulates git command construction.
   jobQueue.registerHandler<CleanupRepositoryPayload>(
     JOB_TYPES.CLEANUP_REPOSITORY,
-    async ({ repoDir, requestUsername, extraDir, sessionDataDirs }) => {
+    async ({ repoDir, requestUsername, extraDir, sessionDataDirs, extraRepoDirs }) => {
       const elevate = shouldElevateForUser(requestUsername);
       logger.debug(
-        { repoDir, requestUsername, elevate, extraDir, sessionDataDirs },
+        { repoDir, requestUsername, elevate, extraDir, sessionDataDirs, extraRepoDirs },
         'Executing cleanup:repository job',
       );
 
@@ -210,36 +210,55 @@ export function registerJobHandlers(
         }
       };
 
-      await removeOne(repoDir);
-      if (extraDir != null) {
-        await removeOne(extraDir);
-      }
-
       // S1301 S4: best-effort removal of the now-possibly-empty org-parent
       // directory (`<repositories>/<org>/`). Runs regardless of whether the
-      // removal above was elevated -- the org-parent dir is created by the
+      // removal was elevated -- the org-parent dir is created by the
       // server process itself (`fsPromises.mkdir(..., { recursive: true })`
       // in worktree-service.ts), never user-owned, so a plain, non-elevated
       // `fs.rmdir` is always the right tool here. Bounded to exactly one
       // level (never `{ recursive: true }`): fails closed (ENOTEMPTY) when
       // sibling repos still live under the same org, and must never throw --
       // this is cosmetic cleanup, not part of the job's success contract.
-      const orgParentDir = path.dirname(repoDir);
-      if (orgParentDir !== getRepositoriesDir()) {
-        try {
-          await fs.rmdir(orgParentDir);
-          logger.info({ orgParentDir }, 'cleanup:repository removed empty org-parent directory');
-        } catch (error) {
-          const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
-          if (code === 'ENOENT' || code === 'ENOTEMPTY') {
-            logger.debug(
-              { orgParentDir, code },
-              'cleanup:repository org-parent directory not removed (missing or not empty)',
-            );
-          } else {
-            logger.warn({ orgParentDir, err: error }, 'cleanup:repository failed to remove org-parent directory');
+      const tidyOrgParent = async (dir: string): Promise<void> => {
+        const orgParentDir = path.dirname(dir);
+        if (orgParentDir !== getRepositoriesDir()) {
+          try {
+            await fs.rmdir(orgParentDir);
+            logger.info({ orgParentDir }, 'cleanup:repository removed empty org-parent directory');
+          } catch (error) {
+            const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
+            if (code === 'ENOENT' || code === 'ENOTEMPTY') {
+              logger.debug(
+                { orgParentDir, code },
+                'cleanup:repository org-parent directory not removed (missing or not empty)',
+              );
+            } else {
+              logger.warn({ orgParentDir, err: error }, 'cleanup:repository failed to remove org-parent directory');
+            }
           }
         }
+      };
+
+      // `repoDir === null`: another registered repository claims the canonical
+      // directory; nothing is removed or tidied for it.
+      if (repoDir !== null) {
+        await removeOne(repoDir);
+      }
+      if (extraDir != null) {
+        await removeOne(extraDir);
+      }
+      // Old-slug repository directories recorded by the repository's worktree
+      // rows: same removal routine as `repoDir` (they hold user-owned
+      // worktrees), no new command shape. Absent == empty.
+      for (const dir of extraRepoDirs ?? []) {
+        await removeOne(dir);
+      }
+
+      if (repoDir !== null) {
+        await tidyOrgParent(repoDir);
+      }
+      for (const dir of extraRepoDirs ?? []) {
+        await tidyOrgParent(dir);
       }
 
       // S1301 S3: remove session-data trees (outputs/messages/memos) built by

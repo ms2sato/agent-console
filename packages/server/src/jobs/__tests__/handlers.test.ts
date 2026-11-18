@@ -521,6 +521,140 @@ describe('cleanup job handlers', () => {
       });
     });
 
+    describe('extraRepoDirs removal (old-slug repository directories)', () => {
+      it('removes each extraRepoDirs entry through rmRecursiveAsUser, after repoDir and extraDir, when requestUsername elevates', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const other = pickOtherUser();
+        const repoDir = '/var/lib/agent-console/repositories/org/new';
+        const extraDir = '/var/lib/agent-console/source-repos/org/new';
+        const old1 = '/var/lib/agent-console/repositories/org/old';
+        const old2 = '/var/lib/agent-console/repositories/older';
+
+        await runPayload({
+          repoDir,
+          requestUsername: other,
+          extraDir,
+          extraRepoDirs: [old1, old2],
+        });
+
+        expect(rmRecursiveAsUserMock.calls.map((c) => c.path)).toEqual([repoDir, extraDir, old1, old2]);
+        for (const call of rmRecursiveAsUserMock.calls) {
+          expect(call.username).toBe(other);
+          expect(call.opts?.timeoutMs).toBeGreaterThan(0);
+        }
+      });
+
+      it('propagates an elevated failure on an extraRepoDirs entry so the job queue retries', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const old1 = '/var/lib/agent-console/repositories/org/old';
+        rmRecursiveAsUserMock.responder.fn = async (target) => ({
+          stdout: '',
+          stderr: target === old1 ? 'rm: cannot remove: Permission denied\n' : '',
+          exitCode: target === old1 ? 1 : 0,
+          timedOut: false, cwdFailed: false,
+        });
+        await expect(
+          runPayload({
+            repoDir: '/var/lib/agent-console/repositories/org/new',
+            requestUsername: pickOtherUser(),
+            extraDir: null,
+            extraRepoDirs: [old1],
+          }),
+        ).rejects.toThrow(/cleanup:repository elevated rm failed/);
+      });
+
+      it('removes a real extraRepoDirs entry directly (ENOENT-idempotent) and tidies its empty org-parent when not elevating', async () => {
+        delete process.env.AUTH_MODE;
+        const baseDir = path.join(os.tmpdir(), `cleanup-handler-extra-${process.pid}-${Date.now()}`);
+        const oldDir = path.join(baseDir, 'org', 'old');
+        await fsPromises.mkdir(oldDir, { recursive: true });
+        await fsPromises.writeFile(path.join(oldDir, 'marker'), 'o');
+        const missing = path.join(baseDir, 'org2', 'missing');
+
+        try {
+          await runPayload({
+            repoDir: path.join(baseDir, 'never', 'there'),
+            requestUsername: null,
+            extraDir: null,
+            extraRepoDirs: [oldDir, missing],
+          });
+          expect(rmRecursiveAsUserMock.calls.length).toBe(0);
+          await expect(fsPromises.access(oldDir)).rejects.toThrow();
+          await expect(fsPromises.access(path.join(baseDir, 'org'))).rejects.toThrow();
+        } finally {
+          await fsPromises.rm(baseDir, { recursive: true, force: true });
+        }
+      });
+
+      it('a payload without the field, or with an empty array, makes exactly the calls it made before (back-compat)', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const other = pickOtherUser();
+        const repoDir = '/var/lib/agent-console/repositories/org/repo';
+        const extraDir = '/var/lib/agent-console/source-repos/org/repo';
+
+        await runPayload({ repoDir, requestUsername: other, extraDir });
+        expect(rmRecursiveAsUserMock.calls.map((c) => c.path)).toEqual([repoDir, extraDir]);
+
+        rmRecursiveAsUserMock.calls.length = 0;
+        await runPayload({ repoDir, requestUsername: other, extraDir, extraRepoDirs: [] });
+        expect(rmRecursiveAsUserMock.calls.map((c) => c.path)).toEqual([repoDir, extraDir]);
+      });
+    });
+
+    describe('repoDir === null (canonical directory claimed by another registered repository)', () => {
+      // Reach: calling removeOne(repoDir) unconditionally (null reaches
+      // fs.rm / the elevated helper) fails both tests below.
+      it('removes nothing for repoDir but still processes extraDir, extraRepoDirs and sessionDataDirs (direct path)', async () => {
+        delete process.env.AUTH_MODE;
+        const baseDir = path.join(os.tmpdir(), `cleanup-handler-null-repodir-${process.pid}-${Date.now()}`);
+        const extraDir = path.join(baseDir, 'source-repos', 'org', 'new');
+        const oldDir = path.join(baseDir, 'repositories', 'org', 'old');
+        const sessionDir = path.join(baseDir, 'session-data', 'slug');
+        const sharedRepoDir = path.join(baseDir, 'repositories', 'org', 'shared');
+        for (const dir of [extraDir, oldDir, sessionDir, sharedRepoDir]) {
+          await fsPromises.mkdir(dir, { recursive: true });
+          await fsPromises.writeFile(path.join(dir, 'marker'), 'x');
+        }
+
+        try {
+          await runPayload({
+            repoDir: null,
+            requestUsername: null,
+            extraDir,
+            extraRepoDirs: [oldDir],
+            sessionDataDirs: [sessionDir],
+          });
+
+          await expect(fsPromises.access(extraDir)).rejects.toThrow();
+          await expect(fsPromises.access(oldDir)).rejects.toThrow();
+          await expect(fsPromises.access(sessionDir)).rejects.toThrow();
+          // The claimed directory (and its org-parent, which oldDir's tidy-up
+          // can not empty because it still holds `shared`) is untouched.
+          await fsPromises.access(sharedRepoDir);
+          expect(rmRecursiveAsUserMock.calls.length).toBe(0);
+        } finally {
+          await fsPromises.rm(baseDir, { recursive: true, force: true });
+        }
+      });
+
+      it('makes no elevated removal call for repoDir when requestUsername elevates; the other targets are still removed as the user', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const other = pickOtherUser();
+        const extraDir = '/var/lib/agent-console/source-repos/org/new';
+        const old1 = '/var/lib/agent-console/repositories/org/old';
+
+        await runPayload({
+          repoDir: null,
+          requestUsername: other,
+          extraDir,
+          extraRepoDirs: [old1],
+          sessionDataDirs: [],
+        });
+
+        expect(rmRecursiveAsUserMock.calls.map((c) => c.path)).toEqual([extraDir, old1]);
+      });
+    });
+
     describe('org-parent husk removal (Issue #1301, S4)', () => {
       it('removes the now-empty org-parent directory after repoDir is removed', async () => {
         delete process.env.AUTH_MODE;
