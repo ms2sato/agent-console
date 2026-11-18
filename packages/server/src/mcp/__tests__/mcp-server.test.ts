@@ -1123,6 +1123,76 @@ describe('MCP Server Tools', () => {
       expect(data.error).toContain('nonexistent-id');
     });
 
+    it('renames the display name (trimmed) and returns it in the result', async () => {
+      await setupRepoManager([{ id: 'repo-1', name: 'my-repo', path: TEST_REPO_PATH }]);
+
+      const response = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        name: '  Renamed Repo  ',
+      }, nextId++);
+      const data = parseToolResult(response) as { repository?: Record<string, unknown> };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.repository!.name).toBe('Renamed Repo');
+      expect(repositoryManager.getRepository('repo-1')?.name).toBe('Renamed Repo');
+      // The directory path is untouched by a rename.
+      expect(repositoryManager.getRepository('repo-1')?.path).toBe(TEST_REPO_PATH);
+    });
+
+    it('leaves the stored name unchanged when name is omitted', async () => {
+      await setupRepoManager([{ id: 'repo-1', name: 'my-repo', path: TEST_REPO_PATH }]);
+
+      const response = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        description: 'only this',
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(repositoryManager.getRepository('repo-1')?.name).toBe('my-repo');
+    });
+
+    for (const [label, name] of [
+      ['an empty string', ''],
+      ['a whitespace-only string', '   '],
+      ['101 characters after trim', ` ${'a'.repeat(101)} `],
+      ['a control character', 'bad\u0007name'],
+      ['null', null],
+    ] as const) {
+      it(`rejects ${label} as the name, writes nothing, and leaves the stored name unchanged`, async () => {
+        await setupRepoManager([{ id: 'repo-1', name: 'my-repo', path: TEST_REPO_PATH, description: 'keep' }]);
+
+        const response = await callTool(app, mcpSessionId, 'update_repository', {
+          repositoryId: 'repo-1',
+          name,
+          // A valid sibling field: nothing may be written when the name is invalid.
+          description: 'must not be written',
+        }, nextId++);
+
+        expect(response.result?.isError ?? response.error !== undefined).toBeTruthy();
+        const stored = repositoryManager.getRepository('repo-1');
+        expect(stored?.name).toBe('my-repo');
+        expect(stored?.description).toBe('keep');
+      });
+    }
+
+    it('accepts a 100-character name (boundary) and rejects 101', async () => {
+      await setupRepoManager([{ id: 'repo-1', name: 'my-repo', path: TEST_REPO_PATH }]);
+
+      const ok = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        name: 'a'.repeat(100),
+      }, nextId++);
+      expect(ok.result?.isError).toBeUndefined();
+      expect(repositoryManager.getRepository('repo-1')?.name).toBe('a'.repeat(100));
+
+      const tooLong = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        name: 'b'.repeat(101),
+      }, nextId++);
+      expect(tooLong.result?.isError).toBe(true);
+      expect(repositoryManager.getRepository('repo-1')?.name).toBe('a'.repeat(100));
+    });
+
     it('should persist all provided fields in a multi-field update', async () => {
       await setupRepoManager([{
         id: 'repo-1',

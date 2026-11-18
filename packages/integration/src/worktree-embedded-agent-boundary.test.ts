@@ -156,7 +156,6 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
       {
         repoPath: TEST_REPO_PATH,
         repoId: TEST_REPO_ID,
-        repoName: 'test-repo',
         branch: 'feat/embedded-agent-wt',
         useRemote: false,
         embeddedAgentId,
@@ -188,7 +187,6 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
       {
         repoPath: TEST_REPO_PATH,
         repoId: TEST_REPO_ID,
-        repoName: 'test-repo',
         branch: 'feat/terminal-agent-wt',
         useRemote: false,
         agentId: CLAUDE_CODE_AGENT_ID,
@@ -228,7 +226,6 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
       {
         repoPath: TEST_REPO_PATH,
         repoId: TEST_REPO_ID,
-        repoName: 'test-repo',
         branch: 'feat/dangling-embedded-agent-wt',
         useRemote: false,
         embeddedAgentId: 'nonexistent-embedded-agent-id',

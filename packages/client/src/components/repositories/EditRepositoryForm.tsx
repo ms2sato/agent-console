@@ -3,7 +3,11 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as v from 'valibot';
-import type { Repository, UpdateRepositoryRequest } from '@agent-console/shared';
+import {
+  RepositoryDisplayNameSchema,
+  type Repository,
+  type UpdateRepositoryRequest,
+} from '@agent-console/shared';
 import {
   updateRepository,
   generateRepositoryDescription,
@@ -22,6 +26,8 @@ import { useAuth } from '../../lib/auth';
 
 // Form data schema - all fields are optional and can be empty
 const EditRepositoryFormSchema = v.object({
+  // Shared rule (trim, 1..max, no control characters); the parsed output is already trimmed.
+  name: RepositoryDisplayNameSchema,
   description: v.optional(v.pipe(v.string(), v.trim())),
   setupCommand: v.optional(
     v.pipe(
@@ -73,7 +79,7 @@ function HookCommandTemplateHelp({ description }: { description: string }) {
       <ul className="text-xs text-gray-500 mt-1 ml-4 list-disc">
         <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_NUM}}'}</code> - Worktree number (e.g., "3")</li>
         <li><code className="bg-slate-700 px-1 rounded">{'{{BRANCH}}'}</code> - Branch name</li>
-        <li><code className="bg-slate-700 px-1 rounded">{'{{REPO}}'}</code> - Repository name</li>
+        <li><code className="bg-slate-700 px-1 rounded">{'{{REPO}}'}</code> - Repository directory name</li>
         <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_PATH}}'}</code> - Full path to the worktree</li>
       </ul>
     </>
@@ -349,6 +355,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
   } = useForm<EditRepositoryFormData>({
     resolver: valibotResolver(EditRepositoryFormSchema),
     defaultValues: {
+      name: repository.name,
       description: repository.description ?? '',
       setupCommand: repository.setupCommand ?? '',
       cleanupCommand: repository.cleanupCommand ?? '',
@@ -437,6 +444,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     setError(null);
     // Send empty string as-is; server will convert to null for database storage
     updateMutation.mutate({
+      name: data.name,
       description: data.description?.trim() ?? '',
       setupCommand: data.setupCommand?.trim() ?? '',
       cleanupCommand: data.cleanupCommand?.trim() ?? '',
@@ -461,6 +469,16 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
 
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <fieldset disabled={updateMutation.isPending} className="flex flex-col gap-4">
+          <FormField label="Name" error={errors.name} fieldId="repositoryName">
+            <Input
+              id="repositoryName"
+              {...register('name')}
+              error={errors.name}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Display label only. It does not rename the directory or move any data.
+            </p>
+          </FormField>
           <FormField label="Description" error={errors.description}>
             <Textarea
               {...register('description')}

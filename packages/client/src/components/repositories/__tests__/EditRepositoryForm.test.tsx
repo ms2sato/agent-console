@@ -2,7 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { Repository } from '@agent-console/shared';
+import { REPOSITORY_DISPLAY_NAME_MAX_LENGTH, type Repository } from '@agent-console/shared';
 import { EditRepositoryForm } from '../EditRepositoryForm';
 import { setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 import { completeWireBody } from '../../../test/wire-fixtures';
@@ -181,7 +181,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ name: 'test-repo', setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -209,7 +209,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ name: 'test-repo', setupCommand: '', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -236,7 +236,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ name: 'test-repo', setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
   });
 
@@ -604,6 +604,100 @@ describe('EditRepositoryForm', () => {
 
       const commandInput = screen.getByPlaceholderText(/bun install/) as HTMLTextAreaElement;
       expect(commandInput.value).toBe('');
+    });
+  });
+
+  describe('name field', () => {
+    function patchCalls() {
+      return (mockFetch.mock.calls as Array<[RequestInfo | URL, RequestInit | undefined]>).filter(
+        ([, init]) => init?.method === 'PATCH',
+      );
+    }
+
+    it('is prefilled with the current repository name', () => {
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm({ repository: createTestRepository({ name: 'my-repo' }) });
+
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('my-repo');
+    });
+
+    it('submits the edited name trimmed', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+      setupMockFetch(createMockResponse({ repository: { ...repository, name: 'Renamed' } }));
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      const nameInput = screen.getByLabelText('Name');
+      await user.clear(nameInput);
+      await user.type(nameInput, '  Renamed  ');
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+      expect(getRepositoryUpdateRequestBody().name).toBe('Renamed');
+    });
+
+    it.each([
+      { label: 'empty', value: '' },
+      { label: 'whitespace-only', value: '   ' },
+    ])('shows a field error and does not submit when the name is $label', async ({ value }) => {
+      const user = userEvent.setup();
+      setupMockFetch(createMockResponse({}));
+
+      const { props } = renderEditRepositoryForm();
+
+      const nameInput = screen.getByLabelText('Name');
+      await user.clear(nameInput);
+      if (value) await user.type(nameInput, value);
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Name is required')).toBeTruthy();
+      });
+      expect(patchCalls()).toHaveLength(0);
+      expect(props.onSuccess).not.toHaveBeenCalled();
+    });
+
+    it('rejects a name one character over the maximum and accepts exactly the maximum', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+      setupMockFetch(createMockResponse({ repository }));
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      const nameInput = screen.getByLabelText('Name');
+      await user.clear(nameInput);
+      await user.click(nameInput);
+      await user.paste('a'.repeat(REPOSITORY_DISPLAY_NAME_MAX_LENGTH + 1));
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(`Name must be at most ${REPOSITORY_DISPLAY_NAME_MAX_LENGTH} characters`),
+        ).toBeTruthy();
+      });
+      expect(patchCalls()).toHaveLength(0);
+
+      await user.clear(nameInput);
+      await user.click(nameInput);
+      await user.paste('a'.repeat(REPOSITORY_DISPLAY_NAME_MAX_LENGTH));
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+      expect(getRepositoryUpdateRequestBody().name).toBe('a'.repeat(REPOSITORY_DISPLAY_NAME_MAX_LENGTH));
+    });
+
+    it('labels the {{REPO}} hint as the repository directory name', () => {
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm();
+
+      expect(screen.getAllByText('- Repository directory name', { exact: false }).length).toBeGreaterThan(0);
     });
   });
 

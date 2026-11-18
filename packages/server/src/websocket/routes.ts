@@ -512,6 +512,10 @@ export async function setupWebSocketRoutes(
       logger.debug({ repositoryId: repository.id }, 'Broadcasting repository-updated');
       broadcastToApp({ type: 'repository-updated', repository: enriched });
     },
+    onRepositoryNameChanged: (repository) => {
+      logger.debug({ repositoryId: repository.id }, 'Re-broadcasting live sessions after repository rename');
+      sessionManager.notifyRepositorySessionsUpdated(repository.id);
+    },
     onRepositoryDeleted: (repositoryId) => {
       logger.debug({ repositoryId }, 'Broadcasting repository-deleted');
       broadcastToApp({ type: 'repository-deleted', repositoryId });

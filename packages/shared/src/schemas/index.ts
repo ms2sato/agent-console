@@ -226,6 +226,8 @@ export {
   DeleteRepositoryRequestSchema,
   PullWorktreeRequestSchema,
   UpdateRepositoryRequestSchema,
+  RepositoryDisplayNameSchema,
+  REPOSITORY_DISPLAY_NAME_MAX_LENGTH,
   FetchGitHubIssueRequestSchema,
   GitHubIssueSummarySchema,
   RefreshDefaultBranchResponseSchema,

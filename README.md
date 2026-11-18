@@ -15,7 +15,7 @@ A web application for managing multiple AI coding agent instances running in dif
 - **Session Persistence**: Sessions continue running even when you close the browser tab (tmux-like behavior)
 - **Multiple Workers per Session**: Run agent, terminal, git-diff, file-viewer and (experimental) embedded-agent workers side-by-side within a single session
 - **Inter-worker Messaging**: Send messages between workers in the same session via an embedded message panel
-- **Git Worktree Integration**: Create and delete git worktrees directly from the UI; add a repository by cloning from a URL (optionally as a bare repository) or by registering an existing path
+- **Git Worktree Integration**: Create and delete git worktrees directly from the UI; add a repository by cloning from a URL (optionally as a bare repository) or by registering an existing path; a repository's display name can be edited later (repository edit screen or the `update_repository` MCP tool) without moving its directory or changing what `{{REPO}}` resolves to
 - **Diff Review with Annotations**: A git-diff worker shows a worktree's changes; agents can push review annotations that appear in the diff in real time, and the Review page lists pending reviews
 - **File Viewer**: Add a File viewer tab from the `+` menu to browse the session's working directory read-only: a lazily expanded file tree (dotfiles and `.git` included, nothing filtered) beside the selected file with line numbers and syntax highlighting; large files are cut at 1 MiB, binary files show only their size, and on a phone the tree opens as a drawer. The viewer follows file changes live (a file the agent edits or creates updates without pressing Refresh); where the server cannot watch a directory it says so and Refresh still works
 - **Session Memo**: Agents write Markdown memos for a session; fenced code blocks have a one-click Copy control, and the memo's command blocks can be run in the session's terminal after a confirmation
@@ -230,7 +230,7 @@ Template files support variable substitution using `{{VARIABLE}}` syntax:
 |-------------|-------------|---------|
 | `{{WORKTREE_NUM}}` | Worktree index number (0, 1, 2, ...) | `1` |
 | `{{BRANCH}}` | Branch name | `feature/add-login` |
-| `{{REPO}}` | Repository name (without owner) | `agent-console` |
+| `{{REPO}}` | Repository directory name (without owner); never the editable display name | `agent-console` |
 | `{{WORKTREE_PATH}}` | Full path to the worktree | `/Users/me/.agent-console/.../wt-001-abc` |
 
 ### Arithmetic Expressions
@@ -352,7 +352,7 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 |------|-------------|
 | `list_agents` | Discover available agents (built-in + custom) with capabilities |
 | `list_repositories` | Discover available repositories with IDs and remote URLs |
-| `update_repository` | Update a registered repository's setup command, cleanup command, environment variables, description, or default agent |
+| `update_repository` | Update a registered repository's display name, setup command, cleanup command, pause/resume commands, environment variables, description, or default agent |
 
 #### Orchestrator Designation
 

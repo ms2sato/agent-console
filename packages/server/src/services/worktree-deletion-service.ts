@@ -3,6 +3,7 @@ import { $ } from 'bun';
 import type { HookCommandResult, Session } from '@agent-console/shared';
 import { getRepositoriesDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveRepoTemplateName } from '../lib/repository-hook-name.js';
 import type { WorktreeService } from './worktree-service.js';
 
 /** Narrow subset of WorktreeService methods needed by the deletion service. */
@@ -75,7 +76,7 @@ async function validateWorktreePath(
  */
 async function executeCleanupCommandIfConfigured(
   worktreeService: DeleteWorktreeServiceDeps,
-  repo: { path: string; name: string; cleanupCommand?: string | null },
+  repo: { path: string; cleanupCommand?: string | null },
   repoId: string,
   worktreePath: string,
   requestUsername: string | null | undefined,
@@ -94,7 +95,7 @@ async function executeCleanupCommandIfConfigured(
     {
       worktreeNum: targetWorktree.index,
       branch: targetWorktree.branch,
-      repo: repo.name,
+      repo: resolveRepoTemplateName(repo.path),
     },
     requestUsername,
   );
@@ -411,7 +412,7 @@ export async function deleteWorktree(
     // 6a. Execute cleanup command if configured
     const cleanupCommandResult = await executeCleanupCommandIfConfigured(
       worktreeService,
-      { path: repo.path, name: repo.name, cleanupCommand: repo.cleanupCommand },
+      { path: repo.path, cleanupCommand: repo.cleanupCommand },
       repoId,
       worktreePath,
       requestUsername,

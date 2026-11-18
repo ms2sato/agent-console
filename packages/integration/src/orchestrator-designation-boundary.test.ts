@@ -215,6 +215,7 @@ describe('Client-Server Boundary: Repository orchestrator designation (Issue #17
         onRepositoryCreated: () => {},
         onRepositoryUpdated: () => {},
         onRepositoryDeleted: () => {},
+        onRepositoryNameChanged: () => {},
         onOrchestratorDesignationChanged: (repositoryId, orchestratorSessionIds, changedSessionId, action) => {
           broadcastToApp({
             type: 'orchestrator-designation-changed',
