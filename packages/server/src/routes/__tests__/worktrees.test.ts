@@ -1057,6 +1057,58 @@ describe('Worktrees API', () => {
       expect(sessionRequest.reasoningEffort).toBe('high');
     });
 
+    it('resolves {{REPO}} for the setup hook to the checkout directory name, not the display name', async () => {
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
+      mockWorktreeService.createWorktree = mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+      const renamedRepo: Repository = {
+        ...TEST_REPO,
+        name: 'Renamed Display Label',
+        setupCommand: 'echo {{REPO}}',
+      };
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: asRepositoryManager({
+            getRepository: mock((id: string) => (id === renamedRepo.id ? renamedRepo : undefined)),
+            getAllRepositories: mock(() => [renamedRepo]),
+          }),
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          sessionManager: asSessionManager({ createSession: createSessionMock }),
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${renamedRepo.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-repo-var',
+            mode: 'custom',
+            branch: 'repo-var-feature',
+            baseBranch: 'main',
+            useRemote: false,
+            agentId: 'claude-code-builtin',
+          }),
+        },
+      );
+
+      expect(res.status).toBe(202);
+      await captured;
+
+      const hookCall = (mockWorktreeService.executeHookCommand as ReturnType<typeof mock>).mock.calls[0]!;
+      expect(hookCall[0]).toBe('echo {{REPO}}');
+      expect((hookCall[2] as { repo: string }).repo).toBe('repo');
+    });
+
     it('forwards contextWindowTokens to createWorktreeWithSession (Issue #1554)', async () => {
       const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
       mockWorktreeService.createWorktree = mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
