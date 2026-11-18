@@ -120,19 +120,26 @@ describe('Repository rename wiring in setupWebSocketRoutes', () => {
   });
 
   afterEach(async () => {
-    if (testJobQueue) {
-      await testJobQueue.stop();
-      testJobQueue = null;
-    }
-
     try {
-      await closeDatabase();
-      cleanupMemfs();
+      if (testJobQueue) {
+        const queue = testJobQueue;
+        testJobQueue = null;
+        await queue.stop();
+      }
     } finally {
-      if (originalConfigHome === undefined) {
-        delete process.env.AGENT_CONSOLE_HOME;
-      } else {
-        process.env.AGENT_CONSOLE_HOME = originalConfigHome;
+      try {
+        await closeDatabase();
+      } finally {
+        try {
+          cleanupMemfs();
+        } finally {
+          // cleanupMemfs() deletes AGENT_CONSOLE_HOME, so restore after it.
+          if (originalConfigHome === undefined) {
+            delete process.env.AGENT_CONSOLE_HOME;
+          } else {
+            process.env.AGENT_CONSOLE_HOME = originalConfigHome;
+          }
+        }
       }
     }
   });
