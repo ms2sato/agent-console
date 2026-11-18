@@ -6,6 +6,10 @@
  * layer and lands in SQLite exactly as sent — catches schema drift
  * between the MCP tool's zod input and the SQLite update layer's
  * RepositoryUpdates shape that unit tests on either side can miss.
+ *
+ * This file wires the repository lifecycle callbacks itself; the production
+ * wiring (`setupWebSocketRoutes` -> `onRepositoryNameChanged`) is pinned in
+ * packages/server/src/websocket/__tests__/routes-repository-rename.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';

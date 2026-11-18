@@ -390,7 +390,9 @@ const controlCharacterPattern = /[\x00-\x1F\x7F]/;
  * Repository display name: the single writer of the rule, shared by REST
  * `PATCH /api/repositories/:id` and MCP `update_repository`. Trimmed, 1..100
  * characters after the trim, no control characters (U+0000-U+001F, U+007F);
- * otherwise free text. Not nullable: the column is NOT NULL and "clear" has no
+ * otherwise free text. The limit counts UTF-16 code units (`v.maxLength` reads
+ * `.length`): at most 100 code units, so most characters count as one while
+ * emoji and some rare CJK characters count as two. Not nullable: the column is NOT NULL and "clear" has no
  * meaning. Uniqueness is deliberately not checked (names are already
  * non-unique at registration).
  */

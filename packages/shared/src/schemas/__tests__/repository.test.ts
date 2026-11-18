@@ -1530,6 +1530,12 @@ describe('repository display name (RepositoryDisplayNameSchema / UpdateRepositor
     expect(parseName(1).success).toBe(false);
   });
 
+  it('counts UTF-16 code units: 50 two-unit emoji pass, 51 fail', () => {
+    // '\u{1F600}'.length === 2; a code-point count would accept 51 of them.
+    expect(parseName('\u{1F600}'.repeat(50)).success).toBe(true);
+    expect(parseName('\u{1F600}'.repeat(51)).success).toBe(false);
+  });
+
   it('treats an omitted name as unchanged (key absent from the output)', () => {
     const result = v.safeParse(UpdateRepositoryRequestSchema, { description: 'd' });
     expect(result.success).toBe(true);

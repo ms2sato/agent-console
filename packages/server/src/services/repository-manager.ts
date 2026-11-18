@@ -963,8 +963,10 @@ export class RepositoryManager {
    * repository's session-data trees (outputs/messages/memos).
    * @param repo The repository being unregistered. `repo.path` resolves the
    *   worktree/templates data dir under
-   *   `<AGENT_CONSOLE_HOME>/repositories/<org/repo>`; `repo.id` drives the
-   *   session-data cleanup candidate set (the display `name` never does).
+   *   `<AGENT_CONSOLE_HOME>/repositories/<org/repo>`; the session-data cleanup
+   *   candidates come from the canonical slug and `basename(repo.path)` (the
+   *   display `name` never does); `repo.id` is used only in the invalid-slug
+   *   warning.
    * @param requestUsername OS username threaded into the CLEANUP_REPOSITORY
    *   payload so the handler can elevate the recursive `rm` to that user
    *   under `AUTH_MODE=multi-user` when the worktree subtree is user-owned.

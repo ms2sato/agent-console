@@ -1147,7 +1147,11 @@ describe('MCP Server Tools', () => {
         description: 'only this',
       }, nextId++);
 
+      const data = parseToolResult(response) as { repository?: Record<string, unknown> };
+
       expect(response.result?.isError).toBeUndefined();
+      expect(data.repository!.description).toBe('only this');
+      expect(repositoryManager.getRepository('repo-1')?.description).toBe('only this');
       expect(repositoryManager.getRepository('repo-1')?.name).toBe('my-repo');
     });
 

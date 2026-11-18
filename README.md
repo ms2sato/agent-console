@@ -230,7 +230,7 @@ Template files support variable substitution using `{{VARIABLE}}` syntax:
 |-------------|-------------|---------|
 | `{{WORKTREE_NUM}}` | Worktree index number (0, 1, 2, ...) | `1` |
 | `{{BRANCH}}` | Branch name | `feature/add-login` |
-| `{{REPO}}` | Repository directory name (without owner); never the editable display name | `agent-console` |
+| `{{REPO}}` | Repository directory name (without owner); never the editable display name. Setup/cleanup/pause/resume commands and env vars use the checkout directory name; copied template files use the remote-derived repo part (the slug when it has no owner part) | `agent-console` |
 | `{{WORKTREE_PATH}}` | Full path to the worktree | `/Users/me/.agent-console/.../wt-001-abc` |
 
 ### Arithmetic Expressions

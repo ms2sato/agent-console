@@ -10,8 +10,10 @@ import * as path from 'path';
  * free-text label (see `RepositoryDisplayNameSchema`), so reading it here would
  * change what an existing worktree's cleanup / pause / resume command and
  * env vars resolve to after a rename. `path` has no update path, so this value
- * is stable for the life of the registration (and equals what `name` held
- * before display-name editing existed).
+ * is stable for the life of the registration (and equals what `name` held for every
+ * repository the application registered, before display-name editing existed:
+ * registration stores `path.basename(path)` and nothing wrote the column
+ * afterwards).
  */
 export function resolveRepoTemplateName(repositoryPath: string): string {
   return path.basename(repositoryPath);

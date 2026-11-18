@@ -181,7 +181,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ name: 'test-repo', setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -209,7 +209,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ name: 'test-repo', setupCommand: '', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -236,7 +236,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ name: 'test-repo', setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', pauseCommand: '', resumeCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
   });
 
@@ -690,6 +690,78 @@ describe('EditRepositoryForm', () => {
         expect(props.onSuccess).toHaveBeenCalledTimes(1);
       });
       expect(getRepositoryUpdateRequestBody().name).toBe('a'.repeat(REPOSITORY_DISPLAY_NAME_MAX_LENGTH));
+    });
+
+    it('omits name from the payload when the form is submitted without editing it', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+      setupMockFetch(createMockResponse({ repository }));
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+      expect(getRepositoryUpdateRequestBody()).not.toHaveProperty('name');
+    });
+
+    it('submits without name when a loaded over-length name is left alone and another field is edited', async () => {
+      const user = userEvent.setup();
+      const longName = 'L'.repeat(REPOSITORY_DISPLAY_NAME_MAX_LENGTH + 20);
+      const repository = createTestRepository({ name: longName });
+      setupMockFetch(createMockResponse({ repository }));
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      await user.type(screen.getByLabelText('Description'), 'edited');
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+      const body = getRepositoryUpdateRequestBody();
+      expect(body).not.toHaveProperty('name');
+      expect(body.description).toBe('edited');
+    });
+
+    it('shows the field error when a loaded over-length name is changed to another over-length name', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository({ name: 'L'.repeat(REPOSITORY_DISPLAY_NAME_MAX_LENGTH + 20) });
+      setupMockFetch(createMockResponse({ repository }));
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      const nameInput = screen.getByLabelText('Name');
+      await user.clear(nameInput);
+      await user.click(nameInput);
+      await user.paste('M'.repeat(REPOSITORY_DISPLAY_NAME_MAX_LENGTH + 20));
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(`Name must be at most ${REPOSITORY_DISPLAY_NAME_MAX_LENGTH} characters`),
+        ).toBeTruthy();
+      });
+      expect(patchCalls()).toHaveLength(0);
+      expect(props.onSuccess).not.toHaveBeenCalled();
+    });
+
+    it('associates the name error with the input via aria-describedby', async () => {
+      const user = userEvent.setup();
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm();
+
+      const nameInput = screen.getByLabelText('Name');
+      await user.clear(nameInput);
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Name is required').id).toBe('repositoryName-error');
+      });
+      expect(nameInput.getAttribute('aria-describedby')).toContain('repositoryName-error');
     });
 
     it('labels the {{REPO}} hint as the repository directory name', () => {

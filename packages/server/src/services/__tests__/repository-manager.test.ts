@@ -1201,6 +1201,11 @@ describe('RepositoryManager', () => {
         if (rename !== null) {
           await manager.updateRepository(repo.id, { name: rename });
         }
+        // Precondition: the rename took effect, so the 'Other' directory below is
+        // really addressable by the display name and its absence is meaningful.
+        if (rename !== null) {
+          expect(manager.getRepository(repo.id)?.name).toBe(rename);
+        }
         await manager.unregisterRepository(repo.id);
         const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
         const payload = JSON.parse(jobs[0]!.payload) as { sessionDataDirs: string[] };

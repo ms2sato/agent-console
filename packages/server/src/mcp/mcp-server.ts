@@ -628,10 +628,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   mcpServer.tool(
     'update_repository',
-    'Update a registered repository\'s configuration. Fields that can be updated: name, setupCommand, cleanupCommand, pauseCommand, resumeCommand, envVars, description, defaultAgentId. Omit a field to leave it unchanged; pass an empty string or null to clear it. NOTE: envVars is stored plaintext in the database until an encryption story ships — do not persist secrets here.',
+    'Update a registered repository\'s configuration. Fields that can be updated: name, setupCommand, cleanupCommand, pauseCommand, resumeCommand, envVars, description, defaultAgentId. Omit a field to leave it unchanged; pass an empty string or null to clear any field except name (name cannot be cleared: omit it to keep it). NOTE: envVars is stored plaintext in the database until an encryption story ships — do not persist secrets here.',
     {
       repositoryId: z.string().min(1).describe('The repository ID to update'),
-      name: z.string().optional().describe('Display name shown in the UI (trimmed, 1-100 characters, no control characters). A display label only: it does not rename the directory, change the path, or move any data, and it cannot be cleared. Omit to leave it unchanged.'),
+      name: z.string().optional().describe('Display name shown in the UI (trimmed, at most 100 UTF-16 code units, at least 1; most characters count as one, emoji and some rare CJK characters as two; no control characters). A display label only: it does not rename the directory, change the path, or move any data, and it cannot be cleared. Omit to leave it unchanged.'),
       setupCommand: z.string().nullish().describe('Shell command to run after creating worktrees. Empty string or null clears the value.'),
       cleanupCommand: z.string().nullish().describe('Shell command to run before deleting worktrees. Empty string or null clears the value.'),
       pauseCommand: z.string().nullish().describe('Shell command to run after a session in this repository is paused. Its failure never blocks the pause. Empty string or null clears the value.'),
