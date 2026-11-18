@@ -17,6 +17,7 @@ type CreateWorktreeServiceDeps = Pick<
 >;
 import { fetchRemote, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveRepoTemplateName } from '../lib/repository-hook-name.js';
 
 const logger = createLogger('worktree-creation-service');
 
@@ -44,7 +45,6 @@ async function rollbackWorktree(
 export interface CreateWorktreeParams {
   repoPath: string;
   repoId: string;
-  repoName: string;
   setupCommand?: string | null;
   branch: string;
   baseBranch?: string;
@@ -104,7 +104,7 @@ export async function createWorktreeWithSession(
   worktreeService: CreateWorktreeServiceDeps,
 ): Promise<CreateWorktreeResult> {
   const {
-    repoPath, repoId, repoName, setupCommand, branch, baseBranch,
+    repoPath, repoId, setupCommand, branch, baseBranch,
     useRemote, agentId, embeddedAgentId, model, reasoningEffort, contextWindowTokens, initialPrompt, title,
     autoStartSession = true,
     context,
@@ -234,7 +234,7 @@ export async function createWorktreeWithSession(
         {
           worktreeNum: wtResult.index,
           branch: worktree.branch,
-          repo: repoName,
+          repo: resolveRepoTemplateName(repoPath),
         },
         requestUsername,
       );

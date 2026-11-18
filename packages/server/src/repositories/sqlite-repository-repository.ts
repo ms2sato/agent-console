@@ -134,6 +134,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
     };
 
     const fieldMap: Array<[keyof RepositoryUpdates, string]> = [
+      ['name', 'name'],
       ['setupCommand', 'setup_command'],
       ['cleanupCommand', 'cleanup_command'],
       ['pauseCommand', 'pause_command'],
@@ -147,7 +148,9 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
 
     for (const [domainKey, dbColumn] of fieldMap) {
       if (updates[domainKey] !== undefined) {
-        updateData[dbColumn] = updates[domainKey] === '' ? null : updates[domainKey];
+        // `name` is NOT NULL: an empty string must never be normalised to null
+        // (validators reject it upstream; this keeps the column safe regardless).
+        updateData[dbColumn] = updates[domainKey] === '' && domainKey !== 'name' ? null : updates[domainKey];
       }
     }
 

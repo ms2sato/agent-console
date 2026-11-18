@@ -169,7 +169,6 @@ describe('createWorktreeWithSession: shared-session Session.isShared derivation 
       {
         repoPath: TEST_REPO_PATH,
         repoId: TEST_REPO_ID,
-        repoName: 'test-repo',
         branch: 'feat/shared-worktree',
         useRemote: false,
         agentId: CLAUDE_CODE_AGENT_ID,
@@ -201,7 +200,6 @@ describe('createWorktreeWithSession: shared-session Session.isShared derivation 
       {
         repoPath: TEST_REPO_PATH,
         repoId: TEST_REPO_ID,
-        repoName: 'test-repo',
         branch: 'feat/personal-worktree',
         useRemote: false,
         agentId: CLAUDE_CODE_AGENT_ID,

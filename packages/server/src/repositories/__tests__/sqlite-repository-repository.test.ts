@@ -464,6 +464,45 @@ describe('SqliteRepositoryRepository', () => {
       expect(updated?.setupCommand).toBe('npm install');
     });
 
+    describe('name', () => {
+      it('round-trips name and leaves every other field untouched', async () => {
+        const repo = createRepository({
+          id: 'repo-rename',
+          name: 'original',
+          path: '/original/path',
+          description: 'keep me',
+          setupCommand: 'bun install',
+        });
+        await repository.save(repo);
+
+        const updated = await repository.update('repo-rename', { name: 'Renamed Display Label' });
+
+        expect(updated?.name).toBe('Renamed Display Label');
+        expect((await repository.findById('repo-rename'))?.name).toBe('Renamed Display Label');
+        expect(updated?.path).toBe('/original/path');
+        expect(updated?.description).toBe('keep me');
+        expect(updated?.setupCommand).toBe('bun install');
+      });
+
+      it('leaves name unchanged when it is not part of the update', async () => {
+        await repository.save(createRepository({ id: 'repo-name-omitted', name: 'stay' }));
+
+        const updated = await repository.update('repo-name-omitted', { description: 'changed' });
+
+        expect(updated?.name).toBe('stay');
+        expect(updated?.description).toBe('changed');
+      });
+
+      it('never normalises an empty name to null (the column is NOT NULL)', async () => {
+        await repository.save(createRepository({ id: 'repo-name-empty', name: 'stay' }));
+
+        // Would reject with a NOT NULL constraint error if '' were mapped to null.
+        const updated = await repository.update('repo-name-empty', { name: '' });
+
+        expect(updated?.name).toBe('');
+      });
+    });
+
     it('should update setupCommand with template variables', async () => {
       const repo = createRepository({ id: 'repo-template' });
       await repository.save(repo);

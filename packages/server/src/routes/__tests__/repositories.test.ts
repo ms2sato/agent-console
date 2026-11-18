@@ -542,6 +542,80 @@ describe('Repositories API', () => {
   });
 
   // =========================================================================
+  // PATCH /api/repositories/:id (name: display label)
+  // =========================================================================
+
+  describe('PATCH /api/repositories/:id (name)', () => {
+    const patch = (body: unknown) =>
+      app.request('/api/repositories/repo1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    beforeEach(async () => {
+      app = await createTestApp({ repositoryManager: repositoryManager as any });
+      repositoryManager.updateRepository.mockClear();
+      repositoryManager.updateRepository.mockImplementation(((_id: string, updates: { name?: string }) =>
+        Promise.resolve({
+          id: 'repo1',
+          name: updates.name ?? 'repo1',
+          path: '/repo',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          orchestratorSessionIds: [],
+          clonedSourceRepoPath: null,
+        } as any)) as any,
+      );
+    });
+
+    it('passes the trimmed name to the update and returns the new name', async () => {
+      const res = await patch({ name: '  Renamed Repo  ' });
+
+      expect(res.status).toBe(200);
+      expect(repositoryManager.updateRepository).toHaveBeenCalledWith('repo1', { name: 'Renamed Repo' });
+      const body = (await res.json()) as { repository: { name: string } };
+      expect(body.repository.name).toBe('Renamed Repo');
+    });
+
+    it('does not pass a name when it is omitted', async () => {
+      const res = await patch({ description: 'd' });
+
+      expect(res.status).toBe(200);
+      expect(repositoryManager.updateRepository).toHaveBeenCalledWith('repo1', { description: 'd' });
+    });
+
+    it('accepts a 100-character name', async () => {
+      const res = await patch({ name: 'a'.repeat(100) });
+
+      expect(res.status).toBe(200);
+    });
+
+    for (const [label, name] of [
+      ['an empty string', ''],
+      ['whitespace only', '   '],
+      ['null', null],
+      ['101 characters after trim', ` ${'a'.repeat(101)} `],
+      ['a control character', 'bad\u0000name'],
+    ] as const) {
+      it(`returns 400 and writes nothing for ${label}`, async () => {
+        // A valid sibling field must not be written either.
+        const res = await patch({ name, description: 'must not be written' });
+
+        expect(res.status).toBe(400);
+        expect(repositoryManager.updateRepository).not.toHaveBeenCalled();
+      });
+    }
+
+    it('returns 404 for an unknown repository id with a valid name', async () => {
+      repositoryManager.updateRepository.mockImplementation(() => Promise.resolve(null));
+
+      const res = await patch({ name: 'Renamed' });
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // =========================================================================
   // POST /api/repositories/:id/generate-description
   // =========================================================================
 

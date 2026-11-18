@@ -225,6 +225,26 @@ On `SessionManager.initialize()`, before auto-resume runs:
 
 This runs exactly once per startup. The cost is O(sessions in DB) string operations — negligible.
 
+### 9. The repository display name is not an address
+
+A repository's `name` is a mutable display label. It is initialised from `path.basename(path)` at registration and can then be edited (REST `PATCH /api/repositories/:id`, MCP `update_repository`). Nothing may address a directory, a hook variable or a route by it.
+
+**Unregister cleanup candidates.** `buildSessionDataCleanupTargets` removes each existing `repositories/<candidate>/` directory for exactly two candidates: the canonical slug (`deriveSlug`, the same derivation as session creation) and `path.basename(repoPath)` (the closed legacy-flat set, since migration v18 froze `data_scope_slug` from a name that was the basename at the time). The display name is not a candidate and the builder has no parameter for it, so it cannot reach a delete path by construction.
+
+**`{{REPO}}`.** Setup, cleanup, pause and resume commands and repository `envVars` resolve `{{REPO}}` to `path.basename(repo.path)` through the single helper `resolveRepoTemplateName` (`lib/repository-hook-name.ts`). It is byte-identical to the pre-edit value for every repository the application registered (registration has always stored `path.basename(path)`, and nothing wrote the column afterwards until this change) and stays stable across a rename, so a per-worktree database or port prefix created under one value is cleaned up under the same one. The worktree-creation service derives it from `repoPath` itself (it takes no name parameter); the deletion service and `SessionManager` (envVars, pause, resume) call the helper with the repository path. Template-file copy (`worktree-service.ts`) is a different derivation and is deliberately untouched: its `repo` value is the repository component of the canonical slug from `deriveRepositorySlug(repoPath, path.basename(repoPath))`. When no valid remote slug is available (no origin remote, an unparseable URL, or a slug that fails validation), the whole fallback slug is used, which is the checkout directory name. So template-file copy and `{{REPO}}` coincide whenever the slug's repository part equals the checkout directory name (always so in the no-remote case, and also for a valid remote slug such as `org/repo` with a checkout at `/work/repo`), and differ otherwise (remote repository name versus checkout directory name).
+
+**Validation (one rule, one writer).** `RepositoryDisplayNameSchema` (`packages/shared/src/schemas/repository.ts`): trimmed, 1..100 characters after the trim (counted as UTF-16 code units, i.e. `.length`: most characters count as one, emoji and some rare CJK characters as two), no control characters (U+0000-U+001F, U+007F), otherwise free text. The control-character check runs after the trim, so leading and trailing whitespace controls are removed first: `"\tRepo\n"` is accepted as `Repo`, while `"Re\tpo"` is rejected. Not nullable and no uniqueness check (names were already non-unique). REST uses it as `v.optional(...)` inside `UpdateRepositoryRequestSchema`; the MCP handler runs the same schema on its `name` argument before anything is written.
+
+**Surfaces.**
+
+| Operation | REST `PATCH /api/repositories/:id` | MCP `update_repository` | UI (`EditRepositoryForm`) |
+|---|---|---|---|
+| change the display name | do: `name` field | do: `name` argument | do: "Name" field (client slice) |
+| clear the display name | not here: the column is NOT NULL, "clear" has no meaning | not here: same | not here: same |
+| change `path` or the on-disk directory | not here: out of scope, no update path | not here: same | not here: same |
+
+**Broadcast wiring.** `repository-updated` still fires for every successful update; only the rename-triggered `session-updated` is suppressed when the name is omitted or unchanged. Each wire session also carries a `repositoryName` computed at conversion time (the sidebar group label reads it), so `RepositoryManager.updateRepository` compares the persisted name before and after the write and, only when the value actually changed, calls the new `onRepositoryNameChanged` lifecycle callback AFTER `onRepositoryUpdated`. `websocket/routes.ts` wires that callback to `SessionManager.notifyRepositorySessionsUpdated(repositoryId)`, which sends the existing `session-updated` message for every live worktree session of that repository (none for other repositories; none when the repository has no live session). No new wire message. An omitted or same-value name fires neither. A paused session's label refreshes on the next `sessions-sync`; an in-flight worktree-creation task label keeps the name captured at start.
+
 ## Migration
 
 ### Schema migration (one-off, on first startup of the new version)

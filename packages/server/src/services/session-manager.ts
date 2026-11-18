@@ -51,6 +51,7 @@ import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
 import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../lib/mcp-server-permissions.js';
 import { serverConfig } from '../lib/server-config.js';
+import { resolveRepoTemplateName } from '../lib/repository-hook-name.js';
 import { SessionDeletingError, SessionPausingError } from '../lib/errors.js';
 import { canOperateSession } from '../lib/session-access.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
@@ -2258,6 +2259,19 @@ export class SessionManager {
   }
 
   /**
+   * Re-broadcast `session-updated` for every live worktree session of the
+   * repository. Called after the repository's display name changed: each wire
+   * session carries a `repositoryName` computed at conversion time, so clients
+   * only see the new name once the session is projected and sent again.
+   * A repository with no live session is not an error (nothing is sent).
+   */
+  notifyRepositorySessionsUpdated(repositoryId: string): void {
+    for (const session of this.getSessionsUsingRepository(repositoryId)) {
+      this.sessionLifecycleCallbacks?.onSessionUpdated?.(session);
+    }
+  }
+
+  /**
    * Get all persisted worktree sessions for a repository that are NOT
    * currently active in memory — paused sessions, plus any zombie row that
    * is neither active nor cleanly paused. This is the single writer for
@@ -2525,7 +2539,7 @@ export class SessionManager {
     if (!hasTemplates) return filtered;
 
     // Resolve template variables and apply substitution
-    const vars = await this.resolveTemplateVars(session, repository.name);
+    const vars = await this.resolveTemplateVars(session, repository.path);
 
     const result: Record<string, string> = {};
     for (const [key, value] of Object.entries(filtered)) {
@@ -2541,7 +2555,7 @@ export class SessionManager {
    */
   private async resolveTemplateVars(
     session: Extract<InternalSession, { type: 'worktree' }>,
-    repositoryName: string,
+    repositoryPath: string,
   ): Promise<{ worktreeNum: number; branch: string; repo: string; worktreePath: string }> {
     const worktreeNum = await this.repositoryEnvLookup.getWorktreeIndexNumber(session.locationPath);
     const branch = await gitGetCurrentBranch(
@@ -2551,7 +2565,7 @@ export class SessionManager {
     return {
       worktreeNum,
       branch,
-      repo: repositoryName,
+      repo: resolveRepoTemplateName(repositoryPath),
       worktreePath: session.locationPath,
     };
   }
@@ -2565,13 +2579,13 @@ export class SessionManager {
   private configuredHookCommand(
     kind: 'pause' | 'resume',
     session: InternalSession,
-  ): { command: string; repositoryName: string } | undefined {
+  ): { command: string; repositoryPath: string } | undefined {
     if (session.type !== 'worktree') return undefined;
     const repository = this.repositoryEnvLookup.getRepositoryInfo(session.repositoryId);
     if (!repository) return undefined;
     const command = kind === 'pause' ? repository.pauseCommand : repository.resumeCommand;
     if (!command?.trim()) return undefined;
-    return { command, repositoryName: repository.name };
+    return { command, repositoryPath: repository.path };
   }
 
   private async runSessionHookCommand(
@@ -2582,11 +2596,11 @@ export class SessionManager {
     if (session.type !== 'worktree' || !this.executeHookCommand) return undefined;
     const configured = this.configuredHookCommand(kind, session);
     if (!configured) return undefined;
-    const { command, repositoryName } = configured;
+    const { command, repositoryPath } = configured;
 
     let result: HookCommandResult;
     try {
-      const { worktreeNum, branch, repo } = await this.resolveTemplateVars(session, repositoryName);
+      const { worktreeNum, branch, repo } = await this.resolveTemplateVars(session, repositoryPath);
       result = await this.executeHookCommand(
         command,
         session.locationPath,

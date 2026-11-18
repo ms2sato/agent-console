@@ -1,9 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as v from 'valibot';
-import type { Repository, UpdateRepositoryRequest } from '@agent-console/shared';
+import {
+  RepositoryDisplayNameSchema,
+  type Repository,
+  type UpdateRepositoryRequest,
+} from '@agent-console/shared';
 import {
   updateRepository,
   generateRepositoryDescription,
@@ -21,7 +25,7 @@ import { useAgents } from '../../hooks/useAgents';
 import { useAuth } from '../../lib/auth';
 
 // Form data schema - all fields are optional and can be empty
-const EditRepositoryFormSchema = v.object({
+const editRepositoryFormFields = {
   description: v.optional(v.pipe(v.string(), v.trim())),
   setupCommand: v.optional(
     v.pipe(
@@ -59,9 +63,15 @@ const EditRepositoryFormSchema = v.object({
       v.trim()
     )
   ),
-});
+};
 
-type EditRepositoryFormData = v.InferOutput<typeof EditRepositoryFormSchema>;
+// The Name rule applies only when the Name differs from the value the form was loaded with, so a
+// legacy name that predates the rule never blocks saving another field.
+const UnchangedNameFormSchema = v.object({ name: v.string(), ...editRepositoryFormFields });
+// Shared rule (trim, 1..max, no control characters); the parsed output is already trimmed.
+const ChangedNameFormSchema = v.object({ name: RepositoryDisplayNameSchema, ...editRepositoryFormFields });
+
+type EditRepositoryFormData = v.InferOutput<typeof ChangedNameFormSchema>;
 
 /** Shared help text listing template variables available in hook commands. */
 function HookCommandTemplateHelp({ description }: { description: string }) {
@@ -73,7 +83,7 @@ function HookCommandTemplateHelp({ description }: { description: string }) {
       <ul className="text-xs text-gray-500 mt-1 ml-4 list-disc">
         <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_NUM}}'}</code> - Worktree number (e.g., "3")</li>
         <li><code className="bg-slate-700 px-1 rounded">{'{{BRANCH}}'}</code> - Branch name</li>
-        <li><code className="bg-slate-700 px-1 rounded">{'{{REPO}}'}</code> - Repository name</li>
+        <li><code className="bg-slate-700 px-1 rounded">{'{{REPO}}'}</code> - Repository directory name</li>
         <li><code className="bg-slate-700 px-1 rounded">{'{{WORKTREE_PATH}}'}</code> - Full path to the worktree</li>
       </ul>
     </>
@@ -341,14 +351,30 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     };
   }, []);
 
+  // The name the form was loaded with. Held in state so later prop changes (e.g. an optimistic
+  // cache update) cannot make an unedited draft look like an edit.
+  const [loadedName] = useState(repository.name);
+  // The form state holds the raw name until the field is blurred; the blur handler then reads the
+  // value back from the <input type="text">, whose value sanitization strips CR and LF. Either
+  // form of the loaded name is "unchanged".
+  const loadedNameAsInputHolds = loadedName.replace(/[\r\n]/g, '');
+  const isLoadedName = (name: string) => name === loadedName || name === loadedNameAsInputHolds;
+  const resolver: Resolver<EditRepositoryFormData> = (values, context, options) =>
+    valibotResolver(isLoadedName(values.name) ? UnchangedNameFormSchema : ChangedNameFormSchema)(
+      values,
+      context,
+      options,
+    );
+
   const {
     register,
     handleSubmit,
     setValue,
     formState: { errors },
   } = useForm<EditRepositoryFormData>({
-    resolver: valibotResolver(EditRepositoryFormSchema),
+    resolver,
     defaultValues: {
+      name: repository.name,
       description: repository.description ?? '',
       setupCommand: repository.setupCommand ?? '',
       cleanupCommand: repository.cleanupCommand ?? '',
@@ -437,6 +463,8 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
     setError(null);
     // Send empty string as-is; server will convert to null for database storage
     updateMutation.mutate({
+      // Omitted when unchanged: the server then does not re-validate a legacy name.
+      ...(isLoadedName(data.name) ? {} : { name: data.name }),
       description: data.description?.trim() ?? '',
       setupCommand: data.setupCommand?.trim() ?? '',
       cleanupCommand: data.cleanupCommand?.trim() ?? '',
@@ -461,6 +489,18 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
 
       <form onSubmit={handleSubmit(handleFormSubmit)}>
         <fieldset disabled={updateMutation.isPending} className="flex flex-col gap-4">
+          <FormField label="Name" error={errors.name} fieldId="repositoryName">
+            <Input
+              id="repositoryName"
+              {...register('name')}
+              error={errors.name}
+              // FormField only injects ARIA props when it has a single child; this field has a hint too.
+              aria-describedby={errors.name ? 'repositoryName-error' : undefined}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Display label only. It does not rename the directory or move any data.
+            </p>
+          </FormField>
           <FormField label="Description" error={errors.description}>
             <Textarea
               {...register('description')}

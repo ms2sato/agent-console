@@ -111,7 +111,6 @@ function createMockSessionManager(): SessionManager & MockSessionManagerMethods 
 const DEFAULT_PARAMS = {
   repoPath: '/repos/my-repo',
   repoId: 'repo-1',
-  repoName: 'my-repo',
   branch: 'feature-new',
   baseBranch: 'main',
   useRemote: true,
@@ -529,6 +528,24 @@ describe('createWorktreeWithSession', () => {
       CREATED_PATH,
       { worktreeNum: 2, branch: 'feature-new', repo: 'my-repo' },
       'alice',
+    );
+  });
+
+  it('resolves {{REPO}} to the checkout directory name for the setup hook', async () => {
+    // CreateWorktreeParams carries no display name at all, so a renamed
+    // repository cannot change what the setup command's {{REPO}} resolves to.
+    const sm = createMockSessionManager();
+    await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, repoPath: '/repos/checkout-dir', setupCommand: 'npm install' },
+      sm,
+      mockWorktreeService,
+    );
+
+    expect(mockExecuteHookCommand).toHaveBeenCalledWith(
+      'npm install',
+      CREATED_PATH,
+      { worktreeNum: 2, branch: 'feature-new', repo: 'checkout-dir' },
+      undefined,
     );
   });
 

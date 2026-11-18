@@ -127,6 +127,13 @@ export interface RepositoryLifecycleCallbacks {
   onRepositoryUpdated: (repository: Repository) => void | Promise<void>;
   onRepositoryDeleted: (repositoryId: string) => void;
   /**
+   * Fired AFTER `onRepositoryUpdated`, and only when an update changed the
+   * stored display `name` (never for an omitted or same-value name). Each live
+   * session carries a `repositoryName` computed at conversion time, so the
+   * owner of that projection re-broadcasts the repository's sessions here.
+   */
+  onRepositoryNameChanged: (repository: Repository) => void | Promise<void>;
+  /**
    * Fired specifically when the repository's designated-Orchestrator SET
    * changes (one session added or removed) via
    * `addOrchestratorSession`/`removeOrchestratorSession` (see docs/design/shared-orchestrator-session.md, "Designation in multi-user").
@@ -627,6 +634,12 @@ export class RepositoryManager {
       // only after database write is confirmed
       await this.lifecycleCallbacks?.onRepositoryUpdated(updated);
 
+      // Compare the persisted values (read back), not the request: a trimmed or
+      // same-value name must not re-broadcast every live session.
+      if (updated.name !== repo.name) {
+        await this.lifecycleCallbacks?.onRepositoryNameChanged(updated);
+      }
+
       return updated;
     });
   }
@@ -950,8 +963,10 @@ export class RepositoryManager {
    * repository's session-data trees (outputs/messages/memos).
    * @param repo The repository being unregistered. `repo.path` resolves the
    *   worktree/templates data dir under
-   *   `<AGENT_CONSOLE_HOME>/repositories/<org/repo>`; `repo.id` / `repo.name`
-   *   drive the session-data cleanup candidate set.
+   *   `<AGENT_CONSOLE_HOME>/repositories/<org/repo>`; the session-data cleanup
+   *   candidates come from the canonical slug and `basename(repo.path)` (the
+   *   display `name` never does); `repo.id` is used only in the invalid-slug
+   *   warning.
    * @param requestUsername OS username threaded into the CLEANUP_REPOSITORY
    *   payload so the handler can elevate the recursive `rm` to that user
    *   under `AUTH_MODE=multi-user` when the worktree subtree is user-owned.
@@ -1006,7 +1021,6 @@ export class RepositoryManager {
       configDir: getConfigDir(),
       repositoryId: repo.id,
       repoPath: repo.path,
-      repoName: repo.name,
       deriveSlug: () => Promise.resolve(orgRepo),
     });
 

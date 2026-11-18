@@ -1189,6 +1189,45 @@ describe('RepositoryManager', () => {
       });
     });
 
+    describe('display name is not an address (repository display-name editing)', () => {
+      async function unregisterAndReadSessionDataDirs(rename: string | null): Promise<string[]> {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        // Directories at the canonical slug, the basename, and one a free-text
+        // display name could address (a different repository's flat dir).
+        for (const slug of ['test-org/repo', 'repo', 'Other']) {
+          fs.mkdirSync(path.join(TEST_CONFIG_DIR, 'repositories', slug, 'outputs'), { recursive: true });
+        }
+        if (rename !== null) {
+          await manager.updateRepository(repo.id, { name: rename });
+        }
+        // Precondition: the rename took effect, so the 'Other' directory below is
+        // really addressable by the display name and its absence is meaningful.
+        if (rename !== null) {
+          expect(manager.getRepository(repo.id)?.name).toBe(rename);
+        }
+        await manager.unregisterRepository(repo.id);
+        const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
+        const payload = JSON.parse(jobs[0]!.payload) as { sessionDataDirs: string[] };
+        return payload.sessionDataDirs;
+      }
+
+      const expectedDirs = () =>
+        ['test-org/repo', 'repo'].map((slug) => path.join(TEST_CONFIG_DIR, 'repositories', slug)).sort();
+
+      it('sessionDataDirs without a rename is {canonical slug, basename}', async () => {
+        expect((await unregisterAndReadSessionDataDirs(null)).sort()).toEqual(expectedDirs());
+      });
+
+      it('sessionDataDirs after a rename is identical to the un-renamed set and never includes the new name', async () => {
+        // A name that addresses an existing directory ('Other') must not become a delete target.
+        const dirs = await unregisterAndReadSessionDataDirs('Other');
+
+        expect(dirs.sort()).toEqual(expectedDirs());
+        expect(dirs.some((dir) => dir.endsWith(`${path.sep}Other`))).toBe(false);
+      });
+    });
+
     describe('atomic cleanup-job enqueue and row delete', () => {
       const settle = <T>(p: Promise<T>): Promise<T | 'hung'> =>
         Promise.race([p, new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3000))]);
@@ -1467,6 +1506,7 @@ describe('RepositoryManager', () => {
         onRepositoryCreated: () => {},
         onRepositoryUpdated: () => {},
         onRepositoryDeleted: () => {},
+        onRepositoryNameChanged: () => {},
         onOrchestratorDesignationChanged: () => {},
       };
     }
@@ -1773,12 +1813,77 @@ describe('RepositoryManager', () => {
     });
   });
 
+  describe('updateRepository display name (onRepositoryNameChanged)', () => {
+    async function setup() {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      const events: string[] = [];
+      manager.setLifecycleCallbacks({
+        onRepositoryCreated: () => {},
+        onRepositoryUpdated: () => { events.push('updated'); },
+        onRepositoryNameChanged: (r: { name: string }) => { events.push(`name-changed:${r.name}`); },
+        onRepositoryDeleted: () => {},
+        onOrchestratorDesignationChanged: () => {},
+      });
+      return { manager, repo, events };
+    }
+
+    it('persists the new name and fires onRepositoryNameChanged AFTER onRepositoryUpdated', async () => {
+      const { manager, repo, events } = await setup();
+
+      const updated = await manager.updateRepository(repo.id, { name: 'Other' });
+
+      expect(updated?.name).toBe('Other');
+      expect(manager.getRepository(repo.id)?.name).toBe('Other');
+      expect(events).toEqual(['updated', 'name-changed:Other']);
+    });
+
+    it('does not fire onRepositoryNameChanged when the name is omitted', async () => {
+      const { manager, repo, events } = await setup();
+
+      await manager.updateRepository(repo.id, { description: 'd' });
+
+      expect(events).toEqual(['updated']);
+    });
+
+    it('does not fire onRepositoryNameChanged when the name equals the current value', async () => {
+      const { manager, repo, events } = await setup();
+
+      await manager.updateRepository(repo.id, { name: repo.name });
+
+      expect(events).toEqual(['updated']);
+    });
+
+    it('allows a name equal to another repository\'s name (no uniqueness)', async () => {
+      const { manager, repo, events } = await setup();
+      const secondPath = '/test/second-repo';
+      for (const [filePath, content] of Object.entries(createMockGitRepoFiles(secondPath))) {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, content);
+      }
+      const second = await manager.registerRepository(secondPath);
+
+      const updated = await manager.updateRepository(repo.id, { name: second.name });
+
+      expect(updated?.name).toBe(second.name);
+      expect(events.at(-1)).toBe(`name-changed:${second.name}`);
+    });
+
+    it('fires nothing for an unknown repository', async () => {
+      const { manager, events } = await setup();
+
+      expect(await manager.updateRepository('does-not-exist', { name: 'x' })).toBeNull();
+      expect(events).toEqual([]);
+    });
+  });
+
   describe('withRepositoryLock (Issue #1651)', () => {
     function noopCallbacks() {
       return {
         onRepositoryCreated: () => {},
         onRepositoryUpdated: () => {},
         onRepositoryDeleted: () => {},
+        onRepositoryNameChanged: () => {},
         onOrchestratorDesignationChanged: () => {},
       };
     }

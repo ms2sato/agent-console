@@ -5,12 +5,11 @@ import { computeSessionDataBaseDir } from '../../lib/session-data-path.js';
 const CONFIG_DIR = '/test/config';
 
 describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
-  it('dedups identical canonical/basename/repoName candidates into a single existing target', async () => {
+  it('dedups identical canonical/basename candidates into a single existing target', async () => {
     const targets = await buildSessionDataCleanupTargets({
       configDir: CONFIG_DIR,
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/repo-1',
-      repoName: 'repo-1',
       deriveSlug: async () => 'repo-1',
       pathExists: async () => true,
     });
@@ -23,7 +22,6 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       configDir: CONFIG_DIR,
       repositoryId: 'repo-a',
       repoPath: '/source/repos/owner/repo-a',
-      repoName: 'repo-a',
       deriveSlug: async () => 'repo-a',
       pathExists: async () => true,
     });
@@ -33,13 +31,12 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
     expect(targetsForRepoA).toEqual([computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'repo-a')]);
   });
 
-  it('returns three distinct candidate dirs when the canonical slug, basename, and repoName all differ', async () => {
+  it('returns exactly the canonical and basename directories when they differ, probing each once', async () => {
     const seenPaths: string[] = [];
     const targets = await buildSessionDataCleanupTargets({
       configDir: CONFIG_DIR,
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/basename-slug',
-      repoName: 'reponame-slug',
       deriveSlug: async () => 'canonical-slug',
       pathExists: async (p) => {
         seenPaths.push(p);
@@ -51,11 +48,40 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       [
         computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'canonical-slug'),
         computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'basename-slug'),
-        computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'reponame-slug'),
       ].sort(),
     );
     // Each candidate is probed exactly once (no duplicate existence checks).
-    expect(seenPaths.length).toBe(3);
+    expect(seenPaths.length).toBe(2);
+  });
+
+  it('never addresses a directory by the repository display name (a directory existing at repositories/<other name> is not returned or probed)', async () => {
+    // Every path "exists", including one named like a renamed display label and
+    // one that belongs to a different repository. Only the canonical and
+    // basename targets may come back: the display name is not an input.
+    const probed: string[] = [];
+    const targets = await buildSessionDataCleanupTargets({
+      configDir: CONFIG_DIR,
+      repositoryId: 'repo-1',
+      repoPath: '/source/repos/owner/basename-slug',
+      deriveSlug: async () => 'owner/canonical-repo',
+      pathExists: async (p) => {
+        probed.push(p);
+        return true;
+      },
+    });
+
+    const displayLabelDir = computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'renamed-label');
+    const otherRepoDir = computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'owner/another-repo');
+    expect(targets).not.toContain(displayLabelDir);
+    expect(targets).not.toContain(otherRepoDir);
+    expect(probed).not.toContain(displayLabelDir);
+    expect(probed).not.toContain(otherRepoDir);
+    expect(targets.sort()).toEqual(
+      [
+        computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'owner/canonical-repo'),
+        computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'basename-slug'),
+      ].sort(),
+    );
   });
 
   it('omits candidates that fail the existence check', async () => {
@@ -63,7 +89,6 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       configDir: CONFIG_DIR,
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/repo-1',
-      repoName: 'repo-1',
       deriveSlug: async () => 'repo-1',
       pathExists: async () => false,
     });
@@ -91,14 +116,13 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       // `buildSessionDataCleanupTargets`'s own defense-in-depth handling,
       // independent of what the derivation returns.
       repoPath: '/source/repos/owner/repo-1',
-      repoName: 'repo-1',
       deriveSlug: async () => '../etc',
       pathExists: async () => true,
     });
 
     // The hostile '../etc' candidate is silently skipped (logged, not
-    // thrown); the other two candidates (basename + repoName, both
-    // 'repo-1') dedup to the one valid, existing target.
+    // thrown); the remaining candidate (the basename, 'repo-1') is the
+    // one valid, existing target.
     expect(targets).toEqual([computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'repo-1')]);
   });
 
@@ -111,7 +135,6 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
         // segment, not a resolved traversal (path.basename does not
         // normalize '..' away).
         repoPath: '/source/repos/..',
-        repoName: '..',
         deriveSlug: async () => '../etc',
         pathExists: async () => true,
       }),
@@ -139,7 +162,6 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       configDir: CONFIG_DIR,
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/basename-not-sentinel',
-      repoName: 'reponame-not-sentinel',
       deriveSlug: async () => 'sentinel-canonical-slug',
       pathExists: async (p) => p.includes('sentinel-canonical-slug'),
     });
@@ -155,7 +177,6 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       configDir: CONFIG_DIR,
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/repo-1',
-      repoName: 'repo-1',
       deriveSlug: async (repoPath, fallback) => {
         calls.push({ repoPath, fallback });
         return 'repo-1';

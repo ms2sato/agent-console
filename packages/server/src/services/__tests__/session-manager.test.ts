@@ -5130,6 +5130,53 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('notifyRepositorySessionsUpdated', () => {
+    async function setup() {
+      const names: Record<string, string> = { 'repo-1': 'before', 'repo-2': 'untouched' };
+      const manager = await getSessionManager({
+        repositoryLookup: repositoryLookupFromSlug(async (id: string) => (names[id] ? id : undefined)),
+        repositoryEnvLookup: makeRepositoryEnvLookup({
+          mapping: (id: string) => (names[id] ? { name: names[id], path: `/test/${id}` } : undefined),
+        }),
+      });
+      const create = (repositoryId: string, worktreeId: string, locationPath: string) =>
+        manager.createSession({ type: 'worktree', locationPath, repositoryId, worktreeId, agentId: 'claude-code' });
+      return { manager, names, create };
+    }
+
+    it('re-broadcasts session-updated for every live session of the repository, with the current repositoryName, and for no other', async () => {
+      const { manager, names, create } = await setup();
+      const a = await create('repo-1', 'wt-a', '/test/path');
+      const b = await create('repo-1', 'wt-b', '/test/path');
+      const other = await create('repo-2', 'wt-c', '/test/path');
+      await manager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+      const updates: Array<{ id: string; repositoryName?: string }> = [];
+      manager.setSessionLifecycleCallbacks({
+        onSessionUpdated: (session) => {
+          updates.push({ id: session.id, repositoryName: session.type === 'worktree' ? session.repositoryName : undefined });
+        },
+      });
+
+      names['repo-1'] = 'after';
+      manager.notifyRepositorySessionsUpdated('repo-1');
+
+      expect(updates.map((u) => u.id).sort()).toEqual([a.id, b.id].sort());
+      expect(updates.every((u) => u.repositoryName === 'after')).toBe(true);
+      expect(updates.map((u) => u.id)).not.toContain(other.id);
+    });
+
+    it('sends nothing for a repository with no live session (not an error)', async () => {
+      const { manager, create } = await setup();
+      await create('repo-2', 'wt-c', '/test/path');
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      expect(() => manager.notifyRepositorySessionsUpdated('repo-1')).not.toThrow();
+
+      expect(onSessionUpdated).not.toHaveBeenCalled();
+    });
+  });
+
   describe('setSessionLifecycleCallbacks', () => {
     it('should call onSessionCreated when a session is created', async () => {
       const manager = await getSessionManager();
@@ -7240,8 +7287,10 @@ describe('SessionManager', () => {
   });
 
   describe('pause and resume commands', () => {
-    const baseInfo = { name: 'test-repo', path: '/test/repo' };
-    const hookVars = { worktreeNum: 5, branch: 'main', repo: 'test-repo' };
+    // The display name deliberately differs from basename(path): `{{REPO}}` must
+    // resolve to the directory name ('repo'), never the editable display label.
+    const baseInfo = { name: 'Renamed Display Label', path: '/test/repo' };
+    const hookVars = { worktreeNum: 5, branch: 'main', repo: 'repo' };
 
     async function setup(options: {
       info?: () => import('../repository-lookup-types.js').RepositoryInfo | undefined;
@@ -7940,7 +7989,7 @@ describe('SessionManager', () => {
           'repo-1': {
             name: 'my-repo',
             path: '/test/repo',
-            envVars: 'PORT={{WORKTREE_NUM * 100}}\nBRANCH_NAME={{BRANCH}}',
+            envVars: 'PORT={{WORKTREE_NUM * 100}}\nBRANCH_NAME={{BRANCH}}\nREPO_DIR={{REPO}}',
           },
         },
         getWorktreeIndexNumber: async () => 3,
@@ -7980,6 +8029,8 @@ describe('SessionManager', () => {
       expect(spawnEnv.PORT).toBe('300');
       // {{BRANCH}} should expand to the mocked branch name
       expect(spawnEnv.BRANCH_NAME).toBe('feature-xyz');
+      // {{REPO}} is the checkout directory name ('repo'), not the display name ('my-repo')
+      expect(spawnEnv.REPO_DIR).toBe('repo');
     });
 
     it('resolves the session spawn user and threads it into gitGetCurrentBranch (Issue #1623)', async () => {

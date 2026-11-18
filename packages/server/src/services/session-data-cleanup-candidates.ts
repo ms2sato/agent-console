@@ -13,7 +13,6 @@ export interface BuildSessionDataCleanupTargetsParams {
   configDir: string;
   repositoryId: string;
   repoPath: string;
-  repoName: string;
   /** MUST be the real `deriveRepositorySlug` (`lib/git.ts`) — never a
    *  re-implementation of its derivation. Defaults to the real function;
    *  injectable so tests can stub the derivation without touching the git
@@ -41,7 +40,8 @@ const defaultPathExists = async (p: string): Promise<boolean> => {
  *      (the same derivation now used at session-creation time). Never
  *      falsy: `deriveRepositorySlug` is total.
  *   2. `path.basename(repoPath)` — closed legacy-flat set.
- *   3. `repoName` — closed legacy-flat set.
+ * The repository's display `name` is never a candidate: it is a mutable free-text
+ * label and must not be able to address a directory that gets deleted.
  * Do NOT extend the legacy set with new derivations; only #1's canonical
  * derivation should change as the codebase evolves.
  *
@@ -61,7 +61,6 @@ export async function buildSessionDataCleanupTargets(
   const canonicalSlug = await deriveSlug(params.repoPath, path.basename(params.repoPath));
   candidateSlugs.add(canonicalSlug);
   candidateSlugs.add(path.basename(params.repoPath));
-  candidateSlugs.add(params.repoName);
 
   const targets: string[] = [];
   for (const slug of candidateSlugs) {

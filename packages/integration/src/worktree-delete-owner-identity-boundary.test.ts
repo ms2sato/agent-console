@@ -172,7 +172,6 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
       {
         repoPath: TEST_REPO_PATH,
         repoId,
-        repoName: 'test-repo-1868',
         branch: opts.branch,
         useRemote: false,
         agentId: CLAUDE_CODE_AGENT_ID,

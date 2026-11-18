@@ -6,6 +6,8 @@ import type { Database } from '../database/schema.js';
  * Updates that can be applied to a repository.
  */
 export interface RepositoryUpdates {
+  /** Display label only; never nullable (the column is NOT NULL). */
+  name?: string;
   setupCommand?: string | null;
   cleanupCommand?: string | null;
   pauseCommand?: string | null;

@@ -22,6 +22,8 @@ import {
   PullWorktreeRequestSchema,
   FetchGitHubIssueRequestSchema,
   UpdateRepositoryRequestSchema,
+  RepositoryDisplayNameSchema,
+  REPOSITORY_DISPLAY_NAME_MAX_LENGTH,
   CloneRepositoryResponseSchema,
   GenerateRepositoryDescriptionResponseSchema,
   WorktreeAcceptedResponseSchema,
@@ -1484,5 +1486,78 @@ describe('WorktreeDeletionAcceptedResponseSchema', () => {
 
   it('rejects the synchronous delete body, which is a different contract', () => {
     expect(v.safeParse(WorktreeDeletionAcceptedResponseSchema, { success: true }).success).toBe(false);
+  });
+});
+
+describe('repository display name (RepositoryDisplayNameSchema / UpdateRepositoryRequestSchema.name)', () => {
+  const parseName = (name: unknown) => v.safeParse(UpdateRepositoryRequestSchema, { name });
+
+  it('trims surrounding whitespace', () => {
+    const result = parseName('  x  ');
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.output.name).toBe('x');
+  });
+
+  it('accepts free text: spaces, non-ASCII and slashes', () => {
+    for (const name of ['My Repo', 'org/repo', 'caf\u00e9 \u30ea\u30dd\u30b8\u30c8\u30ea']) {
+      expect(parseName(name).success).toBe(true);
+    }
+  });
+
+  it('boundary: exactly 100 characters pass, 101 fail', () => {
+    expect(REPOSITORY_DISPLAY_NAME_MAX_LENGTH).toBe(100);
+    expect(parseName('a'.repeat(100)).success).toBe(true);
+    expect(parseName('a'.repeat(101)).success).toBe(false);
+  });
+
+  it('counts the length after trimming', () => {
+    expect(parseName(`  ${'a'.repeat(100)}  `).success).toBe(true);
+    expect(parseName(`  ${'a'.repeat(101)}  `).success).toBe(false);
+  });
+
+  it('boundary: a single character passes; empty and whitespace-only fail', () => {
+    expect(parseName('a').success).toBe(true);
+    expect(parseName('').success).toBe(false);
+    expect(parseName('   ').success).toBe(false);
+    expect(parseName(' \t ').success).toBe(false);
+  });
+
+  it('rejects null (not nullish: the column is NOT NULL)', () => {
+    expect(parseName(null).success).toBe(false);
+  });
+
+  it('rejects non-string values', () => {
+    expect(parseName(1).success).toBe(false);
+  });
+
+  it('counts UTF-16 code units: 50 two-unit emoji pass, 51 fail', () => {
+    // '\u{1F600}'.length === 2; a code-point count would accept 51 of them.
+    expect(parseName('\u{1F600}'.repeat(50)).success).toBe(true);
+    expect(parseName('\u{1F600}'.repeat(51)).success).toBe(false);
+  });
+
+  it('treats an omitted name as unchanged (key absent from the output)', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, { description: 'd' });
+    expect(result.success).toBe(true);
+    if (result.success) expect('name' in result.output).toBe(false);
+  });
+
+  it('rejects control characters U+0000-U+001F and U+007F, including embedded ones', () => {
+    for (const code of [0x00, 0x09, 0x0a, 0x1f, 0x7f]) {
+      expect(parseName(`a${String.fromCharCode(code)}b`).success).toBe(false);
+    }
+    // U+0080 (C1) is outside the ruled set and stays allowed.
+    expect(parseName('a\u0080b').success).toBe(true);
+  });
+
+  it('rejects a valid name alongside an invalid sibling field (nothing is parsed partially)', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, { name: 'ok', setupCommand: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('exports the same rule as a standalone schema for the MCP surface', () => {
+    expect(v.safeParse(RepositoryDisplayNameSchema, '  ok ').success).toBe(true);
+    expect(v.safeParse(RepositoryDisplayNameSchema, '   ').success).toBe(false);
+    expect(v.safeParse(RepositoryDisplayNameSchema, null).success).toBe(false);
   });
 });

@@ -187,7 +187,6 @@ const worktrees = new Hono<AppBindings>()
         const result = await createWorktreeWithSession({
           repoPath: repo.path,
           repoId,
-          repoName: repo.name,
           setupCommand: repo.setupCommand,
           branch,
           baseBranch,

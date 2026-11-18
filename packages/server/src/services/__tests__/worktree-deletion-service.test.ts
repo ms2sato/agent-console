@@ -1026,7 +1026,8 @@ describe('deleteWorktree', () => {
       // user, and would lack access to that user's gh / ssh credentials.
       const deps = createMockDeps({
         sessions: [DEFAULT_WORKTREE_SESSION],
-        repo: { name: 'my-repo', path: REPO_PATH, cleanupCommand: 'echo cleanup' },
+        // Display name differs from basename(REPO_PATH): `{{REPO}}` must be the directory name.
+        repo: { name: 'Renamed Display Label', path: REPO_PATH, cleanupCommand: 'echo cleanup' },
       });
 
       const result = await deleteWorktree(

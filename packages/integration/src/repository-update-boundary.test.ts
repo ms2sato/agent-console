@@ -6,6 +6,10 @@
  * layer and lands in SQLite exactly as sent — catches schema drift
  * between the MCP tool's zod input and the SQLite update layer's
  * RepositoryUpdates shape that unit tests on either side can miss.
+ *
+ * This file wires the repository lifecycle callbacks itself; the production
+ * wiring (`setupWebSocketRoutes` -> `onRepositoryNameChanged`) is pinned in
+ * packages/server/src/websocket/__tests__/routes-repository-rename.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
@@ -40,6 +44,16 @@ import { deleteWorktree } from '@agent-console/server/src/services/worktree-dele
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 import { createEmptyEmbeddedAgentSurface } from './test-utils';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
+import * as v from 'valibot';
+import { AppServerMessageSchema, type AppServerMessage } from '@agent-console/shared';
+import {
+  createTestApp,
+  setupTestEnvironment,
+  cleanupTestEnvironment,
+  getTestConfigDir,
+} from '@agent-console/server/src/__tests__/test-utils';
+import { createTestContext, shutdownAppContext, type AppContext } from '@agent-console/server/src/app-context';
 
 const TEST_CONFIG_DIR = '/test/config';
 const TEST_REPO_PATH = '/test/repo';
@@ -271,5 +285,118 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
 
     const data = parseToolResult(response) as { error?: string };
     expect(data.error).toContain('nonexistent-id');
+  });
+});
+
+// ---------- REST rename: PATCH { name } -> repository-updated + session-updated ----------
+
+describe('PATCH /api/repositories/:id { name } boundary: stored name and wire frames', () => {
+  let ctx: AppContext;
+  let app: Awaited<ReturnType<typeof createTestApp>>;
+  let frames: AppServerMessage[];
+  const REPO_A = '/test/repo-rename-a';
+  const REPO_B = '/test/repo-rename-b';
+
+  const patch = (id: string, body: unknown) =>
+    app.request(`/api/repositories/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(async () => {
+    await setupTestEnvironment();
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider(), assertSpawnCwdFn: async () => {} });
+    setupMemfs({
+      [`${getTestConfigDir()}/.keep`]: '',
+      [`${REPO_A}/.git/HEAD`]: 'ref: refs/heads/main',
+      [`${REPO_B}/.git/HEAD`]: 'ref: refs/heads/main',
+      '/test/wt-a1/.keep': '',
+      '/test/wt-a2/.keep': '',
+      '/test/wt-b1/.keep': '',
+    });
+    frames = [];
+    // Same wiring as packages/server/src/websocket/routes.ts: the repository
+    // frame first, then the live sessions re-broadcast on an actual name change.
+    // The frames are round-tripped through JSON like the real wire.
+    const capture = (frame: AppServerMessage) => { frames.push(JSON.parse(JSON.stringify(frame))); };
+    ctx.repositoryManager.setLifecycleCallbacks({
+      onRepositoryCreated: () => {},
+      onRepositoryUpdated: (repository) => capture({ type: 'repository-updated', repository: { ...repository, clonedSourceRepoPath: null } }),
+      onRepositoryNameChanged: (repository) => ctx.sessionManager.notifyRepositorySessionsUpdated(repository.id),
+      onRepositoryDeleted: () => {},
+      onOrchestratorDesignationChanged: () => {},
+    });
+    ctx.sessionManager.setSessionLifecycleCallbacks({
+      onSessionUpdated: (session) => capture({ type: 'session-updated', session }),
+    });
+    app = await createTestApp(ctx);
+  });
+
+  afterEach(async () => {
+    await shutdownAppContext(ctx);
+    await cleanupTestEnvironment();
+  });
+
+  it('returns 200 with the new name, persists it, and emits repository-updated then session-updated frames that parse through the client schema', async () => {
+    const repoA = await ctx.repositoryManager.registerRepository(REPO_A);
+    const repoB = await ctx.repositoryManager.registerRepository(REPO_B);
+    const mk = (repositoryId: string, locationPath: string, worktreeId: string) =>
+      ctx.sessionManager.createSession({ type: 'worktree', locationPath, repositoryId, worktreeId, agentId: 'claude-code-builtin' });
+    const a1 = await mk(repoA.id, '/test/wt-a1', 'wt-a1');
+    const a2 = await mk(repoA.id, '/test/wt-a2', 'wt-a2');
+    const b1 = await mk(repoB.id, '/test/wt-b1', 'wt-b1');
+    frames.length = 0;
+
+    const res = await patch(repoA.id, { name: '  Renamed Display Label  ' });
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { repository: { name: string } }).repository.name).toBe('Renamed Display Label');
+    expect((await new SqliteRepositoryRepository(ctx.db).findById(repoA.id))?.name).toBe('Renamed Display Label');
+
+    for (const frame of frames) {
+      const parsed = v.safeParse(AppServerMessageSchema, frame);
+      if (!parsed.success) {
+        throw new Error(`frame ${frame.type} failed the client schema: ${JSON.stringify(parsed.issues.map((i) => i.message))}`);
+      }
+    }
+    expect(frames.map((f) => f.type)).toEqual(['repository-updated', 'session-updated', 'session-updated']);
+    const [repoFrame, ...sessionFrames] = frames;
+    if (repoFrame.type !== 'repository-updated') throw new Error('unreachable');
+    expect(repoFrame.repository.name).toBe('Renamed Display Label');
+    const sessionIds = sessionFrames.map((f) => (f.type === 'session-updated' ? f.session.id : ''));
+    expect(sessionIds.sort()).toEqual([a1.id, a2.id].sort());
+    expect(sessionIds).not.toContain(b1.id);
+    for (const frame of sessionFrames) {
+      if (frame.type !== 'session-updated' || frame.session.type !== 'worktree') throw new Error('unexpected frame');
+      expect(frame.session.repositoryName).toBe('Renamed Display Label');
+    }
+  });
+
+  it('emits no session-updated frame for a same-value rename or when no live session exists', async () => {
+    const repoA = await ctx.repositoryManager.registerRepository(REPO_A);
+    await ctx.sessionManager.createSession({ type: 'worktree', locationPath: '/test/wt-a1', repositoryId: repoA.id, worktreeId: 'wt-a1', agentId: 'claude-code-builtin' });
+    const repoB = await ctx.repositoryManager.registerRepository(REPO_B);
+    frames.length = 0;
+
+    expect((await patch(repoA.id, { name: repoA.name })).status).toBe(200);
+    expect(frames.map((f) => f.type)).toEqual(['repository-updated']);
+
+    frames.length = 0;
+    expect((await patch(repoB.id, { name: 'No Live Sessions' })).status).toBe(200);
+    expect(frames.map((f) => f.type)).toEqual(['repository-updated']);
+  });
+
+  it('returns 400 for whitespace-only and null names, leaving the stored name unchanged and emitting nothing', async () => {
+    const repoA = await ctx.repositoryManager.registerRepository(REPO_A);
+    frames.length = 0;
+
+    for (const name of ['   ', null]) {
+      const res = await patch(repoA.id, { name });
+      expect(res.status).toBe(400);
+    }
+
+    expect((await new SqliteRepositoryRepository(ctx.db).findById(repoA.id))?.name).toBe(repoA.name);
+    expect(frames).toEqual([]);
   });
 });
