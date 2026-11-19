@@ -5,6 +5,7 @@ import {
   InvalidSessionDataScopeError,
 } from '../lib/session-data-path.js';
 import { deriveRepositorySlug } from '../lib/git.js';
+import { isProtectedByClaim } from './repository-dir-claims.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('service:session-data-cleanup-candidates');
@@ -84,7 +85,7 @@ export async function buildSessionDataCleanupTargets(
       }
       throw err;
     }
-    if (params.claimedDirs?.has(baseDir)) {
+    if (params.claimedDirs && isProtectedByClaim(baseDir, params.claimedDirs)) {
       logger.info(
         { repositoryId: params.repositoryId, slug, baseDir },
         'Skipping session-data cleanup candidate claimed by another registered repository',

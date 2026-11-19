@@ -223,4 +223,23 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
     expect(await buildSessionDataCleanupTargets(params)).toEqual(expected);
     expect(await buildSessionDataCleanupTargets({ ...params, claimedDirs: new Set() })).toEqual(expected);
   });
+
+  it('skips, without probing, a candidate that is an ancestor of a claimed directory', async () => {
+    const probed: string[] = [];
+    const targets = await buildSessionDataCleanupTargets({
+      configDir: CONFIG_DIR,
+      repositoryId: 'repo-1',
+      repoPath: '/x/x',
+      deriveSlug: async () => 'x/x',
+      pathExists: async (p) => {
+        probed.push(p);
+        return true;
+      },
+      claimedDirs: new Set([computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'x/y')]),
+    });
+
+    const canonicalDir = computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'x/x');
+    expect(targets).toEqual([canonicalDir]);
+    expect(probed).toEqual([canonicalDir]);
+  });
 });

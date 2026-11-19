@@ -16,7 +16,7 @@ import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-re
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 import { isMultiUserAuthMode, runAsUser, shellEscape } from './privilege-elevation.js';
 import { buildSessionDataCleanupTargets } from './session-data-cleanup-candidates.js';
-import { findClaimedRepositoryDirs, repositoryDirFromWorktreePath } from './repository-dir-claims.js';
+import { findClaimedRepositoryDirs, isProtectedByClaim, repositoryDirFromWorktreePath } from './repository-dir-claims.js';
 import type { WorktreeRepository } from '../repositories/worktree-repository.js';
 import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
 
@@ -1042,7 +1042,7 @@ export class RepositoryManager {
         : [];
     const claimedDirs = await findClaimedRepositoryDirs({
       repo,
-      registeredRepositories: this.getAllRepositories(),
+      registeredRepositories: await this.repository.findAll(),
       listWorktreePaths,
       deriveSlug: deriveRepositorySlug,
     });
@@ -1052,7 +1052,7 @@ export class RepositoryManager {
     // repository's data, so the payload carries null and the handler removes
     // nothing for it.
     let repoDir: string | null = canonicalRepoDir;
-    if (claimedDirs.has(canonicalRepoDir)) {
+    if (isProtectedByClaim(canonicalRepoDir, claimedDirs)) {
       logger.info(
         { repositoryId: repo.id, orgRepo, dir: canonicalRepoDir },
         'Skipping canonical repository directory claimed by another registered repository',
@@ -1069,7 +1069,7 @@ export class RepositoryManager {
     for (const worktreePath of await listWorktreePaths(repo.id)) {
       const dir = repositoryDirFromWorktreePath(worktreePath);
       if (dir === null || dir === canonicalRepoDir || extraRepoDirs.includes(dir)) continue;
-      if (claimedDirs.has(dir)) {
+      if (isProtectedByClaim(dir, claimedDirs)) {
         logger.info(
           { repositoryId: repo.id, dir },
           'Skipping recorded worktree directory claimed by another registered repository',

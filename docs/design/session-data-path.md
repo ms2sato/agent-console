@@ -239,10 +239,25 @@ A repository's `name` is a mutable display label. It is initialised from `path.b
 
 **Claim guard.** A directory is skipped, with an info log, when another registered repository claims it by (a) its current canonical slug, (b) its path basename, or (c) a worktree row of its own under it (`findClaimedRepositoryDirs`). Two checkouts that share a basename, one of them without a remote, share the flat directory `repositories/<basename>`; that directory is ambiguous by construction, and deleting too little is the safe direction. A slug derivation that throws for another repository makes it claim its basename only; it never aborts the unregister. With no other registered repository the claim set is empty. The guard is applied to `sessionDataDirs` candidates and to `extraRepoDirs`; for the canonical directory it yields `repoDir: null` (see the residue below).
 
+**What a claim protects.** One predicate, `isProtectedByClaim(dir, claimedDirs)` (`services/repository-dir-claims.ts`), is used at all three sites (the canonical directory, the worktree-derived loop, `buildSessionDataCleanupTargets`). A directory is protected when it equals a claimed directory or is an ANCESTOR of one, compared by path segment (`repositories/acme` is not protected by a claim on `repositories/acme-old`). The layout has two depths (flat `repo` and `org/repo`), so a flat or org-level directory that holds another repository's `org/repo` directory must be left alone: for example a checkout `/x/x` (slug `x/x`) has the basename candidate `repositories/x`, which contains the registered sibling `x/y`. Only the ancestor direction is protected. A target that lies INSIDE a claimed directory is not protected: basename claims are broad, and protecting descendants would skip `x/y` whenever any registered checkout is named `x`.
+
+**Where the claims come from.** The claim input is every persisted registration (`repository.findAll()`), not the in-memory map. `initialize()` leaves a repository out of the map when its checkout path is missing but keeps its row and its worktree rows, so that repository is still a claimant: it claims its basename, the directories of its worktree rows, and its canonical slug when the derivation succeeds (a derivation that throws is the existing basename-only case).
+
+| target | claim set | action |
+|---|---|---|
+| canonical flat `acme` | other claims `acme/project` | `repoDir: null`, info log |
+| basename candidate `x` (exists) | other claims `x/y` | not in `sessionDataDirs`, info log |
+| worktree-derived flat `acme` | other claims `acme/service` | not in `extraRepoDirs`, info log |
+| `acme` | other claims `acme-old` only | not protected (segment comparison) |
+| `x/y` | other claims flat `x` (basename or slug) | not protected (descendant direction) |
+| any | empty claim set | not protected |
+| any | another repository persisted but not loaded (checkout missing) | it claims its basename, its worktree-row directories and its canonical slug (basename only when derivation throws) |
+
 **Residue (decided, not fixed here).**
 
 - Session data left under an old slug that has no remaining worktree row is not removed: nothing records it. Closing that needs a persisted per-repository slug record, which is a database migration and an owner decision. The set is deliberately not approximated by scanning `repositories/`.
 - If another registered repository claims the canonical directory of the repository being unregistered (for example the same remote registered twice), the payload carries `repoDir: null` and the handler removes nothing for it and does not tidy its org-parent directory; the manager logs the skip at info level naming the slug. Always removing the shared directory would delete the other repository's data, and refusing the unregister would leave neither removable. Residue (decided): in that claimed case the unregistered repository's own worktree directories under the shared directory are left. Removing them one by one from its worktree rows is a possible later step, not part of this change. The other payload fields (`extraDir`, `extraRepoDirs`, `sessionDataDirs`) are processed as usual.
+- An org-level directory left in place by the ancestor rule keeps the unregistered repository's own subdirectory when that repository's canonical directory is itself removable; the subdirectory is still removed through `repoDir`. Nothing else changes.
 - Rollback property: a job with `repoDir: null` run by a build that predates this change fails in the handler (its `repoDir` handling needs a string) before anything is removed, so nothing is deleted (fail-closed).
 
 **Premise.** No session rows exist for the repository at unregister: the repository-in-use gate refuses unregister while any session (active or persisted) is attached. Session data is thus addressed by directories, not by session rows.

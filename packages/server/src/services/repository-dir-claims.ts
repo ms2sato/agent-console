@@ -92,3 +92,20 @@ export async function findClaimedRepositoryDirs(
   }
   return claimed;
 }
+
+/**
+ * Whether `dir` must be left alone because another repository claims it:
+ * `dir` is a claimed directory, or an ancestor of one (compared by path
+ * segment, so `repositories/acme` does not match `repositories/acme-old`).
+ * Descendants of a claimed directory are NOT protected: basename claims are
+ * broad, and protecting descendants would skip `x/y` whenever any registered
+ * checkout is named `x`.
+ */
+export function isProtectedByClaim(dir: string, claimedDirs: ReadonlySet<string>): boolean {
+  if (claimedDirs.has(dir)) return true;
+  const prefix = dir + path.sep;
+  for (const claimed of claimedDirs) {
+    if (claimed.startsWith(prefix)) return true;
+  }
+  return false;
+}

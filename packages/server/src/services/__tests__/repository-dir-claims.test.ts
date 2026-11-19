@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as path from 'path';
-import { findClaimedRepositoryDirs, repositoryDirFromWorktreePath } from '../repository-dir-claims.js';
+import { findClaimedRepositoryDirs, isProtectedByClaim, repositoryDirFromWorktreePath } from '../repository-dir-claims.js';
 
 const HOME = '/test/claims-home';
 const REPOS = path.join(HOME, 'repositories');
@@ -134,5 +134,27 @@ describe('findClaimedRepositoryDirs', () => {
       },
     });
     expect([...claimed].sort()).toEqual([`${REPOS}/bar`, `${REPOS}/org/legacy`].sort());
+  });
+});
+
+describe('isProtectedByClaim', () => {
+  it('protects a directory equal to a claimed one', () => {
+    expect(isProtectedByClaim(`${REPOS}/acme`, new Set([`${REPOS}/acme`]))).toBe(true);
+  });
+
+  it('protects an ancestor of a claimed directory', () => {
+    expect(isProtectedByClaim(`${REPOS}/acme`, new Set([`${REPOS}/acme/project`]))).toBe(true);
+  });
+
+  it('does not protect a sibling that only shares a name prefix (segment comparison)', () => {
+    expect(isProtectedByClaim(`${REPOS}/acme`, new Set([`${REPOS}/acme-old`]))).toBe(false);
+  });
+
+  it('does not protect a descendant of a claimed directory', () => {
+    expect(isProtectedByClaim(`${REPOS}/x/y`, new Set([`${REPOS}/x`]))).toBe(false);
+  });
+
+  it('protects nothing when the claim set is empty', () => {
+    expect(isProtectedByClaim(`${REPOS}/acme`, new Set())).toBe(false);
   });
 });
