@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
-import { SCHEMA_VERSION } from '@agent-console/shared';
+import { API_SCHEMA_VERSION } from '@agent-console/shared';
 import { useAppWsEvent, useAppWsState, FRAME_DRIVEN_HANDLERS } from '../useAppWs';
 import { listReconnectInvalidationKeys, _resetReconnectInvalidation } from '../../lib/reconnect-invalidation';
 import { todoKeys } from '../../lib/query-keys';
@@ -344,7 +344,7 @@ describe('useAppWsEvent', () => {
       act(() => {
         ws?.simulateOpen();
         ws?.simulateMessage(
-          JSON.stringify({ type: 'schema-version', version: SCHEMA_VERSION })
+          JSON.stringify({ type: 'schema-version', version: API_SCHEMA_VERSION })
         );
       });
 

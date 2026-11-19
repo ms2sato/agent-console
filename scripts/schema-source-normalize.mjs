@@ -6,7 +6,7 @@
  * actual code — including the contents of string/template literals and
  * regex literals — still produces different output.
  *
- * Used by scripts/generate-schema-version.mjs to compute SCHEMA_VERSION
+ * Used by scripts/generate-schema-version.mjs to compute API_SCHEMA_VERSION
  * from the *semantic* content of the wire-schema files rather than their
  * raw bytes, so a docstring fix doesn't force a client reload.
  *

@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { SCHEMA_VERSION } from '@agent-console/shared';
+import { API_SCHEMA_VERSION } from '@agent-console/shared';
 import {
   checkServerSchemaVersion,
   getMismatch,
@@ -10,9 +10,9 @@ import {
 } from '../schema-version';
 
 // A version string guaranteed to differ from the bundle's compiled-in
-// SCHEMA_VERSION, so checkServerSchemaVersion always sees a mismatch.
-const SERVER_VERSION = `${SCHEMA_VERSION}-different`;
-const OTHER_SERVER_VERSION = `${SCHEMA_VERSION}-another`;
+// API_SCHEMA_VERSION, so checkServerSchemaVersion always sees a mismatch.
+const SERVER_VERSION = `${API_SCHEMA_VERSION}-different`;
+const OTHER_SERVER_VERSION = `${API_SCHEMA_VERSION}-another`;
 
 describe('schema-version', () => {
   let reloadMock: ReturnType<typeof mock>;
@@ -32,7 +32,7 @@ describe('schema-version', () => {
       // Seed a stale guard from a hypothetical prior mismatch.
       window.sessionStorage.setItem('agent-console:schema-version-reload-attempted', SERVER_VERSION);
 
-      checkServerSchemaVersion(SCHEMA_VERSION);
+      checkServerSchemaVersion(API_SCHEMA_VERSION);
 
       expect(reloadMock).not.toHaveBeenCalled();
       expect(getMismatch()).toBe(false);
@@ -162,7 +162,7 @@ describe('schema-version', () => {
 
     it('returns the original response unchanged', async () => {
       const sentinel = new Response('body', {
-        headers: { 'X-Schema-Version': SCHEMA_VERSION },
+        headers: { 'X-Schema-Version': API_SCHEMA_VERSION },
       });
       globalThis.fetch = mock(async () => sentinel) as unknown as typeof globalThis.fetch;
 

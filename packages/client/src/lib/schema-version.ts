@@ -4,7 +4,7 @@
  * The server advertises the wire-schema version it was built with, both as the
  * first frame on `/ws/app` (`{ type: 'schema-version', version }`) and as an
  * `X-Schema-Version` header on every REST response. This module compares that
- * value against `SCHEMA_VERSION` — the version compiled into this client bundle
+ * value against `API_SCHEMA_VERSION` — the version compiled into this client bundle
  * — and forces a one-time page reload when they diverge, so a browser holding a
  * stale bundle picks up the freshly deployed assets.
  *
@@ -16,7 +16,7 @@
  * @see docs/design/websocket-protocol.md
  */
 import { useSyncExternalStore } from 'react';
-import { SCHEMA_VERSION } from '@agent-console/shared';
+import { API_SCHEMA_VERSION } from '@agent-console/shared';
 import { logger } from './logger.js';
 
 /**
@@ -120,7 +120,7 @@ function clearReloadGuard(): void {
 
 /**
  * Compare the server's advertised schema version against this bundle's
- * `SCHEMA_VERSION` and react to a mismatch.
+ * `API_SCHEMA_VERSION` and react to a mismatch.
  *
  * - Match: clear the reload guard (so a future deploy can auto-reload again)
  *   and clear any degraded state.
@@ -130,7 +130,7 @@ function clearReloadGuard(): void {
  *   stop reloading (avoid a loop) and enter the degraded mismatch state.
  */
 export function checkServerSchemaVersion(serverVersion: string): void {
-  if (serverVersion === SCHEMA_VERSION) {
+  if (serverVersion === API_SCHEMA_VERSION) {
     clearReloadGuard();
     setMismatch(false);
     return;
@@ -150,7 +150,7 @@ export function checkServerSchemaVersion(serverVersion: string): void {
     // and let the user refresh manually.
     logger.error(
       `[SchemaVersion] Schema-version mismatch persists after reload ` +
-        `(client=${SCHEMA_VERSION}, server=${serverVersion}). A cached stale ` +
+        `(client=${API_SCHEMA_VERSION}, server=${serverVersion}). A cached stale ` +
         `bundle or an intermediary proxy may be serving old assets. Not ` +
         `reloading again to avoid a reload loop.`,
     );
@@ -167,7 +167,7 @@ export function checkServerSchemaVersion(serverVersion: string): void {
     // banner rather than risk an unbounded reload loop.
     logger.error(
       `[SchemaVersion] Schema-version mismatch detected ` +
-        `(client=${SCHEMA_VERSION}, server=${serverVersion}) but the reload ` +
+        `(client=${API_SCHEMA_VERSION}, server=${serverVersion}) but the reload ` +
         `guard could not be persisted to sessionStorage. Skipping automatic ` +
         `reload to avoid a reload loop; a manual refresh is required.`,
     );

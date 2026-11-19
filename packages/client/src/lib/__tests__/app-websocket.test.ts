@@ -14,7 +14,7 @@ import {
   MAX_RETRY_COUNT,
   LAST_RESORT_RETRY_DELAY,
 } from '../app-websocket';
-import { SCHEMA_VERSION } from '@agent-console/shared';
+import { API_SCHEMA_VERSION } from '@agent-console/shared';
 import {
   _reset as resetSchemaVersion,
   _setReloadImpl as setSchemaReloadImpl,
@@ -593,7 +593,7 @@ describe('app-websocket', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      ws?.simulateMessage(JSON.stringify({ type: 'schema-version', version: `${SCHEMA_VERSION}-stale` }));
+      ws?.simulateMessage(JSON.stringify({ type: 'schema-version', version: `${API_SCHEMA_VERSION}-stale` }));
 
       // The frame is handled by the transport layer, not forwarded to listeners.
       expect(listener).not.toHaveBeenCalled();
@@ -611,7 +611,7 @@ describe('app-websocket', () => {
       connect();
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
-      ws?.simulateMessage(JSON.stringify({ type: 'schema-version', version: SCHEMA_VERSION }));
+      ws?.simulateMessage(JSON.stringify({ type: 'schema-version', version: API_SCHEMA_VERSION }));
 
       expect(listener).not.toHaveBeenCalled();
       expect(reloadMock).not.toHaveBeenCalled();
