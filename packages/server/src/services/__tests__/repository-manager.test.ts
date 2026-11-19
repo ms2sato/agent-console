@@ -1455,6 +1455,69 @@ describe('RepositoryManager', () => {
         expect(guarded.payload.repoDir).toBeNull();
       });
 
+      // Claim (e) from the claim columns only. Reach: reading the rows through
+      // SessionRepository.findAll() (which skips a session whose worker row cannot
+      // be hydrated) fails the claimed half; the control half passes either way.
+      it('still counts a session row that cannot be hydrated as a claimant (claim e, corrupted worker row), and does without that row (control)', async () => {
+        mockSlugs({ '/y/x': 'org/x', '/r/r': 'x/messages' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/x');
+        const target = path.join(reposDir(), 'x', 'messages');
+        const manager = await getRepositoryManager();
+        const b = await manager.registerRepository('/y/x');
+
+        // Control: B has no session row -> the canonical directory IS carried.
+        const r1 = await manager.registerRepository('/r/r');
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.repoDir).toBe(target);
+
+        // Measured case: B's session row records slug 'x' but its worker row is corrupt.
+        await addSessionRow(b.id, 'x');
+        await getDatabase()
+          .insertInto('workers')
+          .values({
+            id: 'corrupted-worker',
+            session_id: `sess-${b.id}-x`,
+            type: 'agent',
+            name: 'Agent',
+            created_at: new Date().toISOString(),
+            pid: null,
+            agent_id: null,
+            base_commit: null,
+          })
+          .execute();
+        // Fixture check: findAll() skips this session.
+        expect(await new SqliteSessionRepository(getDatabase()).findAll()).toEqual([]);
+        const r2 = await manager.registerRepository('/r/r');
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.repoDir).toBeNull();
+      });
+
+      // Fail-closed. Reach: swallowing a reader error (treating it as no rows)
+      // fails this: the row delete would go ahead.
+      it('aborts the unregister before any removal when the session-slug reader throws', async () => {
+        mockSlugs({});
+        makeGitDir('/r/r');
+        const module = await import(`../repository-manager.js?v=${++importCounter}`);
+        const manager = await module.RepositoryManager.create({
+          repository: repositoryRepository,
+          jobQueue: testJobQueue,
+          db: getDatabase(),
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+          listSessionDataScopeSlugs: async () => {
+            throw new Error('reader boom');
+          },
+        });
+        const r = await manager.registerRepository('/r/r');
+
+        await expect(manager.unregisterRepository(r.id)).rejects.toThrow('reader boom');
+
+        expect(await repositoryRepository.findAll()).toHaveLength(1);
+        expect(await testJobQueue!.getJobs({ type: 'cleanup:repository' })).toHaveLength(0);
+      });
+
       // Reach: deleting the session-slug loop fails the claimed half; the control
       // half passes either way. Equality with the claimed directory, so this stays
       // green if the claim sits in `point` (that is what manager test above is for).

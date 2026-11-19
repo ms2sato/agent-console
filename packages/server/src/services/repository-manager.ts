@@ -19,8 +19,7 @@ import { buildSessionDataCleanupTargets } from './session-data-cleanup-candidate
 import { findClaimedRepositoryDirs, isProtectedByClaim, repositoryDirFromWorktreePath } from './repository-dir-claims.js';
 import type { WorktreeRepository } from '../repositories/worktree-repository.js';
 import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
-import type { SessionRepository } from '../repositories/session-repository.js';
-import { SqliteSessionRepository } from '../repositories/sqlite-session-repository.js';
+import { listSessionDataScopeSlugs as readSessionDataScopeSlugs } from '../repositories/sqlite-session-repository.js';
 
 const logger = createLogger('service:repository-manager');
 
@@ -182,11 +181,12 @@ export class RepositoryManager {
    */
   private worktreeRepository: WorktreeRepository | null = null;
   /**
-   * Source of `sessions` rows read at unregister to record which data-scope
-   * slugs other repositories' sessions were frozen under. Null when no `db`
-   * was injected: no slugs are read and the claim set is today's.
+   * Source of the data-scope slugs other repositories' sessions were frozen
+   * under, read from the claim columns only (no hydration). Returns no rows
+   * when no `db` was injected: the claim set is then today's. A throw aborts
+   * the unregister before any removal (fail-closed).
    */
-  private sessionRepository: SessionRepository | null = null;
+  private listSessionDataScopeSlugs: () => Promise<Array<{ repositoryId: string; slug: string }>>;
   /**
    * Indirection so tests can capture / fake the privilege-elevation helper
    * used by the multi-user shared-repo apply step. Production defaults to
@@ -313,17 +313,19 @@ export class RepositoryManager {
     runAsUserImpl?: RunAsUserFn;
     /** Defaults to a SQLite-backed repository on `db` when `db` is given. */
     worktreeRepository?: WorktreeRepository;
-    /** Defaults to a SQLite-backed repository on `db` when `db` is given. */
-    sessionRepository?: SessionRepository;
+    /** Defaults to the claim-column reader on `db` when `db` is given, else no rows. */
+    listSessionDataScopeSlugs?: () => Promise<Array<{ repositoryId: string; slug: string }>>;
   }): Promise<RepositoryManager> {
     const repo = options?.repository ?? new SqliteRepositoryRepository(await initializeDatabase());
+    const db = options?.db;
     const manager = new RepositoryManager(
       repo,
       options?.jobQueue ?? null,
       options?.runAsUserImpl ?? runAsUser,
       options?.db ?? null,
       options?.worktreeRepository ?? (options?.db ? new SqliteWorktreeRepository(options.db) : null),
-      options?.sessionRepository ?? (options?.db ? new SqliteSessionRepository(options.db) : null),
+      options?.listSessionDataScopeSlugs ??
+        (db ? () => readSessionDataScopeSlugs(db) : async () => []),
     );
     await manager.initialize();
     return manager;
@@ -338,10 +340,10 @@ export class RepositoryManager {
     runAsUserImpl: RunAsUserFn = runAsUser,
     db: Kysely<Database> | null = null,
     worktreeRepository: WorktreeRepository | null = null,
-    sessionRepository: SessionRepository | null = null,
+    listSessionDataScopeSlugs: () => Promise<Array<{ repositoryId: string; slug: string }>> = async () => [],
   ) {
     this.worktreeRepository = worktreeRepository;
-    this.sessionRepository = sessionRepository;
+    this.listSessionDataScopeSlugs = listSessionDataScopeSlugs;
     this.repository = repository;
     this.jobQueue = jobQueue;
     this.db = db;
@@ -1057,12 +1059,11 @@ export class RepositoryManager {
     // Null and empty slugs (quick scope, legacy rows) record nothing; a
     // non-null invalid slug is passed through so the claim step warns on it.
     const sessionSlugsByRepository = new Map<string, string[]>();
-    for (const session of this.sessionRepository ? await this.sessionRepository.findAll() : []) {
-      if (session.type !== 'worktree' || session.dataScope !== 'repository') continue;
-      if (session.dataScopeSlug == null || session.dataScopeSlug === '') continue;
-      const slugs = sessionSlugsByRepository.get(session.repositoryId) ?? [];
-      slugs.push(session.dataScopeSlug);
-      sessionSlugsByRepository.set(session.repositoryId, slugs);
+    for (const { repositoryId, slug } of await this.listSessionDataScopeSlugs()) {
+      if (slug === '') continue;
+      const slugs = sessionSlugsByRepository.get(repositoryId) ?? [];
+      slugs.push(slug);
+      sessionSlugsByRepository.set(repositoryId, slugs);
     }
     const claimedDirs = await findClaimedRepositoryDirs({
       repo,

@@ -14,6 +14,31 @@ import { conflictUpdateSet } from './conflict-update-set.js';
 
 const logger = createLogger('sqlite-session-repository');
 
+/**
+ * The data-scope slug every repository-scope worktree session row records,
+ * read from the claim columns only: no `workers` join and no `hydrate`, so a
+ * session `findAll()` skips as corrupted still reports where its data lives.
+ * Not part of `SessionRepository`: one caller (the unregister claim read).
+ */
+export async function listSessionDataScopeSlugs(
+  db: Kysely<Database>,
+): Promise<Array<{ repositoryId: string; slug: string }>> {
+  const rows = await db
+    .selectFrom('sessions')
+    .where('type', '=', 'worktree')
+    .where('data_scope', '=', 'repository')
+    .where('repository_id', 'is not', null)
+    .where('data_scope_slug', 'is not', null)
+    .select(['repository_id', 'data_scope_slug'])
+    .execute();
+  const result: Array<{ repositoryId: string; slug: string }> = [];
+  for (const row of rows) {
+    if (row.repository_id === null || row.data_scope_slug === null) continue;
+    result.push({ repositoryId: row.repository_id, slug: row.data_scope_slug });
+  }
+  return result;
+}
+
 export class SqliteSessionRepository implements SessionRepository {
   constructor(private db: Kysely<Database>) {}
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Kysely, sql } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
-import { SqliteSessionRepository } from '../sqlite-session-repository.js';
+import { SqliteSessionRepository, listSessionDataScopeSlugs } from '../sqlite-session-repository.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import type { Database } from '../../database/schema.js';
 import type { SessionUpdateFields } from '../session-repository.js';
@@ -1607,6 +1607,80 @@ describe('SqliteSessionRepository', () => {
 
       expect(sessions).toHaveLength(1);
       expect(sessions[0].id).toBe('valid-session');
+    });
+  });
+
+  describe('listSessionDataScopeSlugs', () => {
+    const insertSession = (
+      id: string,
+      overrides: Partial<{
+        type: 'worktree' | 'quick';
+        repository_id: string | null;
+        data_scope: 'quick' | 'repository' | null;
+        data_scope_slug: string | null;
+      }> = {},
+    ) =>
+      db
+        .insertInto('sessions')
+        .values({
+          id,
+          type: 'worktree',
+          location_path: `/path/${id}`,
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: null,
+          repository_id: 'repo-1',
+          worktree_id: 'main',
+          data_scope: 'repository',
+          data_scope_slug: 'org/x',
+          ...overrides,
+        })
+        .execute();
+
+    // Reach (measured): implementing the reader through findAll() again fails
+    // this test (the corrupted session's slug is missing from the result).
+    it('returns the slug of a session findAll() skips as corrupted, as well as a healthy one', async () => {
+      await insertSession('healthy', { repository_id: 'repo-a', data_scope_slug: 'org/healthy' });
+      await insertSession('corrupted', { repository_id: 'repo-b', data_scope_slug: 'org/corrupted' });
+      // Corrupted worker (agent without agent_id) makes hydrate throw DataIntegrityError.
+      await db
+        .insertInto('workers')
+        .values({
+          id: 'corrupted-worker',
+          session_id: 'corrupted',
+          type: 'agent',
+          name: 'Agent',
+          created_at: new Date().toISOString(),
+          pid: null,
+          agent_id: null,
+          base_commit: null,
+        })
+        .execute();
+
+      // Control: findAll() omits the corrupted session.
+      expect((await repository.findAll()).map((s) => s.id)).toEqual(['healthy']);
+
+      const rows = await listSessionDataScopeSlugs(db);
+      expect(rows).toHaveLength(2);
+      expect(rows).toContainEqual({ repositoryId: 'repo-a', slug: 'org/healthy' });
+      expect(rows).toContainEqual({ repositoryId: 'repo-b', slug: 'org/corrupted' });
+    });
+
+    // Reach (measured): dropping the `type = 'worktree'` or the
+    // `data_scope = 'repository'` filter turns this test red. Dropping the two
+    // `IS NOT NULL` filters does NOT: the reader's TypeScript-side null skip
+    // covers them, so those two SQL filters are narrowing and efficiency, not
+    // a pinned behaviour.
+    it('does not return quick-scope, null-slug or null-repository-id rows', async () => {
+      await insertSession('kept', { data_scope_slug: 'org/kept' });
+      await insertSession('quick-scope', { data_scope: 'quick', data_scope_slug: 'org/quick' });
+      await insertSession('null-scope', { data_scope: null, data_scope_slug: 'org/nullscope' });
+      await insertSession('null-slug', { data_scope_slug: null });
+      await insertSession('null-repo', { repository_id: null, data_scope_slug: 'org/norepo' });
+      await insertSession('quick-type', { type: 'quick', data_scope_slug: 'org/quicktype' });
+
+      expect(await listSessionDataScopeSlugs(db)).toEqual([{ repositoryId: 'repo-1', slug: 'org/kept' }]);
     });
   });
 
