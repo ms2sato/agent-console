@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { computeVersion, copySchemaClosureTo } from '../../../../scripts/generate-schema-version.mjs';
-import { SCHEMA_VERSION } from '../schema-version.gen.js';
+import { API_SCHEMA_VERSION } from '../schema-version.gen.js';
 
 // Repo root relative to this test file: packages/shared/src/__tests__ -> up 4.
 const REPO_ROOT = path.resolve(import.meta.dir, '..', '..', '..', '..');
@@ -27,9 +27,9 @@ function makeClosureCopy() {
   return copySchemaClosureTo(dest);
 }
 
-describe('SCHEMA_VERSION', () => {
+describe('API_SCHEMA_VERSION', () => {
   it('is a 16-char lowercase hex string', () => {
-    expect(SCHEMA_VERSION).toMatch(/^[0-9a-f]{16}$/);
+    expect(API_SCHEMA_VERSION).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it('is not stale: the committed schema-version.gen.ts matches the schema files', () => {
@@ -53,7 +53,7 @@ describe('SCHEMA_VERSION', () => {
       stderr: 'pipe',
     });
     const stdout = new TextDecoder().decode(result.stdout).trim();
-    expect(stdout).toBe(SCHEMA_VERSION);
+    expect(stdout).toBe(API_SCHEMA_VERSION);
   });
 
   it('includes embedded-agent.ts in the hashed wire-schema file set', () => {

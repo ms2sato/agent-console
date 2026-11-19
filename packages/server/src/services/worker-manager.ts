@@ -1358,7 +1358,7 @@ export class WorkerManager {
    * structured events a client might parse; this marker is purely a
    * human-readable visual separator in the scrollback with no fields to
    * parse, so a wire-level kind would be a schema change with nothing to
-   * show for it; `SCHEMA_VERSION` stays unchanged by this change (no
+   * show for it; `API_SCHEMA_VERSION` stays unchanged by this change (no
    * schema file touched).
    */
   async appendRestoreBoundaryMarker(

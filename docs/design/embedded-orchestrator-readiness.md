@@ -208,7 +208,7 @@ One row per step the skill prescribes, in skill order. Verdict vocabulary is clo
 | K6 | Section 6 steps 3-4: clarify via `send_session_message`; `write_review_annotations(sourceSessionId = own)`; `write_memo` (`:219`, `:223-226`) | MCP | need own ids | blocked | `mcp-server.ts:1914`; F2 | #1694 -> then works via workaround; #1696 -> works |
 | K7 | Section 6: CodeRabbit CHANGES_REQUESTED replies via `gh api .../replies` (`:231-236`) | `Bash` | `run_process` | blocked | F2 | #1694 -> then works |
 | K8 | Section 6: `preflight-check.js <PR>` (`:243`) | `Bash` | `run_process` | blocked | F2 | #1694 -> then works |
-| K9 | Section 6: `SCHEMA_VERSION` merge-tree check (multi-line shell, `:245-266`) | `Bash` | `run_process` with the same script as one `sh -c` body | blocked | `interactive-process-manager.ts:145`; F2 | #1694 -> then works |
+| K9 | Section 6: `API_SCHEMA_VERSION` merge-tree check (multi-line shell, `:245-266`) | `Bash` | `run_process` with the same script as one `sh -c` body | blocked | `interactive-process-manager.ts:145`; F2 | #1694 -> then works |
 | L1 | 7a conflict check `gh pr list ...` + rebase instructions (`:311-317`) | `Bash` + messages | `run_process` + C1 | blocked | F2 | #1694 -> then works via workaround; #1696 -> works |
 | L2 | 7b main sync `git -C "$MAIN_DIR" pull` (`:321-327`) | `Bash` | `run_process` (the `git worktree list \| head -1` resolves the common main dir from inside the embedded session's worktree too) | blocked | F2 | #1694 -> then works |
 | L3 | 7c Orchestrator branch rebase (`:331-339`) | `Bash` | `run_process` | blocked | F2 | #1694 -> then works |

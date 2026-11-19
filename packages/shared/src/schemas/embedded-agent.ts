@@ -15,7 +15,7 @@ import type { ExitReason } from '../types/worker.js';
 // === Definition schemas ===
 
 // Lives here (not types/) because the wire picklist below derives from it,
-// and SCHEMA_VERSION hashes this directory — see generate-schema-version.mjs.
+// and API_SCHEMA_VERSION hashes this directory — see generate-schema-version.mjs.
 /**
  * Builtin subprocess-local tool names. This is the SINGLE WRITER of builtin
  * tool-name literals in the repo — every other usage must reference this
@@ -670,7 +670,7 @@ export type { _AssertExitReasonSchemaWidensToType, _AssertExitReasonTypeWidensTo
  * Bidirectional pin between {@link EnabledToolNameSchema} (a single tool
  * name) and the hand-written `EmbeddedAgentToolName` in types/embedded-agent.ts.
  * `EMBEDDED_AGENT_TOOL_NAMES` above is the SINGLE WRITER of the tool-name
- * literals for the wire (and for SCHEMA_VERSION's hash, which is the whole
+ * literals for the wire (and for API_SCHEMA_VERSION's hash, which is the whole
  * reason it lives in this directory); `EmbeddedAgentToolName` cannot import
  * it back (types/ -> schemas/ is a forbidden depcruise edge — see
  * `EmbeddedAgentToolName`'s own doc comment in types/embedded-agent.ts), so

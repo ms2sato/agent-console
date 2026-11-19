@@ -6,7 +6,7 @@ import type {
   AppServerMessage,
   GitDiffWorker,
 } from '@agent-console/shared';
-import { WS_READY_STATE, WS_CLOSE_CODE, SCHEMA_VERSION } from '@agent-console/shared';
+import { WS_READY_STATE, WS_CLOSE_CODE, API_SCHEMA_VERSION } from '@agent-console/shared';
 import type { WSContext, WSMessageReceive } from 'hono/ws';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AppContext } from '../app-context.js';
@@ -637,7 +637,7 @@ export async function setupWebSocketRoutes(
           // Guard the send: if the socket is already closing this must not throw
           // and abort the rest of onOpen (client registration + initial sync).
           try {
-            ws.send(JSON.stringify({ type: 'schema-version', version: SCHEMA_VERSION }));
+            ws.send(JSON.stringify({ type: 'schema-version', version: API_SCHEMA_VERSION }));
           } catch (e) {
             logger.warn({ err: e }, 'Failed to send schema-version frame');
           }

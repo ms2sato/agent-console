@@ -40,7 +40,7 @@ export type AgentConsoleIdentityEnvKey = (typeof AGENT_CONSOLE_IDENTITY_ENV_KEYS
  *
  * Deliberately not carried by the `init` NDJSON line: that is the
  * `EmbeddedAgentCommandSchema` boundary, and a field there moves
- * `SCHEMA_VERSION` for no gain.
+ * `API_SCHEMA_VERSION` for no gain.
  */
 export const AGENT_CONSOLE_RUNTIME_ENV_KEYS = ['AGENT_CONSOLE_TLS_CA_FILE'] as const;
 
