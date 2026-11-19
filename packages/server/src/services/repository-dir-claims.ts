@@ -56,9 +56,13 @@ export interface FindClaimedRepositoryDirsParams {
 
 /**
  * Directories under `repositories/` that a registered repository OTHER than
- * `repo` claims, by (a) its current canonical slug, (b) its path basename, or
- * (c) one of its own worktree rows living under it. Deleting too little is the
- * safe direction: a shared flat directory is ambiguous by construction.
+ * `repo` claims, by (a) its current canonical slug, (b) its path basename,
+ * (c) one of its own worktree rows living under it, or (d) its own checkout
+ * path (a linked worktree checkout can register and sit under a directory other
+ * rows record). Claim (d) is `path.resolve`d, not realpath'd: targets are built
+ * from the never-realpath'd `getRepositoriesDir()`, and realpath fails for a
+ * missing checkout. Deleting too little is the safe direction: a shared flat
+ * directory is ambiguous by construction.
  *
  * A derivation that throws for another repository degrades to that repository
  * claiming its basename only; it never aborts the caller.
@@ -73,6 +77,8 @@ export async function findClaimedRepositoryDirs(
 
   for (const other of params.registeredRepositories) {
     if (other.id === params.repo.id) continue;
+
+    claimed.add(path.resolve(other.path));
 
     const basename = path.basename(other.path);
     claim(basename);

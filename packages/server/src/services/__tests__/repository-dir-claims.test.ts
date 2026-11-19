@@ -118,7 +118,10 @@ describe('findClaimedRepositoryDirs', () => {
     });
     expect(claimed.has(`${REPOS}/org/legacy`)).toBe(true);
     expect(claimed.has(`${REPOS}/org/mine`)).toBe(false);
-    expect(claimed.has('/y/bar')).toBe(false);
+    // The main-checkout row adds nothing as a worktree-derived directory; '/y/bar' is
+    // claimed only as b's own checkout path (claim d), never through its row.
+    expect(claimed.has('/y/bar')).toBe(true);
+    expect([...claimed].filter((d) => d.startsWith(REPOS)).sort()).toEqual([`${REPOS}/bar`, `${REPOS}/org/legacy`].sort());
   });
 
   it('a derivation failure for another repository makes it claim its basename only and does not abort', async () => {
@@ -133,7 +136,74 @@ describe('findClaimedRepositoryDirs', () => {
         throw new Error('git failed');
       },
     });
-    expect([...claimed].sort()).toEqual([`${REPOS}/bar`, `${REPOS}/org/legacy`].sort());
+    expect([...claimed].sort()).toEqual(['/y/bar', `${REPOS}/bar`, `${REPOS}/org/legacy`].sort());
+  });
+
+  // Claim (d). Reach (measured by deleting the `claimed.add(path.resolve(other.path))` line):
+  // the four tests below fail, plus the two older worktree-row / derivation-failure tests
+  // above, whose expected sets now include the checkout path.
+  it('claims another repository\'s checkout path, which protects an ancestor directory but not an unrelated one', async () => {
+    const checkout = `${REPOS}/org/old/worktrees/wt-a`;
+    const claimed = await findClaimedRepositoryDirs({
+      repo: { id: 'a' },
+      registeredRepositories: [
+        { id: 'a', path: '/x/foo' },
+        { id: 'b', path: checkout },
+      ],
+      listWorktreePaths: noRows,
+      deriveSlug: async (p) => (p === checkout ? 'org/new' : 'org/foo'),
+    });
+    expect(claimed.has(checkout)).toBe(true);
+    expect(isProtectedByClaim(`${REPOS}/org/old`, claimed)).toBe(true);
+    // Control: a directory that holds no claimed checkout is not protected.
+    expect(isProtectedByClaim(`${REPOS}/org/other`, claimed)).toBe(false);
+  });
+
+  it('still claims the checkout path when the slug derivation throws', async () => {
+    const checkout = `${REPOS}/org/old/worktrees/wt-a`;
+    const claimed = await findClaimedRepositoryDirs({
+      repo: { id: 'a' },
+      registeredRepositories: [
+        { id: 'a', path: '/x/foo' },
+        { id: 'b', path: checkout },
+      ],
+      listWorktreePaths: noRows,
+      deriveSlug: async () => {
+        throw new Error('git failed');
+      },
+    });
+    expect(claimed.has(checkout)).toBe(true);
+    // Control: the derivation failure did degrade to the basename claim.
+    expect(claimed.has(`${REPOS}/wt-a`)).toBe(true);
+  });
+
+  it('claims the resolved form of a checkout path given with a .. segment', async () => {
+    const claimed = await findClaimedRepositoryDirs({
+      repo: { id: 'a' },
+      registeredRepositories: [
+        { id: 'a', path: '/x/foo' },
+        { id: 'b', path: `${REPOS}/org/x/../old/worktrees/wt-a` },
+      ],
+      listWorktreePaths: noRows,
+      deriveSlug: fallbackDerive,
+    });
+    expect(claimed.has(`${REPOS}/org/old/worktrees/wt-a`)).toBe(true);
+    expect(claimed.has(`${REPOS}/org/x/../old/worktrees/wt-a`)).toBe(false);
+  });
+
+  it('does not claim the checkout path of the repository being unregistered', async () => {
+    const claimed = await findClaimedRepositoryDirs({
+      repo: { id: 'a' },
+      registeredRepositories: [
+        { id: 'a', path: `${REPOS}/org/mine/worktrees/wt-a` },
+        { id: 'b', path: '/y/bar' },
+      ],
+      listWorktreePaths: noRows,
+      deriveSlug: fallbackDerive,
+    });
+    expect(claimed.has(`${REPOS}/org/mine/worktrees/wt-a`)).toBe(false);
+    // Control: the other registration's checkout is claimed.
+    expect(claimed.has('/y/bar')).toBe(true);
   });
 });
 

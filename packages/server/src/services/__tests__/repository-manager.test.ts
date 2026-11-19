@@ -1360,6 +1360,34 @@ describe('RepositoryManager', () => {
         expect(guarded.payload.extraRepoDirs ?? []).not.toContain(oldDir);
       });
 
+      // Reach: deleting claim (d) in findClaimedRepositoryDirs (the other
+      // registration's own checkout path) fails the claimed half; the control
+      // half passes either way. B's derived slug and basename are neither
+      // org/old nor under it, so claims (a)-(c) cannot protect the directory.
+      it('counts another registration whose checkout sits under the directory as a claimant (claim d)', async () => {
+        const oldDir = path.join(reposDir(), 'org', 'old');
+        const bCheckout = path.join(oldDir, 'worktrees', 'wt-a');
+        mockSlugs({ '/a/a': 'org/new', [bCheckout]: 'other/b' });
+        makeGitDir('/a/a');
+        makeGitDir(bCheckout);
+        const manager = await getRepositoryManager();
+
+        // Control: B not registered -> the directory IS carried.
+        const a1 = await manager.registerRepository('/a/a');
+        await addWorktreeRow(a1.id, path.join(oldDir, 'worktrees', 'wt-a'), 1);
+        await manager.unregisterRepository(a1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.extraRepoDirs).toEqual([oldDir]);
+
+        // Measured case: B's checkout is the worktree path, with no rows of its own.
+        await manager.registerRepository(bCheckout);
+        const a2 = await manager.registerRepository('/a/a');
+        await addWorktreeRow(a2.id, path.join(oldDir, 'worktrees', 'wt-a'), 1);
+        await manager.unregisterRepository(a2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect('extraRepoDirs' in guarded.payload).toBe(false);
+      });
+
       // Reach: replacing isProtectedByClaim with claimedDirs.has(dir) at the
       // basename-candidate site (session-data-cleanup-candidates.ts) fails the
       // registered half; the control half passes either way.
