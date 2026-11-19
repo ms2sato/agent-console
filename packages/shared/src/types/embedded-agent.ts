@@ -40,7 +40,7 @@ export type EmbeddedAgentEngine = 'openai-api' | 'claude-sdk';
  *
  * The RUNTIME source of truth -- `EMBEDDED_AGENT_TOOL_NAMES` (the SINGLE
  * WRITER of the tool-name literals) and `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS`
- * -- lives in schemas/embedded-agent.ts instead, so `SCHEMA_VERSION`'s
+ * -- lives in schemas/embedded-agent.ts instead, so `API_SCHEMA_VERSION`'s
  * content hash (over packages/shared/src/schemas/*.ts) tracks the wire
  * vocabulary; a constant living here would be invisible to that hash even
  * though it widens what the wire schema accepts. This type is pinned
@@ -92,7 +92,7 @@ export type EmbeddedAgentToolName =
  * Deliberately NOT in schemas/embedded-agent.ts beside
  * `EMBEDDED_AGENT_TOOL_NAMES`: this constant does not widen what the wire
  * schema accepts (tool names inside `tool-call` events are plain,
- * unvalidated strings), so it must not participate in SCHEMA_VERSION's
+ * unvalidated strings), so it must not participate in API_SCHEMA_VERSION's
  * content hash over packages/shared/src/schemas/*.ts.
  */
 export const SDK_TODO_WRITE_TOOL_NAME = 'mcp__console__TodoWrite';

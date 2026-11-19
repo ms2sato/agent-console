@@ -4,7 +4,12 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeVersion, collectSchemaFiles, copySchemaClosureTo } from '../generate-schema-version.mjs';
+import {
+  computeVersion,
+  collectSchemaFiles,
+  copySchemaClosureTo,
+  renderOutput,
+} from '../generate-schema-version.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -154,6 +159,14 @@ describe('generate-schema-version.mjs — computeVersion end-to-end (temp fixtur
     // fallback path is itself deterministic), proving the fail-closed
     // branch does not crash computeVersion or behave non-deterministically.
     expect(computeVersion(dir)).toBe(computeVersion(dir));
+  });
+});
+
+describe('generate-schema-version.mjs — renderOutput', () => {
+  it('emits the exported constant under the name API_SCHEMA_VERSION and no other export', () => {
+    const out = renderOutput('0123456789abcdef', 3);
+    expect(out).toContain("export const API_SCHEMA_VERSION = '0123456789abcdef';");
+    expect(out.match(/^export const /gm)?.length).toBe(1);
   });
 });
 
@@ -337,7 +350,7 @@ describe('generate-schema-version.mjs — real-tree closure tell (a picklist sou
     return { dest, copy: copySchemaClosureTo(dest) };
   }
 
-  it('changes SCHEMA_VERSION when PTY_NOTIFICATION_KINDS (types/system-events.ts) is perturbed', () => {
+  it('changes API_SCHEMA_VERSION when PTY_NOTIFICATION_KINDS (types/system-events.ts) is perturbed', () => {
     // PTY_NOTIFICATION_KINDS backs a runtime `import { PTY_NOTIFICATION_KINDS }`
     // in packages/shared/src/schemas/embedded-agent.ts (a picklist source),
     // so it is inside the closure and must move the version.
@@ -361,7 +374,7 @@ describe('generate-schema-version.mjs — real-tree closure tell (a picklist sou
     expect(computeVersion(copy.schemasDir)).toBe(baseline);
   });
 
-  it('does NOT change SCHEMA_VERSION when a type-only-reachable file (types/worker.ts) is perturbed', () => {
+  it('does NOT change API_SCHEMA_VERSION when a type-only-reachable file (types/worker.ts) is perturbed', () => {
     // Negative control, same shape, on a copy of the real tree: types/worker.ts
     // is reachable from schemas/embedded-agent.ts ONLY via
     // `import type { ExitReason } from '../types/worker.js';` — a whole-declaration

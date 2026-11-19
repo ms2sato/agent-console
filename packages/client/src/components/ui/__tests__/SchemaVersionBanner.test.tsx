@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, mock } from 'bun:test';
 import { render, screen, cleanup } from '@testing-library/react';
-import { SCHEMA_VERSION } from '@agent-console/shared';
+import { API_SCHEMA_VERSION } from '@agent-console/shared';
 import { SchemaVersionBanner } from '../SchemaVersionBanner';
 import {
   checkServerSchemaVersion,
@@ -9,7 +9,7 @@ import {
   _simulateReload,
 } from '../../../lib/schema-version';
 
-const STALE_SERVER_VERSION = `${SCHEMA_VERSION}-stale`;
+const STALE_SERVER_VERSION = `${API_SCHEMA_VERSION}-stale`;
 
 /**
  * Drive the module into the degraded "mismatch persists after reload" state

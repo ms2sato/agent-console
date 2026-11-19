@@ -24,7 +24,7 @@ import * as v from 'valibot';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 
-import { SCHEMA_VERSION, AppServerMessageSchema } from '@agent-console/shared';
+import { API_SCHEMA_VERSION, AppServerMessageSchema } from '@agent-console/shared';
 
 // Real generator's own normalization step, used to independently re-derive
 // the wire version at test time. See the "(d)" describe block below for why.
@@ -159,10 +159,10 @@ describe('Client-Server Boundary: Schema-version handshake + strict schemas', ()
       expect(result.templates).toEqual([]);
     });
 
-    it('a 2xx REST response carries X-Schema-Version equal to SCHEMA_VERSION', async () => {
+    it('a 2xx REST response carries X-Schema-Version equal to API_SCHEMA_VERSION', async () => {
       const response = await fetch('/api/message-templates', { method: 'GET' });
       expect(response.status).toBe(200);
-      expect(response.headers.get(SCHEMA_VERSION_HEADER)).toBe(SCHEMA_VERSION);
+      expect(response.headers.get(SCHEMA_VERSION_HEADER)).toBe(API_SCHEMA_VERSION);
     });
 
     it('a 4xx REST response still carries the header (middleware runs before the error)', async () => {
@@ -174,17 +174,17 @@ describe('Client-Server Boundary: Schema-version handshake + strict schemas', ()
         body: JSON.stringify({}),
       });
       expect(response.status).toBe(400);
-      expect(response.headers.get(SCHEMA_VERSION_HEADER)).toBe(SCHEMA_VERSION);
+      expect(response.headers.get(SCHEMA_VERSION_HEADER)).toBe(API_SCHEMA_VERSION);
     });
 
     it('decodes a schema-version wire message via AppServerMessageSchema', () => {
       const parsed = v.safeParse(AppServerMessageSchema, {
         type: 'schema-version',
-        version: SCHEMA_VERSION,
+        version: API_SCHEMA_VERSION,
       });
       expect(parsed.success).toBe(true);
       if (parsed.success && parsed.output.type === 'schema-version') {
-        expect(parsed.output.version).toBe(SCHEMA_VERSION);
+        expect(parsed.output.version).toBe(API_SCHEMA_VERSION);
       } else {
         throw new Error('schema-version message failed to parse');
       }
@@ -332,7 +332,7 @@ describe('Client-Server Boundary: Schema-version handshake + strict schemas', ()
       window.sessionStorage.setItem(RELOAD_GUARD_KEY, 'stale-old-version');
       const reloadMock = mock(() => {});
       _setReloadImpl(reloadMock);
-      // Pass the real middleware header through: it equals SCHEMA_VERSION.
+      // Pass the real middleware header through: it equals API_SCHEMA_VERSION.
       installInspectorWithHeader(null);
 
       await fetch('/api/message-templates', { method: 'GET' });
@@ -365,7 +365,7 @@ describe('Client-Server Boundary: Schema-version handshake + strict schemas', ()
       // call. This re-walks the real schemas dir plus its transitive
       // runtime-import closure right now and re-hashes every file's current
       // content: an independently, freshly computed value -- not a re-import
-      // of the compiled SCHEMA_VERSION constant compared to itself.
+      // of the compiled API_SCHEMA_VERSION constant compared to itself.
       const generatorResult = Bun.spawnSync(['bun', GENERATOR, '--print'], {
         cwd: REPO_ROOT,
         stdout: 'pipe',
