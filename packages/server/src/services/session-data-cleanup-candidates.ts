@@ -5,7 +5,7 @@ import {
   InvalidSessionDataScopeError,
 } from '../lib/session-data-path.js';
 import { deriveRepositorySlug } from '../lib/git.js';
-import { isProtectedByClaim } from './repository-dir-claims.js';
+import { isProtectedByClaim, type RepositoryDirClaims } from './repository-dir-claims.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('service:session-data-cleanup-candidates');
@@ -23,10 +23,10 @@ export interface BuildSessionDataCleanupTargetsParams {
   pathExists?: (p: string) => Promise<boolean>;
   /**
    * Base directories another registered repository claims (see
-   * `findClaimedRepositoryDirs`). A candidate whose directory is in this set is
+   * `findClaimedRepositoryDirs`). A candidate whose directory is protected by a claim is
    * skipped with an info log. Absent == nothing claimed.
    */
-  claimedDirs?: ReadonlySet<string>;
+  claimedDirs?: RepositoryDirClaims;
 }
 
 const defaultPathExists = async (p: string): Promise<boolean> => {

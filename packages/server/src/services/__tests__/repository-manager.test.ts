@@ -1445,6 +1445,48 @@ describe('RepositoryManager', () => {
         expect(payload.extraRepoDirs ?? []).not.toContain(path.join(reposDir(), 'acme'));
       });
 
+      // Reach: removing the descendant check in isProtectedByClaim fails the
+      // registered-B half; the control half passes either way.
+      it('does not carry a recorded directory inside a flat repository\'s directory (target x/worktrees, other has canonical flat x), and does when that repository is not registered (control)', async () => {
+        mockSlugs({ '/r/r': 'org/new' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/x');
+        const dir = path.join(reposDir(), 'x', 'worktrees');
+        const row = path.join(dir, 'worktrees', 'wt-001-r');
+        const manager = await getRepositoryManager();
+
+        const r1 = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r1.id, row, 1);
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.extraRepoDirs).toEqual([dir]);
+
+        await manager.registerRepository('/y/x');
+        const r2 = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r2.id, row, 1);
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.extraRepoDirs ?? []).not.toContain(dir);
+      });
+
+      // Reach: applying the descendant check to the point set fails this; the
+      // other repository's basename claim (point) does not protect x/y.
+      it('carries a recorded directory x/y when the other repository only has basename x (canonical org/x)', async () => {
+        mockSlugs({ '/r/r': 'org/new', '/y/x': 'org/x' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/x');
+        const dir = path.join(reposDir(), 'x', 'y');
+        const manager = await getRepositoryManager();
+        await manager.registerRepository('/y/x');
+        const r = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r.id, path.join(dir, 'worktrees', 'wt-001-r'), 1);
+
+        await manager.unregisterRepository(r.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.extraRepoDirs).toEqual([dir]);
+      });
+
       // Reach: removing the sessionDataDirs filter against extraRepoDirs fails this.
       it('removes a recorded old-slug directory that is also the basename candidate once (extraRepoDirs only)', async () => {
         mockSlugs({ '/x/foo': 'org/foo' });

@@ -201,7 +201,7 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
         probed.push(p);
         return true;
       },
-      claimedDirs: new Set([flatDir]),
+      claimedDirs: { subtree: new Set([flatDir]), point: new Set() },
     });
 
     expect(targets).toEqual([canonicalDir]);
@@ -221,7 +221,7 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'foo'),
     ];
     expect(await buildSessionDataCleanupTargets(params)).toEqual(expected);
-    expect(await buildSessionDataCleanupTargets({ ...params, claimedDirs: new Set() })).toEqual(expected);
+    expect(await buildSessionDataCleanupTargets({ ...params, claimedDirs: { subtree: new Set(), point: new Set() } })).toEqual(expected);
   });
 
   it('skips, without probing, a candidate that is an ancestor of a claimed directory', async () => {
@@ -235,7 +235,7 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
         probed.push(p);
         return true;
       },
-      claimedDirs: new Set([computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'x/y')]),
+      claimedDirs: { subtree: new Set([computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'x/y')]), point: new Set() },
     });
 
     const canonicalDir = computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'x/x');

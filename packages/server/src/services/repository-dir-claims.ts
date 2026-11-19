@@ -55,63 +55,83 @@ export interface FindClaimedRepositoryDirsParams {
 }
 
 /**
- * Directories under `repositories/` that a registered repository OTHER than
- * `repo` claims, by (a) its current canonical slug, (b) its path basename,
- * (c) one of its own worktree rows living under it, or (d) its own checkout
- * path (a linked worktree checkout can register and sit under a directory other
- * rows record). Claim (d) is `path.resolve`d, not realpath'd: targets are built
- * from the never-realpath'd `getRepositoriesDir()`, and realpath fails for a
- * missing checkout. Deleting too little is the safe direction: a shared flat
- * directory is ambiguous by construction.
+ * What other registered repositories claim under `repositories/`, by what the
+ * claimant actually owns.
  *
- * A derivation that throws for another repository degrades to that repository
- * claiming its basename only; it never aborts the caller.
+ * - `subtree`: the claimant's canonical slug directory and the directory of each
+ *   of its worktree rows. Everything under such a directory belongs to it.
+ * - `point`: its path basename directory and its checkout path. Speculative
+ *   (the basename) or possibly containing the whole data root (the checkout),
+ *   so only the directory itself and its ancestors are protected.
+ */
+export interface RepositoryDirClaims {
+  subtree: Set<string>;
+  point: Set<string>;
+}
+
+/**
+ * Directories under `repositories/` that a registered repository OTHER than
+ * `repo` claims, by (a) its current canonical slug (subtree), (b) its path
+ * basename (point), (c) one of its own worktree rows living under it (subtree),
+ * or (d) its own checkout path (point; a linked worktree checkout can register
+ * and sit under a directory other rows record). Claim (d) is `path.resolve`d,
+ * not realpath'd: targets are built from the never-realpath'd
+ * `getRepositoriesDir()`, and realpath fails for a missing checkout. A
+ * repository without a remote has the same directory for (a) and (b); it is then
+ * in both kinds and the subtree rule applies. Deleting too little is the safe
+ * direction: a shared flat directory is ambiguous by construction.
+ *
+ * A derivation that throws for another repository degrades that repository: it
+ * keeps its checkout path, its basename and its worktree-row directories; only
+ * the canonical-slug claim is missing. It never aborts the caller.
  */
 export async function findClaimedRepositoryDirs(
   params: FindClaimedRepositoryDirsParams,
-): Promise<Set<string>> {
-  const claimed = new Set<string>();
-  const claim = (slug: string): void => {
-    if (isValidSlug(slug)) claimed.add(getRepositoryDir(slug));
+): Promise<RepositoryDirClaims> {
+  const claims: RepositoryDirClaims = { subtree: new Set(), point: new Set() };
+  const claim = (kind: keyof RepositoryDirClaims, slug: string): void => {
+    if (isValidSlug(slug)) claims[kind].add(getRepositoryDir(slug));
   };
 
   for (const other of params.registeredRepositories) {
     if (other.id === params.repo.id) continue;
 
-    claimed.add(path.resolve(other.path));
+    claims.point.add(path.resolve(other.path));
 
     const basename = path.basename(other.path);
-    claim(basename);
+    claim('point', basename);
     try {
-      claim(await params.deriveSlug(other.path, basename));
+      claim('subtree', await params.deriveSlug(other.path, basename));
     } catch (err) {
       logger.warn(
         { repositoryId: other.id, err },
-        'Slug derivation failed for another registered repository; it claims its basename only',
+        'Slug derivation failed for another registered repository; it keeps its checkout path, basename and worktree-row directories, only the canonical-slug claim is missing',
       );
     }
 
     for (const worktreePath of await params.listWorktreePaths(other.id)) {
       const dir = repositoryDirFromWorktreePath(worktreePath);
-      if (dir !== null) claimed.add(dir);
+      if (dir !== null) claims.subtree.add(dir);
     }
   }
-  return claimed;
+  return claims;
 }
 
 /**
  * Whether `dir` must be left alone because another repository claims it:
- * `dir` is a claimed directory, or an ancestor of one (compared by path
- * segment, so `repositories/acme` does not match `repositories/acme-old`).
- * Descendants of a claimed directory are NOT protected: basename claims are
- * broad, and protecting descendants would skip `x/y` whenever any registered
- * checkout is named `x`.
+ * `dir` is a claimed directory or an ancestor of one (either kind), or a
+ * descendant of a subtree claim. All comparisons are by path segment, so
+ * `repositories/acme` does not match `repositories/acme-old`. A descendant of a
+ * point claim is NOT protected: a basename claim is speculative and a checkout
+ * can contain the whole data root.
  */
-export function isProtectedByClaim(dir: string, claimedDirs: ReadonlySet<string>): boolean {
-  if (claimedDirs.has(dir)) return true;
+export function isProtectedByClaim(dir: string, claims: RepositoryDirClaims): boolean {
   const prefix = dir + path.sep;
-  for (const claimed of claimedDirs) {
-    if (claimed.startsWith(prefix)) return true;
+  for (const claimed of [...claims.subtree, ...claims.point]) {
+    if (claimed === dir || claimed.startsWith(prefix)) return true;
+  }
+  for (const claimed of claims.subtree) {
+    if (dir.startsWith(claimed + path.sep)) return true;
   }
   return false;
 }
