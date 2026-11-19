@@ -22,5 +22,5 @@
 #      scripts/__tests__/bun-version-pins.test.mjs fails if they disagree.
 #
 # Format: <version> <arch: x64|aarch64> <sha256>
-1.4.4 x64 bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
-1.4.4 aarch64 baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e
+1.4.5 x64 94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb
+1.4.5 aarch64 18656a3bf0ea5641f5796ae4213b75255579a70a0fded2f337933785568cdf84
