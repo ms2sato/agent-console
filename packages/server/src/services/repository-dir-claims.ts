@@ -50,6 +50,12 @@ export interface FindClaimedRepositoryDirsParams {
   registeredRepositories: ReadonlyArray<Pick<Repository, 'id' | 'path'>>;
   /** Paths of the `worktrees` rows of one repository. */
   listWorktreePaths: (repositoryId: string) => Promise<string[]>;
+  /**
+   * Data-scope slugs recorded by the `repository`-scope session rows of one
+   * repository. Called outside the slug-derivation `try`, so a failing derivation
+   * keeps these claims. Never called with the id of `repo`.
+   */
+  listSessionDataSlugs: (repositoryId: string) => Promise<string[]>;
   /** Slug derivation, `deriveRepositorySlug` in production. */
   deriveSlug: (repoPath: string, fallback: string) => Promise<string>;
 }
@@ -58,11 +64,14 @@ export interface FindClaimedRepositoryDirsParams {
  * What other registered repositories claim under `repositories/`, by what the
  * claimant actually owns.
  *
- * - `subtree`: the claimant's canonical slug directory and the directory of each
- *   of its worktree rows. Everything under such a directory belongs to it.
- * - `point`: its path basename directory and its checkout path. Speculative
- *   (the basename) or possibly containing the whole data root (the checkout),
- *   so only the directory itself and its ancestors are protected.
+ * - `subtree`: the claimant's canonical slug directory, the directory of each
+ *   of its worktree rows and the directory of each slug its session rows
+ *   record. Everything under such a directory belongs to it.
+ * - `point`: its path basename directory and its checkout path. The basename
+ *   directory is where data frozen before the slug change may be; whether it is
+ *   there is recorded by session rows (claim e). Without such a row the basename
+ *   is only a backstop, so it protects the directory itself and its ancestors.
+ *   The checkout may contain the whole data root, so it gets the same treatment.
  */
 export interface RepositoryDirClaims {
   subtree: Set<string>;
@@ -73,8 +82,14 @@ export interface RepositoryDirClaims {
  * Directories under `repositories/` that a registered repository OTHER than
  * `repo` claims, by (a) its current canonical slug (subtree), (b) its path
  * basename (point), (c) one of its own worktree rows living under it (subtree),
- * or (d) its own checkout path (point; a linked worktree checkout can register
- * and sit under a directory other rows record). Claim (d) is `path.resolve`d,
+ * (d) its own checkout path (point; a linked worktree checkout can register
+ * and sit under a directory other rows record), or (e) a data-scope slug
+ * recorded by one of its own `repository`-scope session rows (subtree).
+ * Claims come from records (worktree rows, session rows) plus derived names
+ * (canonical slug, basename, checkout); the basename directory is where data
+ * frozen before the slug change may be, whether it is there is recorded by
+ * session rows (claim e), and without such a row the basename is only a
+ * backstop, so it protects the directory itself and its ancestors. Claim (d) is `path.resolve`d,
  * not realpath'd: targets are built from the never-realpath'd
  * `getRepositoriesDir()`, and realpath fails for a missing checkout. A
  * repository without a remote has the same directory for (a) and (b); it is then
@@ -82,7 +97,8 @@ export interface RepositoryDirClaims {
  * direction: a shared flat directory is ambiguous by construction.
  *
  * A derivation that throws for another repository degrades that repository: it
- * keeps its checkout path, its basename and its worktree-row directories; only
+ * keeps its checkout path, its basename, its worktree-row directories and its
+ * session-slug directories; only
  * the canonical-slug claim is missing. It never aborts the caller.
  */
 export async function findClaimedRepositoryDirs(
@@ -112,6 +128,17 @@ export async function findClaimedRepositoryDirs(
     for (const worktreePath of await params.listWorktreePaths(other.id)) {
       const dir = repositoryDirFromWorktreePath(worktreePath);
       if (dir !== null) claims.subtree.add(dir);
+    }
+
+    for (const slug of new Set(await params.listSessionDataSlugs(other.id))) {
+      if (isValidSlug(slug)) {
+        claims.subtree.add(getRepositoryDir(slug));
+      } else {
+        logger.warn(
+          { repositoryId: other.id, slug },
+          'Ignoring session data slug that is not a valid slug',
+        );
+      }
     }
   }
   return claims;

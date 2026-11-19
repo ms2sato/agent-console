@@ -78,6 +78,7 @@ describe('findClaimedRepositoryDirs', () => {
     const claimed = await findClaimedRepositoryDirs({
       repo: { id: 'a' },
       registeredRepositories: [{ id: 'a', path: '/x/foo' }],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: noRows,
       deriveSlug: async () => 'org/foo',
     });
@@ -91,6 +92,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: '/y/bar' },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: noRows,
       deriveSlug: async (p) => (p === '/y/bar' ? 'org/shared' : 'org/foo'),
     });
@@ -105,6 +107,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: '/y/foo' },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: noRows,
       deriveSlug: async (p) => (p === '/y/foo' ? 'org/other' : 'org/foo'),
     });
@@ -119,6 +122,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: '/y/bar' },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: async (id) =>
         id === 'b' ? [`${REPOS}/org/legacy/worktrees/wt-001-x`, '/y/bar'] : [`${REPOS}/org/mine/worktrees/wt-001-z`],
       deriveSlug: fallbackDerive,
@@ -138,6 +142,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: '/y/bar' },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: async (id) => (id === 'b' ? [`${REPOS}/org/legacy/worktrees/wt-001-x`] : []),
       deriveSlug: async () => {
         throw new Error('git failed');
@@ -157,6 +162,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: checkout },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: noRows,
       deriveSlug: async (p) => (p === checkout ? 'org/new' : 'org/foo'),
     });
@@ -174,6 +180,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: checkout },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: noRows,
       deriveSlug: async () => {
         throw new Error('git failed');
@@ -191,6 +198,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: `${REPOS}/org/x/../old/worktrees/wt-a` },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: noRows,
       deriveSlug: fallbackDerive,
     });
@@ -205,6 +213,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: `${REPOS}/org/mine/worktrees/wt-a` },
         { id: 'b', path: '/y/bar' },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: noRows,
       deriveSlug: fallbackDerive,
     });
@@ -220,6 +229,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: '/y/x' },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: async (id) => (id === 'b' ? [`${REPOS}/org/old/worktrees/wt-001-x`] : []),
       deriveSlug: async (p) => (p === '/y/x' ? 'org/x' : 'org/foo'),
     });
@@ -234,6 +244,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: '/y/x' },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: noRows,
       deriveSlug: fallbackDerive,
     });
@@ -248,6 +259,7 @@ describe('findClaimedRepositoryDirs', () => {
         { id: 'a', path: '/x/foo' },
         { id: 'b', path: '/y/bar' },
       ],
+      listSessionDataSlugs: noRows,
       listWorktreePaths: async (id) => (id === 'b' ? [`${REPOS}/org/legacy/worktrees/wt-001-x`] : []),
       deriveSlug: async () => {
         throw new Error('git failed');
@@ -255,6 +267,90 @@ describe('findClaimedRepositoryDirs', () => {
     });
     expect([...claimed.subtree]).toEqual([`${REPOS}/org/legacy`]);
     expect([...claimed.point].sort()).toEqual([`${REPOS}/bar`, '/y/bar'].sort());
+  });
+
+  // Claim (e). Reach (measured, see the PR): deleting the session-slug loop fails
+  // the four tests below that expect its directories; putting them in `point`
+  // instead of `subtree` fails the shape assertion of the first test.
+  describe('claim (e): session-row slugs', () => {
+    const two = [
+      { id: 'a', path: '/x/foo' },
+      { id: 'b', path: '/y/x' },
+    ];
+
+    it('puts each distinct valid session slug directory in subtree once, next to canonical and basename', async () => {
+      const claimed = await findClaimedRepositoryDirs({
+        repo: { id: 'a' },
+        registeredRepositories: two,
+        listWorktreePaths: noRows,
+        listSessionDataSlugs: async (id) => (id === 'b' ? ['x', 'x', 'org/prev'] : []),
+        deriveSlug: async (p) => (p === '/y/x' ? 'org/x' : 'org/foo'),
+      });
+      expect([...claimed.subtree].sort()).toEqual([`${REPOS}/org/x`, `${REPOS}/x`, `${REPOS}/org/prev`].sort());
+      expect([...claimed.point].sort()).toEqual([`${REPOS}/x`, '/y/x'].sort());
+      // The basename directory is in point only by its own claim (b); the (e) one is subtree.
+      expect(isProtectedByClaim(`${REPOS}/x/messages`, claimed)).toBe(true);
+      // Control: without the session rows the basename descendant is not protected.
+      const control = await findClaimedRepositoryDirs({
+        repo: { id: 'a' },
+        registeredRepositories: two,
+        listWorktreePaths: noRows,
+        listSessionDataSlugs: noRows,
+        deriveSlug: async (p) => (p === '/y/x' ? 'org/x' : 'org/foo'),
+      });
+      expect(isProtectedByClaim(`${REPOS}/x/messages`, control)).toBe(false);
+    });
+
+    it('adds nothing for an invalid slug or an empty list', async () => {
+      const claimed = await findClaimedRepositoryDirs({
+        repo: { id: 'a' },
+        registeredRepositories: two,
+        listWorktreePaths: noRows,
+        listSessionDataSlugs: async (id) => (id === 'b' ? ['../escape', 'a/b/c', ''] : []),
+        deriveSlug: fallbackDerive,
+      });
+      expect([...claimed.subtree]).toEqual([`${REPOS}/x`]);
+      // Control: a valid slug in the same list is claimed.
+      const withValid = await findClaimedRepositoryDirs({
+        repo: { id: 'a' },
+        registeredRepositories: two,
+        listWorktreePaths: noRows,
+        listSessionDataSlugs: async () => ['../escape', 'org/prev'],
+        deriveSlug: fallbackDerive,
+      });
+      expect(withValid.subtree.has(`${REPOS}/org/prev`)).toBe(true);
+      expect(withValid.subtree.has(`${REPOS}/../escape`)).toBe(false);
+    });
+
+    it('keeps the session-slug directories when the slug derivation throws', async () => {
+      const claimed = await findClaimedRepositoryDirs({
+        repo: { id: 'a' },
+        registeredRepositories: two,
+        listWorktreePaths: noRows,
+        listSessionDataSlugs: async (id) => (id === 'b' ? ['org/prev'] : []),
+        deriveSlug: async () => {
+          throw new Error('git failed');
+        },
+      });
+      expect(claimed.subtree.has(`${REPOS}/org/prev`)).toBe(true);
+      // Control: the derivation failure did degrade (no canonical claim; basename is point-only).
+      expect([...claimed.subtree]).toEqual([`${REPOS}/org/prev`]);
+    });
+
+    it('never asks for the session slugs of the repository being unregistered', async () => {
+      const asked: string[] = [];
+      await findClaimedRepositoryDirs({
+        repo: { id: 'a' },
+        registeredRepositories: [...two, { id: 'c', path: '/z/c' }],
+        listWorktreePaths: noRows,
+        listSessionDataSlugs: async (id) => {
+          asked.push(id);
+          return [];
+        },
+        deriveSlug: fallbackDerive,
+      });
+      expect(asked.sort()).toEqual(['b', 'c']);
+    });
   });
 });
 

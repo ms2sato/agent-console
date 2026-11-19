@@ -14,6 +14,7 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-repository.js';
+import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
 import type { RepositoryRepository } from '../../repositories/repository-repository.js';
 import { isMultiUserAuthMode, type RunAsUserOpts, type RunAsUserResult } from '../privilege-elevation.js';
 import { buildManualFallbackCommands, buildMissingRefspecMessage } from '../repository-manager.js';
@@ -1203,6 +1204,20 @@ describe('RepositoryManager', () => {
         });
       }
 
+      async function addSessionRow(repositoryId: string, dataScopeSlug: string, id = `sess-${repositoryId}-${dataScopeSlug}`): Promise<void> {
+        await new SqliteSessionRepository(getDatabase()).save({
+          id,
+          type: 'worktree',
+          locationPath: '/tmp/session-location',
+          repositoryId,
+          worktreeId: 'main',
+          createdAt: new Date().toISOString(),
+          workers: [],
+          dataScope: 'repository',
+          dataScopeSlug,
+        });
+      }
+
       async function latestCleanupPayload(excludeJobIds: string[] = []): Promise<{ id: string; payload: CleanupRepositoryPayload }> {
         const jobs = (await testJobQueue!.getJobs({ type: 'cleanup:repository' })).filter(
           (j) => !excludeJobIds.includes(j.id),
@@ -1412,6 +1427,59 @@ describe('RepositoryManager', () => {
         const guarded = await latestCleanupPayload([control.id]);
         expect(guarded.payload.sessionDataDirs).not.toContain(orgDir);
         expect(guarded.payload.repoDir).toBe(path.join(orgDir, 'x'));
+      });
+
+      // Claim (e). Reach: deleting the session-slug loop in findClaimedRepositoryDirs
+      // fails the claimed half; the control half passes either way. Putting the
+      // claim into `point` instead of `subtree` also fails it (the target is a
+      // descendant of the claimed directory).
+      it('does not return the canonical directory when another registration has a session row frozen under its basename (claim e), and does without that row (control)', async () => {
+        mockSlugs({ '/y/x': 'org/x', '/r/r': 'x/messages' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/x');
+        const target = path.join(reposDir(), 'x', 'messages');
+        const manager = await getRepositoryManager();
+        const b = await manager.registerRepository('/y/x');
+
+        // Control: B has no session row -> the canonical directory IS carried.
+        const r1 = await manager.registerRepository('/r/r');
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.repoDir).toBe(target);
+
+        // Measured case: B has a repository-scope session row with slug 'x'.
+        await addSessionRow(b.id, 'x');
+        const r2 = await manager.registerRepository('/r/r');
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.repoDir).toBeNull();
+      });
+
+      // Reach: deleting the session-slug loop fails the claimed half; the control
+      // half passes either way. Equality with the claimed directory, so this stays
+      // green if the claim sits in `point` (that is what manager test above is for).
+      it('does not carry a recorded old-slug directory that another registration\'s session row records (claim e), and does without that row (control)', async () => {
+        mockSlugs({ '/r/r': 'org/new', '/y/b': 'other/b' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/b');
+        const oldDir = path.join(reposDir(), 'org', 'old');
+        const manager = await getRepositoryManager();
+        const b = await manager.registerRepository('/y/b');
+
+        // Control: B has no session row -> the directory IS carried.
+        const r1 = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r1.id, path.join(oldDir, 'worktrees', 'wt-001-r'), 1);
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.extraRepoDirs).toEqual([oldDir]);
+
+        // Measured case: B has a session row with slug org/old, no worktree rows.
+        await addSessionRow(b.id, 'org/old');
+        const r2 = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r2.id, path.join(oldDir, 'worktrees', 'wt-001-r'), 1);
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect('extraRepoDirs' in guarded.payload).toBe(false);
       });
 
       // Reach: claimedDirs.has(canonicalRepoDir) at the canonical site fails this.
