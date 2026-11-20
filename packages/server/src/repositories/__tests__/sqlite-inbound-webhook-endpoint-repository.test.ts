@@ -44,6 +44,7 @@ describe('SqliteInboundWebhookEndpointRepository', () => {
         label: 'label-ep-1',
         repositoryId: 'repo-1',
         instructionText: 'Run the triage skill',
+        replyUrl: null,
         secret: 'whsec_ep-1',
         previousSecret: null,
         previousSecretExpiresAt: null,
@@ -214,6 +215,49 @@ describe('SqliteInboundWebhookEndpointRepository', () => {
 
     it('findWithSecretById is the one lookup not scoped by repository', async () => {
       expect((await repository.findWithSecretById('theirs'))?.repositoryId).toBe('repo-2');
+    });
+  });
+
+  describe('reply URL', () => {
+    const URL_A = 'https://sender.example.com/replies?token=abc';
+    const URL_B = 'https://sender.example.com/other';
+
+    it('create without a reply URL stores NULL; with one stores it as entered', async () => {
+      expect((await create('none')).replyUrl).toBeNull();
+      const withUrl = await create('with', { replyUrl: URL_A });
+      expect(withUrl.replyUrl).toBe(URL_A);
+      expect((await repository.findById('repo-1', 'with'))?.replyUrl).toBe(URL_A);
+    });
+
+    it('set, change, clear and omitted-leaves-unchanged through update', async () => {
+      await create('ep');
+      expect((await repository.update('repo-1', 'ep', { replyUrl: URL_A }, T1))?.replyUrl).toBe(URL_A);
+      expect((await repository.update('repo-1', 'ep', { replyUrl: URL_B }, T1))?.replyUrl).toBe(URL_B);
+      // omitted: another field changes, the reply URL stays
+      const unchanged = await repository.update('repo-1', 'ep', { label: 'renamed' }, T2);
+      expect(unchanged?.label).toBe('renamed');
+      expect(unchanged?.replyUrl).toBe(URL_B);
+      // null clears
+      expect((await repository.update('repo-1', 'ep', { replyUrl: null }, T2))?.replyUrl).toBeNull();
+      expect((await repository.findById('repo-1', 'ep'))?.replyUrl).toBeNull();
+    });
+
+    it('list and findWithSecretById return it too', async () => {
+      await create('ep', { replyUrl: URL_A });
+      expect((await repository.list('repo-1'))[0]?.replyUrl).toBe(URL_A);
+      expect((await repository.findWithSecretById('ep'))?.replyUrl).toBe(URL_A);
+    });
+
+    it('rotating the secret and clearing the previous secret leave the reply URL alone', async () => {
+      await create('ep', { replyUrl: URL_A });
+      expect((await repository.rotateSecret('repo-1', 'ep', 'whsec_new', EXPIRY, T1))?.replyUrl).toBe(URL_A);
+      expect((await repository.clearPreviousSecret('repo-1', 'ep', T2))?.replyUrl).toBe(URL_A);
+    });
+
+    it('the database CHECK refuses an empty value and one over 2048 characters', async () => {
+      await create('ep');
+      await expect(repository.update('repo-1', 'ep', { replyUrl: '' }, T1)).rejects.toThrow(/CHECK constraint failed/);
+      await expect(repository.update('repo-1', 'ep', { replyUrl: 'x'.repeat(2049) }, T1)).rejects.toThrow(/CHECK constraint failed/);
     });
   });
 });

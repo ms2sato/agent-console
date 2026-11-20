@@ -1,8 +1,9 @@
 /**
  * Foreign-key index guard.
  *
- * Rule: every column that carries a REFERENCES clause leads some index (it is
- * seqno 0 of an index returned by PRAGMA index_list; primary-key and UNIQUE
+ * Rule: every foreign key is covered by an index that leads with its columns (a
+ * single column is seqno 0 of an index returned by PRAGMA index_list; the columns
+ * of a composite key are the leading columns of one index; primary-key and UNIQUE
  * autoindexes count). SQLite does not index the child side of a foreign key
  * itself, so a parent DELETE with CASCADE / SET NULL / RESTRICT would scan the
  * whole child table.
@@ -28,6 +29,9 @@ import { createDatabaseForTest } from '../connection.js';
 import type { Database } from '../schema.js';
 
 interface ForeignKeyRow {
+  /** Groups the columns of one (possibly composite) foreign key. */
+  id: number;
+  seq: number;
   table: string;
   from: string;
 }
@@ -52,17 +56,23 @@ async function auditForeignKeyIndexes(db: Kysely<Database>): Promise<{ enumerate
     const fks = (await sql.raw<ForeignKeyRow>(`PRAGMA foreign_key_list("${table}")`).execute(db)).rows;
     const indexes = (await sql.raw<IndexListRow>(`PRAGMA index_list("${table}")`).execute(db)).rows;
 
-    const leadingColumns = new Set<string>();
+    const fullIndexColumns: string[][] = [];
     for (const index of indexes) {
       if (index.partial === 1) continue;
       const info = (await sql.raw<{ seqno: number; name: string }>(`PRAGMA index_info("${index.name}")`).execute(db)).rows;
-      const first = info.find((r) => r.seqno === 0);
-      if (first) leadingColumns.add(first.name);
+      fullIndexColumns.push([...info].sort((a, b) => a.seqno - b.seqno).map((r) => r.name));
     }
 
-    for (const fk of fks) {
+    // A composite foreign key is covered when its columns are the leading columns of one index (in any
+    // order: the lookup is an equality on each). Checking the columns one by one would demand a second
+    // index just for the later column.
+    const byKey = new Map<number, ForeignKeyRow[]>();
+    for (const fk of fks) byKey.set(fk.id, [...(byKey.get(fk.id) ?? []), fk]);
+    for (const columns of byKey.values()) {
       enumerated += 1;
-      if (!leadingColumns.has(fk.from)) missing.push(`${table}.${fk.from} -> ${fk.table}`);
+      const wanted = new Set(columns.map((c) => c.from));
+      const covered = fullIndexColumns.some((index) => index.slice(0, wanted.size).every((c) => wanted.has(c)) && index.length >= wanted.size);
+      if (!covered) missing.push(`${table}.${columns.map((c) => c.from).join(',')} -> ${columns[0]!.table}`);
     }
   }
   return { enumerated, missing };
@@ -104,6 +114,25 @@ describe('foreign-key columns lead an index', () => {
       const db = await scratchDb('CREATE INDEX idx_guard_child_parent ON guard_child (parent_id)');
       try {
         expect((await auditForeignKeyIndexes(db)).missing).toEqual([]);
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    it('a composite foreign key is covered by one index leading with all its columns, and not by one leading with only the first', async () => {
+      const db = await createDatabaseForTest(':memory:');
+      try {
+        await sql.raw('CREATE TABLE guard_pair (a TEXT, b TEXT, PRIMARY KEY (a, b))').execute(db);
+        await sql
+          .raw('CREATE TABLE guard_pair_child (id TEXT PRIMARY KEY, a TEXT, b TEXT, FOREIGN KEY (a, b) REFERENCES guard_pair(a, b))')
+          .execute(db);
+        const missingNow = async () => (await auditForeignKeyIndexes(db)).missing.filter((m) => m.startsWith('guard_pair_child'));
+
+        expect(await missingNow()).toEqual(['guard_pair_child.a,b -> guard_pair']);
+        await sql.raw('CREATE INDEX idx_guard_pair_child_a ON guard_pair_child (a)').execute(db);
+        expect(await missingNow()).toEqual(['guard_pair_child.a,b -> guard_pair']);
+        await sql.raw('CREATE INDEX idx_guard_pair_child_ab ON guard_pair_child (a, b, id)').execute(db);
+        expect(await missingNow()).toEqual([]);
       } finally {
         await db.destroy();
       }

@@ -60,6 +60,33 @@ describe('EditInboundWebhookView', () => {
     await waitFor(() => expect(router.state.location.pathname.replace(/\/$/, '')).toBe(LIST_PATH));
   });
 
+  it('prefills the stored reply URL; clearing it and saving sends null and the stored value reads back null', async () => {
+    server.endpoints = [makeEndpoint({ replyUrl: 'https://sender.example.com/replies' })];
+    const user = userEvent.setup();
+    await renderEdit();
+    await waitFor(() =>
+      expect((screen.getByLabelText('Reply URL (optional)') as HTMLInputElement).value).toBe('https://sender.example.com/replies'),
+    );
+
+    fireEvent.change(screen.getByLabelText('Reply URL (optional)'), { target: { value: '' } });
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    expect(patches()[0]?.body).toEqual({ label: 'Slack alerts', instructionText: 'Triage the message', replyUrl: null });
+    expect(server.endpoints[0]?.replyUrl).toBeNull();
+  });
+
+  it('an invalid reply URL sends no request', async () => {
+    const user = userEvent.setup();
+    await renderEdit();
+    await waitFor(() => expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('Slack alerts'));
+    fireEvent.change(screen.getByLabelText('Reply URL (optional)'), { target: { value: 'http://x.example.com' } });
+
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(patches()).toHaveLength(0);
+  });
+
   it('refuses a blank instruction, an empty label and 4001 characters; accepts 4000', async () => {
     await renderEdit();
     await waitFor(() => expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('Slack alerts'));

@@ -717,3 +717,57 @@ describe('module boundary', () => {
     expect(source).not.toMatch(/from\s+['"][^'"]*\/actions\//);
   });
 });
+
+describe('the reply URL stays off every agent-visible surface', () => {
+  const MARK = 'REPLYURLMARK';
+  const REPLY_URL = `https://sender.example.com/replies?token=${MARK}`;
+
+  it('prepareDelivery for an endpoint that has a reply URL puts it in no content field (control: the endpoint really carries it)', async () => {
+    const db = await createDatabaseForTest();
+    try {
+      await db.insertInto('repositories').values({ id: 'repo-1', name: 'r', path: '/tmp/r' }).execute();
+      const endpoints = new SqliteInboundWebhookEndpointRepository(db);
+      await endpoints.create({
+        id: 'ep-1',
+        label: 'Slack',
+        repositoryId: 'repo-1',
+        instructionText: 'Do it',
+        secret: VECTOR_SECRET,
+        replyUrl: REPLY_URL,
+        now: '2026-11-20T00:00:00.000Z',
+      });
+      expect((await endpoints.findWithSecretById('ep-1'))?.replyUrl).toBe(REPLY_URL);
+
+      const content = await prepareDelivery(
+        { jobId: 'inbound-webhook:ep-1:Ev1', endpointId: 'ep-1', rawPayload: JSON.stringify({ message: 'hi' }), receivedAt: NOW.toISOString() },
+        { endpoints },
+      );
+      const serialized = JSON.stringify(content);
+      expect(serialized).toContain('Do it');
+      expect(serialized).not.toContain(MARK);
+      expect(serialized).not.toContain('sender.example.com');
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  it('no MCP source file or notification renderer names the reply URL or reads the endpoint repository', async () => {
+    const roots = ['../../../mcp', '../../inbound', '../../../lib/pty-notification.ts'];
+    const files: string[] = [];
+    for (const root of roots) {
+      const path = new URL(`${root}`, import.meta.url).pathname;
+      const glob = new Bun.Glob(root.endsWith('.ts') ? path.split('/').pop()! : '**/*.ts');
+      const base = root.endsWith('.ts') ? path.split('/').slice(0, -1).join('/') : path;
+      for await (const file of glob.scan({ cwd: base, absolute: true })) {
+        if (!file.includes('__tests__')) files.push(file);
+      }
+    }
+    // Presence control: the scan actually reached the MCP server and the inbound handlers.
+    expect(files.some((f) => f.endsWith('/mcp/mcp-server.ts'))).toBe(true);
+    expect(files.some((f) => f.endsWith('/inbound/handlers.ts'))).toBe(true);
+    for (const file of files) {
+      const text = await Bun.file(file).text();
+      expect(text, file).not.toMatch(/reply_url|replyUrl|inboundWebhookEndpointRepository/);
+    }
+  });
+});

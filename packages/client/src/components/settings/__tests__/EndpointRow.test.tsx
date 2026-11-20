@@ -1,5 +1,5 @@
 // NOTE: This test injects schema-derived fields (hasPreviousSecret,
-// previousSecretExpiresAt) directly as props and DOES NOT exercise the
+// previousSecretExpiresAt, replyUrl) directly as props and DOES NOT exercise the
 // WebSocket/valibot parse path. Schema-level wire validation lives in the
 // api tests and packages/server route tests.
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
@@ -83,5 +83,17 @@ describe('EndpointRow', () => {
     }
     await user.click(screen.getByRole('button', { name: 'Rotate secret' }));
     expect(h.onRotate).not.toHaveBeenCalled();
+  });
+
+  it('shows "Replies enabled" only when a reply URL is set, and never the URL itself', async () => {
+    await setup(makeEndpoint({ replyUrl: 'https://sender.example.com/replies?token=SECRETMARK' }));
+    expect(screen.getByTestId('endpoint-replies-enabled').textContent).toBe('Replies enabled');
+    expect(document.body.textContent).not.toContain('SECRETMARK');
+    expect(document.body.textContent).not.toContain('sender.example.com');
+    cleanup();
+
+    await setup(makeEndpoint({ replyUrl: null }));
+    expect(screen.queryByTestId('endpoint-replies-enabled')).toBeNull();
+    expect(screen.queryByText('Replies enabled')).toBeNull();
   });
 });

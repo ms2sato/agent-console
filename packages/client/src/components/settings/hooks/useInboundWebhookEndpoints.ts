@@ -29,6 +29,8 @@ export type TakeSecret = () => string | undefined;
 export interface CreateEndpointVariables {
   label: string;
   instructionText: string;
+  /** Create takes a string or nothing. */
+  replyUrl?: string;
   takeSecret?: TakeSecret;
 }
 
@@ -98,10 +100,11 @@ export function useInboundWebhookEndpointMutations(
 
   const create = useMutation({
     gcTime: 0,
-    mutationFn: async ({ label, instructionText, takeSecret }: CreateEndpointVariables): Promise<SecretIssueOutcome> => {
+    mutationFn: async ({ label, instructionText, replyUrl, takeSecret }: CreateEndpointVariables): Promise<SecretIssueOutcome> => {
       const result = await createInboundWebhookEndpoint(repositoryId, {
         label,
         instructionText,
+        ...(replyUrl !== undefined ? { replyUrl } : {}),
         secret: takeSecret?.(),
       });
       if (result.secretSource === 'generated') {

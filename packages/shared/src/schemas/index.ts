@@ -454,6 +454,7 @@ export {
   UpdateInboundWebhookEndpointRequestSchema,
   type UpdateInboundWebhookEndpointRequest,
   InboundWebhookSecretSchema,
+  InboundWebhookReplyUrlSchema,
   RotateInboundWebhookSecretRequestSchema,
   type RotateInboundWebhookSecretRequest,
   InboundWebhookEndpointSchema,

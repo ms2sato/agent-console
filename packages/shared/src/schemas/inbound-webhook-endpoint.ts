@@ -2,6 +2,7 @@ import * as v from 'valibot';
 import {
   INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH,
   INBOUND_WEBHOOK_LABEL_MAX_LENGTH,
+  INBOUND_WEBHOOK_REPLY_URL_MAX_LENGTH,
 } from '../types/inbound-webhook-endpoint.js';
 
 const LabelSchema = v.pipe(
@@ -64,10 +65,51 @@ export const InboundWebhookSecretSchema = v.pipe(
   }, `Secret must decode to ${SECRET_MIN_BYTES} to ${SECRET_MAX_BYTES} bytes`),
 );
 
+function parseUrl(value: string): URL | null {
+  return URL.canParse(value) ? new URL(value) : null;
+}
+
+/**
+ * The address a signed reply is posted to, set by an operator: 1 to 2048 characters, no
+ * leading or trailing whitespace (the value is never trimmed), no control character, an `https:` URL
+ * with no credentials and no fragment. Query strings, ports and any hostname are accepted.
+ *
+ * Every step carries a custom message that names only the rule: the reply URL may carry a token in
+ * its query, valibot's default messages embed the received value, and the API error handler logs
+ * the first message.
+ */
+export const InboundWebhookReplyUrlSchema = v.pipe(
+  v.string('Reply URL must be a string'),
+  v.minLength(1, 'Reply URL must not be empty'),
+  v.maxLength(
+    INBOUND_WEBHOOK_REPLY_URL_MAX_LENGTH,
+    `Reply URL must be at most ${INBOUND_WEBHOOK_REPLY_URL_MAX_LENGTH} characters`,
+  ),
+  v.check((value) => value === value.trim(), 'Reply URL must not have leading or trailing whitespace'),
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
+  v.check((value) => !/[\u0000-\u001F\u007F]/.test(value), 'Reply URL must not contain control characters'),
+  v.check((value) => URL.canParse(value), 'Reply URL must be a valid URL'),
+  // valibot runs every check even after one failed, so the checks below tolerate a value that is not a
+  // URL (the check above already reports it).
+  v.check((value) => {
+    const url = parseUrl(value);
+    return url === null || url.protocol === 'https:';
+  }, 'Reply URL must use https'),
+  v.check((value) => {
+    const url = parseUrl(value);
+    return url === null || (url.username === '' && url.password === '');
+  }, 'Reply URL must not contain credentials'),
+  v.check((value) => {
+    const url = parseUrl(value);
+    return url === null || url.hash === '';
+  }, 'Reply URL must not contain a fragment'),
+);
+
 export const CreateInboundWebhookEndpointRequestSchema = v.strictObject({
   label: LabelSchema,
   instructionText: InstructionTextSchema,
   secret: v.optional(InboundWebhookSecretSchema),
+  replyUrl: v.optional(InboundWebhookReplyUrlSchema),
 });
 
 export type CreateInboundWebhookEndpointRequest = v.InferOutput<typeof CreateInboundWebhookEndpointRequestSchema>;
@@ -84,10 +126,12 @@ export const UpdateInboundWebhookEndpointRequestSchema = v.pipe(
   v.strictObject({
     label: v.optional(LabelSchema),
     instructionText: v.optional(InstructionTextSchema),
+    /** `null` clears the reply URL; an omitted key leaves it unchanged. */
+    replyUrl: v.optional(v.nullable(InboundWebhookReplyUrlSchema)),
   }),
   v.check(
-    (val) => val.label !== undefined || val.instructionText !== undefined,
-    'At least one of label or instructionText is required',
+    (val) => val.label !== undefined || val.instructionText !== undefined || val.replyUrl !== undefined,
+    'At least one of label, instructionText or replyUrl is required',
   ),
 );
 
@@ -104,6 +148,7 @@ export const InboundWebhookEndpointSchema = v.strictObject({
   label: v.string(),
   repositoryId: v.string(),
   instructionText: v.string(),
+  replyUrl: v.nullable(v.string()),
   hasPreviousSecret: v.boolean(),
   previousSecretExpiresAt: v.nullable(v.string()),
   createdAt: v.string(),

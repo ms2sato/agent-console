@@ -33,6 +33,11 @@ export function EndpointRow({
         {endpoint.instructionText}
       </div>
       <ReceiveUrl endpointId={endpoint.id} />
+      {endpoint.replyUrl !== null && (
+        <div data-testid="endpoint-replies-enabled" className="text-sm text-green-400">
+          Replies enabled
+        </div>
+      )}
       {endpoint.hasPreviousSecret && endpoint.previousSecretExpiresAt && (
         <div className="text-sm text-yellow-300">
           Previous secret still valid until {new Date(endpoint.previousSecretExpiresAt).toLocaleString()}

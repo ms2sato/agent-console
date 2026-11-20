@@ -21,6 +21,7 @@ export function makeEndpoint(overrides: Partial<InboundWebhookEndpoint> = {}): I
     label: 'Slack alerts',
     repositoryId: 'repo-1',
     instructionText: 'Triage the message',
+    replyUrl: null,
     hasPreviousSecret: false,
     previousSecretExpiresAt: null,
     createdAt: '2026-01-01T00:00:00Z',
@@ -106,8 +107,13 @@ export function installFakeServer(): FakeServer {
     }
     if (method === 'POST' && !id) {
       if (server.createGate) await server.createGate;
-      const request = body as { label: string; instructionText: string; secret?: string };
-      const created = makeEndpoint({ id: 'ep-new', label: request.label, instructionText: request.instructionText });
+      const request = body as { label: string; instructionText: string; secret?: string; replyUrl?: string };
+      const created = makeEndpoint({
+        id: 'ep-new',
+        label: request.label,
+        instructionText: request.instructionText,
+        replyUrl: request.replyUrl ?? null,
+      });
       server.endpoints = [...server.endpoints, created];
       return request.secret === undefined
         ? jsonResponse({ endpoint: created, secretSource: 'generated', secret: 'whsec_generated' }, 201)

@@ -12,8 +12,8 @@
  *
  * A generated signing secret leaves the server in exactly two responses: create and rotate. An
  * entered secret is never echoed back. Every other response is built from
- * `InboundWebhookEndpointView`, which does not carry a secret. Nothing here logs a secret or a
- * request body.
+ * `InboundWebhookEndpointView`, which does not carry a secret. Nothing here logs a secret, a
+ * request body or the reply URL (it may carry a token in its query).
  */
 import { Hono } from 'hono';
 import {
@@ -50,6 +50,7 @@ function toWireEndpoint(view: InboundWebhookEndpointView, now: Date): InboundWeb
     label: view.label,
     repositoryId: view.repositoryId,
     instructionText: view.instructionText,
+    replyUrl: view.replyUrl,
     hasPreviousSecret,
     previousSecretExpiresAt: hasPreviousSecret ? view.previousSecretExpiresAt : null,
     createdAt: view.createdAt,
@@ -99,6 +100,7 @@ const inboundWebhookEndpoints = new Hono<AppBindings>()
       label: body.label,
       repositoryId,
       instructionText: body.instructionText,
+      ...(body.replyUrl !== undefined ? { replyUrl: body.replyUrl } : {}),
       secret,
       now: now.toISOString(),
     });

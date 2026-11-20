@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'bun:test';
-import { validateInstructionText, validateLabel, validateEnteredSecret, buildReceiveUrl } from '../inbound-webhook-form';
+import {
+  validateInstructionText,
+  validateLabel,
+  validateEnteredSecret,
+  validateReplyUrl,
+  replyUrlRequestField,
+  buildReceiveUrl,
+} from '../inbound-webhook-form';
 
 /** `whsec_` + base64 of `bytes` bytes. */
 function secretOfBytes(bytes: number): string {
@@ -77,5 +84,34 @@ describe('buildReceiveUrl', () => {
 
   it('falls back to the path when the origin is null', () => {
     expect(buildReceiveUrl(null, 'ep-1')).toEqual({ path: '/webhooks/in/ep-1', url: '/webhooks/in/ep-1', hasOrigin: false });
+  });
+});
+
+describe('validateReplyUrl', () => {
+  it('treats the empty field as the valid "no reply URL" state', () => {
+    expect(validateReplyUrl('')).toBeNull();
+  });
+
+  it('uses the shared rules and its value-free messages', () => {
+    expect(validateReplyUrl('https://sender.example.com/replies?token=abc')).toBeNull();
+    expect(validateReplyUrl('http://sender.example.com/?token=MARK')).toBe('Reply URL must use https');
+    expect(validateReplyUrl('https://u:p@sender.example.com/?token=MARK')).toBe('Reply URL must not contain credentials');
+    expect(validateReplyUrl('https://sender.example.com/#MARK')).toBe('Reply URL must not contain a fragment');
+    expect(validateReplyUrl(' https://sender.example.com')).toBe('Reply URL must not have leading or trailing whitespace');
+  });
+});
+
+describe('replyUrlRequestField', () => {
+  it('create: a string only when non-empty, never null', () => {
+    expect(replyUrlRequestField('create', '', null)).toEqual({});
+    expect(replyUrlRequestField('create', 'https://a.example', null)).toEqual({ replyUrl: 'https://a.example' });
+  });
+
+  it('edit: absent when unchanged, null when a stored value is emptied, the string when changed', () => {
+    expect(replyUrlRequestField('edit', 'https://a.example', 'https://a.example')).toEqual({});
+    expect(replyUrlRequestField('edit', '', null)).toEqual({});
+    expect(replyUrlRequestField('edit', '', 'https://a.example')).toEqual({ replyUrl: null });
+    expect(replyUrlRequestField('edit', 'https://b.example', 'https://a.example')).toEqual({ replyUrl: 'https://b.example' });
+    expect(replyUrlRequestField('edit', 'https://b.example', null)).toEqual({ replyUrl: 'https://b.example' });
   });
 });

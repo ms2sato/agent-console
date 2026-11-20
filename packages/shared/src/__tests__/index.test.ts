@@ -13,6 +13,8 @@ describe('shared index exports', () => {
     expect(mod.CreateInboundWebhookEndpointRequestSchema).toBeDefined();
     expect(mod.UpdateInboundWebhookEndpointRequestSchema).toBeDefined();
     expect(mod.InboundWebhookSecretSchema).toBeDefined();
+    expect(mod.InboundWebhookReplyUrlSchema).toBeDefined();
+    expect(mod.INBOUND_WEBHOOK_REPLY_URL_MAX_LENGTH).toBe(2048);
     expect(mod.RotateInboundWebhookSecretRequestSchema).toBeDefined();
     expect(mod.InboundWebhookEndpointSchema).toBeDefined();
     expect(mod.INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH).toBe(4000);
