@@ -385,4 +385,32 @@ describe('isProtectedByClaim', () => {
   it('protects nothing when both sets are empty', () => {
     expect(isProtectedByClaim(`${REPOS}/acme`, claimsOf([]))).toBe(false);
   });
+
+  describe('relative forms are compared resolved', () => {
+    const rel = (abs: string): string => path.relative(process.cwd(), abs);
+
+    it('protects a relative dir equal to an absolute claim', () => {
+      expect(isProtectedByClaim(rel(`${REPOS}/acme`), claimsOf([`${REPOS}/acme`]))).toBe(true);
+    });
+
+    it('protects a relative dir that is the ancestor of an absolute claim', () => {
+      expect(isProtectedByClaim(rel(`${REPOS}/acme`), claimsOf([`${REPOS}/acme/project`]))).toBe(true);
+    });
+
+    it('protects an absolute dir inside a relative subtree claim', () => {
+      expect(isProtectedByClaim(`${REPOS}/acme/project`, claimsOf([rel(`${REPOS}/acme`)]))).toBe(true);
+    });
+
+    it('protects an absolute dir equal to a relative claim', () => {
+      expect(isProtectedByClaim(`${REPOS}/acme`, claimsOf([rel(`${REPOS}/acme`)]))).toBe(true);
+    });
+
+    it('protects an absolute dir that is the ancestor of a relative claim', () => {
+      expect(isProtectedByClaim(`${REPOS}/acme`, claimsOf([rel(`${REPOS}/acme/project`)]))).toBe(true);
+    });
+
+    it('does not protect a relative dir against an unrelated absolute claim', () => {
+      expect(isProtectedByClaim(rel(`${REPOS}/acme`), claimsOf([`${REPOS}/other`]))).toBe(false);
+    });
+  });
 });

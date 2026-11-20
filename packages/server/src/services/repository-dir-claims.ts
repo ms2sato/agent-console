@@ -53,7 +53,9 @@ export interface FindClaimedRepositoryDirsParams {
   /**
    * Data-scope slugs recorded by the `repository`-scope session rows of one
    * repository. Called outside the slug-derivation `try`, so a failing derivation
-   * keeps these claims. Never called with the id of `repo`.
+   * keeps these claims. Never called with the id of `repo`: its own session rows
+   * are not read because its directories are the removal target; the in-use
+   * gate is what decides whether the unregister may run.
    */
   listSessionDataSlugs: (repositoryId: string) => Promise<string[]>;
   /** Slug derivation, `deriveRepositorySlug` in production. */
@@ -150,15 +152,18 @@ export async function findClaimedRepositoryDirs(
  * descendant of a subtree claim. All comparisons are by path segment, so
  * `repositories/acme` does not match `repositories/acme-old`. A descendant of a
  * point claim is NOT protected: a basename claim is speculative and a checkout
- * can contain the whole data root.
+ * can contain the whole data root. Both sides are compared as resolved paths,
+ * so a relative data root does not defeat the guard.
  */
 export function isProtectedByClaim(dir: string, claims: RepositoryDirClaims): boolean {
-  const prefix = dir + path.sep;
+  const resolvedDir = path.resolve(dir);
+  const prefix = resolvedDir + path.sep;
   for (const claimed of [...claims.subtree, ...claims.point]) {
-    if (claimed === dir || claimed.startsWith(prefix)) return true;
+    const resolvedClaimed = path.resolve(claimed);
+    if (resolvedClaimed === resolvedDir || resolvedClaimed.startsWith(prefix)) return true;
   }
   for (const claimed of claims.subtree) {
-    if (dir.startsWith(claimed + path.sep)) return true;
+    if (resolvedDir.startsWith(path.resolve(claimed) + path.sep)) return true;
   }
   return false;
 }
