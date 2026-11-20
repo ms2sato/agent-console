@@ -162,6 +162,38 @@ describe('EndpointForm', () => {
       expect('replyUrl' in (empty.mock.calls[0]![0] as object)).toBe(false);
     });
 
+    it('the baseline is the value at mount: a rerender with a new initial.replyUrl leaves an untouched draft out of the request', async () => {
+      const submit = mock(async (_p: EndpointFormPayload) => {});
+      const { rerender } = render(
+        <EndpointForm mode="edit" initial={editInitial('https://old.example/a')} isPending={false} onSubmit={submit} />,
+      );
+      rerender(<EndpointForm mode="edit" initial={editInitial('https://new.example/b')} isPending={false} onSubmit={submit} />);
+      // the draft still shows the mount-time value
+      expect(replyInput().value).toBe('https://old.example/a');
+
+      await userEvent.setup().click(submitButton());
+
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect('replyUrl' in (submit.mock.calls[0]![0] as object)).toBe(false);
+    });
+
+    it('an invalid value marks the input invalid and points aria-describedby at the visible error; a valid value does neither', () => {
+      setup({ mode: 'edit', initial: editInitial(null) });
+      expect(replyInput().getAttribute('aria-invalid')).toBe('false');
+      expect(replyInput().getAttribute('aria-describedby')).toBeNull();
+
+      fireEvent.change(replyInput(), { target: { value: 'http://sender.example.com/' } });
+
+      expect(replyInput().getAttribute('aria-invalid')).toBe('true');
+      const describedBy = replyInput().getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)?.textContent).toBe('Reply URL must use https');
+
+      fireEvent.change(replyInput(), { target: { value: 'https://sender.example.com/' } });
+      expect(replyInput().getAttribute('aria-invalid')).toBe('false');
+      expect(replyInput().getAttribute('aria-describedby')).toBeNull();
+    });
+
     it('an invalid value shows an inline error that does not echo it, and nothing is sent', async () => {
       const submit = setup({ mode: 'edit', initial: editInitial(null) });
       fireEvent.change(replyInput(), { target: { value: 'http://sender.example.com/?token=SECRETMARK' } });

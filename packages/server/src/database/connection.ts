@@ -4014,37 +4014,41 @@ export async function migrateToV56(database: Kysely<Database>): Promise<void> {
 export async function migrateToV57(database: Kysely<Database>): Promise<void> {
   logger.info('Running migration to v57: Adding inbound_webhook_endpoints.reply_url and creating inbound_webhook_replies');
 
-  await sql`
-    ALTER TABLE inbound_webhook_endpoints
-      ADD COLUMN reply_url TEXT
-      CONSTRAINT iwe_reply_url_length_check CHECK (reply_url IS NULL OR length(reply_url) BETWEEN 1 AND 2048)
-  `.execute(database);
+  // One transaction: the column, the table, the index and the version stamp commit together, so an
+  // interrupted run cannot leave `reply_url` added at user_version 56 (a rerun would fail on a duplicate column).
+  await database.transaction().execute(async (trx) => {
+    await sql`
+      ALTER TABLE inbound_webhook_endpoints
+        ADD COLUMN reply_url TEXT
+        CONSTRAINT iwe_reply_url_length_check CHECK (reply_url IS NULL OR length(reply_url) BETWEEN 1 AND 2048)
+    `.execute(trx);
 
-  await sql`
-    CREATE TABLE IF NOT EXISTS inbound_webhook_replies (
-      id               TEXT PRIMARY KEY,
-      endpoint_id      TEXT NOT NULL,
-      webhook_id       TEXT NOT NULL,
-      session_id       TEXT NOT NULL,
-      body_sha256      TEXT NOT NULL,
-      attempt_count    INTEGER NOT NULL DEFAULT 0,
-      last_status      INTEGER,
-      created_at       TEXT NOT NULL,
-      last_attempt_at  TEXT,
-      FOREIGN KEY (endpoint_id, webhook_id)
-        REFERENCES inbound_webhook_deliveries(endpoint_id, webhook_id) ON DELETE CASCADE,
-      CONSTRAINT iwr_body_sha256_length_check CHECK (length(body_sha256) = 64),
-      CONSTRAINT iwr_attempt_count_check CHECK (attempt_count >= 0),
-      CONSTRAINT iwr_created_at_check CHECK (created_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}'),
-      CONSTRAINT iwr_last_attempt_at_check CHECK (last_attempt_at IS NULL OR last_attempt_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
-    )
-  `.execute(database);
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_iwr_delivery_session
-      ON inbound_webhook_replies (endpoint_id, webhook_id, session_id)
-  `.execute(database);
+    await sql`
+      CREATE TABLE IF NOT EXISTS inbound_webhook_replies (
+        id               TEXT PRIMARY KEY,
+        endpoint_id      TEXT NOT NULL,
+        webhook_id       TEXT NOT NULL,
+        session_id       TEXT NOT NULL,
+        body_sha256      TEXT NOT NULL,
+        attempt_count    INTEGER NOT NULL DEFAULT 0,
+        last_status      INTEGER,
+        created_at       TEXT NOT NULL,
+        last_attempt_at  TEXT,
+        FOREIGN KEY (endpoint_id, webhook_id)
+          REFERENCES inbound_webhook_deliveries(endpoint_id, webhook_id) ON DELETE CASCADE,
+        CONSTRAINT iwr_body_sha256_length_check CHECK (length(body_sha256) = 64),
+        CONSTRAINT iwr_attempt_count_check CHECK (attempt_count >= 0),
+        CONSTRAINT iwr_created_at_check CHECK (created_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}'),
+        CONSTRAINT iwr_last_attempt_at_check CHECK (last_attempt_at IS NULL OR last_attempt_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
+      )
+    `.execute(trx);
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_iwr_delivery_session
+        ON inbound_webhook_replies (endpoint_id, webhook_id, session_id)
+    `.execute(trx);
 
-  await sql`PRAGMA user_version = 57`.execute(database);
+    await sql`PRAGMA user_version = 57`.execute(trx);
+  });
 
   logger.info('Migration to v57 completed');
 }

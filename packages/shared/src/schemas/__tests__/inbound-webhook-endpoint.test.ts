@@ -152,9 +152,11 @@ describe('reply URL validation table', () => {
 
   it('row: omitted on create is accepted and the key stays absent; omitted on update alone is refused (at least one field)', () => {
     const created = v.safeParse(CreateInboundWebhookEndpointRequestSchema, VALID_CREATE);
-    expect(created.success && 'replyUrl' in created.output).toBe(false);
+    expect(created.success).toBe(true);
+    if (created.success) expect('replyUrl' in created.output).toBe(false);
     const updated = v.safeParse(UpdateInboundWebhookEndpointRequestSchema, { label: 'x' });
-    expect(updated.success && 'replyUrl' in updated.output).toBe(false);
+    expect(updated.success).toBe(true);
+    if (updated.success) expect('replyUrl' in updated.output).toBe(false);
   });
 
   it('row: null on update is accepted (clears) and counts as a field', () => {

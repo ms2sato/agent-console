@@ -198,6 +198,31 @@ describe('migration v57 (reply URL and replies)', () => {
     }
   });
 
+  describe('atomicity', () => {
+    it('a failure after the column is added rolls everything back to v56, and a rerun succeeds', async () => {
+      const db = await v56Db();
+      try {
+        await db.insertInto('repositories').values({ id: 'repo-1', name: 'repo-1', path: '/tmp/repo-1' }).execute();
+        await insertEndpointRaw(db, 'ep-1');
+        // A view that holds the replies table's name: the ADD COLUMN runs first, then CREATE TABLE fails.
+        await sql.raw(`CREATE VIEW ${REPLIES} AS SELECT id FROM ${ENDPOINTS}`).execute(db);
+
+        await expect(migrateToV57(db)).rejects.toThrow();
+
+        expect((await columns(db, ENDPOINTS)).map((c) => c.name)).not.toContain('reply_url');
+        expect(await userVersion(db)).toBe(56);
+
+        await sql.raw(`DROP VIEW ${REPLIES}`).execute(db);
+        await migrateToV57(db);
+        expect((await columns(db, ENDPOINTS)).map((c) => c.name)).toContain('reply_url');
+        expect(await userVersion(db)).toBe(57);
+        expect((await db.selectFrom('inbound_webhook_endpoints').select('reply_url').executeTakeFirstOrThrow()).reply_url).toBeNull();
+      } finally {
+        await db.destroy();
+      }
+    });
+  });
+
   describe('reply_url length CHECK', () => {
     it('2048 characters accepted, 2049 and the empty string rejected, NULL accepted (insert and update)', async () => {
       const db = await migratedWithEndpoint();

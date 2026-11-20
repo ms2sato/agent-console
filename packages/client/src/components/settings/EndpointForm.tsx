@@ -35,6 +35,8 @@ interface EndpointFormProps {
   onSubmit: (payload: EndpointFormPayload) => Promise<void>;
 }
 
+const REPLY_URL_ERROR_ID = 'endpoint-reply-url-error';
+
 /** One-shot holder: the first call returns the value and drops it. */
 function oneShot(value: string): TakeSecret {
   let held: string | undefined = value;
@@ -49,6 +51,9 @@ export function EndpointForm({ mode, initial, isPending, onSubmit }: EndpointFor
   const [label, setLabel] = useState(initial?.label ?? '');
   const [instructionText, setInstructionText] = useState(initial?.instructionText ?? '');
   const [replyUrl, setReplyUrl] = useState(initial?.replyUrl ?? '');
+  // The baseline the draft is compared against is the value at mount, the same moment the draft was seeded:
+  // a refetch that changes `initial` while the form stays mounted must not turn an untouched draft into a change.
+  const [replyUrlBaseline] = useState(initial?.replyUrl ?? null);
   const [secretSource, setSecretSource] = useState<SecretSourceChoice>('generate');
   const [secret, setSecret] = useState('');
 
@@ -71,7 +76,7 @@ export function EndpointForm({ mode, initial, isPending, onSubmit }: EndpointFor
       await onSubmit({
         label: label.trim(),
         instructionText,
-        ...replyUrlRequestField(mode, replyUrl, initial?.replyUrl ?? null),
+        ...replyUrlRequestField(mode, replyUrl, replyUrlBaseline),
         ...(enteredSecret !== undefined ? { takeSecret: oneShot(enteredSecret) } : {}),
       });
     } catch {
@@ -124,12 +129,18 @@ export function EndpointForm({ mode, initial, isPending, onSubmit }: EndpointFor
             autoComplete="off"
             spellCheck={false}
             placeholder="https://sender.example.com/replies"
+            aria-invalid={replyUrlError !== null}
+            aria-describedby={replyUrlError ? REPLY_URL_ERROR_ID : undefined}
           />
         </label>
         <span className="text-gray-500">
           Where a signed reply to a delivery is sent. Leave empty to refuse replies. An https address; it is never shown to agents.
         </span>
-        {replyUrlError && <span className="text-red-400">{replyUrlError}</span>}
+        {replyUrlError && (
+          <span id={REPLY_URL_ERROR_ID} className="text-red-400">
+            {replyUrlError}
+          </span>
+        )}
       </div>
       {mode === 'create' && (
         <SecretSourceFields
