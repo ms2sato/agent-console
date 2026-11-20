@@ -5,6 +5,7 @@ import {
   InvalidSessionDataScopeError,
 } from '../lib/session-data-path.js';
 import { deriveRepositorySlug } from '../lib/git.js';
+import { isProtectedByClaim, type RepositoryDirClaims } from './repository-dir-claims.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('service:session-data-cleanup-candidates');
@@ -20,6 +21,12 @@ export interface BuildSessionDataCleanupTargetsParams {
   deriveSlug?: (repoPath: string, fallback: string) => Promise<string>;
   /** Injectable for tests; defaults to a real `fs/promises.access` check. */
   pathExists?: (p: string) => Promise<boolean>;
+  /**
+   * Base directories another registered repository claims (see
+   * `findClaimedRepositoryDirs`). A candidate whose directory is protected by a claim is
+   * skipped with an info log. Absent == nothing claimed.
+   */
+  claimedDirs?: RepositoryDirClaims;
 }
 
 const defaultPathExists = async (p: string): Promise<boolean> => {
@@ -48,8 +55,9 @@ const defaultPathExists = async (p: string): Promise<boolean> => {
  * Each candidate is converted to a path EXCLUSIVELY via
  * `computeSessionDataBaseDir` (the validating single writer). A candidate
  * that fails validation (traversal, malformed slug) is logged and skipped —
- * never hand-joined, never deleted raw. Only existing directories are
- * returned.
+ * never hand-joined, never deleted raw. A candidate directory in
+ * `claimedDirs` is skipped (deleting too little is the safe direction). Only
+ * existing directories are returned.
  */
 export async function buildSessionDataCleanupTargets(
   params: BuildSessionDataCleanupTargetsParams,
@@ -76,6 +84,13 @@ export async function buildSessionDataCleanupTargets(
         continue;
       }
       throw err;
+    }
+    if (params.claimedDirs && isProtectedByClaim(baseDir, params.claimedDirs)) {
+      logger.info(
+        { repositoryId: params.repositoryId, slug, baseDir },
+        'Skipping session-data cleanup candidate claimed by another registered repository',
+      );
+      continue;
     }
     if (await pathExists(baseDir)) {
       targets.push(baseDir);

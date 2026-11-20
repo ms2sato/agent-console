@@ -16,6 +16,10 @@ import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-re
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 import { isMultiUserAuthMode, runAsUser, shellEscape } from './privilege-elevation.js';
 import { buildSessionDataCleanupTargets } from './session-data-cleanup-candidates.js';
+import { findClaimedRepositoryDirs, isProtectedByClaim, repositoryDirFromWorktreePath } from './repository-dir-claims.js';
+import type { WorktreeRepository } from '../repositories/worktree-repository.js';
+import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
+import { listSessionDataScopeSlugs as readSessionDataScopeSlugs } from '../repositories/sqlite-session-repository.js';
 
 const logger = createLogger('service:repository-manager');
 
@@ -171,6 +175,19 @@ export class RepositoryManager {
    */
   private db: Kysely<Database> | null = null;
   /**
+   * Source of `worktrees` rows read at unregister to record which directories
+   * the repository's worktrees were placed under. Null when no `db` was
+   * injected: no rows are read and the removal set is today's.
+   */
+  private worktreeRepository: WorktreeRepository | null = null;
+  /**
+   * Source of the data-scope slugs other repositories' sessions were frozen
+   * under, read from the claim columns only (no hydration). Returns no rows
+   * when no `db` was injected: the claim set is then today's. A throw aborts
+   * the unregister before any removal (fail-closed).
+   */
+  private listSessionDataScopeSlugs: () => Promise<Array<{ repositoryId: string; slug: string }>>;
+  /**
    * Indirection so tests can capture / fake the privilege-elevation helper
    * used by the multi-user shared-repo apply step. Production defaults to
    * the real `runAsUser`.
@@ -294,13 +311,21 @@ export class RepositoryManager {
      * the real helper is used.
      */
     runAsUserImpl?: RunAsUserFn;
+    /** Defaults to a SQLite-backed repository on `db` when `db` is given. */
+    worktreeRepository?: WorktreeRepository;
+    /** Defaults to the claim-column reader on `db` when `db` is given, else no rows. */
+    listSessionDataScopeSlugs?: () => Promise<Array<{ repositoryId: string; slug: string }>>;
   }): Promise<RepositoryManager> {
     const repo = options?.repository ?? new SqliteRepositoryRepository(await initializeDatabase());
+    const db = options?.db;
     const manager = new RepositoryManager(
       repo,
       options?.jobQueue ?? null,
       options?.runAsUserImpl ?? runAsUser,
       options?.db ?? null,
+      options?.worktreeRepository ?? (options?.db ? new SqliteWorktreeRepository(options.db) : null),
+      options?.listSessionDataScopeSlugs ??
+        (db ? () => readSessionDataScopeSlugs(db) : async () => []),
     );
     await manager.initialize();
     return manager;
@@ -314,7 +339,11 @@ export class RepositoryManager {
     jobQueue: JobQueue | null = null,
     runAsUserImpl: RunAsUserFn = runAsUser,
     db: Kysely<Database> | null = null,
+    worktreeRepository: WorktreeRepository | null = null,
+    listSessionDataScopeSlugs: () => Promise<Array<{ repositoryId: string; slug: string }>> = async () => [],
   ) {
+    this.worktreeRepository = worktreeRepository;
+    this.listSessionDataScopeSlugs = listSessionDataScopeSlugs;
     this.repository = repository;
     this.jobQueue = jobQueue;
     this.db = db;
@@ -987,7 +1016,7 @@ export class RepositoryManager {
     }
 
     const orgRepo = await deriveRepositorySlug(repo.path, path.basename(repo.path));
-    const repoDir = getRepositoryDir(orgRepo);
+    const canonicalRepoDir = getRepositoryDir(orgRepo);
 
     // When the unregister request opts in to source-repo removal, verify the
     // registered path actually lives under the shared source-repos directory
@@ -1017,15 +1046,84 @@ export class RepositoryManager {
     // defect this Issue exists to fix, surviving inside the fix if git
     // state changes between the two reads. Build the candidate set of base
     // dirs to remove alongside `repoDir`.
-    const sessionDataDirs = await buildSessionDataCleanupTargets({
+    //
+    // Another registered repository may own a directory these candidates
+    // address (a shared flat basename, an identical remote, a worktree row of
+    // its own under it). Those directories are skipped; see
+    // docs/design/session-data-path.md section 9.
+    const listWorktreePaths = async (repositoryId: string): Promise<string[]> =>
+      this.worktreeRepository
+        ? (await this.worktreeRepository.findByRepositoryId(repositoryId)).map((row) => row.path)
+        : [];
+    // One read of the session rows per unregister, grouped by repository id.
+    // Null and empty slugs (quick scope, legacy rows) record nothing; a
+    // non-null invalid slug is passed through so the claim step warns on it.
+    const sessionSlugsByRepository = new Map<string, string[]>();
+    for (const { repositoryId, slug } of await this.listSessionDataScopeSlugs()) {
+      if (slug === '') continue;
+      const slugs = sessionSlugsByRepository.get(repositoryId) ?? [];
+      slugs.push(slug);
+      sessionSlugsByRepository.set(repositoryId, slugs);
+    }
+    const claimedDirs = await findClaimedRepositoryDirs({
+      repo,
+      registeredRepositories: await this.repository.findAll(),
+      listWorktreePaths,
+      listSessionDataSlugs: async (repositoryId) => sessionSlugsByRepository.get(repositoryId) ?? [],
+      deriveSlug: deriveRepositorySlug,
+    });
+
+    // Another registered repository claims the canonical directory (e.g. the
+    // same remote registered twice): removing it would delete that
+    // repository's data, so the payload carries null and the handler removes
+    // nothing for it.
+    let repoDir: string | null = canonicalRepoDir;
+    if (isProtectedByClaim(canonicalRepoDir, claimedDirs)) {
+      logger.info(
+        { repositoryId: repo.id, orgRepo, dir: canonicalRepoDir },
+        'Skipping canonical repository directory claimed by another registered repository',
+      );
+      repoDir = null;
+    }
+
+    // Directories recorded by this repository's own worktree rows: worktrees
+    // are placed under the slug current at creation, which a later remote
+    // change can leave different from `orgRepo`. Read before the row delete
+    // (the rows cascade away with it). They contain user-owned worktrees, so
+    // the handler removes them through the same routine as `repoDir`.
+    const extraRepoDirs: string[] = [];
+    for (const worktreePath of await listWorktreePaths(repo.id)) {
+      const dir = repositoryDirFromWorktreePath(worktreePath);
+      if (dir === null || dir === canonicalRepoDir || extraRepoDirs.includes(dir)) continue;
+      if (isProtectedByClaim(dir, claimedDirs)) {
+        logger.info(
+          { repositoryId: repo.id, dir },
+          'Skipping recorded worktree directory claimed by another registered repository',
+        );
+        continue;
+      }
+      extraRepoDirs.push(dir);
+    }
+
+    const sessionDataCandidates = await buildSessionDataCleanupTargets({
       configDir: getConfigDir(),
       repositoryId: repo.id,
       repoPath: repo.path,
       deriveSlug: () => Promise.resolve(orgRepo),
+      claimedDirs,
     });
+    // One removal per directory: an old-slug directory that is also the
+    // basename candidate is removed once, through the repoDir routine.
+    const sessionDataDirs = sessionDataCandidates.filter((dir) => !extraRepoDirs.includes(dir));
 
     // The caller enqueues this as the CLEANUP_REPOSITORY job payload.
-    return { repoDir, requestUsername, extraDir, sessionDataDirs };
+    return {
+      repoDir,
+      requestUsername,
+      extraDir,
+      sessionDataDirs,
+      ...(extraRepoDirs.length > 0 ? { extraRepoDirs } : {}),
+    };
   }
 
   getRepository(id: string): Repository | undefined {

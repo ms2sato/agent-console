@@ -113,7 +113,14 @@ export interface CleanupWorkerOutputPayload {
  * single-user / same-user) preserves the historical direct `fs.rm` path.
  */
 export interface CleanupRepositoryPayload {
-  repoDir: string;
+  /**
+   * The canonical repository directory (`<repositories>/<slug>`) to remove.
+   * `null` when another registered repository claims that directory (for
+   * example the same remote registered twice): the handler then removes
+   * nothing for it and does not tidy its org-parent directory. The other
+   * fields are processed as usual.
+   */
+  repoDir: string | null;
   requestUsername: string | null;
   /**
    * Optional source-repos clone directory to remove AFTER the main `repoDir`.
@@ -138,6 +145,17 @@ export interface CleanupRepositoryPayload {
    * treats as an empty array.
    */
   sessionDataDirs?: string[];
+  /**
+   * Additional repository directories (`<repositories>/<slug>`) to remove with
+   * the SAME routine as `repoDir` (elevated when `requestUsername` elevates),
+   * because they contain user-owned worktrees. Built from the repository's
+   * own `worktrees` rows: worktrees are placed under the slug current at
+   * creation, which can differ from the slug derived at unregister. Optional
+   * for backward compatibility: jobs enqueued before this field existed (and
+   * jobs with nothing to add) have it absent, which the handler treats as an
+   * empty array.
+   */
+  extraRepoDirs?: string[];
 }
 
 /**

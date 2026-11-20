@@ -186,4 +186,60 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
 
     expect(calls).toEqual([{ repoPath: '/source/repos/owner/repo-1', fallback: 'repo-1' }]);
   });
+
+  it('skips a candidate whose directory is in claimedDirs, without probing it, and keeps the unclaimed one', async () => {
+    const probed: string[] = [];
+    const canonicalDir = computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'org/foo');
+    const flatDir = computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'foo');
+
+    const targets = await buildSessionDataCleanupTargets({
+      configDir: CONFIG_DIR,
+      repositoryId: 'repo-1',
+      repoPath: '/x/foo',
+      deriveSlug: async () => 'org/foo',
+      pathExists: async (p) => {
+        probed.push(p);
+        return true;
+      },
+      claimedDirs: { subtree: new Set([flatDir]), point: new Set() },
+    });
+
+    expect(targets).toEqual([canonicalDir]);
+    expect(probed).toEqual([canonicalDir]);
+  });
+
+  it('returns both candidates when claimedDirs is empty or absent (positive control)', async () => {
+    const params = {
+      configDir: CONFIG_DIR,
+      repositoryId: 'repo-1',
+      repoPath: '/x/foo',
+      deriveSlug: async () => 'org/foo',
+      pathExists: async () => true,
+    };
+    const expected = [
+      computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'org/foo'),
+      computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'foo'),
+    ];
+    expect(await buildSessionDataCleanupTargets(params)).toEqual(expected);
+    expect(await buildSessionDataCleanupTargets({ ...params, claimedDirs: { subtree: new Set(), point: new Set() } })).toEqual(expected);
+  });
+
+  it('skips, without probing, a candidate that is an ancestor of a claimed directory', async () => {
+    const probed: string[] = [];
+    const targets = await buildSessionDataCleanupTargets({
+      configDir: CONFIG_DIR,
+      repositoryId: 'repo-1',
+      repoPath: '/x/x',
+      deriveSlug: async () => 'x/x',
+      pathExists: async (p) => {
+        probed.push(p);
+        return true;
+      },
+      claimedDirs: { subtree: new Set([computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'x/y')]), point: new Set() },
+    });
+
+    const canonicalDir = computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'x/x');
+    expect(targets).toEqual([canonicalDir]);
+    expect(probed).toEqual([canonicalDir]);
+  });
 });

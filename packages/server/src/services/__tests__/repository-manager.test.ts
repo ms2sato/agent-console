@@ -13,6 +13,8 @@ import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
+import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-repository.js';
+import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
 import type { RepositoryRepository } from '../../repositories/repository-repository.js';
 import { isMultiUserAuthMode, type RunAsUserOpts, type RunAsUserResult } from '../privilege-elevation.js';
 import { buildManualFallbackCommands, buildMissingRefspecMessage } from '../repository-manager.js';
@@ -1186,6 +1188,451 @@ describe('RepositoryManager', () => {
 
         expect(mockGit.deriveRepositorySlug).toHaveBeenCalledTimes(1);
         expect(mockGit.deriveRepositorySlug).toHaveBeenCalledWith(repo.path, path.basename(repo.path));
+      });
+    });
+
+    describe('recorded old-slug directories and the claim guard (unregister removal set)', () => {
+      const reposDir = () => path.join(TEST_CONFIG_DIR, 'repositories');
+
+      async function addWorktreeRow(repositoryId: string, worktreePath: string, indexNumber = 1): Promise<void> {
+        await new SqliteWorktreeRepository(getDatabase()).save({
+          id: `wt-row-${repositoryId}-${indexNumber}`,
+          repositoryId,
+          path: worktreePath,
+          indexNumber,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      async function addSessionRow(repositoryId: string, dataScopeSlug: string, id = `sess-${repositoryId}-${dataScopeSlug}`): Promise<void> {
+        await new SqliteSessionRepository(getDatabase()).save({
+          id,
+          type: 'worktree',
+          locationPath: '/tmp/session-location',
+          repositoryId,
+          worktreeId: 'main',
+          createdAt: new Date().toISOString(),
+          workers: [],
+          dataScope: 'repository',
+          dataScopeSlug,
+        });
+      }
+
+      async function latestCleanupPayload(excludeJobIds: string[] = []): Promise<{ id: string; payload: CleanupRepositoryPayload }> {
+        const jobs = (await testJobQueue!.getJobs({ type: 'cleanup:repository' })).filter(
+          (j) => !excludeJobIds.includes(j.id),
+        );
+        expect(jobs).toHaveLength(1);
+        return { id: jobs[0]!.id, payload: JSON.parse(jobs[0]!.payload) as CleanupRepositoryPayload };
+      }
+
+      // Reach: dropping the worktree-derived set (extraRepoDirs never populated)
+      // fails this test (and only the extraRepoDirs assertions in it).
+      it('carries the directory an old-slug worktree row was placed under, and ignores the main-checkout row', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('org/new'));
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        await addWorktreeRow(repo.id, path.join(reposDir(), 'org', 'old', 'worktrees', 'wt-001-x'), 1);
+        await addWorktreeRow(repo.id, TEST_REPO_DIR, 2);
+        await addWorktreeRow(repo.id, path.join(reposDir(), 'org', 'new', 'worktrees', 'wt-003-z'), 3);
+
+        await manager.unregisterRepository(repo.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.repoDir).toBe(path.join(reposDir(), 'org', 'new'));
+        expect(payload.extraRepoDirs).toEqual([path.join(reposDir(), 'org', 'old')]);
+      });
+
+      it('leaves extraRepoDirs unset when the repository has no worktree rows (today\'s payload)', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        await manager.unregisterRepository(repo.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect('extraRepoDirs' in payload).toBe(false);
+      });
+
+      it('skips a recorded old-slug directory that another registered repository claims by worktree row', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation((p: string, fb: string) =>
+          Promise.resolve(p === TEST_REPO_DIR ? 'org/new' : fb),
+        );
+        fs.mkdirSync('/y/other/.git', { recursive: true });
+        fs.writeFileSync('/y/other/.git/HEAD', 'ref: refs/heads/main');
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        const other = await manager.registerRepository('/y/other');
+        const oldDir = path.join(reposDir(), 'org', 'old');
+        await addWorktreeRow(repo.id, path.join(oldDir, 'worktrees', 'wt-001-x'), 1);
+        await addWorktreeRow(other.id, path.join(oldDir, 'worktrees', 'wt-001-y'), 1);
+
+        await manager.unregisterRepository(repo.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.extraRepoDirs ?? []).not.toContain(oldDir);
+      });
+
+      // Reach: removing the claim guard (claimedDirs not passed to the builder)
+      // fails the registered-B half of this test; the control half passes
+      // either way, which is what makes the failing half attributable.
+      it('does not address another registered repository\'s flat directory, and does when that repository is not registered (control)', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation((p: string, fb: string) =>
+          Promise.resolve(p === '/x/foo' ? 'org/foo' : fb),
+        );
+        for (const root of ['/x/foo', '/y/foo']) {
+          fs.mkdirSync(`${root}/.git`, { recursive: true });
+          fs.writeFileSync(`${root}/.git/HEAD`, 'ref: refs/heads/main');
+        }
+        const flatDir = path.join(reposDir(), 'foo');
+        fs.mkdirSync(path.join(flatDir, 'outputs'), { recursive: true });
+
+        const manager = await getRepositoryManager();
+
+        // Control: only A registered -> the flat basename directory IS a target.
+        const a1 = await manager.registerRepository('/x/foo');
+        await manager.unregisterRepository(a1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.sessionDataDirs).toContain(flatDir);
+
+        // Measured case: B (checkout /y/foo, no remote, slug 'foo') is registered.
+        const a2 = await manager.registerRepository('/x/foo');
+        await manager.registerRepository('/y/foo');
+        await manager.unregisterRepository(a2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.sessionDataDirs).not.toContain(flatDir);
+        expect(guarded.payload.extraRepoDirs ?? []).not.toContain(flatDir);
+        expect(guarded.payload.repoDir).toBe(path.join(reposDir(), 'org', 'foo'));
+      });
+
+      // Reach: always setting repoDir to the canonical path string (ignoring
+      // the claim) fails the claimed half of this test; the control half
+      // passes either way.
+      it('sets repoDir to null when another registered repository claims the canonical directory (same remote registered twice), and to the path otherwise (control)', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('org/shared'));
+        fs.mkdirSync('/y/twin/.git', { recursive: true });
+        fs.writeFileSync('/y/twin/.git/HEAD', 'ref: refs/heads/main');
+        const sharedDir = path.join(reposDir(), 'org', 'shared');
+        const manager = await getRepositoryManager();
+
+        // Control: only one registered -> repoDir is the string path.
+        const solo = await manager.registerRepository(TEST_REPO_DIR);
+        await manager.unregisterRepository(solo.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.repoDir).toBe(sharedDir);
+
+        // Measured case: the twin (same remote, same slug) stays registered.
+        const first = await manager.registerRepository(TEST_REPO_DIR);
+        await manager.registerRepository('/y/twin');
+        await addWorktreeRow(first.id, path.join(sharedDir, 'worktrees', 'wt-001-x'), 1);
+        await manager.unregisterRepository(first.id);
+        const claimed = await latestCleanupPayload([control.id]);
+        expect(claimed.payload.repoDir).toBeNull();
+        expect(claimed.payload.sessionDataDirs ?? []).not.toContain(sharedDir);
+        expect(claimed.payload.extraRepoDirs ?? []).not.toContain(sharedDir);
+      });
+      function makeGitDir(root: string): void {
+        fs.mkdirSync(`${root}/.git`, { recursive: true });
+        fs.writeFileSync(`${root}/.git/HEAD`, 'ref: refs/heads/main');
+      }
+
+      function mockSlugs(slugs: Record<string, string>): void {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation((p: string, fb: string) =>
+          Promise.resolve(slugs[p] ?? fb),
+        );
+      }
+
+      // Reach: building the claim input from this.getAllRepositories() (the
+      // loaded map) instead of this.repository.findAll() fails the claimed half
+      // of this test; the control half passes either way.
+      it('counts a persisted repository whose checkout is missing as a claimant (not loaded, still registered)', async () => {
+        mockSlugs({});
+        makeGitDir('/a/a');
+        const oldDir = path.join(reposDir(), 'org', 'old');
+        // B is persisted but its checkout path does not exist, so initialize()
+        // leaves it out of the in-memory map.
+        const manager = await getRepositoryManager([
+          { id: 'repo-b', name: 'b', path: '/gone/b', createdAt: new Date().toISOString(), orchestratorSessionIds: [], clonedSourceRepoPath: null },
+        ]);
+
+        // Control: B has no worktree row under org/old -> the directory IS carried.
+        const a1 = await manager.registerRepository('/a/a');
+        await addWorktreeRow(a1.id, path.join(oldDir, 'worktrees', 'wt-001-a'), 1);
+        await manager.unregisterRepository(a1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.extraRepoDirs).toEqual([oldDir]);
+
+        // Measured case: B's own worktree row lives under org/old.
+        await addWorktreeRow('repo-b', path.join(oldDir, 'worktrees', 'wt-001-b'), 1);
+        const a2 = await manager.registerRepository('/a/a');
+        await addWorktreeRow(a2.id, path.join(oldDir, 'worktrees', 'wt-001-a'), 1);
+        await manager.unregisterRepository(a2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.extraRepoDirs ?? []).not.toContain(oldDir);
+      });
+
+      // Reach: deleting claim (d) in findClaimedRepositoryDirs (the other
+      // registration's own checkout path) fails the claimed half; the control
+      // half passes either way. B's derived slug and basename are neither
+      // org/old nor under it, so claims (a)-(c) cannot protect the directory.
+      it('counts another registration whose checkout sits under the directory as a claimant (claim d)', async () => {
+        const oldDir = path.join(reposDir(), 'org', 'old');
+        const bCheckout = path.join(oldDir, 'worktrees', 'wt-a');
+        mockSlugs({ '/a/a': 'org/new', [bCheckout]: 'other/b' });
+        makeGitDir('/a/a');
+        makeGitDir(bCheckout);
+        const manager = await getRepositoryManager();
+
+        // Control: B not registered -> the directory IS carried.
+        const a1 = await manager.registerRepository('/a/a');
+        await addWorktreeRow(a1.id, path.join(oldDir, 'worktrees', 'wt-a'), 1);
+        await manager.unregisterRepository(a1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.extraRepoDirs).toEqual([oldDir]);
+
+        // Measured case: B's checkout is the worktree path, with no rows of its own.
+        await manager.registerRepository(bCheckout);
+        const a2 = await manager.registerRepository('/a/a');
+        await addWorktreeRow(a2.id, path.join(oldDir, 'worktrees', 'wt-a'), 1);
+        await manager.unregisterRepository(a2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect('extraRepoDirs' in guarded.payload).toBe(false);
+      });
+
+      // Reach: replacing isProtectedByClaim with claimedDirs.has(dir) at the
+      // basename-candidate site (session-data-cleanup-candidates.ts) fails the
+      // registered half; the control half passes either way.
+      it('does not return an org-level directory that is an ancestor of another repository\'s directory (checkout basename equals org name)', async () => {
+        mockSlugs({ '/x/x': 'x/x', '/s/y': 'x/y' });
+        makeGitDir('/x/x');
+        makeGitDir('/s/y');
+        const orgDir = path.join(reposDir(), 'x');
+        fs.mkdirSync(path.join(orgDir, 'y', 'outputs'), { recursive: true });
+        const manager = await getRepositoryManager();
+
+        // Control: sibling x/y not registered -> repositories/x IS a target.
+        const r1 = await manager.registerRepository('/x/x');
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.sessionDataDirs).toContain(orgDir);
+
+        // Measured case: sibling slug x/y registered.
+        const r2 = await manager.registerRepository('/x/x');
+        await manager.registerRepository('/s/y');
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.sessionDataDirs).not.toContain(orgDir);
+        expect(guarded.payload.repoDir).toBe(path.join(orgDir, 'x'));
+      });
+
+      // Claim (e). Reach: deleting the session-slug loop in findClaimedRepositoryDirs
+      // fails the claimed half; the control half passes either way. Putting the
+      // claim into `point` instead of `subtree` also fails it (the target is a
+      // descendant of the claimed directory).
+      it('does not return the canonical directory when another registration has a session row frozen under its basename (claim e), and does without that row (control)', async () => {
+        mockSlugs({ '/y/x': 'org/x', '/r/r': 'x/messages' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/x');
+        const target = path.join(reposDir(), 'x', 'messages');
+        const manager = await getRepositoryManager();
+        const b = await manager.registerRepository('/y/x');
+
+        // Control: B has no session row -> the canonical directory IS carried.
+        const r1 = await manager.registerRepository('/r/r');
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.repoDir).toBe(target);
+
+        // Measured case: B has a repository-scope session row with slug 'x'.
+        await addSessionRow(b.id, 'x');
+        const r2 = await manager.registerRepository('/r/r');
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.repoDir).toBeNull();
+      });
+
+      // Claim (e) from the claim columns only. Reach: reading the rows through
+      // SessionRepository.findAll() (which skips a session whose worker row cannot
+      // be hydrated) fails the claimed half; the control half passes either way.
+      it('still counts a session row that cannot be hydrated as a claimant (claim e, corrupted worker row), and does without that row (control)', async () => {
+        mockSlugs({ '/y/x': 'org/x', '/r/r': 'x/messages' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/x');
+        const target = path.join(reposDir(), 'x', 'messages');
+        const manager = await getRepositoryManager();
+        const b = await manager.registerRepository('/y/x');
+
+        // Control: B has no session row -> the canonical directory IS carried.
+        const r1 = await manager.registerRepository('/r/r');
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.repoDir).toBe(target);
+
+        // Measured case: B's session row records slug 'x' but its worker row is corrupt.
+        await addSessionRow(b.id, 'x');
+        await getDatabase()
+          .insertInto('workers')
+          .values({
+            id: 'corrupted-worker',
+            session_id: `sess-${b.id}-x`,
+            type: 'agent',
+            name: 'Agent',
+            created_at: new Date().toISOString(),
+            pid: null,
+            agent_id: null,
+            base_commit: null,
+          })
+          .execute();
+        // Fixture check: findAll() skips this session.
+        expect(await new SqliteSessionRepository(getDatabase()).findAll()).toEqual([]);
+        const r2 = await manager.registerRepository('/r/r');
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.repoDir).toBeNull();
+      });
+
+      // Fail-closed. Reach: swallowing a reader error (treating it as no rows)
+      // fails this: the row delete would go ahead.
+      it('aborts the unregister before any removal when the session-slug reader throws', async () => {
+        mockSlugs({});
+        makeGitDir('/r/r');
+        const module = await import(`../repository-manager.js?v=${++importCounter}`);
+        const manager = await module.RepositoryManager.create({
+          repository: repositoryRepository,
+          jobQueue: testJobQueue,
+          db: getDatabase(),
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+          listSessionDataScopeSlugs: async () => {
+            throw new Error('reader boom');
+          },
+        });
+        const r = await manager.registerRepository('/r/r');
+
+        await expect(manager.unregisterRepository(r.id)).rejects.toThrow('reader boom');
+
+        expect(await repositoryRepository.findAll()).toHaveLength(1);
+        expect(await testJobQueue!.getJobs({ type: 'cleanup:repository' })).toHaveLength(0);
+      });
+
+      // Reach: deleting the session-slug loop fails the claimed half; the control
+      // half passes either way. Equality with the claimed directory, so this stays
+      // green if the claim sits in `point` (that is what manager test above is for).
+      it('does not carry a recorded old-slug directory that another registration\'s session row records (claim e), and does without that row (control)', async () => {
+        mockSlugs({ '/r/r': 'org/new', '/y/b': 'other/b' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/b');
+        const oldDir = path.join(reposDir(), 'org', 'old');
+        const manager = await getRepositoryManager();
+        const b = await manager.registerRepository('/y/b');
+
+        // Control: B has no session row -> the directory IS carried.
+        const r1 = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r1.id, path.join(oldDir, 'worktrees', 'wt-001-r'), 1);
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.extraRepoDirs).toEqual([oldDir]);
+
+        // Measured case: B has a session row with slug org/old, no worktree rows.
+        await addSessionRow(b.id, 'org/old');
+        const r2 = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r2.id, path.join(oldDir, 'worktrees', 'wt-001-r'), 1);
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect('extraRepoDirs' in guarded.payload).toBe(false);
+      });
+
+      // Reach: claimedDirs.has(canonicalRepoDir) at the canonical site fails this.
+      it('sets repoDir to null when the canonical flat directory is an ancestor of another repository\'s directory', async () => {
+        mockSlugs({ '/o/proj': 'acme/project' });
+        makeGitDir('/r/acme');
+        makeGitDir('/o/proj');
+        const manager = await getRepositoryManager();
+        const r = await manager.registerRepository('/r/acme');
+        await manager.registerRepository('/o/proj');
+
+        await manager.unregisterRepository(r.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.repoDir).toBeNull();
+      });
+
+      // Reach: claimedDirs.has(dir) in the worktree-derived loop fails this.
+      it('does not carry a recorded flat directory that is an ancestor of another repository\'s directory', async () => {
+        mockSlugs({ '/o/svc': 'acme/service' });
+        makeGitDir('/r/other');
+        makeGitDir('/o/svc');
+        const manager = await getRepositoryManager();
+        const r = await manager.registerRepository('/r/other');
+        await manager.registerRepository('/o/svc');
+        await addWorktreeRow(r.id, path.join(reposDir(), 'acme', 'worktrees', 'wt-001-x'), 1);
+
+        await manager.unregisterRepository(r.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.extraRepoDirs ?? []).not.toContain(path.join(reposDir(), 'acme'));
+      });
+
+      // Reach: removing the descendant check in isProtectedByClaim fails the
+      // registered-B half; the control half passes either way.
+      it('does not carry a recorded directory inside a flat repository\'s directory (target x/worktrees, other has canonical flat x), and does when that repository is not registered (control)', async () => {
+        mockSlugs({ '/r/r': 'org/new' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/x');
+        const dir = path.join(reposDir(), 'x', 'worktrees');
+        const row = path.join(dir, 'worktrees', 'wt-001-r');
+        const manager = await getRepositoryManager();
+
+        const r1 = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r1.id, row, 1);
+        await manager.unregisterRepository(r1.id);
+        const control = await latestCleanupPayload();
+        expect(control.payload.extraRepoDirs).toEqual([dir]);
+
+        await manager.registerRepository('/y/x');
+        const r2 = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r2.id, row, 1);
+        await manager.unregisterRepository(r2.id);
+        const guarded = await latestCleanupPayload([control.id]);
+        expect(guarded.payload.extraRepoDirs ?? []).not.toContain(dir);
+      });
+
+      // Reach: applying the descendant check to the point set fails this; the
+      // other repository's basename claim (point) does not protect x/y.
+      it('carries a recorded directory x/y when the other repository only has basename x (canonical org/x)', async () => {
+        mockSlugs({ '/r/r': 'org/new', '/y/x': 'org/x' });
+        makeGitDir('/r/r');
+        makeGitDir('/y/x');
+        const dir = path.join(reposDir(), 'x', 'y');
+        const manager = await getRepositoryManager();
+        await manager.registerRepository('/y/x');
+        const r = await manager.registerRepository('/r/r');
+        await addWorktreeRow(r.id, path.join(dir, 'worktrees', 'wt-001-r'), 1);
+
+        await manager.unregisterRepository(r.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.extraRepoDirs).toEqual([dir]);
+      });
+
+      // Reach: removing the sessionDataDirs filter against extraRepoDirs fails this.
+      it('removes a recorded old-slug directory that is also the basename candidate once (extraRepoDirs only)', async () => {
+        mockSlugs({ '/x/foo': 'org/foo' });
+        makeGitDir('/x/foo');
+        const flatDir = path.join(reposDir(), 'foo');
+        fs.mkdirSync(path.join(flatDir, 'outputs'), { recursive: true });
+        const manager = await getRepositoryManager();
+        const r = await manager.registerRepository('/x/foo');
+        await addWorktreeRow(r.id, path.join(flatDir, 'worktrees', 'wt-001-x'), 1);
+
+        await manager.unregisterRepository(r.id);
+
+        const { payload } = await latestCleanupPayload();
+        expect(payload.extraRepoDirs).toContain(flatDir);
+        expect(payload.sessionDataDirs).not.toContain(flatDir);
       });
     });
 
