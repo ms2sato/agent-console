@@ -63,15 +63,17 @@ async function auditForeignKeyIndexes(db: Kysely<Database>): Promise<{ enumerate
       fullIndexColumns.push([...info].sort((a, b) => a.seqno - b.seqno).map((r) => r.name));
     }
 
-    // A composite foreign key is covered when its columns are the leading columns of one index (in any
-    // order: the lookup is an equality on each). Checking the columns one by one would demand a second
-    // index just for the later column.
+    // A composite foreign key is covered when its columns, in foreign-key order, are the leading columns
+    // of one full index. Checking the columns one by one would demand a second index just for the later
+    // column; accepting any order would count an index the key's column order cannot use.
     const byKey = new Map<number, ForeignKeyRow[]>();
     for (const fk of fks) byKey.set(fk.id, [...(byKey.get(fk.id) ?? []), fk]);
     for (const columns of byKey.values()) {
       enumerated += 1;
-      const wanted = new Set(columns.map((c) => c.from));
-      const covered = fullIndexColumns.some((index) => index.slice(0, wanted.size).every((c) => wanted.has(c)) && index.length >= wanted.size);
+      const wanted = [...columns].sort((a, b) => a.seq - b.seq).map((c) => c.from);
+      const covered = fullIndexColumns.some(
+        (index) => index.length >= wanted.length && wanted.every((column, position) => index[position] === column),
+      );
       if (!covered) missing.push(`${table}.${columns.map((c) => c.from).join(',')} -> ${columns[0]!.table}`);
     }
   }
@@ -119,7 +121,7 @@ describe('foreign-key columns lead an index', () => {
       }
     });
 
-    it('a composite foreign key is covered by one index leading with all its columns, and not by one leading with only the first', async () => {
+    it('a composite foreign key is covered by one index leading with all its columns in foreign-key order, and not by one leading with only the first or with the columns reversed', async () => {
       const db = await createDatabaseForTest(':memory:');
       try {
         await sql.raw('CREATE TABLE guard_pair (a TEXT, b TEXT, PRIMARY KEY (a, b))').execute(db);
@@ -130,6 +132,8 @@ describe('foreign-key columns lead an index', () => {
 
         expect(await missingNow()).toEqual(['guard_pair_child.a,b -> guard_pair']);
         await sql.raw('CREATE INDEX idx_guard_pair_child_a ON guard_pair_child (a)').execute(db);
+        expect(await missingNow()).toEqual(['guard_pair_child.a,b -> guard_pair']);
+        await sql.raw('CREATE INDEX idx_guard_pair_child_ba ON guard_pair_child (b, a)').execute(db);
         expect(await missingNow()).toEqual(['guard_pair_child.a,b -> guard_pair']);
         await sql.raw('CREATE INDEX idx_guard_pair_child_ab ON guard_pair_child (a, b, id)').execute(db);
         expect(await missingNow()).toEqual([]);
