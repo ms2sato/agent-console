@@ -776,6 +776,12 @@ describe('Inbound webhook endpoint routes', () => {
       ['not a URL', `not a url ${MARK}`],
       ['leading whitespace', ` https://a.example/?q=${MARK}`],
       ['a control character', `https://a.example/${MARK}\u0001`],
+      ['a C1 control character', `https://a.example/${MARK}\u0085q`],
+      ['an empty fragment', `https://a.example/p?q=${MARK}#`],
+      ['no host after the slashes', `https:///${MARK}`],
+      ['a single slash', `https:/${MARK}`],
+      ['no slashes', `https:${MARK}`],
+      ['backslashes', `https:\\\\a.example\\${MARK}`],
     ];
     for (const [name, value] of rejected) {
       it(`create and patch refuse ${name} with 400, store nothing, and the 400 body and the logs do not contain the value`, async () => {
@@ -805,8 +811,12 @@ describe('Inbound webhook endpoint routes', () => {
       expect(await db.selectFrom('inbound_webhook_endpoints').select('id').execute()).toHaveLength(0);
     });
 
-    it('accepts exactly 2048 characters, a query string, a port and an IP literal', async () => {
+    it('accepts exactly 2048 characters, a query string, a port, an IP literal, an upper-case scheme, a space in the path, an encoded # and a bare host', async () => {
       for (const value of [
+        'HTTPS://a.example/p',
+        'https://a.example/p q',
+        'https://a.example/p?a=%23',
+        'https://a.example',
         `https://a.example/${'x'.repeat(2048 - 'https://a.example/'.length)}`,
         'https://a.example/p?token=abc',
         'https://localhost:8443/x',

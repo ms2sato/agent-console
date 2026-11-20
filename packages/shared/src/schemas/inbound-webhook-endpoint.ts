@@ -86,8 +86,8 @@ export const InboundWebhookReplyUrlSchema = v.pipe(
     `Reply URL must be at most ${INBOUND_WEBHOOK_REPLY_URL_MAX_LENGTH} characters`,
   ),
   v.check((value) => value === value.trim(), 'Reply URL must not have leading or trailing whitespace'),
-  // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
-  v.check((value) => !/[\u0000-\u001F\u007F]/.test(value), 'Reply URL must not contain control characters'),
+  // `\p{Cc}` is every control character, C0, DEL and C1.
+  v.check((value) => !/\p{Cc}/u.test(value), 'Reply URL must not contain control characters'),
   v.check((value) => URL.canParse(value), 'Reply URL must be a valid URL'),
   // valibot runs every check even after one failed, so the checks below tolerate a value that is not a
   // URL (the check above already reports it).
@@ -95,14 +95,16 @@ export const InboundWebhookReplyUrlSchema = v.pipe(
     const url = parseUrl(value);
     return url === null || url.protocol === 'https:';
   }, 'Reply URL must use https'),
+  // The stored text must show the host that is called: `new URL` also reads `https:///x`, `https:x`, `https:/x`
+  // and `https:\\host\p` as an https URL with a host, so the input text itself is required to start with
+  // the scheme, two slashes and a host character.
+  v.check((value) => /^https:\/\/[^/\\?#]/i.test(value), 'Reply URL must start with https:// followed by a host'),
   v.check((value) => {
     const url = parseUrl(value);
     return url === null || (url.username === '' && url.password === '');
   }, 'Reply URL must not contain credentials'),
-  v.check((value) => {
-    const url = parseUrl(value);
-    return url === null || url.hash === '';
-  }, 'Reply URL must not contain a fragment'),
+  // A raw `#` is the fragment delimiter, including an empty one that `URL#hash` reads as ''.
+  v.check((value) => !value.includes('#'), 'Reply URL must not contain a fragment'),
 );
 
 export const CreateInboundWebhookEndpointRequestSchema = v.strictObject({

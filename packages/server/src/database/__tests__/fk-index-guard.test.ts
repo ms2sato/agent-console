@@ -1,10 +1,13 @@
 /**
  * Foreign-key index guard.
  *
- * Rule: every foreign key is covered by an index that leads with its columns (a
- * single column is seqno 0 of an index returned by PRAGMA index_list; the columns
- * of a composite key are the leading columns of one index; primary-key and UNIQUE
- * autoindexes count). SQLite does not index the child side of a foreign key
+ * Rule: a foreign key with N columns is covered when the first N columns of some
+ * full index are exactly the key's columns, in any order (a single column is seqno
+ * 0 of an index returned by PRAGMA index_list; primary-key and UNIQUE autoindexes
+ * count). Order inside the prefix does not matter because the parent-side lookup is
+ * an equality on every key column: measured on Bun's SQLite, a child key (a, b) with
+ * only an index on (b, a) plans `SEARCH c USING COVERING INDEX c_ba (b=? AND a=?)`,
+ * and with no index `SCAN c`. SQLite does not index the child side of a foreign key
  * itself, so a parent DELETE with CASCADE / SET NULL / RESTRICT would scan the
  * whole child table.
  *
@@ -63,16 +66,18 @@ async function auditForeignKeyIndexes(db: Kysely<Database>): Promise<{ enumerate
       fullIndexColumns.push([...info].sort((a, b) => a.seqno - b.seqno).map((r) => r.name));
     }
 
-    // A composite foreign key is covered when its columns, in foreign-key order, are the leading columns
-    // of one full index. Checking the columns one by one would demand a second index just for the later
-    // column; accepting any order would count an index the key's column order cannot use.
+    // A foreign key with N columns is covered when the first N columns of one full index are exactly the
+    // key's columns, in any order: the lookup is an equality on each, and the planner uses an index
+    // whose prefix is that set (see the header). Checking the columns one by one would demand a second
+    // index just for the later column; accepting the columns anywhere in the index would count an index
+    // whose prefix does not hold them all.
     const byKey = new Map<number, ForeignKeyRow[]>();
     for (const fk of fks) byKey.set(fk.id, [...(byKey.get(fk.id) ?? []), fk]);
     for (const columns of byKey.values()) {
       enumerated += 1;
-      const wanted = [...columns].sort((a, b) => a.seq - b.seq).map((c) => c.from);
+      const wanted = new Set(columns.map((c) => c.from));
       const covered = fullIndexColumns.some(
-        (index) => index.length >= wanted.length && wanted.every((column, position) => index[position] === column),
+        (index) => index.length >= wanted.size && index.slice(0, wanted.size).every((column) => wanted.has(column)),
       );
       if (!covered) missing.push(`${table}.${columns.map((c) => c.from).join(',')} -> ${columns[0]!.table}`);
     }
@@ -121,26 +126,33 @@ describe('foreign-key columns lead an index', () => {
       }
     });
 
-    it('a composite foreign key is covered by one index leading with all its columns in foreign-key order, and not by one leading with only the first or with the columns reversed', async () => {
-      const db = await createDatabaseForTest(':memory:');
-      try {
-        await sql.raw('CREATE TABLE guard_pair (a TEXT, b TEXT, PRIMARY KEY (a, b))').execute(db);
-        await sql
-          .raw('CREATE TABLE guard_pair_child (id TEXT PRIMARY KEY, a TEXT, b TEXT, FOREIGN KEY (a, b) REFERENCES guard_pair(a, b))')
-          .execute(db);
-        const missingNow = async () => (await auditForeignKeyIndexes(db)).missing.filter((m) => m.startsWith('guard_pair_child'));
-
-        expect(await missingNow()).toEqual(['guard_pair_child.a,b -> guard_pair']);
-        await sql.raw('CREATE INDEX idx_guard_pair_child_a ON guard_pair_child (a)').execute(db);
-        expect(await missingNow()).toEqual(['guard_pair_child.a,b -> guard_pair']);
-        await sql.raw('CREATE INDEX idx_guard_pair_child_ba ON guard_pair_child (b, a)').execute(db);
-        expect(await missingNow()).toEqual(['guard_pair_child.a,b -> guard_pair']);
-        await sql.raw('CREATE INDEX idx_guard_pair_child_ab ON guard_pair_child (a, b, id)').execute(db);
-        expect(await missingNow()).toEqual([]);
-      } finally {
-        await db.destroy();
-      }
-    });
+    // Key (a, b). One test per state so a failure names the state.
+    const COMPOSITE_STATES: Array<{ name: string; indexes: string[]; covered: boolean }> = [
+      { name: 'no index', indexes: [], covered: false },
+      { name: 'an index on (a) only', indexes: ['(a)'], covered: false },
+      { name: 'an index on (a, id): the first column, then an unrelated one', indexes: ['(a, id)'], covered: false },
+      { name: 'an index on (b, id, a): both columns, not as the prefix', indexes: ['(b, id, a)'], covered: false },
+      { name: 'an index on (b, a): the reversed prefix', indexes: ['(b, a)'], covered: true },
+      { name: 'an index on (a, b, id): the key in order, then more', indexes: ['(a, b, id)'], covered: true },
+    ];
+    for (const state of COMPOSITE_STATES) {
+      it(`a composite foreign key (a, b) with ${state.name} is ${state.covered ? 'covered' : 'uncovered'}`, async () => {
+        const db = await createDatabaseForTest(':memory:');
+        try {
+          await sql.raw('CREATE TABLE guard_pair (a TEXT, b TEXT, PRIMARY KEY (a, b))').execute(db);
+          await sql
+            .raw('CREATE TABLE guard_pair_child (id TEXT PRIMARY KEY, a TEXT, b TEXT, FOREIGN KEY (a, b) REFERENCES guard_pair(a, b))')
+            .execute(db);
+          for (const [i, columns] of state.indexes.entries()) {
+            await sql.raw(`CREATE INDEX idx_gpc_${i} ON guard_pair_child ${columns}`).execute(db);
+          }
+          const missing = (await auditForeignKeyIndexes(db)).missing.filter((m) => m.startsWith('guard_pair_child'));
+          expect(missing).toEqual(state.covered ? [] : ['guard_pair_child.a,b -> guard_pair']);
+        } finally {
+          await db.destroy();
+        }
+      });
+    }
 
     it('does not count a partial index as coverage', async () => {
       const db = await scratchDb("CREATE INDEX idx_guard_child_parent ON guard_child (parent_id) WHERE status = 'active'");

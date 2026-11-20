@@ -191,8 +191,22 @@ describe('reply URL validation table', () => {
     expect(createWith('https://:pass@a.example/').success).toBe(false);
   });
 
-  it('row: a fragment is rejected', () => {
+  it('row: a fragment is rejected, including an empty one after the path or after a query', () => {
     expect(createWith(`https://a.example/path#${MARKER}`).success).toBe(false);
+    expect(createWith('https://a.example/p#').success).toBe(false);
+    expect(createWith('https://a.example/p?a=1#').success).toBe(false);
+  });
+
+  it('row: a form that URL parsing reads as a host the text does not show is rejected', () => {
+    for (const value of ['https:///x', 'https:x', 'https:/x', 'https:\\\\a.example\\p', 'https://?q=1', 'https://#x']) {
+      expect(createWith(value).success).toBe(false);
+    }
+  });
+
+  it('row: an upper-case scheme, a space in the path, an encoded # and a bare host are accepted', () => {
+    for (const value of ['HTTPS://a.example/p', 'https://a.example/p q', 'https://a.example/p?a=%23', 'https://a.example']) {
+      expect(createWith(value).success).toBe(true);
+    }
   });
 
   it('row: a query string is accepted and stored as entered', () => {
@@ -219,7 +233,7 @@ describe('reply URL validation table', () => {
   });
 
   it('row: any control character is rejected, including ones the URL parser would silently strip', () => {
-    for (const code of [0x00, 0x09, 0x0a, 0x0d, 0x1f, 0x7f]) {
+    for (const code of [0x00, 0x09, 0x0a, 0x0d, 0x1f, 0x7f, 0x85, 0x9f]) {
       const value = `https://a.example/pa${String.fromCharCode(code)}th`;
       expect(createWith(value).success).toBe(false);
     }
@@ -237,6 +251,8 @@ describe('reply URL validation table', () => {
       `https://a.example/#${MARKER}`,
       ` https://a.example/?q=${MARKER}`,
       `https://a.example/${MARKER}\u0001`,
+      `https:///${MARKER}`,
+      `https://a.example/p#${MARKER}`,
       replyUrlOfLength(2049).replace('xxx', MARKER),
     ]) {
       const result = v.safeParse(InboundWebhookReplyUrlSchema, value);

@@ -981,7 +981,7 @@ Some senders accept a reply to a delivery: an HTTP POST to a sender-side URL, si
 - It is set and cleared on the existing endpoint surfaces only: `POST /` (create, optional), `PATCH /:id` (`replyUrl: string | null`; `null` clears; omitted leaves it unchanged) and the `EndpointForm` on the create and edit pages. No MCP tool reads or writes it. "Admin-only" here means the existing authenticated-caller check on REST and no agent-visible surface.
 - Validation is one schema, `InboundWebhookReplyUrlSchema`, in the shared schema file, used by create and update (client and server share it):
   - a string of 1..2048 characters (`.length`), with no leading or trailing whitespace (the value is not trimmed: surrounding whitespace is 400);
-  - it parses with `new URL(value)`, its protocol is exactly `https:`, its `username` and `password` are empty, it has no fragment, and it contains no control character (U+0000-U+001F, U+007F);
+  - it parses with `new URL(value)`, its protocol is exactly `https:`, its `username` and `password` are empty, and the text starts with `https://` followed by a host character (case-insensitive scheme; so `https:///x`, `https:x`, `https:/x` and backslash forms are refused, because the stored text must show the host that is called). It contains no `#` (a raw `#` is the fragment delimiter, an empty one included) and no control character (`\p{Cc}`: C0, DEL and C1);
   - query strings, ports and any hostname (including `localhost` and IP literals) are accepted. The field is operator-set, and a hostname filter would be a name-time check that the later connect does not repeat, so it would add no boundary.
   - The validation message never echoes the value (the API error handler logs messages), as for the secret schema.
 - The stored value is the string as entered (not `URL#href`-normalized).
@@ -1063,7 +1063,10 @@ Some senders accept a reply to a delivery: an HTTP POST to a sender-side URL, si
 | `https://host/path?token=abc` | accepted |
 | `https://localhost:8443/x`, `https://10.0.0.5/x` | accepted |
 | not a URL | 400 |
-| leading or trailing whitespace, any control character | 400 |
+| leading or trailing whitespace, any control character (`\p{Cc}`: C0, DEL and C1) | 400 |
+| a `#` anywhere, including an empty fragment (`https://host/p#`, `https://host/p?a=1#`) | 400 |
+| a form that URL parsing reads as a host the text does not show (`https:///x`, `https:x`, `https:/x`, `https:\\host\p`); the text must start with `https://` and a host character | 400 |
+| `HTTPS://host/p` (scheme case), a space in the path, `%23` in a query, a bare `https://host` | accepted |
 | update body with none of `label`, `instructionText`, `replyUrl` | 400 (the existing "at least one" rule, extended) |
 
 #### DDL (migration v57, owner-approved 2026-11-20)
