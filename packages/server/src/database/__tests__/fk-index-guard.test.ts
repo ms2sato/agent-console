@@ -76,9 +76,11 @@ async function auditForeignKeyIndexes(db: Kysely<Database>): Promise<{ enumerate
     for (const columns of byKey.values()) {
       enumerated += 1;
       const wanted = new Set(columns.map((c) => c.from));
-      const covered = fullIndexColumns.some(
-        (index) => index.length >= wanted.size && index.slice(0, wanted.size).every((column) => wanted.has(column)),
-      );
+      const covered = fullIndexColumns.some((index) => {
+        const prefix = index.slice(0, wanted.size);
+        // Every key column once: a prefix such as (a, a) has the right length and only key columns, yet lacks b.
+        return prefix.length === wanted.size && new Set(prefix).size === wanted.size && prefix.every((column) => wanted.has(column));
+      });
       if (!covered) missing.push(`${table}.${columns.map((c) => c.from).join(',')} -> ${columns[0]!.table}`);
     }
   }
@@ -132,6 +134,7 @@ describe('foreign-key columns lead an index', () => {
       { name: 'an index on (a) only', indexes: ['(a)'], covered: false },
       { name: 'an index on (a, id): the first column, then an unrelated one', indexes: ['(a, id)'], covered: false },
       { name: 'an index on (b, id, a): both columns, not as the prefix', indexes: ['(b, id, a)'], covered: false },
+      { name: 'an index on (a, a): the right length, but b is missing from the prefix', indexes: ['(a, a)'], covered: false },
       { name: 'an index on (b, a): the reversed prefix', indexes: ['(b, a)'], covered: true },
       { name: 'an index on (a, b, id): the key in order, then more', indexes: ['(a, b, id)'], covered: true },
     ];
