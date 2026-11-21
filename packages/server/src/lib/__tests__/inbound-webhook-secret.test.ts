@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'bun:test';
+import { createHmac } from 'node:crypto';
 import {
   INBOUND_WEBHOOK_PREVIOUS_SECRET_GRACE_MS,
   INBOUND_WEBHOOK_SECRET_BYTES,
   INBOUND_WEBHOOK_SECRET_PREFIX,
+  computeStandardWebhookDigest,
   generateInboundWebhookSecret,
+  signStandardWebhook,
   isPreviousSecretActive,
   previousSecretExpiryFrom,
 } from '../inbound-webhook-secret.js';
@@ -58,5 +61,40 @@ describe('isPreviousSecretActive', () => {
   it('is false without an expiry or with an unparsable one', () => {
     expect(isPreviousSecretActive(null, now)).toBe(false);
     expect(isPreviousSecretActive('not a date', now)).toBe(false);
+  });
+});
+
+describe('signStandardWebhook', () => {
+  const secret = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
+  const id = 'msg_2KWPBgLlAfxdpx2AI54pPJ85f4W';
+  const timestamp = '1700000000';
+  const body = '{"a":1}';
+
+  // Written from the Standard Webhooks specification, not from production code: HMAC-SHA256 over
+  // `id.timestamp.body`, key = base64-decoded part after `whsec_`, value = `v1,` + base64.
+  const specSignature = (): string => {
+    const key = Buffer.from(secret.slice('whsec_'.length), 'base64');
+    return `v1,${createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest('base64')}`;
+  };
+
+  it('equals the independently computed specification vector', () => {
+    expect(signStandardWebhook({ secret, id, timestamp, body })).toBe(specSignature());
+  });
+
+  it('the raw digest is the same bytes the signature carries', () => {
+    const digest = computeStandardWebhookDigest(secret, id, timestamp, body);
+    expect(`v1,${digest?.toString('base64')}`).toBe(specSignature());
+  });
+
+  it('a different id, timestamp or body changes the signature', () => {
+    const base = signStandardWebhook({ secret, id, timestamp, body });
+    expect(signStandardWebhook({ secret, id: `${id}x`, timestamp, body })).not.toBe(base);
+    expect(signStandardWebhook({ secret, id, timestamp: '1700000001', body })).not.toBe(base);
+    expect(signStandardWebhook({ secret, id, timestamp, body: `${body} ` })).not.toBe(base);
+  });
+
+  it('throws for a secret without the whsec_ prefix, and the digest is null', () => {
+    expect(() => signStandardWebhook({ secret: 'MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw', id, timestamp, body })).toThrow();
+    expect(computeStandardWebhookDigest('plain', id, timestamp, body)).toBeNull();
   });
 });

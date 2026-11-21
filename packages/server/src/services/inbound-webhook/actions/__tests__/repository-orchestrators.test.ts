@@ -441,7 +441,7 @@ describe('inbound webhook action: repository orchestrators', () => {
       expect(deliveries[0]).toMatchObject({ bodyExisted: true, instructionExisted: true });
       expect(deliveries[0]!.fields).toMatchObject({ attachments_fetched: '2', attachments_skipped: '1' });
       const written = ptyFactory.instances.flatMap((pty) => pty.writtenData).join('');
-      expect(written).toContain(`body_path=${paths.bodyPath} attachments_fetched=2 attachments_skipped=1 intent=triage`);
+      expect(written).toContain(`body_path=${paths.bodyPath} delivery_id=${payload.jobId} attachments_fetched=2 attachments_skipped=1 intent=triage`);
     });
 
     it('the attachment URL token is in no written file (body, instruction, attachment names and bytes), no notification text and no deferred row, for a live and a paused target', async () => {
