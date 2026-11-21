@@ -190,7 +190,13 @@ function TodoEditForm({ todo, onError, onClose }: TodoEditFormProps & { onClose:
       >
         Save
       </button>
-      <button type="button" onClick={onClose} className="btn text-xs bg-slate-700 hover:bg-slate-600 ml-2">
+      {/* A pending Save would still call onClose after a Cancel, closing a draft opened later. */}
+      <button
+        type="button"
+        onClick={onClose}
+        disabled={saveMutation.isPending}
+        className="btn text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50 ml-2"
+      >
         Cancel
       </button>
     </div>

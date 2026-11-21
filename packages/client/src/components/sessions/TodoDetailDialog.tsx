@@ -53,27 +53,27 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFo
           </Link>
         </DialogHeader>
         <div className="flex-1 min-h-0 overflow-y-auto">
-        {detail ? (
-          <TodoDetail
-            todo={detail.todo}
-            users={users}
-            activities={detail.activities}
-            onError={showError}
-            runEnabled={terminalRun !== null}
-            onRun={setPendingRunCommand}
-            onDeleted={onClose}
-            resolveBarClassName="bg-slate-800"
-          />
-        ) : isTodoGone(error) ? (
-          <p className="text-sm text-gray-400">This Todo was deleted or does not exist</p>
-        ) : error ? (
-          <p className="text-sm text-red-400">{error.message}</p>
-        ) : (
-          <div className="flex items-center gap-2 text-gray-500">
-            <Spinner size="sm" />
-            <span>Loading Todo...</span>
-          </div>
-        )}
+          {detail ? (
+            <TodoDetail
+              todo={detail.todo}
+              users={users}
+              activities={detail.activities}
+              onError={showError}
+              runEnabled={terminalRun !== null}
+              onRun={setPendingRunCommand}
+              onDeleted={onClose}
+              resolveBarClassName="bg-slate-800"
+            />
+          ) : isTodoGone(error) ? (
+            <p className="text-sm text-gray-400">This Todo was deleted or does not exist</p>
+          ) : error ? (
+            <p className="text-sm text-red-400">{error.message}</p>
+          ) : (
+            <div className="flex items-center gap-2 text-gray-500">
+              <Spinner size="sm" />
+              <span>Loading Todo...</span>
+            </div>
+          )}
         </div>
       </DialogContent>
       {terminalRun && pendingRunCommand !== null && (

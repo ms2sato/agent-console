@@ -280,6 +280,24 @@ describe('TodoDetail', () => {
       expect((screen.getByLabelText('Edit title') as HTMLInputElement).value).toBe('Server title');
     });
 
+    it('Cancel is disabled while a Save is pending, so the pending Save cannot close a later draft', async () => {
+      // Mutation: drop `disabled={saveMutation.isPending}` from Cancel -> the disabled assertion fails.
+      let release: () => void = () => {};
+      api.state.writeGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { user } = await renderDetail({ title: 'Old', body: '' });
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+      await user.type(screen.getByLabelText('Edit title'), ' more');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() => expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true));
+
+      release();
+      await waitForAbsent(() => screen.queryByLabelText('Edit title'));
+      expect(api.writes()).toHaveLength(1);
+    });
+
     it('a successful Save closes the form', async () => {
       const { user } = await renderDetail({ title: 'Old', body: '' });
       await user.click(screen.getByRole('button', { name: 'Edit' }));
