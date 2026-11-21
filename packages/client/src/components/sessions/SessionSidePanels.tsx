@@ -25,7 +25,9 @@ interface SessionSidePanelsProps {
  *
  * The open rail is not one scroll container: the collapse button row is
  * `shrink-0` and only the wrapper around the sections scrolls, so the button
- * stays reachable at every scroll position.
+ * stays reachable at every scroll position. The sections inside it are
+ * `shrink-0` too: left shrinkable they would squeeze to fit the column and
+ * clip their own headers instead of making the wrapper scroll.
  */
 export function SessionSidePanels({ sessionId }: SessionSidePanelsProps) {
   const { railOpen, openSection, toggleRail, toggleSection, openRailAndExpandSection, expandSection } =
@@ -53,7 +55,7 @@ export function SessionSidePanels({ sessionId }: SessionSidePanelsProps) {
           {railOpen ? <ChevronRightIcon className="w-4 h-4" /> : <ChevronLeftIcon className="w-4 h-4" />}
         </button>
       </div>
-      <div className={railOpen ? 'flex flex-col flex-1 min-h-0 overflow-y-auto' : 'contents'}>
+      <div className={railOpen ? 'flex flex-col flex-1 min-h-0 overflow-y-auto [&>*]:shrink-0' : 'contents'}>
         <MemoPanel
           sessionId={sessionId}
           isExpanded={openSection === 'memo'}

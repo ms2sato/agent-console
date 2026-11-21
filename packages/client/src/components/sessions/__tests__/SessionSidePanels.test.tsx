@@ -362,6 +362,8 @@ describe('SessionSidePanels', () => {
       expect(scroller.contains(screen.getByLabelText(name))).toBe(true);
     }
     expect(scroller.contains(collapse)).toBe(false);
+    // Sections must not shrink inside the scroller, or they clip instead of scrolling (layout is checked in Browser QA).
+    expect(scroller.className).toContain('[&>*]:shrink-0');
 
     const root = container.querySelector('.w-80') as HTMLElement;
     expect(root.className).not.toContain('overflow-y-auto');
