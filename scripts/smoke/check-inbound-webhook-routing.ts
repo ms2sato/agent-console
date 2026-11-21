@@ -295,6 +295,10 @@ async function main(): Promise<void> {
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   let stdoutBuf = '';
   let stderrBuf = '';
+  let stdoutDrained: Promise<void> = Promise.resolve();
+  let stderrDrained: Promise<void> = Promise.resolve();
+  // Set by the reply arm; scanned in `finally` once the child has exited and both readers have drained.
+  let finalSecrecyScan: { secrets: string[]; toolTexts: string[] } | undefined;
   let stubServer: ReturnType<typeof Bun.serve> | undefined;
   let replyListener: Bun.TCPSocketListener<undefined> | undefined;
   const sessionsToDelete: string[] = [];
@@ -320,12 +324,12 @@ async function main(): Promise<void> {
       stderr: 'pipe',
     });
     const decoder = new TextDecoder();
-    void (async () => {
+    stdoutDrained = (async () => {
       for await (const chunk of proc!.stdout as ReadableStream<Uint8Array>) stdoutBuf += decoder.decode(chunk);
-    })();
-    void (async () => {
+    })().catch(() => undefined);
+    stderrDrained = (async () => {
       for await (const chunk of proc!.stderr as ReadableStream<Uint8Array>) stderrBuf += decoder.decode(chunk);
-    })();
+    })().catch(() => undefined);
     await waitForServerReady(baseUrl);
     console.log('==> disposable server is ready');
 
@@ -560,7 +564,7 @@ async function main(): Promise<void> {
     expect(accepted.status === 200 && acceptedBody?.ok === true && acceptedBody.duplicate !== true, 'DELIVERY: the signed POST is accepted (200, not a duplicate)', `status=${accepted.status} body=${JSON.stringify(acceptedBody)}`);
     expect(countDeliveries() === 1 && countJobs() === 1, 'DELIVERY: exactly one deliveries row and one inbound-webhook:process job were created', `deliveries=${countDeliveries()} jobs=${countJobs()}`);
 
-    const tagFoundInL = await waitFor(() => { const since = readSafe(outputPathL).slice(beforeL.length); return since.includes(TAG) && since.includes('intent=triage'); }, 45_000, "L's output file to contain the external:message tag");
+    const tagFoundInL = await waitFor(() => { const since = readSafe(outputPathL).slice(beforeL.length); const flat = since.replace(/\r?\n/g, ''); return flat.includes(TAG) && flat.includes('intent=triage'); }, 45_000, "L's output file to contain the external:message tag");
     const newL = readSafe(outputPathL).slice(beforeL.length);
     expect(tagFoundInL, `(1) L's real worker output file gained ${TAG}`, newL.slice(-600));
 
@@ -721,7 +725,7 @@ async function main(): Promise<void> {
     const tagFoundL2 = await waitFor(
       () => {
         // The whole notification line (it ends with the intent field), not just its tag: the line is written in chunks.
-        const since = readSafe(outputPathL).slice(beforeL2.length);
+        const since = readSafe(outputPathL).slice(beforeL2.length).replace(/\r?\n/g, '');
         return tagCount(since) >= 1 && since.includes('intent=triage');
       },
       45_000,
@@ -938,11 +942,9 @@ async function main(): Promise<void> {
     // and carries the reply's own ids, so the scan below is looking at a stream that demonstrably sees them.
     const idsLogged = await waitFor(() => stdoutBuf.includes(replyId) && stdoutBuf.includes(deliveryE1), 15_000, "the child's stdout to carry the reply's ids");
     expect(idsLogged && stdoutBuf.length > 0, '(6) A3: POSITIVE CONTROL: the child\'s captured stdout carries the reply id and the delivery id', stdoutBuf.slice(-300));
-    const everything = [stdoutBuf, stderrBuf, ...toolTexts].join('\n');
-    expect(
-      !everything.includes(e1.secret) && !everything.includes(e2.secret) && !everything.includes(urlMarker) && !everything.includes(listenerHostPort),
-      '(6) A3: neither endpoint secret, the reply URL query marker nor the listener address appears in any tool result or captured server output',
-    );
+    // The scan itself runs in `finally`, after the child exited and both output readers drained, so output
+    // that arrives after this point (a resend's late log chunk) is inside what is scanned.
+    finalSecrecyScan = { secrets: [e1.secret, e2.secret, urlMarker, listenerHostPort], toolTexts };
 
     // Let E's turns for these deliveries finish before teardown deletes its session (not an assertion).
     await waitFor(() => stubRequests.length >= stubBeforeReply + 2, 30_000, "E's turns for the two reply-arm deliveries");
@@ -970,6 +972,15 @@ async function main(): Promise<void> {
       }
       proc.kill();
       await proc.exited;
+      const drainDeadline = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+      await Promise.race([Promise.all([stdoutDrained, stderrDrained]).then(() => undefined), drainDeadline]);
+      if (finalSecrecyScan) {
+        const everything = [stdoutBuf, stderrBuf, ...finalSecrecyScan.toolTexts].join('\n');
+        expect(
+          finalSecrecyScan.secrets.every((secret) => !everything.includes(secret)),
+          '(6) A3: neither endpoint secret, the reply URL query marker nor the listener address appears in any tool result or captured server output (scanned after the child exited and both readers drained)',
+        );
+      }
     }
     if (stubServer) stubServer.stop(true);
     if (replyListener) replyListener.stop(true);

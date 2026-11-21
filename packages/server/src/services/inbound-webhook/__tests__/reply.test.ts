@@ -384,6 +384,24 @@ describe('replyToInboundWebhook', () => {
     expect(result.responseBody).toBe('ab[31mc\nd\tefg');
   });
 
+  it('row 13: a reader whose cancel never settles delays the result by no more than the timeout', async () => {
+    respond = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('y'.repeat(RESPONSE_BODY_CAP_BYTES + 10)));
+          },
+          cancel: () => new Promise<void>(() => undefined),
+        }),
+        { status: 200 },
+      );
+    const startedAt = performance.now();
+    const result = okResult(await reply({}, { timeoutMs: 60 })) as Extract<ReplyResult, { outcome: 'responded' }>;
+    expect(result.responseBodyTruncated).toBe(true);
+    expect(result.responseBody).toHaveLength(RESPONSE_BODY_CAP_BYTES);
+    expect(performance.now() - startedAt).toBeLessThan(1000);
+  });
+
   it('row 14: an empty response body is "" and not truncated', async () => {
     respond = async () => new Response(null, { status: 202 });
     expect(okResult(await reply())).toEqual({
@@ -539,16 +557,42 @@ describe('replyToInboundWebhook', () => {
   });
 
   it('row 26: the attempt is already counted when the fetch runs', async () => {
+    // Read inside the fetch but asserted outside it: a throw inside the fake fetch would be swallowed
+    // as a connection failure and the test would pass vacuously.
+    const seen: { count: number | null } = { count: null };
     respond = async (call) => {
       const row = await db
         .selectFrom('inbound_webhook_replies')
         .select('attempt_count')
         .where('id', '=', call.init.headers['webhook-id']!)
         .executeTakeFirstOrThrow();
-      expect(row.attempt_count).toBe(1);
+      seen.count = row.attempt_count;
       return okResponse();
     };
     okResult(await reply());
+    expect(seen.count).toBe(1);
+  });
+
+  it('row 21: only the latest attempt records its status (an earlier attempt whose fetch resolves last does not overwrite it)', async () => {
+    const first = okResult(await reply());
+    let releaseEarlier: (response: Response) => void = () => undefined;
+    const outcomes: Array<Promise<ReplyOutcome>> = [];
+    respond = () => {
+      if (calls.length === 2) {
+        return new Promise<Response>((resolve) => {
+          releaseEarlier = resolve;
+        });
+      }
+      return Promise.resolve(new Response('later', { status: 201 }));
+    };
+    outcomes.push(reply({ replyId: first.replyId }));
+    while (calls.length < 2) await new Promise((resolve) => setTimeout(resolve, 2));
+    const later = okResult(await reply({ replyId: first.replyId }));
+    expect(later).toMatchObject({ attempt: 3, status: 201 });
+    releaseEarlier(new Response('earlier', { status: 500 }));
+    const earlier = okResult(await outcomes[0]!);
+    expect(earlier).toMatchObject({ attempt: 2, status: 500 });
+    expect((await replyRows())[0]).toMatchObject({ attempt_count: 3, last_status: 201 });
   });
 
   describe('row 27: both caps are atomic', () => {
@@ -594,7 +638,7 @@ describe('replyToInboundWebhook', () => {
 
     it('15 concurrent resends of a reply with no attempt yet: exactly 10 attempts, 5 attempt-limit refusals, attempt_count 10, 10 fetch calls', async () => {
       respond = slowOk;
-      // A reply row with attempt_count 0, as left by a crash between the insert and the first attempt.
+      // A reply row with attempt_count 0, seeded directly (a new reply is inserted already counted).
       await db
         .insertInto('inbound_webhook_replies')
         .values({
@@ -622,6 +666,62 @@ describe('replyToInboundWebhook', () => {
       expect(outcomes.filter((o) => !o.ok && o.error === 'Attempt limit reached for this reply')).toHaveLength(6);
       expect((await replyRows())[0]!.attempt_count).toBe(MAX_ATTEMPTS_PER_REPLY);
       expect(calls).toHaveLength(MAX_ATTEMPTS_PER_REPLY - 1);
+    });
+  });
+
+  describe('row 13: values the sender echoes back are redacted', () => {
+    type Responded = Extract<ReplyResult, { outcome: 'responded' }>;
+    const bodyOf = async (): Promise<string> => (okResult(await reply()) as Responded).responseBody;
+
+    it('a body echoing the signature header value, or its base64 part alone, does not contain either', async () => {
+      let signature = '';
+      respond = async ({ init }) => {
+        signature = init.headers['webhook-signature']!;
+        return new Response(`bad signature ${signature} / ${signature.slice(3)}`, { status: 401 });
+      };
+      const text = await bodyOf();
+      expect(signature.startsWith('v1,')).toBe(true);
+      expect(text).not.toContain(signature.slice(3));
+      expect(text).toBe('bad signature [redacted] / [redacted]');
+    });
+
+    it('a body echoing the path and query keeps its other text and loses the token', async () => {
+      respond = async () => new Response(`Not Found: /replies?token=${URL_MARKER}`, { status: 404 });
+      const text = await bodyOf();
+      expect(text).not.toContain(URL_MARKER);
+      expect(text).toBe('Not Found: [redacted]');
+    });
+
+    it('a body echoing the full reply URL, or only the query value, loses both', async () => {
+      respond = async () => new Response(`posted to ${REPLY_URL}; token ${URL_MARKER} rejected`, { status: 400 });
+      expect(await bodyOf()).toBe('posted to [redacted]; token [redacted] rejected');
+    });
+
+    it('a percent-encoded query value is redacted raw and decoded', async () => {
+      await endpoints.update('repo-1', ENDPOINT_ID, { replyUrl: `https://${REPLY_HOST}/r?k=a%20b%20c%20d%20e` }, NOW.toISOString());
+      respond = async () => new Response('raw a%20b%20c%20d%20e decoded a b c d e', { status: 400 });
+      expect(await bodyOf()).toBe('raw [redacted] decoded [redacted]');
+    });
+
+    it('a retry-after echoing the token does not carry it', async () => {
+      respond = async () => new Response('x', { status: 429, headers: { 'retry-after': URL_MARKER } });
+      const result = okResult(await reply()) as Responded;
+      expect(JSON.stringify(result)).not.toContain(URL_MARKER);
+      expect(result.retryAfter).toBe('[redacted]');
+    });
+
+    it('a query value shorter than 8 characters is not redacted: a body containing it is unchanged', async () => {
+      await endpoints.update('repo-1', ENDPOINT_ID, { replyUrl: `https://${REPLY_HOST}/r?n=1` }, NOW.toISOString());
+      respond = async () => new Response('total 1 of 1', { status: 200 });
+      expect(await bodyOf()).toBe('total 1 of 1');
+    });
+
+    it('a reply URL with no query leaves the body unchanged except for a full-URL echo', async () => {
+      await endpoints.update('repo-1', ENDPOINT_ID, { replyUrl: `https://${REPLY_HOST}/replies` }, NOW.toISOString());
+      respond = async () => new Response(`see /replies on ${REPLY_HOST}`, { status: 404 });
+      expect(await bodyOf()).toBe(`see /replies on ${REPLY_HOST}`);
+      respond = async () => new Response(`posted to https://${REPLY_HOST}/replies`, { status: 404 });
+      expect(await bodyOf()).toBe('posted to [redacted]');
     });
   });
 

@@ -232,13 +232,15 @@ export async function receiveInboundWebhook(input: ReceiveInput, deps: ReceiveDe
   }
 
   const { webhookId } = input;
-  if (!isValidWebhookId(webhookId) || parseInboundWebhookBody(input.rawBody) === null) {
+  if (!isValidWebhookId(webhookId)) {
     logger.warn({ endpointId, reason: 'invalid-request' }, 'Inbound webhook refused');
     return { kind: 'invalid_request' };
   }
 
   // A recorded reply id is a message this server signed itself; if the sender echoes it back it
-  // must not be delivered to a session as a new inbound message.
+  // must not be delivered to a session as a new inbound message. The lookup runs after signature
+  // verification (an unsigned request cannot probe reply ids) and before body-schema validation,
+  // so the answer to a reflected reply does not depend on the shape of its body.
   const reflected = await deps.db
     .selectFrom('inbound_webhook_replies')
     .select('id')
@@ -248,6 +250,11 @@ export async function receiveInboundWebhook(input: ReceiveInput, deps: ReceiveDe
   if (reflected) {
     logger.warn({ endpointId, webhookId, reason: 'reply-id-reflected' }, 'Inbound webhook ignored');
     return { kind: 'duplicate' };
+  }
+
+  if (parseInboundWebhookBody(input.rawBody) === null) {
+    logger.warn({ endpointId, reason: 'invalid-request' }, 'Inbound webhook refused');
+    return { kind: 'invalid_request' };
   }
 
   const deliveryId = inboundWebhookDeliveryId(endpointId, webhookId);

@@ -1045,7 +1045,7 @@ Verification of the reply path, as shipped (recorded proxy):
 | 10 | `replyId` known, 10 attempts already made | error `Attempt limit reached for this reply` |
 | 11 | `replyId` known, same body, under the limit | attempt n+1, same id, new timestamp and signature |
 | 12 | sender answers any status (2xx, 3xx, 4xx, 5xx) | `outcome: 'responded'` with the status; 3xx not followed |
-| 13 | response body over 4,096 bytes | first 4,096 bytes at a code-point boundary, `responseBodyTruncated: true` |
+| 13 | response body over 4,096 bytes | first 4,096 bytes at a code-point boundary, `responseBodyTruncated: true`. Values the sender could echo back are replaced with `[redacted]` in the decoded text and in `retryAfter`, before the control-character cleanup, longest match first: the full signature header value and its base64 part; the reply URL as stored; `pathname + search` and `search` of the parsed URL (only when `search` is non-empty); each query value of 8 or more characters, raw and percent-decoded. Shorter query values are not redacted. Known residue: a value cut by the 4,096-byte cap can leave a prefix, because redaction runs on what was kept. The reader is cancelled at the cap, awaited only until the exchange deadline, and a failed cancel never changes the result |
 | 14 | response body empty | `responseBody: ''`, `responseBodyTruncated: false` |
 | 15 | timeout before headers | `outcome: 'no-response'`, `reason: 'timeout'` |
 | 16 | connection / TLS failure | `outcome: 'no-response'`, `reason: 'connection-failed'` |
@@ -1053,12 +1053,12 @@ Verification of the reply path, as shipped (recorded proxy):
 | 18 | secret rotated or reply URL changed since the first attempt | the current values are used |
 | 19 | reply URL cleared since the first attempt | row 5 |
 | 20 | database write of the reply row fails | tool error, nothing sent |
-| 21 | recording the attempt's outcome (`last_status`) fails after the POST | the result is still returned; warn log |
+| 21 | recording the attempt's outcome (`last_status`) fails after the POST | the result is still returned; warn log. Only the latest attempt records its status: the update is conditioned on `attempt_count` still being this attempt's number, and an attempt that is no longer the latest updates no row (neither an error nor a warning) |
 | 22 | single-user and multi-user modes | identical (no elevation, no per-user state) |
 | 23 | database error during the ownership check | tool error, nothing sent, no reply row (not `Unknown delivery`, which is a permission answer the agent would act on) |
 | 24 | delivery row exists but the endpoint is gone | `Unknown delivery` |
 | 25 | `retry-after` empty or whitespace-only after cleanup | no `retryAfter` key (`'120'` is returned as `'120'`) |
-| 26 | the attempt counter write | written before the POST; its failure is row 20's text and nothing is sent (any write after the POST is row 21). When a NEW reply's row was inserted and this write then fails, the caller gets row 20's text and no `replyId`, and a row with `attempt_count` 0 remains and counts toward the 20 per (delivery, session): nothing was sent and the cap only gets stricter |
+| 26 | the attempt counter write | a new reply's row is inserted already counted as attempt 1; a resend's attempt is counted by one guarded UPDATE; both happen before the POST, so the attempt is already counted when the request is made. A failure of either is row 20's text and nothing is sent (any write after the POST is row 21); a failed new-reply insert leaves no row and returns no `replyId` |
 | 27 | the two caps under concurrent calls | both atomic: one `INSERT ... SELECT` with the count in its `WHERE` (zero rows inserted is row 6) and one guarded `UPDATE` (zero rows updated is row 10) |
 
 #### Reply URL validation (boundary values)

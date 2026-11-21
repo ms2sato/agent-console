@@ -185,8 +185,69 @@ interface BoundedBody {
   truncated: boolean;
 }
 
+/**
+ * A function that replaces every occurrence of the values the sender could echo back (the signature,
+ * the reply URL and its parts) with `[redacted]`. Built once per attempt; the values are never logged.
+ */
+type Redactor = (text: string) => string;
+
+const REDACTED = '[redacted]';
+/** A query value shorter than this is not redacted: a value like `1` would mangle ordinary text. */
+const MIN_REDACTED_QUERY_VALUE_CHARS = 8;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Needles are the full signature header value and its base64 part, the reply URL as stored,
+ * `pathname + search` and `search` of the parsed URL (when `search` is non-empty), and each query
+ * value of at least `MIN_REDACTED_QUERY_VALUE_CHARS` characters, raw and percent-decoded. One
+ * alternation, longest first, so a long match is never left half-redacted by a shorter one and the
+ * placeholder text is never itself rewritten.
+ */
+function buildRedactor(signature: string, replyUrl: string): Redactor {
+  const needles = new Set<string>([signature, replyUrl]);
+  const signatureParts = signature.split(',');
+  if (signatureParts.length === 2) needles.add(signatureParts[1]!);
+
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(replyUrl);
+  } catch {
+    parsed = null;
+  }
+  if (parsed !== null && parsed.search !== '') {
+    needles.add(parsed.pathname + parsed.search);
+    needles.add(parsed.search);
+    const queryValues: string[] = [];
+    for (const pair of parsed.search.slice(1).split('&')) {
+      const separator = pair.indexOf('=');
+      if (separator !== -1) queryValues.push(pair.slice(separator + 1));
+    }
+    for (const [, value] of parsed.searchParams) queryValues.push(value);
+    for (const value of queryValues) {
+      if (value.length >= MIN_REDACTED_QUERY_VALUE_CHARS) needles.add(value);
+    }
+  }
+
+  const ordered = [...needles].filter((needle) => needle.length > 0).sort((a, b) => b.length - a.length);
+  if (ordered.length === 0) return (text) => text;
+  const pattern = new RegExp(ordered.map(escapeRegExp).join('|'), 'g');
+  return (text) => text.replace(pattern, REDACTED);
+}
+
+/** Cancel `reader` without ever throwing or waiting past `signal`'s abort. */
+async function cancelBounded(reader: { cancel(): Promise<void> }, signal: AbortSignal): Promise<void> {
+  try {
+    await untilAborted(reader.cancel(), signal);
+  } catch {
+    // Cancelling is best-effort: a failure or the deadline must not change the result.
+  }
+}
+
 /** Read at most `RESPONSE_BODY_CAP_BYTES`, cancel the reader at the cap, stop when `signal` aborts. */
-async function readBoundedBody(response: Response, signal: AbortSignal): Promise<BoundedBody> {
+async function readBoundedBody(response: Response, signal: AbortSignal, redact: Redactor): Promise<BoundedBody> {
   const reader = response.body?.getReader();
   if (!reader) return { text: '', bytes: 0, truncated: false };
 
@@ -211,7 +272,7 @@ async function readBoundedBody(response: Response, signal: AbortSignal): Promise
   } catch {
     truncated = true;
   }
-  if (truncated) reader.cancel().catch(() => undefined);
+  if (truncated) await cancelBounded(reader, signal);
 
   const joined = new Uint8Array(total);
   let offset = 0;
@@ -220,7 +281,7 @@ async function readBoundedBody(response: Response, signal: AbortSignal): Promise
     offset += chunk.length;
   }
   const bytes = truncated ? trimToCodePointBoundary(joined) : joined;
-  return { text: sanitizeMultiline(new TextDecoder().decode(bytes)), bytes: total, truncated };
+  return { text: sanitizeMultiline(redact(new TextDecoder().decode(bytes))), bytes: total, truncated };
 }
 
 function errorName(error: unknown): string {
@@ -295,16 +356,20 @@ export async function replyToInboundWebhook(input: ReplyInput, deps: ReplyDeps):
 
   const bodyHash = canonicalBodyHash(body);
   let replyId: string;
+  let attempt: number;
 
   if (input.replyId === undefined) {
-    // Rows 6, 7: one statement both checks the cap and inserts, so concurrent calls cannot overshoot it.
+    // Rows 6, 7, 26: one statement checks the cap and inserts the row already counted as attempt 1,
+    // so concurrent calls cannot overshoot the cap and no row exists without its first attempt.
     replyId = generateId();
+    attempt = 1;
+    const insertedAt = now().toISOString();
     let inserted: bigint | undefined;
     try {
       const insertResult = await sql`
         INSERT INTO inbound_webhook_replies
           (id, endpoint_id, webhook_id, session_id, body_sha256, attempt_count, last_status, created_at, last_attempt_at)
-        SELECT ${replyId}, ${endpointId}, ${webhookId}, ${sessionId}, ${bodyHash}, 0, NULL, ${now().toISOString()}, NULL
+        SELECT ${replyId}, ${endpointId}, ${webhookId}, ${sessionId}, ${bodyHash}, ${attempt}, NULL, ${insertedAt}, ${insertedAt}
         WHERE (
           SELECT count(*) FROM inbound_webhook_replies
           WHERE endpoint_id = ${endpointId} AND webhook_id = ${webhookId} AND session_id = ${sessionId}
@@ -332,22 +397,21 @@ export async function replyToInboundWebhook(input: ReplyInput, deps: ReplyDeps):
       return refuse(REPLY_ERRORS.bodyDiffers, 'body-differs', { endpointId, replyId: row.id });
     }
     replyId = row.id;
-  }
 
-  // Rows 10, 11: one statement counts the attempt, and the request is made only if it counted.
-  let attempt: number;
-  try {
-    const counted = await deps.db
-      .updateTable('inbound_webhook_replies')
-      .set((eb) => ({ attempt_count: eb('attempt_count', '+', 1), last_attempt_at: now().toISOString() }))
-      .where('id', '=', replyId)
-      .where('attempt_count', '<', MAX_ATTEMPTS_PER_REPLY)
-      .returning('attempt_count')
-      .executeTakeFirst();
-    if (!counted) return refuse(REPLY_ERRORS.attemptLimitReached, 'attempt-limit-reached', { endpointId, replyId });
-    attempt = counted.attempt_count;
-  } catch (error) {
-    return refuse(REPLY_ERRORS.recordFailed, 'attempt-write-failed', { endpointId, replyId, errorName: errorName(error) });
+    // Rows 10, 11, 26: one guarded statement counts the resend, and the request is made only if it counted.
+    try {
+      const counted = await deps.db
+        .updateTable('inbound_webhook_replies')
+        .set((eb) => ({ attempt_count: eb('attempt_count', '+', 1), last_attempt_at: now().toISOString() }))
+        .where('id', '=', replyId)
+        .where('attempt_count', '<', MAX_ATTEMPTS_PER_REPLY)
+        .returning('attempt_count')
+        .executeTakeFirst();
+      if (!counted) return refuse(REPLY_ERRORS.attemptLimitReached, 'attempt-limit-reached', { endpointId, replyId });
+      attempt = counted.attempt_count;
+    } catch (error) {
+      return refuse(REPLY_ERRORS.recordFailed, 'attempt-write-failed', { endpointId, replyId, errorName: errorName(error) });
+    }
   }
 
   const timestamp = String(Math.floor(now().getTime() / 1000));
@@ -403,11 +467,14 @@ export async function replyToInboundWebhook(input: ReplyInput, deps: ReplyDeps):
         'Inbound webhook reply attempted',
       );
     } else {
-      const read = await readBoundedBody(response, controller.signal);
+      const redact = buildRedactor(signature, replyUrl);
+      const read = await readBoundedBody(response, controller.signal, redact);
       responseBytes = read.bytes;
       const retryAfterRaw = response.headers.get('retry-after');
       const retryAfter =
-        retryAfterRaw === null ? '' : Array.from(toSingleLine(retryAfterRaw)).slice(0, RETRY_AFTER_MAX_CHARS).join('');
+        retryAfterRaw === null
+          ? ''
+          : Array.from(toSingleLine(redact(retryAfterRaw))).slice(0, RETRY_AFTER_MAX_CHARS).join('');
       result = {
         replyId,
         attempt,
@@ -437,12 +504,15 @@ export async function replyToInboundWebhook(input: ReplyInput, deps: ReplyDeps):
     clearTimeout(timer);
   }
 
-  // Row 21: the result is returned even when recording its status fails.
+  // Row 21: the result is returned even when recording its status fails. Only the latest attempt
+  // records its status: an attempt that is no longer the latest updates no row, which is neither an
+  // error nor a warning.
   try {
     await deps.db
       .updateTable('inbound_webhook_replies')
       .set({ last_status: result.outcome === 'responded' ? result.status : null })
       .where('id', '=', replyId)
+      .where('attempt_count', '=', attempt)
       .execute();
   } catch (error) {
     logger.warn(

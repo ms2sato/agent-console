@@ -360,6 +360,22 @@ describe('receiveInboundWebhook', () => {
       expect(after.jobs).toHaveLength(1);
     });
 
+    it('a reflected reply id is a duplicate even when the body fails the inbound schema (control: the same body with an unrecorded id is invalid_request)', async () => {
+      await recordReply(ENDPOINT_ID, 'reply_abc');
+      const before = await rows();
+      wakeSpy.mockClear();
+      const badBody = '{"unexpected":"echo"}';
+
+      expect(await receiveInboundWebhook(input({ webhookId: 'reply_abc', rawBody: badBody }), deps())).toEqual({ kind: 'duplicate' });
+      expect(await rows()).toEqual(before);
+      expect(wakeSpy).not.toHaveBeenCalled();
+
+      expect(await receiveInboundWebhook(input({ webhookId: 'reply_unrecorded', rawBody: badBody }), deps())).toEqual({
+        kind: 'invalid_request',
+      });
+      expect(await rows()).toEqual(before);
+    });
+
     it('a reply id recorded for another endpoint does not block this one', async () => {
       await endpoints.create({
         id: 'ep-2',
