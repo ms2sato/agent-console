@@ -3,8 +3,9 @@
  * `body.md`.
  *
  * Only strings found in the positions the design doc's projection table lists are written; every
- * other key of the untrusted `slack_message` (user, bot ids, `block_id`, URLs, image fields,
- * action values, `slack_message.text` itself) is never read. The text is displayed as sent: no
+ * other key of the untrusted `slack_message` (user, `block_id`, URLs, image fields, action values,
+ * `slack_message.text` itself) is never read. The one exception is the poster identity
+ * (`app_id`, `bot_id`, top level), which {@link readPosterIdentity} shape-validates. The text is displayed as sent: no
  * entity decoding, no rewriting of Slack tokens, and nothing is derived from it (no counts of
  * findings, no severity, no routing).
  *
@@ -115,6 +116,40 @@ function cleanTexts(values: Array<string | null>): string[] {
     if (cleaned !== null) out.push(cleaned);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Poster identity
+// ---------------------------------------------------------------------------
+
+/** A poster id as received: upper-case letters and digits, 1 to 32 characters. No trim, no case folding. */
+const PosterIdSchema = v.pipe(v.string(), v.regex(/^[A-Z0-9]{1,32}$/));
+
+/** `absent`: the key is not there. `rejected`: it is there and fails the shape. */
+export type PosterId = { kind: 'shown'; value: string } | { kind: 'absent' } | { kind: 'rejected' };
+
+export interface PosterIdentity {
+  appId: PosterId;
+  botId: PosterId;
+}
+
+function readPosterId(message: Record<string, unknown> | undefined, key: 'app_id' | 'bot_id'): PosterId {
+  try {
+    const value = message?.[key];
+    if (value === undefined) return { kind: 'absent' };
+    const parsed = v.safeParse(PosterIdSchema, value);
+    return parsed.success ? { kind: 'shown', value: parsed.output } : { kind: 'rejected' };
+  } catch {
+    return { kind: 'rejected' };
+  }
+}
+
+/**
+ * The poster's `slack_message.app_id` and `slack_message.bot_id` (top level only), each shown only
+ * when it matches the shape. Pure; never throws, for any input value.
+ */
+export function readPosterIdentity(slackMessage: Record<string, unknown> | undefined): PosterIdentity {
+  return { appId: readPosterId(slackMessage, 'app_id'), botId: readPosterId(slackMessage, 'bot_id') };
 }
 
 // ---------------------------------------------------------------------------

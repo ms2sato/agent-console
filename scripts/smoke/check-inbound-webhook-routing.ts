@@ -253,6 +253,8 @@ const REFUSED_BODY = {
 /** The POST-to-tag time must stay far below the 10 s attachment timeout; generous for a loaded runner. */
 const REFUSAL_ARM_MAX_ELAPSED_MS = 5_000;
 const TAG = '[inbound:external:message]';
+// A made-up poster app id (well-formed), and a bot id that fails the id shape so no `Bot ID` line may appear.
+const POSTER_APP_ID = 'A0123ABCD';
 const SENDER_BODY = {
   schema_version: 1,
   message: 'Deploy finished\nsecond sender line',
@@ -263,6 +265,8 @@ const SENDER_BODY = {
   slack_message: {
     text: RAW_EVENT_TEXT,
     user: 'U1',
+    app_id: POSTER_APP_ID,
+    bot_id: 'b-1',
     blocks: [{ type: 'section', block_id: BLOCK_ID_MARKER, text: { type: 'mrkdwn', text: BLOCK_MARKER } }],
   },
 };
@@ -616,6 +620,13 @@ async function main(): Promise<void> {
       '(1) body.md carries no slack_message key, no slack_files URL and no token-looking substring',
       bodyL.slice(0, 600),
     );
+
+    expect(
+      bodyL.includes(`- App ID: ${POSTER_APP_ID}`) && !bodyL.includes('Bot ID') && bodyL.indexOf('- Timestamp:') < bodyL.indexOf('- App ID:'),
+      '(1) body.md carries the poster `- App ID:` line after `- Timestamp:` and no `Bot ID` line (the malformed bot_id is omitted)',
+      bodyL.slice(0, 800),
+    );
+    expect(!newL.includes(POSTER_APP_ID), "(1) the poster app id value is absent from L's output file (it is in body.md only)", newL.slice(-600));
 
     // (2) embedded: read only after the turn settles.
     interface NdjsonLine { type?: string; state?: string; text?: string; notification?: { kind?: string } }

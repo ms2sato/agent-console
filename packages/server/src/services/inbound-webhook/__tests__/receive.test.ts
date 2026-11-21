@@ -589,19 +589,20 @@ describe('prepareDelivery', () => {
     expect(content.bodyMarkdown).not.toContain('Details');
   });
 
-  it('never projects slack_message.text, non-content keys of slack_message, or slack_files, even when the payload carries them', async () => {
+  it('never projects slack_message.text, non-content keys of slack_message (the poster app_id / bot_id are the only exception), or slack_files, even when the payload carries them', async () => {
     const token = 'TOKEN-SENTINEL-123';
     const content = await prepareDelivery(
       payloadOf({
         message: 'plain',
-        slack_message: { text: 'RAW-EVENT-SENTINEL', user: 'USER-SENTINEL', bot_id: 'BOT-SENTINEL', blocks: [{ type: 'rich_text', block_id: 'BLOCK-ID-SENTINEL' }] },
+        // bot_id fails the id shape here, so it is not shown either; bot_profile.app_id is never read.
+        slack_message: { text: 'RAW-EVENT-SENTINEL', user: 'USER-SENTINEL', username: 'USERNAME-SENTINEL', bot_profile: { app_id: 'APROFILE1' }, bot_id: 'BOT-SENTINEL', blocks: [{ type: 'rich_text', block_id: 'BLOCK-ID-SENTINEL' }] },
         slack_files: [{ name: 'a.png', mimetype: 'image/png', size: 5, url: `https://firebasestorage.googleapis.com/v0/b/x/o/a?alt=media&token=${token}` }],
       }),
       // The file is not fetchable here, so no local name is listed either.
       { endpoints, attachmentFetch: async () => new Response('', { status: 404 }) },
     );
     const everything = JSON.stringify(content);
-    for (const forbidden of ['RAW-EVENT-SENTINEL', 'USER-SENTINEL', 'BOT-SENTINEL', 'BLOCK-ID-SENTINEL', token, 'firebasestorage', 'slack_message', 'slack_files', 'a.png']) {
+    for (const forbidden of ['RAW-EVENT-SENTINEL', 'USER-SENTINEL', 'USERNAME-SENTINEL', 'APROFILE1', 'BOT-SENTINEL', 'BLOCK-ID-SENTINEL', token, 'firebasestorage', 'slack_message', 'slack_files', 'a.png']) {
       expect(everything).not.toContain(forbidden);
     }
   });
@@ -681,6 +682,8 @@ describe('prepareDelivery', () => {
           chunks: 1,
           notShown: 1,
           cut: false,
+          appId: 'absent',
+          botId: 'absent',
           senderTruncated: false,
         });
         expect(JSON.stringify(infoSpy.mock.calls)).not.toContain(sentinel);
@@ -688,6 +691,100 @@ describe('prepareDelivery', () => {
         infoSpy.mockClear();
         await prepareDelivery(payloadOf({ message: 'no event' }), { endpoints });
         expect(infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'))).toHaveLength(0);
+      } finally {
+        infoSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('poster identity', () => {
+    const base = { message: 'hi', slack_channel: 'C1', slack_ts: '1.2' };
+
+    it('(T6) renders the five Details lines in order', async () => {
+      const content = await prepareDelivery(
+        payloadOf({ ...base, slack_permalink: 'https://x.slack.com/archives/C1/p1', slack_message: { app_id: 'A0123ABCD', bot_id: 'B0123ABCD' } }),
+        { endpoints },
+      );
+      expect(content.bodyMarkdown).toBe(
+        [
+          '# Inbound webhook message',
+          '',
+          '## Message',
+          '',
+          'hi',
+          '',
+          '## Details',
+          '',
+          '- Permalink: https://x.slack.com/archives/C1/p1',
+          '- Channel: C1',
+          '- Timestamp: 1.2',
+          '- App ID: A0123ABCD',
+          '- Bot ID: B0123ABCD',
+          '',
+        ].join('\n'),
+      );
+    });
+
+    it('(T7) renders ## Details with the two id lines alone', async () => {
+      const content = await prepareDelivery(
+        payloadOf({ message: 'hi', slack_message: { app_id: 'A0123ABCD', bot_id: 'B0123ABCD' } }),
+        { endpoints },
+      );
+      expect(content.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n\n## Details\n\n- App ID: A0123ABCD\n- Bot ID: B0123ABCD\n');
+    });
+
+    it('(A2/A3) renders one id alone when the other is malformed', async () => {
+      const content = await prepareDelivery(
+        payloadOf({ message: 'hi', slack_message: { app_id: 'A0123ABCD', bot_id: 'b-1' } }),
+        { endpoints },
+      );
+      expect(content.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n\n## Details\n\n- App ID: A0123ABCD\n');
+      expect(content.bodyMarkdown).not.toContain('Bot ID');
+    });
+
+    it('(T8) writes nothing of an id that carries a newline and a heading', async () => {
+      const content = await prepareDelivery(
+        payloadOf({ ...base, slack_message: { app_id: 'A1\n## Injected' } }),
+        { endpoints },
+      );
+      expect(content.bodyMarkdown).not.toContain('Injected');
+      expect(content.bodyMarkdown).not.toContain('App ID');
+    });
+
+    it('(T9) leaves the body byte-identical when the only ids are malformed and nothing is projected', async () => {
+      const plain = await prepareDelivery(payloadOf({ message: 'hi' }), { endpoints });
+      const withBad = await prepareDelivery(
+        payloadOf({ message: 'hi', slack_message: { app_id: 'bad id', text: 'x' } }),
+        { endpoints },
+      );
+      expect(withBad.bodyMarkdown).toBe(plain.bodyMarkdown);
+    });
+
+    it('(T11/A5) keeps summary, url and the rest of the content equal to the same body without ids', async () => {
+      const bodyOf = (slackMessage: Record<string, unknown>) =>
+        payloadOf({ message: 'hello', slack_permalink: 'https://x.slack.com/archives/C1/p1', slack_message: slackMessage });
+      const without = await prepareDelivery(bodyOf({ text: 'x' }), { endpoints });
+      const withIds = await prepareDelivery(bodyOf({ text: 'x', app_id: 'A0123ABCD', bot_id: 'B0123ABCD' }), { endpoints });
+      expect(withIds.summary).toBe(without.summary);
+      expect(withIds.url).toBe(without.url);
+      expect(withIds.instructionMarkdown).toBe(without.instructionMarkdown);
+      expect(withIds.deliveryId).toBe(without.deliveryId);
+      expect(withIds.endpoint).toEqual(without.endpoint);
+      const everythingButBody = JSON.stringify({ ...withIds, bodyMarkdown: '' });
+      expect(everythingButBody).not.toContain('A0123ABCD');
+      expect(everythingButBody).not.toContain('B0123ABCD');
+    });
+
+    it('(A6) logs the kinds of both ids and never a value', async () => {
+      const infoSpy = spyOn(rootLogger, 'info');
+      try {
+        await prepareDelivery(payloadOf({ message: 'hi', slack_message: { app_id: 'A0123ABCD', bot_id: 'b-1' } }), { endpoints });
+        const projected = infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'));
+        expect(projected).toHaveLength(1);
+        expect(projected[0]![0]).toMatchObject({ appId: 'shown', botId: 'rejected' });
+        const logged = JSON.stringify(infoSpy.mock.calls);
+        expect(logged).not.toContain('A0123ABCD');
+        expect(logged).not.toContain('b-1');
       } finally {
         infoSpy.mockRestore();
       }
