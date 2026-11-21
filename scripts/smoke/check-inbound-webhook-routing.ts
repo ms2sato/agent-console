@@ -267,6 +267,9 @@ const SENDER_BODY = {
   },
 };
 
+/** Upper bound on waiting for the child's output readers to reach end of stream after the child exited. */
+const DRAIN_DEADLINE_MS = 5_000;
+
 async function main(): Promise<void> {
   // NODE_ENV-sensitive: this smoke boots the real `packages/server/src/index.ts` as a child
   // process inheriting NODE_ENV, whose static-file-serving branch is gated on it (see
@@ -295,8 +298,9 @@ async function main(): Promise<void> {
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   let stdoutBuf = '';
   let stderrBuf = '';
-  let stdoutDrained: Promise<void> = Promise.resolve();
-  let stderrDrained: Promise<void> = Promise.resolve();
+  // Each resolves true when the reader reached end of stream, false when it errored.
+  let stdoutDrained: Promise<boolean> = Promise.resolve(true);
+  let stderrDrained: Promise<boolean> = Promise.resolve(true);
   // Set by the reply arm; scanned in `finally` once the child has exited and both readers have drained.
   let finalSecrecyScan: { secrets: string[]; toolTexts: string[] } | undefined;
   let stubServer: ReturnType<typeof Bun.serve> | undefined;
@@ -326,10 +330,12 @@ async function main(): Promise<void> {
     const decoder = new TextDecoder();
     stdoutDrained = (async () => {
       for await (const chunk of proc!.stdout as ReadableStream<Uint8Array>) stdoutBuf += decoder.decode(chunk);
-    })().catch(() => undefined);
+      return true;
+    })().catch(() => false);
     stderrDrained = (async () => {
       for await (const chunk of proc!.stderr as ReadableStream<Uint8Array>) stderrBuf += decoder.decode(chunk);
-    })().catch(() => undefined);
+      return true;
+    })().catch(() => false);
     await waitForServerReady(baseUrl);
     console.log('==> disposable server is ready');
 
@@ -972,9 +978,20 @@ async function main(): Promise<void> {
       }
       proc.kill();
       await proc.exited;
-      const drainDeadline = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
-      await Promise.race([Promise.all([stdoutDrained, stderrDrained]).then(() => undefined), drainDeadline]);
-      if (finalSecrecyScan) {
+      const drainTimer = { id: undefined as ReturnType<typeof setTimeout> | undefined };
+      const drainDeadline = new Promise<'deadline'>((resolve) => {
+        drainTimer.id = setTimeout(() => resolve('deadline'), DRAIN_DEADLINE_MS);
+      });
+      const drain = await Promise.race([Promise.all([stdoutDrained, stderrDrained]), drainDeadline]);
+      clearTimeout(drainTimer.id);
+      const drainedCleanly = drain !== 'deadline' && drain[0] && drain[1];
+      if (finalSecrecyScan && !drainedCleanly) {
+        expect(
+          false,
+          '(6) A3: the child output readers finished cleanly before the final secrecy scan',
+          drain === 'deadline' ? `drain deadline of ${DRAIN_DEADLINE_MS} ms expired` : `stdout reader ok=${drain[0]}, stderr reader ok=${drain[1]}; the scan was not run`,
+        );
+      } else if (finalSecrecyScan) {
         const everything = [stdoutBuf, stderrBuf, ...finalSecrecyScan.toolTexts].join('\n');
         expect(
           finalSecrecyScan.secrets.every((secret) => !everything.includes(secret)),
