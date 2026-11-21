@@ -31,6 +31,7 @@ export interface Database {
   deferred_worker_notifications: DeferredWorkerNotificationsTable;
   inbound_webhook_endpoints: InboundWebhookEndpointsTable;
   inbound_webhook_deliveries: InboundWebhookDeliveriesTable;
+  inbound_webhook_replies: InboundWebhookRepliesTable;
 }
 
 /**
@@ -959,6 +960,8 @@ export interface InboundWebhookEndpointsTable {
   previous_secret: string | null;
   /** Expiry of `previous_secret` as ISO 8601 string */
   previous_secret_expires_at: string | null;
+  /** Operator-set address a signed reply is posted to; NULL = replies refused (a CHECK caps it at 2048 characters) */
+  reply_url: string | null;
   /** Creation timestamp as ISO 8601 string */
   created_at: string;
   /** Last update timestamp as ISO 8601 string */
@@ -979,4 +982,29 @@ export interface InboundWebhookDeliveriesTable {
   webhook_id: string;
   /** Receipt timestamp as ISO 8601 string */
   received_at: string;
+}
+
+/**
+ * Inbound Webhook Replies table schema: one row per reply an agent sends to the sender of an
+ * inbound delivery (rows cascade with their delivery row, never pruned). Holds ids, a body hash and
+ * counters; never the reply body.
+ */
+export interface InboundWebhookRepliesTable {
+  /** Primary key - server-minted reply id (`reply_<uuid>`), sent as the `webhook-id` */
+  id: string;
+  /** Delivery the reply answers (with `webhook_id`; composite foreign key, cascades) */
+  endpoint_id: string;
+  webhook_id: string;
+  /** Session that sent the reply (no foreign key: the row outlives the session) */
+  session_id: string;
+  /** SHA-256 (hex, 64 characters) of the body's canonical JSON */
+  body_sha256: string;
+  /** Attempts made so far (has DEFAULT) */
+  attempt_count: Generated<number>;
+  /** HTTP status of the latest attempt, NULL when there was no response */
+  last_status: number | null;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: string;
+  /** Latest attempt timestamp as ISO 8601 string */
+  last_attempt_at: string | null;
 }

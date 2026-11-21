@@ -115,6 +115,49 @@ describe('Client-Server Boundary: inbound webhook endpoints', () => {
     expect(readText).not.toContain('secret');
   });
 
+  it('replyUrl crosses the wire: create with one, read it back through the strict schemas, patch it to null, read null back', async () => {
+    const replyUrl = 'https://sender.example.com/replies?token=abc';
+    const createdRes = await request('POST', '', { label: 'Slack', instructionText: 'x', replyUrl });
+    expect(createdRes.status).toBe(201);
+    const created = v.parse(InboundWebhookEndpointWithSecretResponseSchema, await createdRes.json());
+    expect(created.endpoint.replyUrl).toBe(replyUrl);
+    const id = created.endpoint.id;
+
+    const got = v.parse(InboundWebhookEndpointResponseSchema, await (await request('GET', `/${id}`)).json());
+    expect(got.endpoint.replyUrl).toBe(replyUrl);
+    const listed = v.parse(InboundWebhookEndpointsListResponseSchema, await (await request('GET', '')).json());
+    expect(listed.endpoints.map((e) => e.replyUrl)).toEqual([replyUrl]);
+
+    const changed = v.parse(
+      InboundWebhookEndpointResponseSchema,
+      await (await request('PATCH', `/${id}`, { replyUrl: 'https://sender.example.com/other' })).json(),
+    );
+    expect(changed.endpoint.replyUrl).toBe('https://sender.example.com/other');
+
+    const cleared = v.parse(InboundWebhookEndpointResponseSchema, await (await request('PATCH', `/${id}`, { replyUrl: null })).json());
+    expect(cleared.endpoint.replyUrl).toBeNull();
+    const after = v.parse(InboundWebhookEndpointResponseSchema, await (await request('GET', `/${id}`)).json());
+    expect(after.endpoint.replyUrl).toBeNull();
+  });
+
+  it('control: an endpoint created without replyUrl reads null on the wire, and a body without the key fails the strict response schema', async () => {
+    const created = v.parse(
+      InboundWebhookEndpointWithSecretResponseSchema,
+      await (await request('POST', '', { label: 'Slack', instructionText: 'x' })).json(),
+    );
+    expect(created.endpoint.replyUrl).toBeNull();
+    const raw = (await (await request('GET', `/${created.endpoint.id}`)).json()) as { endpoint: Record<string, unknown> };
+    expect(raw.endpoint).toHaveProperty('replyUrl', null);
+    const { replyUrl: _omitted, ...withoutKey } = raw.endpoint;
+    expect(v.safeParse(InboundWebhookEndpointResponseSchema, { endpoint: withoutKey }).success).toBe(false);
+  });
+
+  it('an invalid reply URL is a 400 whose body does not echo it', async () => {
+    const res = await request('POST', '', { label: 'Slack', instructionText: 'x', replyUrl: 'http://sender.example.com/?token=ECHOMARK' });
+    expect(res.status).toBe(400);
+    expect(await res.text()).not.toContain('ECHOMARK');
+  });
+
   it('an entered secret parses as the entered variant on create and on rotate, and is never echoed', async () => {
     const onCreate = enteredSecret(32);
     const createdText = await (await request('POST', '', { label: 'Slack', instructionText: 'x', secret: onCreate })).text();

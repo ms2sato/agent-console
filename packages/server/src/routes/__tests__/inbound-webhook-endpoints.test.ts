@@ -725,6 +725,138 @@ describe('Inbound webhook endpoint routes', () => {
     });
   });
 
+  describe('reply URL', () => {
+    const URL_A = 'https://sender.example.com/replies?token=abc';
+    const URL_B = 'https://sender.example.com/other';
+    const MARK = 'REPLYURLMARK';
+
+    const patch = (id: string, body: unknown) => app.request(`${base}/${id}`, json('PATCH', body));
+    const stored = async (id: string) => (await storedRow(id)).reply_url;
+
+    it('create without replyUrl reads null; with one stores it as entered and returns it', async () => {
+      const without = await create();
+      expect(without.endpoint.replyUrl).toBeNull();
+      expect(await stored(without.endpoint.id)).toBeNull();
+
+      const withUrl = await create({ ...VALID_CREATE, replyUrl: URL_A });
+      expect(withUrl.endpoint.replyUrl).toBe(URL_A);
+      expect(await stored(withUrl.endpoint.id)).toBe(URL_A);
+    });
+
+    it('get and list carry replyUrl', async () => {
+      const created = await create({ ...VALID_CREATE, replyUrl: URL_A });
+      const got = v.parse(InboundWebhookEndpointResponseSchema, await (await app.request(`${base}/${created.endpoint.id}`)).json());
+      expect(got.endpoint.replyUrl).toBe(URL_A);
+      const listed = v.parse(InboundWebhookEndpointsListResponseSchema, await (await app.request(base)).json());
+      expect(listed.endpoints[0]?.replyUrl).toBe(URL_A);
+    });
+
+    it('patch sets, changes and clears; an omitted key leaves it unchanged', async () => {
+      const created = await create();
+      const id = created.endpoint.id;
+      expect((await patch(id, { replyUrl: URL_A })).status).toBe(200);
+      expect(await stored(id)).toBe(URL_A);
+      expect((await patch(id, { replyUrl: URL_B })).status).toBe(200);
+      expect(await stored(id)).toBe(URL_B);
+      const omitted = await patch(id, { label: 'renamed' });
+      expect(omitted.status).toBe(200);
+      expect(v.parse(InboundWebhookEndpointResponseSchema, await omitted.json()).endpoint.replyUrl).toBe(URL_B);
+      const cleared = await patch(id, { replyUrl: null });
+      expect(cleared.status).toBe(200);
+      expect(v.parse(InboundWebhookEndpointResponseSchema, await cleared.json()).endpoint.replyUrl).toBeNull();
+      expect(await stored(id)).toBeNull();
+    });
+
+    const rejected: Array<[string, unknown]> = [
+      ['empty string', ''],
+      ['2049 characters', `https://a.example/${'x'.repeat(2049 - 'https://a.example/'.length)}`],
+      ['http', `http://a.example/?q=${MARK}`],
+      ['credentials', `https://user:pass@a.example/?q=${MARK}`],
+      ['a fragment', `https://a.example/#${MARK}`],
+      ['not a URL', `not a url ${MARK}`],
+      ['leading whitespace', ` https://a.example/?q=${MARK}`],
+      ['a control character', `https://a.example/${MARK}\u0001`],
+      ['a C1 control character', `https://a.example/${MARK}\u0085q`],
+      ['an empty fragment', `https://a.example/p?q=${MARK}#`],
+      ['no host after the slashes', `https:///${MARK}`],
+      ['a single slash', `https:/${MARK}`],
+      ['no slashes', `https:${MARK}`],
+      ['backslashes', `https:\\\\a.example\\${MARK}`],
+    ];
+    for (const [name, value] of rejected) {
+      it(`create and patch refuse ${name} with 400, store nothing, and the 400 body and the logs do not contain the value`, async () => {
+        const created = await create();
+        const spies = (['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const).map((level) => spyOn(rootLogger, level));
+        try {
+          const createRes = await app.request(base, json('POST', { ...VALID_CREATE, replyUrl: value }));
+          const patchRes = await patch(created.endpoint.id, { replyUrl: value });
+          expect(createRes.status).toBe(400);
+          expect(patchRes.status).toBe(400);
+          expect(await createRes.text()).not.toContain(MARK);
+          expect(await patchRes.text()).not.toContain(MARK);
+          // Positive control: the 400 path did log through the API error handler.
+          expect(JSON.stringify(spies.flatMap((spy) => spy.mock.calls))).toContain('API error');
+          expect(JSON.stringify(spies.flatMap((spy) => spy.mock.calls))).not.toContain(MARK);
+        } finally {
+          for (const spy of spies) spy.mockRestore();
+        }
+        expect(await stored(created.endpoint.id)).toBeNull();
+        expect(await db.selectFrom('inbound_webhook_endpoints').select('id').execute()).toHaveLength(1);
+      });
+    }
+
+    it('null on create is 400', async () => {
+      const res = await app.request(base, json('POST', { ...VALID_CREATE, replyUrl: null }));
+      expect(res.status).toBe(400);
+      expect(await db.selectFrom('inbound_webhook_endpoints').select('id').execute()).toHaveLength(0);
+    });
+
+    it('accepts exactly 2048 characters, a query string, a port, an IP literal, an upper-case scheme, a space in the path, an encoded # and a bare host', async () => {
+      for (const value of [
+        'HTTPS://a.example/p',
+        'https://a.example/p q',
+        'https://a.example/p?a=%23',
+        'https://a.example',
+        `https://a.example/${'x'.repeat(2048 - 'https://a.example/'.length)}`,
+        'https://a.example/p?token=abc',
+        'https://localhost:8443/x',
+        'https://10.0.0.5/x',
+      ]) {
+        const res = await app.request(base, json('POST', { ...VALID_CREATE, replyUrl: value }));
+        expect(res.status).toBe(201);
+      }
+    });
+
+    it('a patch body with none of label, instructionText, replyUrl is 400', async () => {
+      const created = await create();
+      expect((await patch(created.endpoint.id, {})).status).toBe(400);
+    });
+
+    it('no log call during create and patch carries the reply URL (marker in the query; control: the calls were made)', async () => {
+      const spies = (['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const).map((level) => spyOn(rootLogger, level));
+      try {
+        const withMark = `https://a.example/p?token=${MARK}`;
+        const created = await create({ ...VALID_CREATE, replyUrl: withMark });
+        await patch(created.endpoint.id, { replyUrl: `https://a.example/q?token=${MARK}2` });
+        await patch(created.endpoint.id, { replyUrl: null });
+
+        const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+        expect(logged).toContain(created.endpoint.id);
+        expect(logged).not.toContain(MARK);
+        expect(logged).not.toContain('a.example');
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    });
+
+    it("another repository's endpoint reply URL cannot be changed through this repository (404, unchanged)", async () => {
+      const theirs = await create({ ...VALID_CREATE, replyUrl: URL_A }, OTHER_REPO_ID);
+      const res = await patch(theirs.endpoint.id, { replyUrl: URL_B });
+      expect(res.status).toBe(404);
+      expect(await stored(theirs.endpoint.id)).toBe(URL_A);
+    });
+  });
+
   describe('logging', () => {
     it('no log call during create, rotate, update, clear or delete carries a secret, generated or entered', async () => {
       const spies = (['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const).map((level) => spyOn(rootLogger, level));

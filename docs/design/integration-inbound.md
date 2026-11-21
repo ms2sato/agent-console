@@ -953,6 +953,13 @@ Entered-secret handling in the client: the secret input is `type="password"` wit
 | clear previous secret | do: `POST /:id/clear-previous-secret` | do: "End previous secret now" on the row, rendered only while `hasPreviousSecret` **(owner)** | not here: operator-only | not here: operator-only |
 | show receive URL (`<base>/webhooks/in/<id>`) | do: base via `GET /api/system/health` `internetOrigin` (null when `AGENT_CONSOLE_INTERNET_ORIGIN` is unset); no URL field on the endpoint resources | do: on each list row and on the create page's post-create panel, with Copy; path plus a hint when the base URL is unset **(owner)** | not here: operator-only (the agent never needs the sender's URL) | not here: operator-only |
 | reveal secret (read back after issue) | not here: owner ruling 2026-11-07, lost secret means rotate | not here: same | not here: same | not here: same |
+| set / change reply URL | do: `POST /` (optional `replyUrl`), `PATCH /:id` (`replyUrl: string`) | do: "Reply URL (optional)" input in `EndpointForm`, create and edit pages **(owner)** | not here: operator-only | not here: operator-only |
+| clear reply URL | do: `PATCH /:id` with `replyUrl: null` | do: emptying the input and saving sends `null` **(owner)** | not here: operator-only | not here: operator-only |
+| read reply URL | do: `replyUrl` on list / get / patch responses | do: prefilled in the edit form; the list row shows only "Replies enabled" when set, nothing when unset **(owner)** | not here: the agent never needs the sender's URL | not here: same |
+| send a reply | not here: an operator has no delivery to answer; replies are an agent action | not here: same | do: `reply_to_inbound_webhook` (in development, see "Signed replies") | do: the same MCP tool (embedded agents reach it through the same MCP server) |
+| resend a reply (same id) | not here: same | not here: same | do: `reply_to_inbound_webhook` with `replyId` | do: same |
+| list / read past replies | not here: no reader in this version; the per-attempt log record is the audit trail | not here: same | not here: same | not here: same |
+| read the signature or the secret | not here: never leaves the server | not here: same | not here: same | not here: same |
 | receive a message (`POST /webhooks/in/:endpointId`) | not here: this route is a public, signature-verified route outside `/api` (sender surface, not an authenticated caller) | not here: nothing to operate; delivery reaches sessions through the notification path | not here: same | not here: same |
 
 **Rulings on the implementer's decisions (design decisions, 2026-11-07; unchanged by the revision unless noted):**
@@ -963,6 +970,136 @@ Entered-secret handling in the client: the secret input is `type="password"` wit
 - **`previousSecretExpiresAt` reads null once expired and `hasPreviousSecret` is true only while unexpired.** Confirmed; the receive verifier uses the same strictly-future predicate.
 - **Interface file `repositories/webhook-endpoint-repository.ts`.** Confirmed (keeps `test-trigger.md`'s interface-only exemption).
 - **Unknown repository is 404, missing is 400.** Revised by the move: the repository is now a path segment, so "missing" cannot occur; an unknown `:repositoryId` is 404 `Repository` on list and create, and an id-scoped route for an endpoint not in that repository is 404 `Inbound webhook endpoint`.
+
+### Signed replies (in development)
+
+Some senders accept a reply to a delivery: an HTTP POST to a sender-side URL, signed with the same endpoint secret and the same scheme. A session agent cannot read the secret, and a signature handed back to it would be a valid signature under the receive secret. So the server signs and sends on the agent's behalf and never returns the signature. This feature ships in two steps: the reply URL setting (column, table, wire schema, REST, UI) and then the reply path (signing helper, reply service, MCP tool, notification field, reflection guard). Only the first step exists in code today; the rulings below are the specification of both, and the second step is marked `(in development)` until it lands.
+
+**R1. Reply URL (operator-set, per endpoint).**
+
+- A nullable column `reply_url` on `inbound_webhook_endpoints`. NULL means replies are refused for this endpoint.
+- It is set and cleared on the existing endpoint surfaces only: `POST /` (create, optional), `PATCH /:id` (`replyUrl: string | null`; `null` clears; omitted leaves it unchanged) and the `EndpointForm` on the create and edit pages. No MCP tool reads or writes it. "Admin-only" here means the existing authenticated-caller check on REST and no agent-visible surface.
+- Validation is one schema, `InboundWebhookReplyUrlSchema`, in the shared schema file, used by create and update (client and server share it):
+  - a string of 1..2048 characters (`.length`), with no leading or trailing whitespace (the value is not trimmed: surrounding whitespace is 400);
+  - it parses with `new URL(value)`, its protocol is exactly `https:`, its `username` and `password` are empty, and the text starts with `https://` followed by a host character (case-insensitive scheme; so `https:///x`, `https:x`, `https:/x` and backslash forms are refused, because the stored text must show the host that is called). It contains no `#` (a raw `#` is the fragment delimiter, an empty one included) and no control character (`\p{Cc}`: C0, DEL and C1);
+  - query strings, ports and any hostname (including `localhost` and IP literals) are accepted. The field is operator-set, and a hostname filter would be a name-time check that the later connect does not repeat, so it would add no boundary.
+  - The validation message never echoes the value (the API error handler logs messages), as for the secret schema.
+- The stored value is the string as entered (not `URL#href`-normalized).
+- The reply URL is returned by list, get and patch as `replyUrl: string | null`. It is configuration, not a secret, but it may carry a token in its query: it is never written to a log, never returned by the MCP tool, and never placed in a notification or a delivery file.
+
+**R2. MCP tool `reply_to_inbound_webhook`.** Parameters: `deliveryId: string`; `body: object` (a JSON object; arrays, strings, numbers, booleans and null are refused; agent-console does not interpret it); `replyId?: string` (present only when resending a reply already attempted, R4); `sessionId?: string` (the caller's session, same convention as `send_session_message`, resolved through `resolveSelfIdentity`; the tool is listed in `mcp/session-claiming-tools.ts`). The agent gets the delivery id from a notification field `delivery_id` on `external:message` (R7).
+
+**R3. Ownership of `deliveryId`.** A session may reply to a delivery exactly when all hold: (1) `deliveryId` parses with `parseInboundWebhookDeliveryId`, which sits beside `inboundWebhookDeliveryId` (the single writer of the format): prefix `inbound-webhook:`, the endpoint id up to the next `:`, the rest as the webhook id (which may contain `:`) and the webhook id passes `isValidWebhookId`; (2) a row exists in `inbound_webhook_deliveries` for `(endpoint_id, webhook_id)` (rows cascade with the endpoint, so a deleted endpoint fails here); (3) a row exists in `inbound_event_notifications` with `job_id = deliveryId`, `session_id = <caller's session>` and `event_type = 'external:message'`, in any status (the row exists only for a target that routing resolved, so it is the routing record; requiring `delivered` would refuse a legitimate reply when the terminal-status write failed after the notification was sent). Failing any of the three returns one generic error, `Unknown delivery`, so the tool does not reveal which deliveries or endpoints exist.
+
+**R4. Reply identity, retry and idempotency.**
+
+- The message id is server-minted and server-recorded: `reply_<uuid v4>` (it matches `WEBHOOK_ID_PATTERN`). The caller never chooses it.
+- Table `inbound_webhook_replies` holds one row per reply, committed before the first POST, so the id survives a crash or a timeout and the tool can always return it.
+- First attempt: no `replyId`; the server mints the id, inserts the row, POSTs and returns the id with the outcome. Resend: the caller passes the `replyId` it was given; the server reuses the id (the `webhook-id` header is identical) with a new timestamp and a new signature. When to resend is the agent's decision under the sender's conventions; the server never retries on its own.
+- A resend must carry the same body. The row stores `body_sha256`, the SHA-256 (hex) of the body's canonical JSON (object keys sorted recursively, `JSON.stringify` otherwise). A different hash is refused with `Body differs from the recorded reply; send a new reply instead`. The body itself is not stored. The bytes sent are `JSON.stringify(body)` of the body as given on that call, and they are what is signed.
+- Bounds (exactly the bound is allowed, one more is refused): at most 10 attempts per reply id; at most 20 replies per (delivery, session).
+- A `replyId` that does not exist, or belongs to another delivery or session, is the one generic error `Unknown reply`.
+- Two concurrent calls with the same `replyId` both POST; the sender dedupes by id. `attempt_count` is incremented with a single `UPDATE ... SET attempt_count = attempt_count + 1 ... WHERE id = ? AND attempt_count < 10`, and the POST proceeds only if a row was updated.
+- Fan-out: a delivery reaches every designated session and each may reply, with different reply ids. Which session answers is the operator's instruction text, not a server rule.
+
+**R5. Signing and the request.**
+
+- One exported `signStandardWebhook({ secret, id, timestamp, body }): string` returns `v1,<base64>`; `verifyStandardWebhookSignature` computes its expected value through the same inner computation (one writer of the HMAC input string and key decoding). Signing always uses the current `secret`, never `previous_secret`.
+- Request: `POST <reply_url>` with headers `content-type: application/json`, `webhook-id: <replyId>`, `webhook-timestamp: <unix seconds>`, `webhook-signature: <v1,...>` and no header that carries server or session information. `redirect: 'manual'`: a 3xx is returned to the agent as its status and never followed. It goes through `outboundFetch`, injectable for tests.
+- The secret and the reply URL are read at call time, so a rotation or an edit between attempts takes effect on the next attempt.
+- Reflection guard: the receive half treats a `webhook-id` that equals an id in `inbound_webhook_replies` for that endpoint as a duplicate (200, no job, a warn log with ids only). A reply is a validly signed message under the receive secret; without the guard, a message echoed back by the sender would be delivered to the sessions as a new inbound message.
+
+**R6. Bounds, timeout, response handling.** The request body is at most 262,144 UTF-8 bytes (exactly the cap is accepted). One timeout covers the whole exchange: `INBOUND_WEBHOOK_REPLY_TIMEOUT_MS`, default 10,000, in `server-config.ts`. The response body is read as a stream, at most 4,096 UTF-8 bytes are kept (the reader is cancelled at the cap), returned as text through `sanitizeMultiline`, cut at a code-point boundary, with `responseBodyTruncated`; it is untrusted sender text. The `retry-after` response header is returned as `retryAfter` (through `toSingleLine`, at most 64 characters); no other response header is returned. Result shapes: `{ replyId, attempt, outcome: 'responded', status, responseBody, responseBodyTruncated, retryAfter? }` for any HTTP status, and `{ replyId, attempt, outcome: 'no-response', reason }` with `reason` one of `timeout` | `connection-failed`. Never returned: the signature, the secret, the reply URL or its host, any request header.
+
+**R7. Notification field `delivery_id`.** `external:message` notifications gain the field `delivery_id` (the delivery id string), rendered immediately after `body_path` and before the attachment counts, live and deferred alike. It is added to the server-only `InboundEventPtyNotification['fields']`; no shared schema changes.
+
+**R8. Logging and data at rest.** One `info` record per attempt: `endpointId`, `deliveryId`, `replyId`, `sessionId`, `attempt`, `outcome`, `status` or `reason`, `durationMs`, `requestBytes`, `responseBytes`. Never logged: the request body, the response body, the secret, the signature, the reply URL (not even its host), and the text of a thrown fetch error (only `errorName`, because a fetch error message can carry the URL). Refusals are logged at `warn` with ids and a reason code only. Data at rest added: `reply_url` (configuration) and `inbound_webhook_replies` rows (ids, a body hash, counters, timestamps; no body). Rows cascade with their delivery row and so with the endpoint, and, like the deliveries ledger, are not pruned. The endpoint management routes added in the first step also never log the reply URL.
+
+**R9. Wire schema.** `InboundWebhookEndpointSchema` gains `replyUrl: string | null` and the create and update request schemas gain it, which moves the wire-schema hash. The receive route's contract is unchanged except the reflection guard (a 200 that was already the duplicate answer).
+
+**R10. Two steps, serial.** Step 1: migration v57 (column and table in one migration), repository, shared schema, REST, UI, this section, glossary. Step 2 (no DDL, no wire schema): signing helper, reply service, MCP tool, notification field, reflection guard, smoke.
+
+**R11. Verification tier.** Unprivileged: no elevation and no OS coupling; the server makes one HTTPS call as itself.
+
+#### Reply tool behaviour (order of evaluation)
+
+| # | Case | Result |
+|---|---|---|
+| 1 | caller identity not resolved (`resolveSelfIdentity` fails) | its error, unchanged |
+| 2 | `body` not an object (array, string, number, boolean, null, missing) | error `body must be a JSON object` |
+| 3 | serialized body over 262,144 bytes | error `body is too large` (exactly the cap passes) |
+| 4 | `deliveryId` malformed / no delivery row / endpoint deleted / not routed to the caller's session | error `Unknown delivery` (one message for all four) |
+| 5 | endpoint has no reply URL | error `Replies are not enabled for this endpoint` |
+| 6 | no `replyId`, and the (delivery, session) already has 20 replies | error `Reply limit reached for this delivery` |
+| 7 | no `replyId`, under the limit | mint id, insert row, attempt 1 |
+| 8 | `replyId` unknown, or of another delivery, or of another session | error `Unknown reply` |
+| 9 | `replyId` known, body hash differs | error `Body differs from the recorded reply; send a new reply instead` |
+| 10 | `replyId` known, 10 attempts already made | error `Attempt limit reached for this reply` |
+| 11 | `replyId` known, same body, under the limit | attempt n+1, same id, new timestamp and signature |
+| 12 | sender answers any status (2xx, 3xx, 4xx, 5xx) | `outcome: 'responded'` with the status; 3xx not followed |
+| 13 | response body over 4,096 bytes | first 4,096 bytes at a code-point boundary, `responseBodyTruncated: true` |
+| 14 | response body empty | `responseBody: ''`, `responseBodyTruncated: false` |
+| 15 | timeout before headers | `outcome: 'no-response'`, `reason: 'timeout'` |
+| 16 | connection / TLS failure | `outcome: 'no-response'`, `reason: 'connection-failed'` |
+| 17 | headers received, body read times out | `outcome: 'responded'`, partial body, `responseBodyTruncated: true` |
+| 18 | secret rotated or reply URL changed since the first attempt | the current values are used |
+| 19 | reply URL cleared since the first attempt | row 5 |
+| 20 | database write of the reply row fails | tool error, nothing sent |
+| 21 | recording the attempt's outcome (`last_status`) fails after the POST | the result is still returned; warn log |
+| 22 | single-user and multi-user modes | identical (no elevation, no per-user state) |
+
+#### Reply URL validation (boundary values)
+
+| Input | Result |
+|---|---|
+| omitted on create / update | create: stored NULL; update: unchanged |
+| `null` on update | cleared |
+| `null` on create | 400 (create takes a string or nothing) |
+| `''` | 400 |
+| 2,048 characters, otherwise valid | accepted; 2,049 -> 400 |
+| `http://...` | 400 |
+| `https://user:pass@host/` | 400 |
+| `https://host/path#frag` | 400 |
+| `https://host/path?token=abc` | accepted |
+| `https://localhost:8443/x`, `https://10.0.0.5/x` | accepted |
+| not a URL | 400 |
+| leading or trailing whitespace, any control character (`\p{Cc}`: C0, DEL and C1) | 400 |
+| a `#` anywhere, including an empty fragment (`https://host/p#`, `https://host/p?a=1#`) | 400 |
+| a form that URL parsing reads as a host the text does not show (`https:///x`, `https:x`, `https:/x`, `https:\\host\p`); the text must start with `https://` and a host character | 400 |
+| `HTTPS://host/p` (scheme case), a space in the path, `%23` in a query, a bare `https://host` | accepted |
+| update body with none of `label`, `instructionText`, `replyUrl` | 400 (the existing "at least one" rule, extended) |
+
+#### DDL (migration v57, owner-approved 2026-11-20)
+
+```sql
+ALTER TABLE inbound_webhook_endpoints
+  ADD COLUMN reply_url TEXT
+  CONSTRAINT iwe_reply_url_length_check CHECK (reply_url IS NULL OR length(reply_url) BETWEEN 1 AND 2048);
+
+CREATE TABLE IF NOT EXISTS inbound_webhook_replies (
+  id               TEXT PRIMARY KEY,
+  endpoint_id      TEXT NOT NULL,
+  webhook_id       TEXT NOT NULL,
+  session_id       TEXT NOT NULL,
+  body_sha256      TEXT NOT NULL,
+  attempt_count    INTEGER NOT NULL DEFAULT 0,
+  last_status      INTEGER,
+  created_at       TEXT NOT NULL,
+  last_attempt_at  TEXT,
+  FOREIGN KEY (endpoint_id, webhook_id)
+    REFERENCES inbound_webhook_deliveries(endpoint_id, webhook_id) ON DELETE CASCADE,
+  CONSTRAINT iwr_body_sha256_length_check CHECK (length(body_sha256) = 64),
+  CONSTRAINT iwr_attempt_count_check CHECK (attempt_count >= 0),
+  CONSTRAINT iwr_created_at_check CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'),
+  CONSTRAINT iwr_last_attempt_at_check CHECK (last_attempt_at IS NULL OR last_attempt_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
+);
+CREATE INDEX IF NOT EXISTS idx_iwr_delivery_session
+  ON inbound_webhook_replies (endpoint_id, webhook_id, session_id);
+
+PRAGMA user_version = 57;
+```
+
+Existing endpoint rows get `reply_url = NULL`, so replies stay refused until an operator sets a URL and no existing behaviour changes. `session_id` has no foreign key on purpose: a reply row outlives its session (like the deliveries ledger) and goes away with the endpoint. `last_status` is the HTTP status of the latest attempt, NULL when there was no response. The GLOB literals are what `ISO8601_GLOB_PATTERN` renders; the migration emits them from the constant.
 
 ### Non-goals
 

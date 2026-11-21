@@ -2953,6 +2953,7 @@ describe('API Client', () => {
       label: 'Alerts',
       repositoryId: 'repo-1',
       instructionText: 'Triage\nsecond line',
+      replyUrl: null,
       hasPreviousSecret: false,
       previousSecretExpiresAt: null,
       createdAt: '2026-01-01T00:00:00Z',

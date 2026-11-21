@@ -2,6 +2,7 @@ import * as v from 'valibot';
 import {
   INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH,
   INBOUND_WEBHOOK_LABEL_MAX_LENGTH,
+  InboundWebhookReplyUrlSchema,
   InboundWebhookSecretSchema,
 } from '@agent-console/shared';
 
@@ -37,6 +38,32 @@ export function validateLabel(value: string): string | null {
 export function validateEnteredSecret(value: string): string | null {
   const result = v.safeParse(InboundWebhookSecretSchema, value);
   return result.success ? null : (result.issues[0]?.message ?? 'Secret is invalid');
+}
+
+/**
+ * Validates a reply URL with the shared schema, so the rule is the server's rule. An empty value is
+ * the "no reply URL" state and is valid here; the schema's messages name only the rule, never the
+ * value (the URL may carry a token in its query).
+ */
+export function validateReplyUrl(value: string): string | null {
+  if (value === '') return null;
+  const result = v.safeParse(InboundWebhookReplyUrlSchema, value);
+  return result.success ? null : (result.issues[0]?.message ?? 'Reply URL is invalid');
+}
+
+/**
+ * The `replyUrl` key of a request from the form's field. Create: a string only when the field is
+ * non-empty, otherwise absent (create takes a string or nothing). Edit: absent when unchanged,
+ * `null` when a stored value was emptied, the new string when changed.
+ */
+export function replyUrlRequestField(
+  mode: 'create' | 'edit',
+  value: string,
+  initial: string | null,
+): { replyUrl?: string | null } {
+  if (mode === 'create') return value === '' ? {} : { replyUrl: value };
+  if (value === (initial ?? '')) return {};
+  return { replyUrl: value === '' ? null : value };
 }
 
 /** How the signing secret of a create or a rotate is chosen. */

@@ -64,7 +64,7 @@ export function NewInboundWebhookView({ repositoryId }: { repositoryId: string }
 
   const handleSubmit = async (payload: EndpointFormPayload) => {
     try {
-      const outcome = await createEndpoint(payload);
+      const outcome = await createEndpoint({ ...payload, replyUrl: payload.replyUrl ?? undefined });
       if (outcome.secretSource === 'entered') {
         await navigate({ to: '/settings/repositories/$repositoryId/inbound-webhooks', params: { repositoryId } });
       }

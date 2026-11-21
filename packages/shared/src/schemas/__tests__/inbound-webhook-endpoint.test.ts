@@ -3,6 +3,7 @@ import * as v from 'valibot';
 import {
   CreateInboundWebhookEndpointRequestSchema,
   InboundWebhookSecretSchema,
+  InboundWebhookReplyUrlSchema,
   RotateInboundWebhookSecretRequestSchema,
   UpdateInboundWebhookEndpointRequestSchema,
   InboundWebhookEndpointSchema,
@@ -23,6 +24,7 @@ const ENDPOINT = {
   label: 'Slack',
   repositoryId: 'repo-1',
   instructionText: 'Run the triage skill',
+  replyUrl: null,
   hasPreviousSecret: false,
   previousSecretExpiresAt: null,
   createdAt: '2026-11-07T00:00:00.000Z',
@@ -136,6 +138,136 @@ describe('InboundWebhookSecretSchema', () => {
   });
 });
 
+const REPLY_URL_PREFIX = 'https://a.example/';
+/** A valid reply URL of exactly `length` characters. */
+function replyUrlOfLength(length: number): string {
+  return REPLY_URL_PREFIX + 'x'.repeat(length - REPLY_URL_PREFIX.length);
+}
+const MARKER = 'REPLYMARKER';
+
+/** One test per row of the reply URL validation table in docs/design/integration-inbound.md. */
+describe('reply URL validation table', () => {
+  const createWith = (replyUrl: unknown) => v.safeParse(CreateInboundWebhookEndpointRequestSchema, { ...VALID_CREATE, replyUrl });
+  const updateWith = (replyUrl: unknown) => v.safeParse(UpdateInboundWebhookEndpointRequestSchema, { replyUrl });
+
+  it('row: omitted on create is accepted and the key stays absent; omitted on update alone is refused (at least one field)', () => {
+    const created = v.safeParse(CreateInboundWebhookEndpointRequestSchema, VALID_CREATE);
+    expect(created.success).toBe(true);
+    if (created.success) expect('replyUrl' in created.output).toBe(false);
+    const updated = v.safeParse(UpdateInboundWebhookEndpointRequestSchema, { label: 'x' });
+    expect(updated.success).toBe(true);
+    if (updated.success) expect('replyUrl' in updated.output).toBe(false);
+  });
+
+  it('row: null on update is accepted (clears) and counts as a field', () => {
+    const result = updateWith(null);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.output.replyUrl).toBeNull();
+  });
+
+  it('row: null on create is rejected', () => {
+    expect(createWith(null).success).toBe(false);
+  });
+
+  it('row: empty string is rejected on create and update', () => {
+    expect(createWith('').success).toBe(false);
+    expect(updateWith('').success).toBe(false);
+  });
+
+  it('row: exactly 2048 characters accepted, 2049 rejected', () => {
+    expect(replyUrlOfLength(2048)).toHaveLength(2048);
+    expect(createWith(replyUrlOfLength(2048)).success).toBe(true);
+    expect(updateWith(replyUrlOfLength(2048)).success).toBe(true);
+    expect(createWith(replyUrlOfLength(2049)).success).toBe(false);
+    expect(updateWith(replyUrlOfLength(2049)).success).toBe(false);
+  });
+
+  it('row: http is rejected', () => {
+    expect(createWith(`http://a.example/?q=${MARKER}`).success).toBe(false);
+    expect(createWith(`ftp://a.example/`).success).toBe(false);
+  });
+
+  it('row: credentials are rejected (user alone, user and password)', () => {
+    expect(createWith(`https://user:pass@a.example/?q=${MARKER}`).success).toBe(false);
+    expect(createWith('https://user@a.example/').success).toBe(false);
+    expect(createWith('https://:pass@a.example/').success).toBe(false);
+  });
+
+  it('row: a fragment is rejected, including an empty one after the path or after a query', () => {
+    expect(createWith(`https://a.example/path#${MARKER}`).success).toBe(false);
+    expect(createWith('https://a.example/p#').success).toBe(false);
+    expect(createWith('https://a.example/p?a=1#').success).toBe(false);
+  });
+
+  it('row: a form that URL parsing reads as a host the text does not show is rejected', () => {
+    for (const value of ['https:///x', 'https:x', 'https:/x', 'https:\\\\a.example\\p', 'https://?q=1', 'https://#x']) {
+      expect(createWith(value).success).toBe(false);
+    }
+  });
+
+  it('row: an upper-case scheme, a space in the path, an encoded # and a bare host are accepted', () => {
+    for (const value of ['HTTPS://a.example/p', 'https://a.example/p q', 'https://a.example/p?a=%23', 'https://a.example']) {
+      expect(createWith(value).success).toBe(true);
+    }
+  });
+
+  it('row: a query string is accepted and stored as entered', () => {
+    const result = createWith('https://a.example/path?token=abc');
+    expect(result.success && result.output.replyUrl).toBe('https://a.example/path?token=abc');
+  });
+
+  it('row: localhost, a port and an IP literal are accepted', () => {
+    expect(createWith('https://localhost:8443/x').success).toBe(true);
+    expect(createWith('https://10.0.0.5/x').success).toBe(true);
+  });
+
+  it('row: a value that is not a URL is rejected', () => {
+    for (const value of ['not a url', 'a.example/path', 'https://']) {
+      expect(createWith(value).success).toBe(false);
+    }
+    expect(createWith(123).success).toBe(false);
+  });
+
+  it('row: leading or trailing whitespace is rejected and the value is not trimmed', () => {
+    for (const value of [' https://a.example/', 'https://a.example/ ', 'https://a.example/\n', '\thttps://a.example/']) {
+      expect(createWith(value).success).toBe(false);
+    }
+  });
+
+  it('row: any control character is rejected, including ones the URL parser would silently strip', () => {
+    for (const code of [0x00, 0x09, 0x0a, 0x0d, 0x1f, 0x7f, 0x85, 0x9f]) {
+      const value = `https://a.example/pa${String.fromCharCode(code)}th`;
+      expect(createWith(value).success).toBe(false);
+    }
+  });
+
+  it('row: an update body with none of label, instructionText, replyUrl is rejected; replyUrl alone is enough', () => {
+    expect(v.safeParse(UpdateInboundWebhookEndpointRequestSchema, {}).success).toBe(false);
+    expect(updateWith('https://a.example/').success).toBe(true);
+  });
+
+  it('no message echoes the submitted value', () => {
+    for (const value of [
+      `http://a.example/?q=${MARKER}`,
+      `https://user:pass@a.example/?q=${MARKER}`,
+      `https://a.example/#${MARKER}`,
+      ` https://a.example/?q=${MARKER}`,
+      `https://a.example/${MARKER}\u0001`,
+      `https:///${MARKER}`,
+      `https://a.example/p#${MARKER}`,
+      replyUrlOfLength(2049).replace('xxx', MARKER),
+    ]) {
+      const result = v.safeParse(InboundWebhookReplyUrlSchema, value);
+      expect(result.success).toBe(false);
+      for (const issue of result.issues ?? []) expect(issue.message).not.toContain(MARKER);
+    }
+  });
+
+  it('the schema is also used on its own (the client form validates with it)', () => {
+    expect(v.safeParse(InboundWebhookReplyUrlSchema, 'https://a.example/').success).toBe(true);
+  });
+});
+
 describe('RotateInboundWebhookSecretRequestSchema', () => {
   it('accepts {} and { secret }, rejects an invalid secret and unknown keys', () => {
     expect(v.safeParse(RotateInboundWebhookSecretRequestSchema, {}).success).toBe(true);
@@ -174,6 +306,14 @@ describe('response schemas', () => {
     expect(v.safeParse(InboundWebhookEndpointSchema, ENDPOINT).success).toBe(true);
     expect(v.safeParse(InboundWebhookEndpointSchema, { ...ENDPOINT, secret: 'whsec_x' }).success).toBe(false);
     expect(v.safeParse(InboundWebhookEndpointSchema, { ...ENDPOINT, previous_secret: 'whsec_x' }).success).toBe(false);
+  });
+
+  it('replyUrl is required on the wire shape: a string or null, nothing else', () => {
+    expect(v.safeParse(InboundWebhookEndpointSchema, { ...ENDPOINT, replyUrl: 'https://a.example/' }).success).toBe(true);
+    expect(v.safeParse(InboundWebhookEndpointSchema, { ...ENDPOINT, replyUrl: null }).success).toBe(true);
+    const { replyUrl: _omitted, ...withoutReplyUrl } = ENDPOINT;
+    expect(v.safeParse(InboundWebhookEndpointSchema, withoutReplyUrl).success).toBe(false);
+    expect(v.safeParse(InboundWebhookEndpointSchema, { ...ENDPOINT, replyUrl: 5 }).success).toBe(false);
   });
 
   it('accepts an active previous secret', () => {

@@ -59,9 +59,9 @@ export function EditInboundWebhookView({ repositoryId, endpointId }: { repositor
   const endpointQuery = useInboundWebhookEndpointQuery(repositoryId, endpointId);
   const update = useUpdateInboundWebhookEndpoint(repositoryId);
 
-  const handleSubmit = async ({ label, instructionText }: EndpointFormPayload) => {
+  const handleSubmit = async ({ label, instructionText, replyUrl }: EndpointFormPayload) => {
     try {
-      await update.mutateAsync({ id: endpointId, request: { label, instructionText } });
+      await update.mutateAsync({ id: endpointId, request: { label, instructionText, ...(replyUrl !== undefined ? { replyUrl } : {}) } });
       await navigate({ to: '/settings/repositories/$repositoryId/inbound-webhooks', params: { repositoryId } });
     } catch (err) {
       showError('Cannot Update Endpoint', err instanceof Error ? err.message : 'Failed to update endpoint');
@@ -92,7 +92,7 @@ export function EditInboundWebhookView({ repositoryId, endpointId }: { repositor
         <EndpointForm
           key={endpoint.id}
           mode="edit"
-          initial={{ label: endpoint.label, instructionText: endpoint.instructionText }}
+          initial={{ label: endpoint.label, instructionText: endpoint.instructionText, replyUrl: endpoint.replyUrl }}
           isPending={update.isPending}
           onSubmit={handleSubmit}
         />

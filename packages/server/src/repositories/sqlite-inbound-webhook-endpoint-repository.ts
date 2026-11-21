@@ -17,6 +17,7 @@ const VIEW_COLUMNS = [
   'label',
   'repository_id',
   'instruction_text',
+  'reply_url',
   'previous_secret_expires_at',
   'created_at',
   'updated_at',
@@ -30,6 +31,7 @@ function toView(row: ViewRow): InboundWebhookEndpointView {
     label: row.label,
     repositoryId: row.repository_id,
     instructionText: row.instruction_text,
+    replyUrl: row.reply_url,
     previousSecretExpiresAt: row.previous_secret_expires_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -81,6 +83,7 @@ export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEnd
         label: params.label,
         repository_id: params.repositoryId,
         instruction_text: params.instructionText,
+        reply_url: params.replyUrl ?? null,
         secret: params.secret,
         previous_secret: null,
         previous_secret_expires_at: null,
@@ -106,6 +109,7 @@ export class SqliteInboundWebhookEndpointRepository implements InboundWebhookEnd
         updated_at: now,
         ...(updates.label !== undefined ? { label: updates.label } : {}),
         ...(updates.instructionText !== undefined ? { instruction_text: updates.instructionText } : {}),
+        ...(updates.replyUrl !== undefined ? { reply_url: updates.replyUrl } : {}),
       })
       .where('id', '=', id)
       .where('repository_id', '=', repositoryId)

@@ -13,7 +13,7 @@ const PAYLOAD: InboundWebhookProcessPayload = {
 };
 
 function endpointRow(repositoryId: string) {
-  return { id: 'ep-1', repositoryId, label: 'Slack', instructionText: 'Do it\n', secret: 's', previousSecret: null, previousSecretExpiresAt: null, createdAt: '2026-11-07T00:00:00.000Z', updatedAt: '2026-11-07T00:00:00.000Z' };
+  return { id: 'ep-1', repositoryId, label: 'Slack', instructionText: 'Do it\n', replyUrl: null, secret: 's', previousSecret: null, previousSecretExpiresAt: null, createdAt: '2026-11-07T00:00:00.000Z', updatedAt: '2026-11-07T00:00:00.000Z' };
 }
 
 /** An action whose repository is unknown: delivery returns at once, and records that it was reached. */

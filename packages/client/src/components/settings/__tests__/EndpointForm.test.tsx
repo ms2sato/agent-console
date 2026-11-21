@@ -7,7 +7,7 @@ afterEach(cleanup);
 
 const ENTERED = `whsec_${Buffer.alloc(24, 3).toString('base64')}`;
 
-function setup(props: { mode?: 'create' | 'edit'; initial?: { label: string; instructionText: string }; isPending?: boolean; onSubmit?: (p: EndpointFormPayload) => Promise<void> } = {}) {
+function setup(props: { mode?: 'create' | 'edit'; initial?: { label: string; instructionText: string; replyUrl: string | null }; isPending?: boolean; onSubmit?: (p: EndpointFormPayload) => Promise<void> } = {}) {
   const submit = mock(props.onSubmit ?? (async (_p: EndpointFormPayload) => {}));
   render(<EndpointForm mode={props.mode ?? 'create'} initial={props.initial} isPending={props.isPending ?? false} onSubmit={submit} />);
   return submit;
@@ -26,7 +26,7 @@ describe('EndpointForm', () => {
   });
 
   it('edit mode: prefilled, no secret choice, Save button', () => {
-    setup({ mode: 'edit', initial: { label: 'L', instructionText: 'a\nb' } });
+    setup({ mode: 'edit', initial: { label: 'L', instructionText: 'a\nb', replyUrl: null } });
     expect((screen.getByLabelText('Label') as HTMLInputElement).value).toBe('L');
     expect((screen.getByLabelText('Instruction text') as HTMLTextAreaElement).value).toBe('a\nb');
     expect(screen.queryByLabelText('Generate')).toBeNull();
@@ -99,5 +99,110 @@ describe('EndpointForm', () => {
     expect(screen.getByText('Instruction text is required')).toBeTruthy();
     fireEvent.change(label, { target: { value: '' } });
     expect(submitButton().disabled).toBe(true);
+  });
+
+  describe('Reply URL', () => {
+    const URL_A = 'https://sender.example.com/replies?token=abc';
+    const editInitial = (replyUrl: string | null) => ({ label: 'L', instructionText: 'text', replyUrl });
+    const replyInput = () => screen.getByLabelText('Reply URL (optional)') as HTMLInputElement;
+
+    it('sits below the instruction text and is prefilled on the edit page', () => {
+      setup({ mode: 'edit', initial: editInitial(URL_A) });
+      expect(replyInput().value).toBe(URL_A);
+      const instruction = screen.getByLabelText('Instruction text');
+      expect(instruction.compareDocumentPosition(replyInput()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('edit: emptying a stored value sends null', async () => {
+      const submit = setup({ mode: 'edit', initial: editInitial(URL_A) });
+      fireEvent.change(replyInput(), { target: { value: '' } });
+      await userEvent.setup().click(submitButton());
+
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect(submit.mock.calls[0]![0]).toEqual({ label: 'L', instructionText: 'text', replyUrl: null });
+    });
+
+    it('edit: an unchanged value, and an untouched empty field, leave the key absent', async () => {
+      const unchanged = setup({ mode: 'edit', initial: editInitial(URL_A) });
+      await userEvent.setup().click(submitButton());
+      await waitFor(() => expect(unchanged).toHaveBeenCalledTimes(1));
+      expect('replyUrl' in (unchanged.mock.calls[0]![0] as object)).toBe(false);
+      cleanup();
+
+      const untouchedEmpty = setup({ mode: 'edit', initial: editInitial(null) });
+      await userEvent.setup().click(submitButton());
+      await waitFor(() => expect(untouchedEmpty).toHaveBeenCalledTimes(1));
+      expect('replyUrl' in (untouchedEmpty.mock.calls[0]![0] as object)).toBe(false);
+    });
+
+    it('edit: a changed value is sent as entered, not normalized', async () => {
+      const submit = setup({ mode: 'edit', initial: editInitial(null) });
+      fireEvent.change(replyInput(), { target: { value: 'https://Sender.example.com' } });
+      await userEvent.setup().click(submitButton());
+
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect((submit.mock.calls[0]![0] as EndpointFormPayload).replyUrl).toBe('https://Sender.example.com');
+    });
+
+    it('create: a non-empty value is sent, an empty field leaves the key absent', async () => {
+      const filled = setup();
+      fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'L' } });
+      fireEvent.change(screen.getByLabelText('Instruction text'), { target: { value: 'x' } });
+      fireEvent.change(replyInput(), { target: { value: URL_A } });
+      await userEvent.setup().click(submitButton());
+      await waitFor(() => expect(filled).toHaveBeenCalledTimes(1));
+      expect(filled.mock.calls[0]![0]).toEqual({ label: 'L', instructionText: 'x', replyUrl: URL_A });
+      cleanup();
+
+      const empty = setup();
+      fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'L' } });
+      fireEvent.change(screen.getByLabelText('Instruction text'), { target: { value: 'x' } });
+      await userEvent.setup().click(submitButton());
+      await waitFor(() => expect(empty).toHaveBeenCalledTimes(1));
+      expect('replyUrl' in (empty.mock.calls[0]![0] as object)).toBe(false);
+    });
+
+    it('the baseline is the value at mount: a rerender with a new initial.replyUrl leaves an untouched draft out of the request', async () => {
+      const submit = mock(async (_p: EndpointFormPayload) => {});
+      const { rerender } = render(
+        <EndpointForm mode="edit" initial={editInitial('https://old.example/a')} isPending={false} onSubmit={submit} />,
+      );
+      rerender(<EndpointForm mode="edit" initial={editInitial('https://new.example/b')} isPending={false} onSubmit={submit} />);
+      // the draft still shows the mount-time value
+      expect(replyInput().value).toBe('https://old.example/a');
+
+      await userEvent.setup().click(submitButton());
+
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect('replyUrl' in (submit.mock.calls[0]![0] as object)).toBe(false);
+    });
+
+    it('an invalid value marks the input invalid and points aria-describedby at the visible error; a valid value does neither', () => {
+      setup({ mode: 'edit', initial: editInitial(null) });
+      expect(replyInput().getAttribute('aria-invalid')).toBe('false');
+      expect(replyInput().getAttribute('aria-describedby')).toBeNull();
+
+      fireEvent.change(replyInput(), { target: { value: 'http://sender.example.com/' } });
+
+      expect(replyInput().getAttribute('aria-invalid')).toBe('true');
+      const describedBy = replyInput().getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)?.textContent).toBe('Reply URL must use https');
+
+      fireEvent.change(replyInput(), { target: { value: 'https://sender.example.com/' } });
+      expect(replyInput().getAttribute('aria-invalid')).toBe('false');
+      expect(replyInput().getAttribute('aria-describedby')).toBeNull();
+    });
+
+    it('an invalid value shows an inline error that does not echo it, and nothing is sent', async () => {
+      const submit = setup({ mode: 'edit', initial: editInitial(null) });
+      fireEvent.change(replyInput(), { target: { value: 'http://sender.example.com/?token=SECRETMARK' } });
+
+      expect(screen.getByText('Reply URL must use https')).toBeTruthy();
+      expect(document.body.textContent).not.toContain('SECRETMARK');
+      expect(submitButton().disabled).toBe(true);
+      await userEvent.setup().click(submitButton());
+      expect(submit).not.toHaveBeenCalled();
+    });
   });
 });

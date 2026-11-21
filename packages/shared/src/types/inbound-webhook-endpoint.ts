@@ -6,3 +6,9 @@
  */
 export const INBOUND_WEBHOOK_LABEL_MAX_LENGTH = 100;
 export const INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH = 4000;
+
+/**
+ * Longest reply URL accepted, in characters. The `reply_url` column of
+ * `inbound_webhook_endpoints` carries a length CHECK reading the same number.
+ */
+export const INBOUND_WEBHOOK_REPLY_URL_MAX_LENGTH = 2048;

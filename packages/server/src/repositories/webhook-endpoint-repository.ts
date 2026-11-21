@@ -12,6 +12,8 @@ export interface InboundWebhookEndpointView {
   label: string;
   repositoryId: string;
   instructionText: string;
+  /** Operator-set address a signed reply is posted to, or null when replies are refused. */
+  replyUrl: string | null;
   /** ISO 8601 expiry of the previous secret, or null when there is none. */
   previousSecretExpiresAt: string | null;
   createdAt: string;
@@ -34,14 +36,17 @@ export interface CreateInboundWebhookEndpointParams {
   repositoryId: string;
   instructionText: string;
   secret: string;
+  /** Optional reply URL; omitted is stored as NULL. */
+  replyUrl?: string;
   /** ISO 8601 timestamp used for both `created_at` and `updated_at`. */
   now: string;
 }
 
-/** Editable fields. An omitted key is left unchanged. */
+/** Editable fields. An omitted key is left unchanged; `replyUrl: null` clears the reply URL. */
 export interface UpdateInboundWebhookEndpointParams {
   label?: string;
   instructionText?: string;
+  replyUrl?: string | null;
 }
 
 /**
@@ -70,7 +75,7 @@ export interface InboundWebhookEndpointRepository {
    */
   create(params: CreateInboundWebhookEndpointParams): Promise<InboundWebhookEndpointWithSecret>;
 
-  /** Update label and/or instruction text and touch `updated_at`. Never touches the secrets. */
+  /** Update label, instruction text and/or reply URL and touch `updated_at`. Never touches the secrets. */
   update(
     repositoryId: string,
     id: string,

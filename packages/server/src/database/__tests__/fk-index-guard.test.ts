@@ -1,9 +1,13 @@
 /**
  * Foreign-key index guard.
  *
- * Rule: every column that carries a REFERENCES clause leads some index (it is
- * seqno 0 of an index returned by PRAGMA index_list; primary-key and UNIQUE
- * autoindexes count). SQLite does not index the child side of a foreign key
+ * Rule: a foreign key with N columns is covered when the first N columns of some
+ * full index are exactly the key's columns, in any order (a single column is seqno
+ * 0 of an index returned by PRAGMA index_list; primary-key and UNIQUE autoindexes
+ * count). Order inside the prefix does not matter because the parent-side lookup is
+ * an equality on every key column: measured on Bun's SQLite, a child key (a, b) with
+ * only an index on (b, a) plans `SEARCH c USING COVERING INDEX c_ba (b=? AND a=?)`,
+ * and with no index `SCAN c`. SQLite does not index the child side of a foreign key
  * itself, so a parent DELETE with CASCADE / SET NULL / RESTRICT would scan the
  * whole child table.
  *
@@ -28,6 +32,9 @@ import { createDatabaseForTest } from '../connection.js';
 import type { Database } from '../schema.js';
 
 interface ForeignKeyRow {
+  /** Groups the columns of one (possibly composite) foreign key. */
+  id: number;
+  seq: number;
   table: string;
   from: string;
 }
@@ -52,17 +59,29 @@ async function auditForeignKeyIndexes(db: Kysely<Database>): Promise<{ enumerate
     const fks = (await sql.raw<ForeignKeyRow>(`PRAGMA foreign_key_list("${table}")`).execute(db)).rows;
     const indexes = (await sql.raw<IndexListRow>(`PRAGMA index_list("${table}")`).execute(db)).rows;
 
-    const leadingColumns = new Set<string>();
+    const fullIndexColumns: string[][] = [];
     for (const index of indexes) {
       if (index.partial === 1) continue;
       const info = (await sql.raw<{ seqno: number; name: string }>(`PRAGMA index_info("${index.name}")`).execute(db)).rows;
-      const first = info.find((r) => r.seqno === 0);
-      if (first) leadingColumns.add(first.name);
+      fullIndexColumns.push([...info].sort((a, b) => a.seqno - b.seqno).map((r) => r.name));
     }
 
-    for (const fk of fks) {
+    // A foreign key with N columns is covered when the first N columns of one full index are exactly the
+    // key's columns, in any order: the lookup is an equality on each, and the planner uses an index
+    // whose prefix is that set (see the header). Checking the columns one by one would demand a second
+    // index just for the later column; accepting the columns anywhere in the index would count an index
+    // whose prefix does not hold them all.
+    const byKey = new Map<number, ForeignKeyRow[]>();
+    for (const fk of fks) byKey.set(fk.id, [...(byKey.get(fk.id) ?? []), fk]);
+    for (const columns of byKey.values()) {
       enumerated += 1;
-      if (!leadingColumns.has(fk.from)) missing.push(`${table}.${fk.from} -> ${fk.table}`);
+      const wanted = new Set(columns.map((c) => c.from));
+      const covered = fullIndexColumns.some((index) => {
+        const prefix = index.slice(0, wanted.size);
+        // Every key column once: a prefix such as (a, a) has the right length and only key columns, yet lacks b.
+        return prefix.length === wanted.size && new Set(prefix).size === wanted.size && prefix.every((column) => wanted.has(column));
+      });
+      if (!covered) missing.push(`${table}.${columns.map((c) => c.from).join(',')} -> ${columns[0]!.table}`);
     }
   }
   return { enumerated, missing };
@@ -108,6 +127,35 @@ describe('foreign-key columns lead an index', () => {
         await db.destroy();
       }
     });
+
+    // Key (a, b). One test per state so a failure names the state.
+    const COMPOSITE_STATES: Array<{ name: string; indexes: string[]; covered: boolean }> = [
+      { name: 'no index', indexes: [], covered: false },
+      { name: 'an index on (a) only', indexes: ['(a)'], covered: false },
+      { name: 'an index on (a, id): the first column, then an unrelated one', indexes: ['(a, id)'], covered: false },
+      { name: 'an index on (b, id, a): both columns, not as the prefix', indexes: ['(b, id, a)'], covered: false },
+      { name: 'an index on (a, a): the right length, but b is missing from the prefix', indexes: ['(a, a)'], covered: false },
+      { name: 'an index on (b, a): the reversed prefix', indexes: ['(b, a)'], covered: true },
+      { name: 'an index on (a, b, id): the key in order, then more', indexes: ['(a, b, id)'], covered: true },
+    ];
+    for (const state of COMPOSITE_STATES) {
+      it(`a composite foreign key (a, b) with ${state.name} is ${state.covered ? 'covered' : 'uncovered'}`, async () => {
+        const db = await createDatabaseForTest(':memory:');
+        try {
+          await sql.raw('CREATE TABLE guard_pair (a TEXT, b TEXT, PRIMARY KEY (a, b))').execute(db);
+          await sql
+            .raw('CREATE TABLE guard_pair_child (id TEXT PRIMARY KEY, a TEXT, b TEXT, FOREIGN KEY (a, b) REFERENCES guard_pair(a, b))')
+            .execute(db);
+          for (const [i, columns] of state.indexes.entries()) {
+            await sql.raw(`CREATE INDEX idx_gpc_${i} ON guard_pair_child ${columns}`).execute(db);
+          }
+          const missing = (await auditForeignKeyIndexes(db)).missing.filter((m) => m.startsWith('guard_pair_child'));
+          expect(missing).toEqual(state.covered ? [] : ['guard_pair_child.a,b -> guard_pair']);
+        } finally {
+          await db.destroy();
+        }
+      });
+    }
 
     it('does not count a partial index as coverage', async () => {
       const db = await scratchDb("CREATE INDEX idx_guard_child_parent ON guard_child (parent_id) WHERE status = 'active'");
