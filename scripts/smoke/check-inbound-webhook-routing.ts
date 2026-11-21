@@ -100,6 +100,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createScratchGitRepo, type ScratchGitRepo } from '../../packages/server/src/__tests__/utils/scratch-git.js';
+// Dependency-free constant module (no logger, no NODE_ENV read), so a static import is safe before the NODE_ENV check.
+import { EXTERNAL_MESSAGE_NEXT_STEP } from '../../packages/server/src/lib/inbound-instruction-excerpt.js';
 
 const REPO_ROOT = new URL('../..', import.meta.url).pathname;
 
@@ -591,12 +593,21 @@ async function main(): Promise<void> {
       ['source=webhook', 'source'],
       [`repo=${expectedSlug}`, 'the real remote slug'],
       ['branch=N/A', 'branch N/A'],
+      [`next_step="${EXTERNAL_MESSAGE_NEXT_STEP}"`, 'the fixed next_step directive'],
       [`instruction_excerpt="${EXCERPT}"`, 'the one-line instruction excerpt'],
       [`instruction_path=${pathsL.instructionPath}`, 'the instruction path'],
       [`body_path=${pathsL.bodyPath}`, 'the body path'],
       ['intent=triage', 'intent'],
     ] as const) {
       expect(newL.replace(/\r?\n/g, '').includes(needle), `(1) L's notification carries ${what}`, needle);
+    }
+    {
+      const flatL = newL.replace(/\r?\n/g, '');
+      expect(
+        flatL.includes('next_step="Read the file at instruction_path in full') && flatL.indexOf('next_step=') < flatL.indexOf('instruction_excerpt='),
+        "(1) L's notification carries next_step=\"Read the file at instruction_path in full ...\" before instruction_excerpt=",
+        flatL.slice(-700),
+      );
     }
     expect(
       !newL.includes('SECOND-LINE-MARKER') && !newL.includes(TOKEN_LOOKING) && !FILE_HOST_PATTERN.test(newL) && !newL.includes(RAW_EVENT_TEXT) && !newL.includes('slack_message') && !newL.includes(BLOCK_MARKER),
@@ -650,6 +661,11 @@ async function main(): Promise<void> {
       "(2) E's notification names E's own two paths and carries no second instruction line",
       inboundE[0]?.text,
     );
+    expect(
+      inboundE.length === 1 && inboundE[0]!.text!.includes(`next_step="${EXTERNAL_MESSAGE_NEXT_STEP}"`),
+      "(2) E's user-message text carries the same next_step directive",
+      inboundE[0]?.text,
+    );
     const stubSince = stubRequests.filter((r) => r.at >= postedAt);
     expect(stubSince.length === 1, '(2) the stub saw exactly ONE chat request since the POST (E was dormant and woken by this event)', `count=${stubSince.length}`);
     expect(existsSync(pathsE.bodyPath) && existsSync(pathsE.instructionPath), "(2) body.md and instruction.md exist in E's delivery directory");
@@ -671,6 +687,11 @@ async function main(): Promise<void> {
     expect(
       deferredFields.body_path === pathsP.bodyPath && deferredFields.instruction_path === pathsP.instructionPath,
       "(3) the stored params carry P's body_path and instruction_path",
+      JSON.stringify(deferredFields),
+    );
+    expect(
+      deferredFields.next_step === EXTERNAL_MESSAGE_NEXT_STEP,
+      "(3) the stored params carry the next_step directive",
       JSON.stringify(deferredFields),
     );
     expect(existsSync(pathsP.bodyPath) && existsSync(pathsP.instructionPath), "(3) body.md and instruction.md exist in P's delivery directory");

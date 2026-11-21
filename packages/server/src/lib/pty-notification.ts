@@ -70,6 +70,11 @@ export interface InboundEventPtyNotification extends BasePtyNotificationParams {
     url: string;
     summary: string;
     /**
+     * `external:message` only: a fixed server string telling the agent to read the instruction
+     * file in full and to treat the body as data. Rendered right after `summary`.
+     */
+    next_step?: string;
+    /**
      * `external:message` only (fields-only delivery; the sender text and the
      * multi-line operator instruction travel as files, never as fields):
      * a one-line excerpt of the instruction and the absolute paths of the two files.

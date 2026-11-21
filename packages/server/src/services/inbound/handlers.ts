@@ -11,7 +11,7 @@ import type { SessionManager } from '../session-manager.js';
 import { triggerRefresh } from '../git-diff-service.js';
 import { createLogger } from '../../lib/logger.js';
 import type { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
-import { toInstructionExcerpt } from '../../lib/inbound-instruction-excerpt.js';
+import { EXTERNAL_MESSAGE_NEXT_STEP, toInstructionExcerpt } from '../../lib/inbound-instruction-excerpt.js';
 
 /** Event types that AgentWorkerHandler actually handles */
 type AgentWorkerEventType = 'ci:completed' | 'ci:failed' | 'issue:labeled' | 'pr:merged' | 'pr:review_comment' | 'pr:changes_requested' | 'pr:comment' | 'external:message';
@@ -283,6 +283,7 @@ class AgentWorkerHandler implements InboundEventHandler {
       branch: 'N/A',
       url: event.metadata.url ?? 'N/A',
       summary: event.summary,
+      next_step: EXTERNAL_MESSAGE_NEXT_STEP,
       instruction_excerpt: toInstructionExcerpt(event.metadata.instructionExcerpt ?? ''),
       instruction_path: paths.instructionPath,
       body_path: paths.bodyPath,
