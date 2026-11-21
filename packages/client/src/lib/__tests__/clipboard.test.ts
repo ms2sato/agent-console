@@ -128,8 +128,18 @@ describe('copyToClipboard', () => {
   // not reproducible in happy-dom, so the steal is simulated by stubbing the
   // textarea's focus()/select(); the placement and restore assertions are real DOM.
   describe('execCommand fallback inside a dialog', () => {
-    const originalTextareaFocus = HTMLTextAreaElement.prototype.focus;
-    const originalTextareaSelect = HTMLTextAreaElement.prototype.select;
+    // `focus` / `select` may be a plain method or a getter-only accessor depending on what
+    // ran earlier in the same process, so a plain assignment can throw a readonly-property
+    // TypeError. Shadow them with an own property on the textarea prototype and restore by
+    // putting the original own descriptor back, or deleting the shadow if there was none.
+    const stubbed = new Map<'focus' | 'select', PropertyDescriptor | undefined>();
+
+    function stubTextareaMethod(name: 'focus' | 'select', fn: (this: HTMLTextAreaElement) => void) {
+      if (!stubbed.has(name)) {
+        stubbed.set(name, Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, name));
+      }
+      Object.defineProperty(HTMLTextAreaElement.prototype, name, { configurable: true, writable: true, value: fn });
+    }
 
     const originalValueDescriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
 
@@ -160,8 +170,14 @@ describe('copyToClipboard', () => {
     }
 
     function teardown(dialog: HTMLElement) {
-      HTMLTextAreaElement.prototype.focus = originalTextareaFocus;
-      HTMLTextAreaElement.prototype.select = originalTextareaSelect;
+      for (const [name, original] of stubbed) {
+        if (original) {
+          Object.defineProperty(HTMLTextAreaElement.prototype, name, original);
+        } else {
+          Reflect.deleteProperty(HTMLTextAreaElement.prototype, name);
+        }
+      }
+      stubbed.clear();
       if (originalValueDescriptor) {
         Object.defineProperty(HTMLTextAreaElement.prototype, 'value', originalValueDescriptor);
       }
@@ -206,7 +222,7 @@ describe('copyToClipboard', () => {
 
     it('rejects when the textarea cannot hold focus, even if execCommand would return true', async () => {
       const { dialog, button, seen } = setup(true);
-      HTMLTextAreaElement.prototype.focus = () => {};
+      stubTextareaMethod('focus', () => {});
       try {
         await expect(copyToClipboard('stolen focus')).rejects.toThrow('execCommand("copy") returned false');
         expect(seen.calls).toBe(0);
@@ -257,9 +273,9 @@ describe('copyToClipboard', () => {
 
     it('rejects when the selection is not the full text', async () => {
       const { dialog, seen } = setup(true);
-      HTMLTextAreaElement.prototype.select = function (this: HTMLTextAreaElement) {
+      stubTextareaMethod('select', function (this: HTMLTextAreaElement) {
         this.setSelectionRange(1, this.value.length);
-      };
+      });
       try {
         await expect(copyToClipboard('partial selection')).rejects.toThrow('execCommand("copy") returned false');
         expect(seen.calls).toBe(0);
