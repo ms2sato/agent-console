@@ -123,4 +123,105 @@ describe('copyToClipboard', () => {
       restoreExecCommand();
     }
   });
+
+  // The execCommand fallback inside a modal dialog. Focus-trap behaviour itself is
+  // not reproducible in happy-dom, so the steal is simulated by stubbing the
+  // textarea's focus()/select(); the placement and restore assertions are real DOM.
+  describe('execCommand fallback inside a dialog', () => {
+    const originalTextareaFocus = HTMLTextAreaElement.prototype.focus;
+    const originalTextareaSelect = HTMLTextAreaElement.prototype.select;
+
+    function setup(execResult = true) {
+      installUndefinedClipboard();
+      installSecureContext(false);
+      const dialog = document.createElement('div');
+      dialog.setAttribute('role', 'dialog');
+      const button = document.createElement('button');
+      dialog.appendChild(button);
+      document.body.appendChild(dialog);
+      button.focus();
+      const seen: { active: Element | null; parent: Element | null; calls: number } = {
+        active: null,
+        parent: null,
+        calls: 0,
+      };
+      Object.defineProperty(document, 'execCommand', {
+        value: mock(() => {
+          seen.calls += 1;
+          seen.active = document.activeElement;
+          seen.parent = document.activeElement?.parentElement ?? null;
+          return execResult;
+        }),
+        configurable: true,
+      });
+      return { dialog, button, seen };
+    }
+
+    function teardown(dialog: HTMLElement) {
+      HTMLTextAreaElement.prototype.focus = originalTextareaFocus;
+      HTMLTextAreaElement.prototype.select = originalTextareaSelect;
+      dialog.remove();
+      restoreClipboard();
+      restoreSecureContext();
+      restoreExecCommand();
+    }
+
+    it('mounts the textarea inside the dialog (not body) and copies while it holds focus', async () => {
+      const { dialog, seen } = setup();
+      try {
+        await copyToClipboard('inside dialog');
+        expect(seen.calls).toBe(1);
+        expect(seen.active?.tagName).toBe('TEXTAREA');
+        expect(seen.parent).toBe(dialog);
+        expect(document.querySelector('textarea')).toBeNull();
+      } finally {
+        teardown(dialog);
+      }
+    });
+
+    it('restores focus to the previously focused element after a successful copy', async () => {
+      const { dialog, button } = setup();
+      try {
+        await copyToClipboard('x');
+        expect(document.activeElement).toBe(button);
+      } finally {
+        teardown(dialog);
+      }
+    });
+
+    it('restores focus to the previously focused element after a failed copy', async () => {
+      const { dialog, button } = setup(false);
+      try {
+        await expect(copyToClipboard('x')).rejects.toThrow();
+        expect(document.activeElement).toBe(button);
+      } finally {
+        teardown(dialog);
+      }
+    });
+
+    it('rejects when the textarea cannot hold focus, even if execCommand would return true', async () => {
+      const { dialog, button, seen } = setup(true);
+      HTMLTextAreaElement.prototype.focus = () => {};
+      try {
+        await expect(copyToClipboard('stolen focus')).rejects.toThrow('execCommand("copy") returned false');
+        expect(seen.calls).toBe(0);
+        expect(document.activeElement).toBe(button);
+      } finally {
+        teardown(dialog);
+      }
+    });
+
+    it('rejects when the selection is not the full text', async () => {
+      const { dialog, seen } = setup(true);
+      HTMLTextAreaElement.prototype.select = function (this: HTMLTextAreaElement) {
+        this.setSelectionRange(1, this.value.length);
+      };
+      try {
+        await expect(copyToClipboard('partial selection')).rejects.toThrow('execCommand("copy") returned false');
+        expect(seen.calls).toBe(0);
+      } finally {
+        teardown(dialog);
+      }
+    });
+  });
 });

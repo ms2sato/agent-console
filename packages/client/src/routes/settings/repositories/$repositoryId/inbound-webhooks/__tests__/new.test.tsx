@@ -14,8 +14,10 @@ import { renderWithRouter } from '../../../../../../test/renderWithRouter';
 import { waitForAbsent } from '../../../../../../test/waitForAbsent';
 import { installFakeServer } from '../../../../../../test/inbound-webhooks-fake-server';
 import { findSecretHolders } from '../../../../../../test/assert-no-secret';
+import { useSecureContext } from '../../../../../../test/secure-context';
 
 const server = installFakeServer();
+useSecureContext();
 afterAll(() => server.restore());
 beforeEach(() => {
   server.reset();
