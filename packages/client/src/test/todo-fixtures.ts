@@ -92,6 +92,8 @@ export function createTodoApiMock() {
     activities: {} as Record<string, TodoActivity[]>,
     users: [{ id: 'user-me', username: 'me' }] as DirectoryUserFixture[],
     refusal: null as { status: number; error: string } | null,
+    /** When set, every write waits on it before it is answered (a test resolves it to settle a pending write). */
+    writeGate: null as Promise<void> | null,
     calls: [] as RecordedCall[],
   };
 
@@ -121,6 +123,7 @@ export function createTodoApiMock() {
       }
       return jsonResponse({ todos: state.todos });
     }
+    if (state.writeGate) await state.writeGate;
     if (state.refusal) {
       return jsonResponse({ error: state.refusal.error }, state.refusal.status);
     }

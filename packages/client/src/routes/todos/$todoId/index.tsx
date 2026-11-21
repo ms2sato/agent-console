@@ -82,6 +82,7 @@ export function TodoDetailPage({ todoId }: { todoId: string }) {
           onError={showError}
           runEnabled={false}
           onDeleted={() => navigate({ to: '/todos' })}
+          resolveBarClassName="bg-slate-900"
         />
       </div>
       <ErrorDialog {...errorDialogProps} />

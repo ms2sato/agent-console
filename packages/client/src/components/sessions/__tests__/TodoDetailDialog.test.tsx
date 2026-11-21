@@ -146,4 +146,32 @@ describe('TodoDetailDialog', () => {
     await screen.findByRole('button', { name: 'Copy code' });
     await waitForAbsent(() => screen.queryByRole('button', { name: 'Run command in terminal' }));
   });
+  it('frames the dialog wide and non-scrolling, with the scroll area holding only the detail', async () => {
+    // Mutation: restore `overflow-y-auto` on DialogContent (and drop the inner scroller) -> the first block fails.
+    api.state.todos = [makeTodo({ id: 'todo-1', title: 'Framed', body: 'Long body' })];
+
+    await renderDialog('todo-1');
+
+    const dialog = await screen.findByRole('dialog');
+    for (const cls of ['max-w-4xl', 'flex', 'flex-col']) expect(dialog.classList.contains(cls)).toBe(true);
+    expect(dialog.classList.contains('overflow-y-auto')).toBe(false);
+    expect(dialog.classList.contains('max-w-2xl')).toBe(false);
+
+    const detail = await within(dialog).findByTestId('todo-detail-todo-1');
+    const scroller = detail.closest('.overflow-y-auto') as HTMLElement;
+    expect(scroller).not.toBeNull();
+    expect(scroller).not.toBe(dialog);
+    expect(within(scroller).queryByText('Todo', { selector: 'h2' })).toBeNull();
+    expect(within(scroller).queryByRole('button', { name: 'Close' })).toBeNull();
+    expect(within(scroller).queryByRole('link', { name: 'Open as page' })).toBeNull();
+  });
+
+  it('gives the pinned resolve bar the dialog background', async () => {
+    api.state.todos = [makeTodo({ id: 'todo-1' })];
+
+    await renderDialog('todo-1');
+
+    const bar = await screen.findByTestId('todo-resolve-bar');
+    expect(bar.classList.contains('bg-slate-800')).toBe(true);
+  });
 });
