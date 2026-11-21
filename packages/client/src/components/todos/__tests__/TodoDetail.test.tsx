@@ -55,6 +55,7 @@ async function renderDetail(overrides: Parameters<typeof makeTodo>[0] = {}, opti
         runEnabled={options.runEnabled ?? false}
         onRun={options.withOnRun === false ? undefined : onRun}
         onDeleted={onDeleted}
+        resolveBarClassName="bg-slate-800"
       />
     </SessionDataProvider>,
   );
@@ -90,7 +91,7 @@ describe('TodoDetail', () => {
       expect(wrapper?.querySelector('pre')).not.toBeNull();
     });
 
-    it('shows kind, scope, status, creator and assignee as detail rows', async () => {
+    it('shows scope, creator and assignee as detail rows, and kind and status on one meta line', async () => {
       await renderDetail(
         { kind: 'action', scope: 'session', status: 'open', createdBy: { userId: BOB.id }, assigneeUserId: ALICE.id },
         { users: [ALICE, BOB] },
@@ -98,7 +99,10 @@ describe('TodoDetail', () => {
 
       expect(screen.getByText('Created by:').nextSibling?.textContent).toBe('bob');
       expect(screen.getByText('Assigned to:').nextSibling?.textContent).toBe('alice');
-      expect(screen.getByText('Status:').nextSibling?.textContent).toBe('open');
+      expect(screen.getByText('action · open')).toBeTruthy();
+      expect(screen.getByText('Scope:').nextSibling?.textContent).toBe('session');
+      expect(screen.queryByText('Status:')).toBeNull();
+      expect(screen.queryByText('Kind:')).toBeNull();
     });
 
     it('shows the resolved-at row only for a resolved item', async () => {
@@ -183,6 +187,7 @@ describe('TodoDetail', () => {
   describe('edit', () => {
     it('saves title and body in one PATCH', async () => {
       const { todo, user } = await renderDetail({ title: 'Old title', body: 'Old body' });
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
 
       const title = screen.getByLabelText('Edit title');
       await user.clear(title);
@@ -210,7 +215,7 @@ describe('TodoDetail', () => {
             <button type="button" onClick={() => setTodo(second)}>
               simulate remote edit
             </button>
-            <TodoDetail todo={todo} users={[ALICE]} activities={[]} onError={() => {}} runEnabled={false} onDeleted={() => {}} />
+            <TodoDetail todo={todo} users={[ALICE]} activities={[]} onError={() => {}} runEnabled={false} onDeleted={() => {}} resolveBarClassName="bg-slate-800" />
           </>
         );
       }
@@ -220,6 +225,7 @@ describe('TodoDetail', () => {
           <Host />
         </SessionDataProvider>,
       );
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
       expect((screen.getByLabelText('Edit title') as HTMLInputElement).value).toBe('Old title');
 
       await user.click(screen.getByRole('button', { name: 'simulate remote edit' }));
@@ -230,6 +236,7 @@ describe('TodoDetail', () => {
 
     it('Save is disabled until something changed, and for a blank title', async () => {
       const { user } = await renderDetail({ title: 'Same', body: 'Same body' });
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
       const save = screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
 
       expect(save.disabled).toBe(true);
@@ -242,18 +249,56 @@ describe('TodoDetail', () => {
     it('offers no edit for an item that is not open', async () => {
       await renderDetail({ status: 'done', resolutionText: 'ok' });
 
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
       expect(screen.queryByLabelText('Edit title')).toBeNull();
       expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    });
+
+    it('is closed until Edit is clicked, and the body is then rendered once outside the form', async () => {
+      // Mutation: render TodoEditForm unconditionally -> the "Edit body" assertion fails.
+      const { user } = await renderDetail({ title: 'T', body: 'Only once' });
+
+      expect(screen.getAllByText('Only once')).toHaveLength(1);
+      expect(screen.queryByLabelText('Edit body')).toBeNull();
+      expect(screen.queryByLabelText('Edit title')).toBeNull();
+
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+      expect((screen.getByLabelText('Edit title') as HTMLInputElement).value).toBe('T');
+      expect((screen.getByLabelText('Edit body') as HTMLTextAreaElement).value).toBe('Only once');
+    });
+
+    it('Cancel closes the form and drops the typed input; a second open shows the server values', async () => {
+      const { user } = await renderDetail({ title: 'Server title', body: 'Server body' });
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+      await user.type(screen.getByLabelText('Edit title'), ' typed');
+
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByLabelText('Edit title')).toBeNull();
+      expect(api.writes()).toHaveLength(0);
+
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+      expect((screen.getByLabelText('Edit title') as HTMLInputElement).value).toBe('Server title');
+    });
+
+    it('a successful Save closes the form', async () => {
+      const { user } = await renderDetail({ title: 'Old', body: '' });
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+      await user.type(screen.getByLabelText('Edit title'), ' more');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitForAbsent(() => screen.queryByLabelText('Edit title'));
     });
 
     it('shows the server\'s message when the edit is refused', async () => {
       api.state.refusal = { status: 409, error: 'The item is no longer open' };
       const { onError, user } = await renderDetail({ title: 'Old', body: '' });
 
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
       await user.type(screen.getByLabelText('Edit title'), ' more');
       await user.click(screen.getByRole('button', { name: 'Save' }));
 
       await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to Update Todo', 'The item is no longer open'));
+      expect((screen.getByLabelText('Edit title') as HTMLInputElement).value).toBe('Old more');
     });
   });
 
@@ -537,6 +582,138 @@ describe('TodoDetail', () => {
         expect(onError).toHaveBeenCalledWith('Failed to Reply', 'Only an open or done item takes comments'),
       );
       expect(input.value).toBe('too late');
+    });
+  });
+
+  describe('layout', () => {
+    const precedes = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    it('orders body, Thread, Details, Manage and the Resolve bar top to bottom, with the Edit form closed', async () => {
+      // Mutation: move the bar above the Thread in TodoDetail -> the Thread < Resolve assertion fails.
+      await renderDetail(
+        { kind: 'action', status: 'open', body: 'The body text' },
+        { users: [ALICE, BOB], activities: [makeTodoComment({ text: 'First comment' })] },
+      );
+
+      const body = screen.getByText('The body text');
+      const thread = screen.getByRole('region', { name: 'Thread' });
+      const details = screen.getByRole('heading', { name: 'Details' });
+      const manage = screen.getByRole('heading', { name: 'Manage' });
+      const resolve = screen.getByRole('button', { name: 'Resolve' });
+
+      expect(precedes(body, thread)).toBe(true);
+      expect(precedes(thread, details)).toBe(true);
+      expect(precedes(details, manage)).toBe(true);
+      expect(precedes(manage, resolve)).toBe(true);
+      expect(screen.queryByLabelText('Edit title')).toBeNull();
+    });
+
+    it('puts the title first and the meta line directly under it, before the body', async () => {
+      await renderDetail({ title: 'Heading', kind: 'question', status: 'open', body: 'The body text' });
+
+      const title = screen.getByRole('heading', { name: 'Heading' });
+      const meta = screen.getByText('question · open');
+      expect(precedes(title, meta)).toBe(true);
+      expect(precedes(meta, screen.getByText('The body text'))).toBe(true);
+      expect(screen.queryByRole('heading', { name: 'Body' })).toBeNull();
+    });
+
+    it('an item with no body and no activities shows the meta line, then the Thread holding only the Reply form', async () => {
+      await renderDetail({ body: '', status: 'open' });
+
+      const thread = screen.getByRole('region', { name: 'Thread' });
+      expect(precedes(screen.getByText('action · open'), thread)).toBe(true);
+      expect(within(thread).queryByRole('list')).toBeNull();
+      expect(within(thread).getByRole('textbox', { name: 'Reply' })).toBeTruthy();
+    });
+
+    describe('Resolve bar', () => {
+      it.each(['open', 'done'] as const)('is rendered for a %s item, sticky at the bottom with the host background', async (status) => {
+        await renderDetail({ status, resolutionText: status === 'done' ? 'ok' : null });
+
+        const bar = screen.getByTestId('todo-resolve-bar');
+        expect(bar.classList.contains('sticky')).toBe(true);
+        expect(bar.classList.contains('bottom-0')).toBe(true);
+        expect(bar.classList.contains('bg-slate-800')).toBe(true);
+        expect(within(bar).getByRole('button', { name: 'Resolve' })).toBeTruthy();
+      });
+
+      it.each(['superseded', 'dismissed', 'withdrawn'] as const)('is not rendered for a %s item', async (status) => {
+        await renderDetail({ status });
+
+        expect(screen.queryByTestId('todo-resolve-bar')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Resolve' })).toBeNull();
+      });
+
+      it('is the last element of the detail root', async () => {
+        const { todo } = await renderDetail({ status: 'open' });
+
+        const root = screen.getByTestId(`todo-detail-${todo.id}`);
+        expect(root.lastElementChild).toBe(screen.getByTestId('todo-resolve-bar'));
+      });
+
+      it('open action, multi-user: Resolve and Dismiss in the bar, the Assignee select not', async () => {
+        const { todo } = await renderDetail({ kind: 'action' }, { users: [ALICE, BOB] });
+
+        const bar = screen.getByTestId('todo-resolve-bar');
+        expect(within(bar).getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+        expect(within(bar).queryByLabelText(`Assignee for ${todo.title}`)).toBeNull();
+      });
+
+      it('open question, single-user: the input asks for a required answer', async () => {
+        await renderDetail({ kind: 'question' });
+
+        const bar = screen.getByTestId('todo-resolve-bar');
+        expect(within(bar).getByPlaceholderText('Answer (required)')).toBeTruthy();
+        expect(within(bar).getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+      });
+
+      it('done: the input adds to the resolution and there is no Dismiss', async () => {
+        await renderDetail({ status: 'done', resolutionText: 'ok' });
+
+        const bar = screen.getByTestId('todo-resolve-bar');
+        expect(within(bar).getByPlaceholderText('Add to the resolution')).toBeTruthy();
+        expect(within(bar).queryByRole('button', { name: 'Dismiss' })).toBeNull();
+      });
+    });
+
+    describe('Manage contents', () => {
+      const manageOf = () => screen.getByRole('heading', { name: 'Manage' }).closest('section') as HTMLElement;
+
+      it('open action, multi-user: Edit, Assignee, Scope, Move and Delete, in that order', async () => {
+        const { todo } = await renderDetail({ kind: 'action', status: 'open' }, { users: [ALICE, BOB] });
+
+        const manage = manageOf();
+        const edit = within(manage).getByRole('button', { name: 'Edit' });
+        const assignee = within(manage).getByLabelText(`Assignee for ${todo.title}`);
+        const scope = within(manage).getByRole('heading', { name: 'Scope' });
+        const move = within(manage).getByRole('heading', { name: 'Move to session' });
+        const del = within(manage).getByRole('button', { name: 'Delete' });
+        expect(precedes(edit, assignee)).toBe(true);
+        expect(precedes(assignee, scope)).toBe(true);
+        expect(precedes(scope, move)).toBe(true);
+        expect(precedes(move, del)).toBe(true);
+      });
+
+      it('open question, single-user: Edit, Move and Delete, with no Assignee and no Scope', async () => {
+        const { todo } = await renderDetail({ kind: 'question', status: 'open' });
+
+        const manage = manageOf();
+        expect(within(manage).getByRole('button', { name: 'Edit' })).toBeTruthy();
+        expect(within(manage).getByRole('heading', { name: 'Move to session' })).toBeTruthy();
+        expect(within(manage).getByRole('button', { name: 'Delete' })).toBeTruthy();
+        expect(within(manage).queryByLabelText(`Assignee for ${todo.title}`)).toBeNull();
+        expect(within(manage).queryByRole('heading', { name: 'Scope' })).toBeNull();
+      });
+
+      it.each(['done', 'superseded', 'dismissed', 'withdrawn'] as const)('a %s item: Delete only', async (status) => {
+        await renderDetail({ status, resolutionText: 'ok' }, { users: [ALICE, BOB] });
+
+        const manage = manageOf();
+        expect(within(manage).getByRole('button', { name: 'Delete' })).toBeTruthy();
+        expect(within(manage).queryByRole('button', { name: 'Edit' })).toBeNull();
+        expect(within(manage).queryByRole('combobox')).toBeNull();
+      });
     });
   });
 

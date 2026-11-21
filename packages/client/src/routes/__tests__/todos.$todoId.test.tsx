@@ -76,6 +76,16 @@ describe('Todo detail page', () => {
     expect(container?.classList.contains('max-w-4xl')).toBe(true);
   });
 
+  it('pins the resolve bar with the page background', async () => {
+    api.state.todos = [makeTodo({ id: 'todo-1' })];
+
+    await renderWithRouter(<SessionDataProvider><TodoDetailPage todoId="todo-1" /></SessionDataProvider>);
+
+    const bar = await screen.findByTestId('todo-resolve-bar');
+    expect(bar.classList.contains('sticky')).toBe(true);
+    expect(bar.classList.contains('bg-slate-900')).toBe(true);
+  });
+
   it('a deleted item shows the deleted-state card with a back link', async () => {
     api.state.todos = [];
 

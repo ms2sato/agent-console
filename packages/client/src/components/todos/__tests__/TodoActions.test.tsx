@@ -3,7 +3,7 @@ import { screen, cleanup, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { createTodoApiMock, makeTodo } from '../../../test/todo-fixtures';
-import { TodoActions } from '../TodoActions';
+import { TodoActions, TodoAssignControl } from '../TodoActions';
 
 const ME = { id: 'user-me', username: 'me' };
 const BOB = { id: 'user-bob', username: 'bob' };
@@ -108,6 +108,43 @@ describe('TodoActions', () => {
 
       await waitFor(() => expect(api.writes()).toHaveLength(1));
       expect(api.writes()[0]).toMatchObject({ method: 'PATCH', path: `/api/todos/${todo.id}`, body: { assigneeUserId: null } });
+    });
+  });
+  describe('assign split', () => {
+    it('renders the Assignee select by default (two users)', async () => {
+      const { todo } = await renderActions({}, [ME, BOB]);
+      expect(screen.getByLabelText(`Assignee for ${todo.title}`)).toBeTruthy();
+    });
+
+    it('assign={false} leaves the Assignee select out but keeps Resolve and Dismiss', async () => {
+      const todo = makeTodo({});
+      api.state.todos = [todo];
+      await renderWithRouter(<TodoActions todo={todo} users={[ME, BOB]} onError={() => {}} assign={false} />);
+
+      expect(screen.queryByLabelText(`Assignee for ${todo.title}`)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Resolve' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+    });
+
+    it('TodoAssignControl alone sends the same assign call, including null for Unassigned', async () => {
+      const todo = makeTodo({ assigneeUserId: BOB.id });
+      api.state.todos = [todo];
+      const user = userEvent.setup();
+      await renderWithRouter(<TodoAssignControl todo={todo} users={[ME, BOB]} onError={() => {}} />);
+
+      await user.selectOptions(screen.getByLabelText(`Assignee for ${todo.title}`), ME.id);
+      await waitFor(() => expect(api.writes()).toHaveLength(1));
+      expect(api.writes()[0]).toMatchObject({ method: 'PATCH', path: `/api/todos/${todo.id}`, body: { assigneeUserId: ME.id } });
+
+      await user.selectOptions(screen.getByLabelText(`Assignee for ${todo.title}`), '');
+      await waitFor(() => expect(api.writes()).toHaveLength(2));
+      expect(api.writes()[1]).toMatchObject({ body: { assigneeUserId: null } });
+    });
+
+    it('TodoAssignControl renders nothing for a single user', async () => {
+      const todo = makeTodo({});
+      await renderWithRouter(<TodoAssignControl todo={todo} users={[ME]} onError={() => {}} />);
+      expect(screen.queryByLabelText(`Assignee for ${todo.title}`)).toBeNull();
     });
   });
 });

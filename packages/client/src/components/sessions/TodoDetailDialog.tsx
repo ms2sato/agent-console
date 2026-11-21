@@ -38,11 +38,11 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFo
   return (
     <>
       <DialogContent
-        className="max-w-2xl max-h-[85vh] overflow-y-auto"
+        className="max-w-4xl max-h-[calc(100vh-6rem)] flex flex-col"
         aria-describedby={undefined}
         onCloseAutoFocus={onCloseAutoFocus}
       >
-        <DialogHeader className="mb-4 flex-row items-center gap-3 space-y-0 pr-8">
+        <DialogHeader className="mb-4 shrink-0 flex-row items-center gap-3 space-y-0 pr-8">
           <DialogTitle>Todo</DialogTitle>
           <Link
             to="/todos/$todoId"
@@ -52,6 +52,7 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFo
             Open as page
           </Link>
         </DialogHeader>
+        <div className="flex-1 min-h-0 overflow-y-auto">
         {detail ? (
           <TodoDetail
             todo={detail.todo}
@@ -61,6 +62,7 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFo
             runEnabled={terminalRun !== null}
             onRun={setPendingRunCommand}
             onDeleted={onClose}
+            resolveBarClassName="bg-slate-800"
           />
         ) : isTodoGone(error) ? (
           <p className="text-sm text-gray-400">This Todo was deleted or does not exist</p>
@@ -72,6 +74,7 @@ function TodoDetailDialogBody({ todoId, sessionId, users, onClose, onCloseAutoFo
             <span>Loading Todo...</span>
           </div>
         )}
+        </div>
       </DialogContent>
       {terminalRun && pendingRunCommand !== null && (
         <RunCommandDialog

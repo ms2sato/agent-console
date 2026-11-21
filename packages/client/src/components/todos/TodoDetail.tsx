@@ -11,7 +11,7 @@ import { todoKeys } from '../../lib/query-keys';
 import { formatAbsoluteTimestamp } from '../../lib/format';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { SectionHeader, DetailRow } from '../ui/detail-layout';
-import { TodoActions } from './TodoActions';
+import { TodoActions, TodoAssignControl } from './TodoActions';
 import { TodoBodyMarkdown } from './TodoBodyMarkdown';
 import { usernameOf, creatorLabel } from './todo-labels';
 
@@ -29,6 +29,8 @@ interface TodoDetailProps {
   onRun?: (command: string) => void;
   /** Called after the item is deleted (the page navigates away, the dialog closes). */
   onDeleted: () => void;
+  /** Opaque background of the pinned resolve bar: content scrolls under it, so it must match the host's own. */
+  resolveBarClassName: string;
 }
 
 function formatIso(iso: string): string {
@@ -149,21 +151,23 @@ interface TodoEditFormProps {
   onError: TodoDetailProps['onError'];
 }
 
-function TodoEditForm({ todo, onError }: TodoEditFormProps) {
+function TodoEditForm({ todo, onError, onClose }: TodoEditFormProps & { onClose: () => void }) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState(todo.title);
   const [body, setBody] = useState(todo.body);
 
   const saveMutation = useMutation({
     mutationFn: () => updateTodo(todo.id, { title: title.trim(), body }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: todoKeys.root() }),
+    onSuccess: async () => {
+      onClose();
+      await queryClient.invalidateQueries({ queryKey: todoKeys.root() });
+    },
     onError: (err: Error) => onError('Failed to Update Todo', err.message),
   });
   const unchanged = title.trim() === todo.title && body === todo.body;
 
   return (
     <div className="space-y-2">
-      <SectionHeader title="Edit" />
       <input
         type="text"
         aria-label="Edit title"
@@ -185,6 +189,9 @@ function TodoEditForm({ todo, onError }: TodoEditFormProps) {
         className="btn text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
       >
         Save
+      </button>
+      <button type="button" onClick={onClose} className="btn text-xs bg-slate-700 hover:bg-slate-600 ml-2">
+        Cancel
       </button>
     </div>
   );
@@ -339,9 +346,10 @@ function TodoReScopeControls({ todo, onError }: TodoEditFormProps) {
  * with its provenance, and the actions the summary row does not carry (edit,
  * re-scope, delete). Hosted by the `/todos/:id` page and the in-session dialog.
  */
-export function TodoDetail({ todo, users, activities, onError, runEnabled, onRun, onDeleted }: TodoDetailProps) {
+export function TodoDetail({ todo, users, activities, onError, runEnabled, onRun, onDeleted, resolveBarClassName }: TodoDetailProps) {
   const queryClient = useQueryClient();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   const isOpen = todo.status === 'open';
   // A question is always session-scoped; only an open action can be re-scoped.
@@ -349,6 +357,7 @@ export function TodoDetail({ todo, users, activities, onError, runEnabled, onRun
   const provenance = provenanceLabel(todo, users);
   // The server takes a reply on an open or done item only; a closed item keeps its timeline read-only.
   const canReply = todo.status === 'open' || todo.status === 'done';
+  const canResolve = canReply;
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteTodo(todo.id),
@@ -366,30 +375,17 @@ export function TodoDetail({ todo, users, activities, onError, runEnabled, onRun
 
   return (
     <div className="space-y-6" data-testid={`todo-detail-${todo.id}`}>
-      <h2 className="text-lg font-semibold text-gray-100 break-words">{todo.title}</h2>
-
-      <section>
-        <SectionHeader title="Details" />
-        <div className="space-y-1 text-sm">
-          <DetailRow label="Kind" value={todo.kind} />
-          <DetailRow label="Scope" value={todo.scope} />
-          <DetailRow label="Status" value={todo.status} />
-          <DetailRow label="Created by" value={creatorLabel(todo, users)} />
-          {todo.assigneeUserId !== null && (
-            <DetailRow label="Assigned to" value={usernameOf(users, todo.assigneeUserId)} />
-          )}
-          <DetailRow label="Created at" value={formatIso(todo.createdAt)} />
-          {todo.resolvedAt !== null && <DetailRow label="Resolved at" value={formatIso(todo.resolvedAt)} />}
-        </div>
-      </section>
+      <div>
+        <h2 className="text-lg font-semibold text-gray-100 break-words">{todo.title}</h2>
+        <p className="mt-1 text-xs text-gray-500">
+          {todo.kind} · {todo.status}
+        </p>
+      </div>
 
       {todo.body !== '' && (
-        <section>
-          <SectionHeader title="Body" />
-          <div className="memo-content min-w-0 text-sm text-gray-300">
-            <TodoBodyMarkdown body={todo.body} focusable onRun={runEnabled ? onRun : undefined} />
-          </div>
-        </section>
+        <div className="memo-content min-w-0 text-sm text-gray-300">
+          <TodoBodyMarkdown body={todo.body} focusable onRun={runEnabled ? onRun : undefined} />
+        </div>
       )}
 
       {!runEnabled && todo.sessionId !== null && (
@@ -400,6 +396,16 @@ export function TodoDetail({ todo, users, activities, onError, runEnabled, onRun
         >
           Open in session
         </Link>
+      )}
+
+      {(todo.resolutionText || provenance !== null) && (
+        <section>
+          <SectionHeader title="Resolution" />
+          {todo.resolutionText && (
+            <p className="text-sm text-gray-300 whitespace-pre-wrap break-words">{todo.resolutionText}</p>
+          )}
+          {provenance !== null && <p className="mt-1 text-xs text-gray-500">{provenance}</p>}
+        </section>
       )}
 
       {(activities.length > 0 || canReply) && (
@@ -416,43 +422,72 @@ export function TodoDetail({ todo, users, activities, onError, runEnabled, onRun
         </section>
       )}
 
-      {(todo.resolutionText || provenance !== null) && (
-        <section>
-          <SectionHeader title="Resolution" />
-          {todo.resolutionText && (
-            <p className="text-sm text-gray-300 whitespace-pre-wrap break-words">{todo.resolutionText}</p>
-          )}
-          {provenance !== null && <p className="mt-1 text-xs text-gray-500">{provenance}</p>}
-        </section>
-      )}
-
-      {/* Remount when the server's version changes: the inputs seed from props only on mount. */}
-      {isOpen && <TodoEditForm key={`${todo.id}:${todo.updatedAt}`} todo={todo} onError={onError} />}
-
-      {canReScope && (
-        <section>
-          <SectionHeader title="Scope" />
-          <TodoReScopeControls todo={todo} onError={onError} />
-        </section>
-      )}
-
-      {isOpen && (
-        <section>
-          <SectionHeader title="Move to session" />
-          <TodoMoveControls todo={todo} onError={onError} />
-        </section>
-      )}
-
       <section>
-        <SectionHeader title="Actions" />
-        <TodoActions todo={todo} users={users} onError={onError} />
+        <SectionHeader title="Details" />
+        <div className="space-y-1 text-sm">
+          <DetailRow label="Scope" value={todo.scope} />
+          <DetailRow label="Created by" value={creatorLabel(todo, users)} />
+          {todo.assigneeUserId !== null && (
+            <DetailRow label="Assigned to" value={usernameOf(users, todo.assigneeUserId)} />
+          )}
+          <DetailRow label="Created at" value={formatIso(todo.createdAt)} />
+          {todo.resolvedAt !== null && <DetailRow label="Resolved at" value={formatIso(todo.resolvedAt)} />}
+        </div>
       </section>
 
-      <div>
-        <button type="button" onClick={() => setConfirmDelete(true)} className="btn btn-danger text-xs">
-          Delete
-        </button>
-      </div>
+      <section className="space-y-4">
+        <SectionHeader title="Manage" />
+
+        {isOpen && !editing && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="btn text-xs bg-slate-700 hover:bg-slate-600"
+          >
+            Edit
+          </button>
+        )}
+        {/* Remount when the server's version changes: the inputs seed from props only on mount. */}
+        {isOpen && editing && (
+          <TodoEditForm
+            key={`${todo.id}:${todo.updatedAt}`}
+            todo={todo}
+            onError={onError}
+            onClose={() => setEditing(false)}
+          />
+        )}
+
+        <TodoAssignControl todo={todo} users={users} onError={onError} />
+
+        {canReScope && (
+          <div>
+            <h4 className="text-xs font-medium text-gray-400 mb-2">Scope</h4>
+            <TodoReScopeControls todo={todo} onError={onError} />
+          </div>
+        )}
+
+        {isOpen && (
+          <div>
+            <h4 className="text-xs font-medium text-gray-400 mb-2">Move to session</h4>
+            <TodoMoveControls todo={todo} onError={onError} />
+          </div>
+        )}
+
+        <div>
+          <button type="button" onClick={() => setConfirmDelete(true)} className="btn btn-danger text-xs">
+            Delete
+          </button>
+        </div>
+      </section>
+
+      {canResolve && (
+        <div
+          data-testid="todo-resolve-bar"
+          className={`sticky bottom-0 z-10 border-t border-slate-700 pt-3 pb-3 ${resolveBarClassName}`}
+        >
+          <TodoActions todo={todo} users={users} onError={onError} assign={false} />
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirmDelete}

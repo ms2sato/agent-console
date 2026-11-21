@@ -8,20 +8,62 @@ type DirectoryUsers = UsersListResponse['users'];
 
 const UNASSIGNED_VALUE = '';
 
-interface TodoActionsProps {
+interface TodoAssignControlProps {
   todo: Todo;
   users: DirectoryUsers;
   /** Shows a refused or failed action; the message is the server's own. */
   onError: (title: string, message: string) => void;
-  /** False while the host is collapsed: every control leaves the tab order (fallback for engines without `inert`). */
+  /** False while the host is collapsed: the control leaves the tab order (fallback for engines without `inert`). */
   focusable?: boolean;
+  className?: string;
+}
+
+/** The assignee select of one Todo item; null when assignment has no meaning (not open, or single-user). */
+export function TodoAssignControl({ todo, users, onError, focusable = true, className }: TodoAssignControlProps) {
+  const queryClient = useQueryClient();
+  // The directory has one member in single-user mode: assignment has no meaning there.
+  const canAssign = todo.status === 'open' && users.length > 1;
+  const assignMutation = useMutation({
+    mutationFn: (assigneeUserId: string | null) => updateTodo(todo.id, { assigneeUserId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: todoKeys.root() }),
+    onError: (err: Error) => onError('Failed to Assign Todo', err.message),
+  });
+
+  if (!canAssign) return null;
+  return (
+    <div className={`flex items-center gap-3 flex-wrap${className ? ` ${className}` : ''}`}>
+      <label className="flex items-center gap-1.5 text-xs text-gray-400">
+        Assignee
+        <select
+          tabIndex={focusable ? undefined : -1}
+          aria-label={`Assignee for ${todo.title}`}
+          value={todo.assigneeUserId ?? UNASSIGNED_VALUE}
+          onChange={(e) => assignMutation.mutate(e.target.value === UNASSIGNED_VALUE ? null : e.target.value)}
+          disabled={assignMutation.isPending}
+          className="input text-xs"
+        >
+          <option value={UNASSIGNED_VALUE}>Unassigned</option>
+          {users.map((user) => (
+            <option key={user.id} value={user.id}>
+              {user.username}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
+
+interface TodoActionsProps extends TodoAssignControlProps {
+  /** False where the host renders the assignee select elsewhere (the detail view's Manage section). */
+  assign?: boolean;
 }
 
 /**
  * The resolve / dismiss / assign controls of one Todo item. The single home of
  * those three mutations: the summary row and the detail view both render it.
  */
-export function TodoActions({ todo, users, onError, focusable = true }: TodoActionsProps) {
+export function TodoActions({ todo, users, onError, focusable = true, assign = true }: TodoActionsProps) {
   const tabIndex = focusable ? undefined : -1;
   const queryClient = useQueryClient();
   const [resolutionText, setResolutionText] = useState('');
@@ -30,8 +72,6 @@ export function TodoActions({ todo, users, onError, focusable = true }: TodoActi
   const canResolve = todo.status === 'open' || todo.status === 'done';
   const isQuestion = todo.kind === 'question';
   const resolveNeedsText = isQuestion && resolutionText.trim() === '';
-  // The directory has one member in single-user mode: assignment has no meaning there.
-  const canAssign = isOpen && users.length > 1;
 
   // The server composes the item; every mutation refetches the lists instead of
   // writing the response into the cache.
@@ -50,11 +90,6 @@ export function TodoActions({ todo, users, onError, focusable = true }: TodoActi
     mutationFn: () => dismissTodo(todo.id),
     onSuccess: settled,
     onError: failed('Failed to Dismiss Todo'),
-  });
-  const assignMutation = useMutation({
-    mutationFn: (assigneeUserId: string | null) => updateTodo(todo.id, { assigneeUserId }),
-    onSuccess: settled,
-    onError: failed('Failed to Assign Todo'),
   });
 
   const handleResolve = () => {
@@ -102,28 +137,7 @@ export function TodoActions({ todo, users, onError, focusable = true }: TodoActi
         )}
       </div>
 
-      {canAssign && (
-        <div className="mt-2 flex items-center gap-3 flex-wrap">
-          <label className="flex items-center gap-1.5 text-xs text-gray-400">
-            Assignee
-            <select
-              tabIndex={tabIndex}
-              aria-label={`Assignee for ${todo.title}`}
-              value={todo.assigneeUserId ?? UNASSIGNED_VALUE}
-              onChange={(e) => assignMutation.mutate(e.target.value === UNASSIGNED_VALUE ? null : e.target.value)}
-              disabled={assignMutation.isPending}
-              className="input text-xs"
-            >
-              <option value={UNASSIGNED_VALUE}>Unassigned</option>
-              {users.map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.username}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      )}
+      {assign && <TodoAssignControl todo={todo} users={users} onError={onError} focusable={focusable} className="mt-2" />}
     </>
   );
 }
