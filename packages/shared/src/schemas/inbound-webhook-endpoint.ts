@@ -70,14 +70,21 @@ function parseUrl(value: string): URL | null {
   return URL.canParse(value) ? new URL(value) : null;
 }
 
-/** True when the placeholder is absent, or occurs once as a whole path segment (not in the host or the query). */
+const SENTINEL_SEGMENT = 'Ab0';
+
+/** True when the placeholder is absent, or occurs once as a whole path segment (not in the host or the query) that survives URL normalisation. */
 function placeholderPlacementIsValid(value: string): boolean {
   if (!value.includes(IN_REPLY_TO_PLACEHOLDER)) return true;
   if (value.split(IN_REPLY_TO_PLACEHOLDER).length !== 2) return false;
   const match = /^https:\/\/([^/?#]*)([^?#]*)/i.exec(value);
   // A value that does not start like an https URL is reported by the checks above.
   if (match === null) return true;
-  return match[2]!.split('/').includes(IN_REPLY_TO_PLACEHOLDER);
+  if (!match[2]!.split('/').includes(IN_REPLY_TO_PLACEHOLDER)) return false;
+  // URL parsing drops a segment that a later `..` (literal or percent-encoded) cancels, which would remove the id
+  // from the path the sender receives. A sentinel that is valid id text stands in for the id: it must survive
+  // normalisation as a whole segment.
+  const expanded = parseUrl(value.split(IN_REPLY_TO_PLACEHOLDER).join(SENTINEL_SEGMENT));
+  return expanded === null || expanded.pathname.split('/').includes(SENTINEL_SEGMENT);
 }
 
 /**
