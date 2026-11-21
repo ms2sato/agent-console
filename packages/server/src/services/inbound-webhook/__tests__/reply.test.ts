@@ -567,6 +567,31 @@ describe('replyToInboundWebhook', () => {
       expect(calls).toHaveLength(MAX_REPLIES_PER_DELIVERY_SESSION);
     });
 
+    it('19 existing replies and 5 concurrent new ones: exactly 1 attempt, 4 reply-limit refusals, 20 rows, 1 fetch call', async () => {
+      respond = slowOk;
+      const bodySha = createHash('sha256').update(JSON.stringify({ text: 'seed' })).digest('hex');
+      for (let i = 0; i < MAX_REPLIES_PER_DELIVERY_SESSION - 1; i += 1) {
+        await db
+          .insertInto('inbound_webhook_replies')
+          .values({
+            id: `reply_seed_${i}`,
+            endpoint_id: ENDPOINT_ID,
+            webhook_id: WEBHOOK_ID,
+            session_id: 's1',
+            body_sha256: bodySha,
+            attempt_count: 1,
+            created_at: NOW.toISOString(),
+          })
+          .execute();
+      }
+      const outcomes = await Promise.all(Array.from({ length: 5 }, () => reply()));
+      expect(outcomes.filter((o) => o.ok)).toHaveLength(1);
+      expect(outcomes.filter((o) => !o.ok && o.error === 'Reply limit reached for this delivery')).toHaveLength(4);
+      const rows = await replyRows();
+      expect(rows.filter((row) => row.session_id === 's1' && row.webhook_id === WEBHOOK_ID)).toHaveLength(MAX_REPLIES_PER_DELIVERY_SESSION);
+      expect(calls).toHaveLength(1);
+    });
+
     it('15 concurrent resends of a reply with no attempt yet: exactly 10 attempts, 5 attempt-limit refusals, attempt_count 10, 10 fetch calls', async () => {
       respond = slowOk;
       // A reply row with attempt_count 0, as left by a crash between the insert and the first attempt.

@@ -1058,7 +1058,7 @@ Verification of the reply path, as shipped (recorded proxy):
 | 23 | database error during the ownership check | tool error, nothing sent, no reply row (not `Unknown delivery`, which is a permission answer the agent would act on) |
 | 24 | delivery row exists but the endpoint is gone | `Unknown delivery` |
 | 25 | `retry-after` empty or whitespace-only after cleanup | no `retryAfter` key (`'120'` is returned as `'120'`) |
-| 26 | the attempt counter write | written before the POST; its failure is row 20's text and nothing is sent (any write after the POST is row 21) |
+| 26 | the attempt counter write | written before the POST; its failure is row 20's text and nothing is sent (any write after the POST is row 21). When a NEW reply's row was inserted and this write then fails, the caller gets row 20's text and no `replyId`, and a row with `attempt_count` 0 remains and counts toward the 20 per (delivery, session): nothing was sent and the cap only gets stricter |
 | 27 | the two caps under concurrent calls | both atomic: one `INSERT ... SELECT` with the count in its `WHERE` (zero rows inserted is row 6) and one guarded `UPDATE` (zero rows updated is row 10) |
 
 #### Reply URL validation (boundary values)
