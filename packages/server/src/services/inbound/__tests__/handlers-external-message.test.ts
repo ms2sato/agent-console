@@ -102,7 +102,7 @@ describe('AgentWorkerHandler: external:message notification', () => {
     expect(text).toBe(
       `\n[inbound:external:message] timestamp=${FROZEN_NOW} type=external:message source=webhook repo=owner/repo branch=N/A ` +
         `url=https://example.slack.com/archives/C1/p1 summary="Deploy finished" instruction_excerpt="Triage this message" ` +
-        `instruction_path=${DELIVERY_DIR}/instruction.md body_path=${DELIVERY_DIR}/body.md intent=triage`,
+        `instruction_path=${DELIVERY_DIR}/instruction.md body_path=${DELIVERY_DIR}/body.md delivery_id=${DELIVERY_ID} intent=triage`,
     );
   });
 
@@ -113,6 +113,7 @@ describe('AgentWorkerHandler: external:message notification', () => {
     expect(params.body).toBeUndefined();
     expect(Object.keys(params.fields)).toEqual([
       'type', 'source', 'repo', 'branch', 'url', 'summary', 'instruction_excerpt', 'instruction_path', 'body_path',
+      'delivery_id',
     ]);
     expect(params.intent).toBe('triage');
   });
@@ -178,6 +179,44 @@ describe('AgentWorkerHandler: external:message notification', () => {
     expect(buildPtyNotificationText({ ...stored, timestamp: FROZEN_NOW })).toContain(`body_path=${DELIVERY_DIR}/body.md`);
   });
 
+  it('renders delivery_id immediately after body_path and before intent, live', async () => {
+    const text = await render(createEvent());
+    expect(text).toContain(`body_path=${DELIVERY_DIR}/body.md delivery_id=${DELIVERY_ID} intent=triage`);
+  });
+
+  it('renders delivery_id after body_path and before the attachment counts, live', async () => {
+    const text = await render(createEvent({ metadata: { attachmentsFetched: 1, attachmentsSkipped: 0 } }));
+    expect(text).toContain(`body_path=${DELIVERY_DIR}/body.md delivery_id=${DELIVERY_ID} attachments_fetched=1`);
+  });
+
+  it('the deferred digest carries delivery_id after body_path and before the counts', async () => {
+    const h = harness({ session: session(), paused: true });
+    setSystemTime(new Date(FROZEN_NOW));
+    await h.handler.handle(
+      createEvent({ metadata: { attachmentsFetched: 1, attachmentsSkipped: 0 } }),
+      { sessionId: 'session-1', provenance: 'match' },
+      { jobId: 'job-1' },
+    );
+    const stored = JSON.parse(JSON.stringify(h.delivered[0]!)) as PtyNotificationParams;
+    const readMore = composeDeferredReadMore(
+      [{ id: 'row-1', workerId: 'worker-1', kind: 'inbound-event', params: stored, sourceId: 'job-1', replyToSessionId: null, createdAt: FROZEN_NOW }],
+      { pausedAt: FROZEN_NOW, resumedAt: FROZEN_NOW },
+    );
+    expect(readMore).toContain(`body_path=${DELIVERY_DIR}/body.md delivery_id=${DELIVERY_ID} attachments_fetched=1`);
+  });
+
+  it('delivery_id is absent for an event of another type (control: the external:message event carries it)', async () => {
+    const h = harness({ session: session() });
+    const external = createEvent();
+    const other: InboundSystemEvent = { ...external, type: 'ci:failed', source: 'github', metadata: { ...external.metadata, branch: 'main' } };
+    await h.handler.handle(external, { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
+    await h.handler.handle(other, { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-2' });
+    expect(Object.keys(h.delivered[0]!.fields)).toContain('delivery_id');
+    expect(h.delivered).toHaveLength(2);
+    expect(Object.keys(h.delivered[1]!.fields)).not.toContain('delivery_id');
+    expect(buildPtyNotificationText(h.delivered[1]!)).not.toContain('delivery_id');
+  });
+
   it('an embedded target receives the same fields through the same seam', async () => {
     const pty = harness({ session: session() });
     const embedded = harness({ session: session(EMBEDDED_WORKER) });
@@ -211,15 +250,15 @@ describe('AgentWorkerHandler: external:message attachment counts', () => {
     expect(text).toBe(
       `\n[inbound:external:message] timestamp=${FROZEN_NOW} type=external:message source=webhook repo=owner/repo branch=N/A ` +
         `url=https://example.slack.com/archives/C1/p1 summary="Deploy finished" instruction_excerpt="Triage this message" ` +
-        `instruction_path=${DELIVERY_DIR}/instruction.md body_path=${DELIVERY_DIR}/body.md ` +
+        `instruction_path=${DELIVERY_DIR}/instruction.md body_path=${DELIVERY_DIR}/body.md delivery_id=${DELIVERY_ID} ` +
         `attachments_fetched=2 attachments_skipped=1 intent=triage`,
     );
   });
 
-  it('carries the keys in order, after body_path and before the appended intent', async () => {
+  it('carries the keys in order, after body_path and delivery_id, before the appended intent', async () => {
     const h = harness({ session: session() });
     await h.handler.handle(withCounts(0, 3), { sessionId: 'session-1', provenance: 'match' }, { jobId: 'job-1' });
-    expect(Object.keys(h.delivered[0]!.fields).slice(-3)).toEqual(['body_path', 'attachments_fetched', 'attachments_skipped']);
+    expect(Object.keys(h.delivered[0]!.fields).slice(-4)).toEqual(['body_path', 'delivery_id', 'attachments_fetched', 'attachments_skipped']);
     expect(h.delivered[0]!.fields).toMatchObject({ attachments_fetched: '0', attachments_skipped: '3' });
   });
 
@@ -246,7 +285,7 @@ describe('AgentWorkerHandler: external:message attachment counts', () => {
       [{ id: 'row-1', workerId: 'worker-1', kind: 'inbound-event', params: stored, sourceId: 'job-1', replyToSessionId: null, createdAt: FROZEN_NOW }],
       { pausedAt: FROZEN_NOW, resumedAt: FROZEN_NOW },
     );
-    expect(readMore).toContain(`body_path=${DELIVERY_DIR}/body.md attachments_fetched=2 attachments_skipped=1 intent=triage`);
+    expect(readMore).toContain(`body_path=${DELIVERY_DIR}/body.md delivery_id=${DELIVERY_ID} attachments_fetched=2 attachments_skipped=1 intent=triage`);
   });
 });
 

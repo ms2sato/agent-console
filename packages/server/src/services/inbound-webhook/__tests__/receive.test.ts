@@ -8,6 +8,7 @@ import { JobQueue, JOB_TYPES } from '../../../jobs/index.js';
 import { SqliteInboundWebhookEndpointRepository } from '../../../repositories/sqlite-inbound-webhook-endpoint-repository.js';
 import { PermanentHandlerError } from '../../inbound/job-handler.js';
 import { rootLogger } from '../../../lib/logger.js';
+import { signStandardWebhook } from '../../../lib/inbound-webhook-secret.js';
 // Fictional values from a public repository's sender fixture.
 import golden from './fixtures/slack-blocks-golden.json';
 import {
@@ -15,6 +16,7 @@ import {
   isTimestampWithinTolerance,
   isValidWebhookId,
   parseInboundWebhookBody,
+  parseInboundWebhookDeliveryId,
   prepareDelivery,
   receiveInboundWebhook,
   verifyStandardWebhookSignature,
@@ -168,6 +170,57 @@ describe('parseInboundWebhookBody', () => {
   }
 });
 
+describe('signStandardWebhook with verifyStandardWebhookSignature', () => {
+  it('a signature produced by the signer verifies', () => {
+    const signature = signStandardWebhook({ secret: VECTOR_SECRET, id: VECTOR_ID, timestamp: VECTOR_TS, body: VECTOR_BODY });
+    expect(signature).toBe(`v1,${VECTOR_SIG}`);
+    expect(
+      verifyStandardWebhookSignature({
+        secret: VECTOR_SECRET,
+        webhookId: VECTOR_ID,
+        timestamp: VECTOR_TS,
+        rawBody: VECTOR_BODY,
+        signatureHeader: signature,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('parseInboundWebhookDeliveryId', () => {
+  const longest = 'A'.repeat(128);
+  for (const [name, webhookId] of [
+    ['a plain webhook id', 'Ev1'],
+    ['a webhook id containing a colon', 'a:b:c'],
+    ['the 128-character maximum', longest],
+  ] as const) {
+    it(`round-trips ${name}`, () => {
+      expect(parseInboundWebhookDeliveryId(inboundWebhookDeliveryId('ep-1', webhookId))).toEqual({
+        endpointId: 'ep-1',
+        webhookId,
+      });
+    });
+  }
+
+  it('returns null for a wrong prefix', () => {
+    expect(parseInboundWebhookDeliveryId('other:ep-1:Ev1')).toBeNull();
+    expect(parseInboundWebhookDeliveryId('ep-1:Ev1')).toBeNull();
+  });
+
+  it('returns null for an empty endpoint id', () => {
+    expect(parseInboundWebhookDeliveryId('inbound-webhook::Ev1')).toBeNull();
+  });
+
+  it('returns null for an empty webhook id and for a missing separator', () => {
+    expect(parseInboundWebhookDeliveryId('inbound-webhook:ep-1:')).toBeNull();
+    expect(parseInboundWebhookDeliveryId('inbound-webhook:ep-1')).toBeNull();
+  });
+
+  it('returns null for a webhook id that fails isValidWebhookId', () => {
+    expect(parseInboundWebhookDeliveryId('inbound-webhook:ep-1:../x')).toBeNull();
+    expect(parseInboundWebhookDeliveryId(`inbound-webhook:ep-1:${'A'.repeat(129)}`)).toBeNull();
+  });
+});
+
 describe('receiveInboundWebhook', () => {
   let db: Kysely<Database>;
   let endpoints: SqliteInboundWebhookEndpointRepository;
@@ -263,6 +316,80 @@ describe('receiveInboundWebhook', () => {
     const other = await receiveInboundWebhook(input({ endpointId: 'ep-2' }), deps());
     expect(other).toEqual({ kind: 'accepted' });
     expect((await rows()).jobs).toHaveLength(2);
+  });
+
+  describe('reflected reply ids', () => {
+    const recordReply = async (endpointId: string, replyId: string) => {
+      await db
+        .insertInto('inbound_webhook_deliveries')
+        .values({ endpoint_id: endpointId, webhook_id: 'Orig1', received_at: NOW.toISOString() })
+        .execute();
+      await db
+        .insertInto('inbound_webhook_replies')
+        .values({
+          id: replyId,
+          endpoint_id: endpointId,
+          webhook_id: 'Orig1',
+          session_id: 'session-1',
+          body_sha256: 'a'.repeat(64),
+          created_at: NOW.toISOString(),
+        })
+        .execute();
+    };
+
+    it('a signed delivery whose webhook-id is a recorded reply id for this endpoint is a duplicate with no new row, job or wake (control: an unrecorded id is accepted)', async () => {
+      await recordReply(ENDPOINT_ID, 'reply_abc');
+      const before = await rows();
+      wakeSpy.mockClear();
+      const warn = spyOn(rootLogger, 'warn');
+      try {
+        const reflected = await receiveInboundWebhook(input({ webhookId: 'reply_abc' }), deps());
+        expect(reflected).toEqual({ kind: 'duplicate' });
+        expect(await rows()).toEqual(before);
+        expect(wakeSpy).not.toHaveBeenCalled();
+        const logged = warn.mock.calls.map((call) => JSON.stringify(call));
+        expect(logged.some((line) => line.includes('reply-id-reflected') && line.includes('reply_abc') && line.includes(ENDPOINT_ID))).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+
+      const control = await receiveInboundWebhook(input({ webhookId: 'reply_other' }), deps());
+      expect(control).toEqual({ kind: 'accepted' });
+      const after = await rows();
+      expect(after.deliveries.map((d) => d.webhook_id).sort()).toEqual(['Orig1', 'reply_other']);
+      expect(after.jobs).toHaveLength(1);
+    });
+
+    it('a reflected reply id is a duplicate even when the body fails the inbound schema (control: the same body with an unrecorded id is invalid_request)', async () => {
+      await recordReply(ENDPOINT_ID, 'reply_abc');
+      const before = await rows();
+      wakeSpy.mockClear();
+      const badBody = '{"unexpected":"echo"}';
+
+      expect(await receiveInboundWebhook(input({ webhookId: 'reply_abc', rawBody: badBody }), deps())).toEqual({ kind: 'duplicate' });
+      expect(await rows()).toEqual(before);
+      expect(wakeSpy).not.toHaveBeenCalled();
+
+      expect(await receiveInboundWebhook(input({ webhookId: 'reply_unrecorded', rawBody: badBody }), deps())).toEqual({
+        kind: 'invalid_request',
+      });
+      expect(await rows()).toEqual(before);
+    });
+
+    it('a reply id recorded for another endpoint does not block this one', async () => {
+      await endpoints.create({
+        id: 'ep-2',
+        label: 'Other',
+        repositoryId: 'repo-1',
+        instructionText: 'x',
+        secret: SECRET,
+        now: '2026-11-07T00:00:00.000Z',
+      });
+      await recordReply('ep-2', 'reply_abc');
+      const result = await receiveInboundWebhook(input({ webhookId: 'reply_abc' }), deps());
+      expect(result).toEqual({ kind: 'accepted' });
+      expect((await rows()).jobs).toHaveLength(1);
+    });
   });
 
   it('answers not_found for an unknown endpoint and writes nothing', async () => {

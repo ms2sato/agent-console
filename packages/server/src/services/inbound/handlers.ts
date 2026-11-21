@@ -286,6 +286,7 @@ class AgentWorkerHandler implements InboundEventHandler {
       instruction_excerpt: toInstructionExcerpt(event.metadata.instructionExcerpt ?? ''),
       instruction_path: paths.instructionPath,
       body_path: paths.bodyPath,
+      delivery_id: deliveryId,
       // Only when the sender listed files: a message without any keeps the earlier text exactly.
       ...(attachmentsFetched !== undefined && attachmentsSkipped !== undefined
         ? { attachments_fetched: String(attachmentsFetched), attachments_skipped: String(attachmentsSkipped) }

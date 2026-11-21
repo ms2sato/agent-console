@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
 /** Prefix of a Standard Webhooks signing secret. */
 export const INBOUND_WEBHOOK_SECRET_PREFIX = 'whsec_';
@@ -29,4 +29,28 @@ export function previousSecretExpiryFrom(now: Date): string {
  */
 export function isPreviousSecretActive(expiresAt: string | null, now: Date): boolean {
   return expiresAt !== null && Date.parse(expiresAt) > now.getTime();
+}
+
+/**
+ * The raw HMAC-SHA256 digest of one Standard Webhooks message: input `{id}.{timestamp}.{body}`,
+ * keyed by the base64-DECODED bytes of the part after `whsec_`. `null` when the secret lacks the
+ * prefix. The single writer of the signed string and of the key decoding: signing and verifying
+ * both go through it.
+ */
+export function computeStandardWebhookDigest(
+  secret: string,
+  id: string,
+  timestamp: string,
+  body: string,
+): Buffer | null {
+  if (!secret.startsWith(INBOUND_WEBHOOK_SECRET_PREFIX)) return null;
+  const key = Buffer.from(secret.slice(INBOUND_WEBHOOK_SECRET_PREFIX.length), 'base64');
+  return createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest();
+}
+
+/** `v1,<base64>` signature header value for one message. Throws on a secret without the prefix. */
+export function signStandardWebhook(input: { secret: string; id: string; timestamp: string; body: string }): string {
+  const digest = computeStandardWebhookDigest(input.secret, input.id, input.timestamp, input.body);
+  if (digest === null) throw new Error('Signing secret does not carry the expected prefix');
+  return `v1,${digest.toString('base64')}`;
 }

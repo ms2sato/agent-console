@@ -676,6 +676,44 @@ describe('buildPtyNotificationText: external:message fields', () => {
     expect(text.split('\n')).toHaveLength(2);
   });
 
+  it('renders delivery_id on the header line right after body_path and before intent', () => {
+    const text = buildPtyNotificationText({
+      kind: 'inbound-event',
+      tag: 'inbound:external:message',
+      fields: {
+        ...baseFields,
+        instruction_path: '/data/instruction.md',
+        body_path: '/data/body.md',
+        delivery_id: 'del-123',
+      },
+      intent: 'triage',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(text).toBe(
+      '\n[inbound:external:message] timestamp=2026-01-01T00:00:00.000Z type=external:message source=webhook repo=owner/repo ' +
+        'branch=N/A url=N/A summary="A message" instruction_path=/data/instruction.md body_path=/data/body.md ' +
+        'delivery_id=del-123 intent=triage',
+    );
+    expect(text.split('\n')).toHaveLength(2);
+  });
+
+  it('leaves the text unchanged when delivery_id is omitted', () => {
+    const text = buildPtyNotificationText({
+      kind: 'inbound-event',
+      tag: 'inbound:external:message',
+      fields: { ...baseFields, body_path: '/data/body.md' },
+      intent: 'triage',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(text).not.toContain('delivery_id');
+    expect(text).toBe(
+      '\n[inbound:external:message] timestamp=2026-01-01T00:00:00.000Z type=external:message source=webhook repo=owner/repo ' +
+        'branch=N/A url=N/A summary="A message" body_path=/data/body.md intent=triage',
+    );
+  });
+
   it('leaves an event of any other type byte-identical when the optional fields are absent', () => {
     const text = buildPtyNotificationText({
       kind: 'inbound-event',

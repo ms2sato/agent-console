@@ -1574,6 +1574,28 @@ describe('MCP Server Tools', () => {
       ]);
     });
 
+    it('advertises reply_to_inbound_webhook in tools/list with deliveryId, body, replyId and sessionId, and a description that promises no secret or signature', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      const listBody = (await listRes.json()) as {
+        result?: { tools?: Array<{ name: string; description?: string; inputSchema?: { properties?: Record<string, unknown> } }> };
+      };
+      const tool = (listBody.result?.tools ?? []).find((t) => t.name === 'reply_to_inbound_webhook');
+
+      expect(tool).toBeDefined();
+      expect(Object.keys(tool?.inputSchema?.properties ?? {}).sort()).toEqual(['body', 'deliveryId', 'replyId', 'sessionId']);
+      expect(tool?.description).toContain('delivery_id');
+      expect(tool?.description).toContain('you never see a signature or a secret');
+      expect(tool?.description).not.toMatch(/returns? (the |a )?(signature|secret)/i);
+    });
+
     it('advertises adopt_todo in tools/list, beside resolve_todo, and list_todos describes its global flag', async () => {
       const listRes = await app.request('/mcp', {
         method: 'POST',

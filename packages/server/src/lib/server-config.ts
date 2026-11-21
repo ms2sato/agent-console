@@ -213,6 +213,15 @@ export const serverConfig = {
     10,
   ),
   /**
+   * Inbound webhook signed replies: time allowed for ONE reply attempt (connect, headers and body
+   * read together). An attempt not complete by then is reported to the caller, never retried here.
+   * Default: 10 seconds
+   */
+  INBOUND_WEBHOOK_REPLY_TIMEOUT_MS: parsePositiveIntWithDefault(
+    process.env.INBOUND_WEBHOOK_REPLY_TIMEOUT_MS,
+    10_000,
+  ),
+  /**
    * Base URL for the application.
    * Used to generate URLs in outbound notifications (e.g., Slack "Open Session" button).
    * If not set, notifications will show a warning about missing configuration.

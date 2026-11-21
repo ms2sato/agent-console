@@ -4,6 +4,7 @@ import { api } from './routes/api.js';
 import { webhooks } from './routes/webhooks.js';
 import { artifactsViewer } from './routes/artifacts-viewer.js';
 import { createMcpApp } from './mcp/mcp-server.js';
+import { replyToInboundWebhook } from './services/inbound-webhook/reply.js';
 import { createWorktreeWithSession } from './services/worktree-creation-service.js';
 import { deleteWorktree } from './services/worktree-deletion-service.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
@@ -161,6 +162,11 @@ app.route('/webhooks', webhooks);
 app.route('/artifacts', artifactsViewer);
 
 // Mount MCP endpoint (Streamable HTTP transport for AI agent tool integration)
+const replyDeps = {
+  endpoints: appContext.inboundWebhookEndpointRepository,
+  db: appContext.db,
+  now: appContext.now,
+};
 const mcpApp = createMcpApp({
   sessionManager: appContext.sessionManager,
   repositoryManager: appContext.repositoryManager,
@@ -183,6 +189,7 @@ const mcpApp = createMcpApp({
   fetchPullRequestUrl: appContext.fetchPullRequestUrl,
   findOpenPullRequest: appContext.findOpenPullRequest,
   mcpTokenRegistry: appContext.mcpTokenRegistry,
+  replyToInboundWebhook: (input) => replyToInboundWebhook(input, replyDeps),
 });
 app.route('', mcpApp);
 

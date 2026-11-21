@@ -7,12 +7,12 @@
  * (the route is a thin adapter) and imports nothing from the action half, so a later endpoint
  * kind plugs a different action into the same `DeliveryContent` seam.
  */
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import type { Kysely } from 'kysely';
 import * as v from 'valibot';
 import { JOB_TYPES, type InboundWebhookProcessPayload, type JobQueue } from '../../jobs/index.js';
 import type { Database } from '../../database/schema.js';
-import { INBOUND_WEBHOOK_SECRET_PREFIX, isPreviousSecretActive } from '../../lib/inbound-webhook-secret.js';
+import { computeStandardWebhookDigest, isPreviousSecretActive } from '../../lib/inbound-webhook-secret.js';
 import { createLogger } from '../../lib/logger.js';
 import type { InboundWebhookEndpointRepository } from '../../repositories/webhook-endpoint-repository.js';
 import { PermanentHandlerError } from '../inbound/job-handler.js';
@@ -47,6 +47,23 @@ export function inboundWebhookDeliveryId(endpointId: string, webhookId: string):
   return `inbound-webhook:${endpointId}:${webhookId}`;
 }
 
+const DELIVERY_ID_PREFIX = 'inbound-webhook:';
+
+/**
+ * Inverse of `inboundWebhookDeliveryId`: the endpoint id runs to the NEXT `:`, the rest is the
+ * webhook id (which may itself contain `:`) and must be a valid webhook id. `null` otherwise.
+ */
+export function parseInboundWebhookDeliveryId(deliveryId: string): { endpointId: string; webhookId: string } | null {
+  if (!deliveryId.startsWith(DELIVERY_ID_PREFIX)) return null;
+  const rest = deliveryId.slice(DELIVERY_ID_PREFIX.length);
+  const separator = rest.indexOf(':');
+  if (separator <= 0) return null;
+  const endpointId = rest.slice(0, separator);
+  const webhookId = rest.slice(separator + 1);
+  if (!isValidWebhookId(webhookId)) return null;
+  return { endpointId, webhookId };
+}
+
 export function isValidWebhookId(value: string): boolean {
   return WEBHOOK_ID_PATTERN.test(value);
 }
@@ -73,11 +90,8 @@ export interface SignatureCheckInput {
  * matches. A malformed entry or a length mismatch is a plain refusal.
  */
 export function verifyStandardWebhookSignature(input: SignatureCheckInput): boolean {
-  if (!input.secret.startsWith(INBOUND_WEBHOOK_SECRET_PREFIX)) return false;
-  const key = Buffer.from(input.secret.slice(INBOUND_WEBHOOK_SECRET_PREFIX.length), 'base64');
-  const expected = createHmac('sha256', key)
-    .update(`${input.webhookId}.${input.timestamp}.${input.rawBody}`)
-    .digest();
+  const expected = computeStandardWebhookDigest(input.secret, input.webhookId, input.timestamp, input.rawBody);
+  if (expected === null) return false;
 
   let matched = false;
   for (const entry of input.signatureHeader.split(' ')) {
@@ -218,7 +232,27 @@ export async function receiveInboundWebhook(input: ReceiveInput, deps: ReceiveDe
   }
 
   const { webhookId } = input;
-  if (!isValidWebhookId(webhookId) || parseInboundWebhookBody(input.rawBody) === null) {
+  if (!isValidWebhookId(webhookId)) {
+    logger.warn({ endpointId, reason: 'invalid-request' }, 'Inbound webhook refused');
+    return { kind: 'invalid_request' };
+  }
+
+  // A recorded reply id is a message this server signed itself; if the sender echoes it back it
+  // must not be delivered to a session as a new inbound message. The lookup runs after signature
+  // verification (an unsigned request cannot probe reply ids) and before body-schema validation,
+  // so the answer to a reflected reply does not depend on the shape of its body.
+  const reflected = await deps.db
+    .selectFrom('inbound_webhook_replies')
+    .select('id')
+    .where('id', '=', webhookId)
+    .where('endpoint_id', '=', endpointId)
+    .executeTakeFirst();
+  if (reflected) {
+    logger.warn({ endpointId, webhookId, reason: 'reply-id-reflected' }, 'Inbound webhook ignored');
+    return { kind: 'duplicate' };
+  }
+
+  if (parseInboundWebhookBody(input.rawBody) === null) {
     logger.warn({ endpointId, reason: 'invalid-request' }, 'Inbound webhook refused');
     return { kind: 'invalid_request' };
   }
