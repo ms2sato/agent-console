@@ -5,6 +5,7 @@ import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionSidePanels } from '../SessionSidePanels';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { installMockWebSocket } from '../../../test/mock-websocket';
+import { artifactKeys } from '../../../lib/query-keys';
 
 // Fetch-level mock (testing.md Anti-Pattern #2: mock at the fetch boundary).
 // Unlike the sibling panel test files (which each exercise one panel and one
@@ -79,7 +80,29 @@ function routeFetchByPanel(): void {
   });
 }
 
-const STORAGE_KEY = 'agent-console:session-side-panels-v2';
+const STORAGE_KEY = 'agent-console:session-side-panels-v3';
+
+function seedRecord(record: { railOpen: boolean; openSection: string | null }): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
+}
+
+const SECTION_HEADER_NAME = /^(Collapse|Expand) (Memo|Todo|Artifacts|Bookmarks)$/;
+
+/** Section header label -> aria-expanded, for the headers currently rendered. */
+function headerStates(): Record<string, boolean> {
+  const states: Record<string, boolean> = {};
+  for (const button of screen.queryAllByRole('button', { name: SECTION_HEADER_NAME })) {
+    const label = (button.getAttribute('aria-label') ?? '').replace(/^(Collapse|Expand) /, '');
+    states[label] = button.getAttribute('aria-expanded') === 'true';
+  }
+  return states;
+}
+
+function openHeaders(): string[] {
+  return Object.entries(headerStates())
+    .filter(([, expanded]) => expanded)
+    .map(([label]) => label);
+}
 
 describe('SessionSidePanels', () => {
   let restoreWebSocket: () => void;
@@ -159,10 +182,10 @@ describe('SessionSidePanels', () => {
     await user.click(memoHeader);
     const collapsedMemoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
     const editMemoButton = screen.getByLabelText('Edit memo');
-    const todoHeader = await screen.findByLabelText('Collapse Todo');
+    const todoHeader = await screen.findByLabelText('Expand Todo');
 
     const memoSection = collapsedMemoHeader.closest('.border-b') as HTMLElement;
-    const memoBodyWrapper = memoSection.querySelector('[aria-hidden]') as HTMLElement;
+    const memoBodyWrapper = memoSection.querySelector('div[aria-hidden]') as HTMLElement;
     expect(memoBodyWrapper).toBeTruthy();
     expect(memoBodyWrapper.getAttribute('inert')).toBe('');
     expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
@@ -182,11 +205,9 @@ describe('SessionSidePanels', () => {
     expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
   });
 
-  it('starts with the rail closed (new default), then shows all three sections expanded once opened', async () => {
+  it('starts with the rail closed (default), then opens with only Memo expanded', async () => {
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
 
-    // New default: the rail starts closed, so the compact rail's own
-    // toggle button (not the Memo content) is what's available first.
     await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
 
     act(() => {
@@ -194,12 +215,8 @@ describe('SessionSidePanels', () => {
     });
 
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
-    expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
-    expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy();
-
-    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByLabelText('Collapse Artifacts').getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByLabelText('Collapse Bookmarks').getAttribute('aria-expanded')).toBe('true');
+    await waitFor(() => expect(Object.keys(headerStates()).sort()).toEqual(['Artifacts', 'Bookmarks', 'Memo', 'Todo']));
+    expect(openHeaders()).toEqual(['Memo']);
   });
 
   it('mounts the to-do section in the open rail when the session has an open item, and leaves it out otherwise', async () => {
@@ -214,7 +231,7 @@ describe('SessionSidePanels', () => {
       }
       return base(input);
     });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } }));
+    seedRecord({ railOpen: true, openSection: 'todos' });
 
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
 
@@ -227,7 +244,7 @@ describe('SessionSidePanels', () => {
     mockFetch.mockImplementation((input: RequestInfo | URL) =>
       urlToString(input).includes('/todos') ? Promise.resolve(jsonResponse({ todos: [] })) : base(input)
     );
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } }));
+    seedRecord({ railOpen: true, openSection: 'todos' });
 
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
 
@@ -260,80 +277,196 @@ describe('SessionSidePanels', () => {
     expect(container.querySelector('.w-80')).toBeNull();
   });
 
-  it('clicking a compact section label while the rail is closed reopens the rail with that section expanded, without disturbing an already-expanded section (R5a)', async () => {
+  it('clicking a compact section label on the closed rail opens the rail with only that section expanded', async () => {
+    seedRecord({ railOpen: false, openSection: 'memo' });
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
     await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+    await screen.findByLabelText('Expand artifacts');
 
-    // Open the rail first (new default is closed) to set up the
-    // "artifacts collapsed, memo still expanded" starting state.
     act(() => {
-      screen.getByLabelText('Expand side panel').click();
+      screen.getByLabelText('Expand artifacts').click();
     });
-    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
-    // Collapse the artifacts section (it stays collapsed once the rail
-    // closes), but leave memo expanded.
-    act(() => {
-      screen.getByLabelText('Collapse Artifacts').click();
-    });
-    await waitFor(() => expect(screen.getByLabelText('Expand Artifacts')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('Collapse side panel')).toBeTruthy());
+    await waitFor(() => expect(Object.keys(headerStates()).length).toBe(4));
+    expect(openHeaders()).toEqual(['Artifacts']);
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(JSON.stringify({ railOpen: true, openSection: 'artifacts' }));
+  });
 
-    // Close the rail.
-    act(() => {
-      screen.getByLabelText('Collapse side panel').click();
-    });
-    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+  it('a label click on the closed rail for the section that is already the open one keeps it open', async () => {
+    seedRecord({ railOpen: false, openSection: 'memo' });
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await screen.findByLabelText('Expand memo');
 
-    // From the narrow rail, click memo's compact label -- it was already
-    // expanded before the rail closed, and must come back expanded, not
-    // toggled off.
     act(() => {
       screen.getByLabelText('Expand memo').click();
     });
 
-    await waitFor(() => expect(screen.getByLabelText('Collapse side panel')).toBeTruthy());
-    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
-    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
-
-    // Artifacts was NOT already expanded before the rail closed -- it stays
-    // collapsed (opening the rail does not force every section open).
-    expect(screen.getByLabelText('Expand Artifacts')).toBeTruthy();
+    await waitFor(() => expect(Object.keys(headerStates()).length).toBe(4));
+    expect(openHeaders()).toEqual(['Memo']);
   });
 
-  it('expanding memo and then artifacts leaves both simultaneously open, and a third section opening does not close the first two (multi-open unaffected)', async () => {
+  it('opening Todo while Memo is open leaves exactly one header with aria-expanded="true"', async () => {
+    seedRecord({ railOpen: true, openSection: 'memo' });
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
-    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+    await waitFor(() => expect(Object.keys(headerStates()).length).toBe(4));
+    expect(openHeaders()).toEqual(['Memo']);
 
-    // Open the rail first (new default is closed).
+    act(() => {
+      screen.getByLabelText('Expand Todo').click();
+    });
+
+    await waitFor(() => expect(openHeaders()).toEqual(['Todo']));
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(JSON.stringify({ railOpen: true, openSection: 'todos' }));
+  });
+
+  it('clicking the open section header closes it and no section is open', async () => {
+    seedRecord({ railOpen: true, openSection: 'memo' });
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(Object.keys(headerStates()).length).toBe(4));
+
+    act(() => {
+      screen.getByLabelText('Collapse Memo').click();
+    });
+
+    await waitFor(() => expect(openHeaders()).toEqual([]));
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(JSON.stringify({ railOpen: true, openSection: null }));
+  });
+
+  it('collapsing and reopening the rail shows the section that was open', async () => {
+    seedRecord({ railOpen: true, openSection: 'bookmarks' });
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByLabelText('Collapse side panel')).toBeTruthy());
+
+    act(() => {
+      screen.getByLabelText('Collapse side panel').click();
+    });
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
     act(() => {
       screen.getByLabelText('Expand side panel').click();
     });
-    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
-    // All three sections start expanded by default -- confirm all three,
-    // then collapse-and-reopen bookmarks to prove opening a third section
-    // doesn't disturb the other two.
-    expect(screen.getByText('Hello Memo')).toBeTruthy();
-    expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
-    expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy();
+    await waitFor(() => expect(Object.keys(headerStates()).length).toBe(4));
+    expect(openHeaders()).toEqual(['Bookmarks']);
+  });
+
+  it('the scrolling element holds the four section headers and not the collapse button; the rail root does not scroll', async () => {
+    seedRecord({ railOpen: true, openSection: 'memo' });
+    const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(Object.keys(headerStates()).length).toBe(4));
+
+    const collapse = screen.getByLabelText('Collapse side panel');
+    const scroller = container.querySelector('.overflow-y-auto.flex-1') as HTMLElement;
+    expect(scroller).toBeTruthy();
+    for (const name of ['Collapse Memo', 'Expand Todo', 'Expand Artifacts', 'Expand Bookmarks']) {
+      expect(scroller.contains(screen.getByLabelText(name))).toBe(true);
+    }
+    expect(scroller.contains(collapse)).toBe(false);
+
+    const root = container.querySelector('.w-80') as HTMLElement;
+    expect(root.className).not.toContain('overflow-y-auto');
+    expect(collapse.closest('.shrink-0')).toBeTruthy();
+  });
+
+  it('Memo Edit while another section is open makes Memo the only open section and focuses the textarea', async () => {
+    seedRecord({ railOpen: true, openSection: 'bookmarks' });
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    const edit = await screen.findByLabelText('Edit memo');
+    await waitFor(() => expect(openHeaders()).toEqual(['Bookmarks']));
 
     act(() => {
-      screen.getByLabelText('Collapse Bookmarks').click();
-    });
-    await waitFor(() => expect(screen.getByLabelText('Expand Bookmarks')).toBeTruthy());
-
-    act(() => {
-      screen.getByLabelText('Expand Bookmarks').click();
+      edit.click();
     });
 
-    await waitFor(() => expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy());
-    // Memo and artifacts are still open throughout.
-    expect(screen.getByText('Hello Memo')).toBeTruthy();
-    expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
+    await waitFor(() => expect(openHeaders()).toEqual(['Memo']));
+    const textarea = (await screen.findByLabelText('Memo content')) as HTMLTextAreaElement;
+    expect(document.activeElement).toBe(textarea);
+  });
 
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(
-      JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } })
-    );
+  it('Memo collapsed by another section while editing reads "Memo (editing)" and keeps the draft', async () => {
+    seedRecord({ railOpen: true, openSection: 'memo' });
+    const user = userEvent.setup();
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await user.click(await screen.findByLabelText('Edit memo'));
+    const textarea = (await screen.findByLabelText('Memo content')) as HTMLTextAreaElement;
+    await user.type(textarea, ' typed');
+    const draft = textarea.value;
+
+    await user.click(screen.getByLabelText('Expand Todo'));
+
+    const header = await screen.findByLabelText('Expand Memo');
+    expect(header.textContent).toContain('Memo (editing)');
+    await user.click(header);
+    expect((screen.getByLabelText('Memo content') as HTMLTextAreaElement).value).toBe(draft);
+    expect(screen.getByLabelText('Collapse Memo').textContent).not.toContain('(editing)');
+  });
+
+  it('Bookmarks form text survives another section opening and the form is still showing on reopen', async () => {
+    seedRecord({ railOpen: true, openSection: 'bookmarks' });
+    const user = userEvent.setup();
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await user.click(await screen.findByLabelText('Show add bookmark form'));
+    await user.type(screen.getByLabelText('Bookmark URL'), 'https://typed.example');
+
+    await user.click(screen.getByLabelText('Expand Memo'));
+    await waitFor(() => expect(openHeaders()).toEqual(['Memo']));
+    await user.click(screen.getByLabelText('Expand Bookmarks'));
+
+    await waitFor(() => expect(openHeaders()).toEqual(['Bookmarks']));
+    expect((screen.getByLabelText('Bookmark URL') as HTMLInputElement).value).toBe('https://typed.example');
+    expect(screen.getByLabelText('Hide add bookmark form')).toBeTruthy();
+  });
+
+  it('Bookmarks form closed by its own header is hidden on reopen', async () => {
+    seedRecord({ railOpen: true, openSection: 'bookmarks' });
+    const user = userEvent.setup();
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await user.click(await screen.findByLabelText('Show add bookmark form'));
+    await user.click(screen.getByLabelText('Collapse Bookmarks'));
+    await user.click(screen.getByLabelText('Expand Bookmarks'));
+
+    expect(screen.queryByLabelText('Bookmark URL')).toBeNull();
+  });
+
+  describe('openSection pointing at a section that renders nothing (empty Artifacts)', () => {
+    function routeEmptyArtifacts(): void {
+      const base = mockFetch.getMockImplementation()!;
+      mockFetch.mockImplementation((input: RequestInfo | URL) =>
+        urlToString(input).includes('/artifacts') ? Promise.resolve(jsonResponse({ artifacts: [] })) : base(input)
+      );
+    }
+
+    it('renders the other three headers collapsed, no Artifacts header, and a click on Memo stores openSection memo', async () => {
+      routeEmptyArtifacts();
+      seedRecord({ railOpen: true, openSection: 'artifacts' });
+      await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+
+      await waitFor(() => expect(Object.keys(headerStates()).sort()).toEqual(['Bookmarks', 'Memo', 'Todo']));
+      expect(headerStates()).toEqual({ Memo: false, Todo: false, Bookmarks: false });
+      expect(screen.queryByLabelText('Expand Artifacts')).toBeNull();
+      expect(screen.queryByLabelText('Collapse Artifacts')).toBeNull();
+
+      act(() => {
+        screen.getByLabelText('Expand Memo').click();
+      });
+
+      await waitFor(() => expect(openHeaders()).toEqual(['Memo']));
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEY) as string)).toEqual({ railOpen: true, openSection: 'memo' });
+    });
+
+    it('when an artifact then arrives, Artifacts renders open and the other three stay closed', async () => {
+      routeEmptyArtifacts();
+      seedRecord({ railOpen: true, openSection: 'artifacts' });
+      const { queryClient } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+      await waitFor(() => expect(Object.keys(headerStates()).sort()).toEqual(['Bookmarks', 'Memo', 'Todo']));
+
+      routeFetchByPanel();
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: artifactKeys.listBySession('session-1'), exact: true });
+      });
+
+      await waitFor(() => expect(headerStates()).toEqual({ Memo: false, Todo: false, Artifacts: true, Bookmarks: false }));
+    });
   });
 
   it('renders exactly one bordered rail element when the rail is open (all sections expanded, R1c DOM pin)', async () => {

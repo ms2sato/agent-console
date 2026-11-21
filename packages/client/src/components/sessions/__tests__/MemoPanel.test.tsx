@@ -486,6 +486,50 @@ describe('MemoPanel', () => {
     expect(textarea.closest('[aria-hidden="true"]')).toBeNull();
   });
 
+  describe('header label while editing', () => {
+    it('reads "Memo (editing)" when collapsed in edit mode, and "Memo" when expanded or not editing', async () => {
+      mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+      await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+      await waitFor(() => expect(screen.getByText('Existing memo')).toBeTruthy());
+      expect(screen.getByLabelText('Collapse Memo').textContent).toBe('Memo');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+      await screen.findByLabelText('Memo content');
+      expect(screen.getByLabelText('Collapse Memo').textContent).toBe('Memo');
+
+      fireEvent.click(screen.getByLabelText('Collapse Memo'));
+      const collapsed = await screen.findByLabelText('Expand Memo');
+      expect(collapsed.textContent).toBe('Memo (editing)');
+      expect(collapsed.getAttribute('aria-label')).toBe('Expand Memo');
+    });
+
+    it('collapsed while not editing reads "Memo"', async () => {
+      mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+      await renderWithRouter(<ControlledMemoPanel sessionId="session-1" initialExpanded={false} />);
+
+      expect((await screen.findByLabelText('Expand Memo')).textContent).toBe('Memo');
+    });
+
+    it('collapsing never discards a typed draft: it is still in the textarea after expanding again', async () => {
+      mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+      await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+      await waitFor(() => expect(screen.getByText('Existing memo')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+      const textarea = (await screen.findByLabelText('Memo content')) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: 'half-written draft' } });
+
+      fireEvent.click(screen.getByLabelText('Collapse Memo'));
+      await screen.findByLabelText('Expand Memo');
+      fireEvent.click(screen.getByLabelText('Expand Memo'));
+
+      await screen.findByLabelText('Collapse Memo');
+      expect((screen.getByLabelText('Memo content') as HTMLTextAreaElement).value).toBe('half-written draft');
+    });
+  });
+
   // M4: Ctrl+Enter saves, Escape behavior depends on whether the draft changed.
   describe('keyboard shortcuts in the textarea', () => {
     it('Ctrl+Enter triggers the same save as clicking the Save button', async () => {

@@ -4,6 +4,7 @@ import { fetchUsers } from '../../lib/api';
 import { userKeys } from '../../lib/query-keys';
 import { useSessionTodos } from './hooks/useSessionTodos';
 import { AccordionSectionBody } from './AccordionSectionBody';
+import { AccordionSectionHeader } from './AccordionSectionHeader';
 import { AddTodoForm } from '../todos/AddTodoForm';
 import { TodoRow } from '../todos/TodoRow';
 import { DEFAULT_TODO_STATUS_FILTER, TodoStatusSelect, type TodoStatusFilter } from '../todos/TodoStatusSelect';
@@ -101,17 +102,12 @@ export function SessionTodosPanel({ sessionId, isExpanded, onToggleExpanded, com
 
   return (
     <div ref={panelRef} className="flex flex-col border-b border-slate-700">
-      <div className="flex items-center justify-between px-3 py-1.5">
-        <button
-          type="button"
-          onClick={onToggleExpanded}
-          aria-expanded={isExpanded}
-          aria-label={isExpanded ? 'Collapse Todo' : 'Expand Todo'}
-          className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
-        >
-          {headerLabel}
-        </button>
-      </div>
+      <AccordionSectionHeader
+        label={headerLabel}
+        isExpanded={isExpanded}
+        onToggle={onToggleExpanded}
+        toggleAriaLabel={isExpanded ? 'Collapse Todo' : 'Expand Todo'}
+      />
       <AccordionSectionBody isExpanded={isExpanded}>
         <div className="min-w-0 max-h-96 overflow-y-auto">
           {isError && (

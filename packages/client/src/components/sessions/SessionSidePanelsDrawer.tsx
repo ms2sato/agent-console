@@ -16,9 +16,10 @@ interface SessionSidePanelsDrawerProps {
  * Mobile counterpart of `SessionSidePanels`: on viewports below 768px the
  * rail is unrendered entirely (`hidden md:flex` never shows it), so the
  * Memo / Artifacts / Bookmarks sections need a separate, right-anchored
- * overlay entry point. This drawer shares the exact same `expanded` record
+ * overlay entry point. This drawer shares the exact same open-section record
  * through the exact same `useSessionSidePanelsState` hook and storage key
- * as the rail, so desktop and mobile never diverge on which sections a
+ * as the rail, so desktop and mobile follow the same single-open rule
+ * (owner direction, 2026-11-21) and never diverge on which section a
  * viewer left open.
  *
  * `railOpen` is a desktop-only concept -- the rail's own collapse/expand
@@ -47,7 +48,7 @@ interface SessionSidePanelsDrawerProps {
 export function SessionSidePanelsDrawer({ sessionId, open, onClose }: SessionSidePanelsDrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
   const { containerProps } = useModalDrawerFocus({ open, onClose, containerRef: drawerRef });
-  const { expanded, toggleSection, expandSection } = useSessionSidePanelsState();
+  const { openSection, toggleSection, expandSection } = useSessionSidePanelsState();
 
   return (
     <>
@@ -69,26 +70,26 @@ export function SessionSidePanelsDrawer({ sessionId, open, onClose }: SessionSid
       >
         <MemoPanel
           sessionId={sessionId}
-          isExpanded={expanded.memo}
+          isExpanded={openSection === 'memo'}
           onToggleExpanded={() => toggleSection('memo')}
           onEnsureExpanded={() => expandSection('memo')}
           compact={false}
         />
         <SessionTodosPanel
           sessionId={sessionId}
-          isExpanded={expanded.todos}
+          isExpanded={openSection === 'todos'}
           onToggleExpanded={() => toggleSection('todos')}
           compact={false}
         />
         <SessionArtifactsPanel
           sessionId={sessionId}
-          isExpanded={expanded.artifacts}
+          isExpanded={openSection === 'artifacts'}
           onToggleExpanded={() => toggleSection('artifacts')}
           compact={false}
         />
         <SessionBookmarksPanel
           sessionId={sessionId}
-          isExpanded={expanded.bookmarks}
+          isExpanded={openSection === 'bookmarks'}
           onToggleExpanded={() => toggleSection('bookmarks')}
           compact={false}
         />
