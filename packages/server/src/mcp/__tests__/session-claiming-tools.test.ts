@@ -93,6 +93,13 @@ describe('SESSION_CLAIMING_TOOLS registry', () => {
     expect(claiming.map((b) => b.name)).toContain('update_html_artifact');
   });
 
+  it('lists reply_to_inbound_webhook, and its registration calls the gate under that name', () => {
+    expect(SESSION_CLAIMING_TOOLS).toContain('reply_to_inbound_webhook');
+    const block = claiming.find((b) => b.name === 'reply_to_inbound_webhook');
+    expect(block).toBeDefined();
+    expect(block!.body).toContain("{ toolName: 'reply_to_inbound_webhook' }");
+  });
+
   it('has no duplicate names', () => {
     expect(new Set(SESSION_CLAIMING_TOOLS).size).toBe(SESSION_CLAIMING_TOOLS.length);
   });
