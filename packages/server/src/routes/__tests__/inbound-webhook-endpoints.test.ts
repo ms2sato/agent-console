@@ -782,11 +782,6 @@ describe('Inbound webhook endpoint routes', () => {
       ['a single slash', `https:/${MARK}`],
       ['no slashes', `https:${MARK}`],
       ['backslashes', `https:\\\\a.example\\${MARK}`],
-      ['the placeholder in the query', `https://a.example/r?x=${MARK}{{in_reply_to}}`],
-      ['the placeholder in the host', `https://{{in_reply_to}}.a.example/${MARK}`],
-      ['the placeholder twice', `https://a.example/{{in_reply_to}}/{{in_reply_to}}?q=${MARK}`],
-      ['the placeholder inside a segment', `https://a.example/r-{{in_reply_to}}?q=${MARK}`],
-      ['an unknown placeholder', `https://a.example/{{delivery_id}}?q=${MARK}`],
     ];
     for (const [name, value] of rejected) {
       it(`create and patch refuse ${name} with 400, store nothing, and the 400 body and the logs do not contain the value`, async () => {
@@ -805,6 +800,27 @@ describe('Inbound webhook endpoint routes', () => {
         } finally {
           for (const spy of spies) spy.mockRestore();
         }
+        expect(await stored(created.endpoint.id)).toBeNull();
+        expect(await db.selectFrom('inbound_webhook_endpoints').select('id').execute()).toHaveLength(1);
+      });
+    }
+
+    const refusedPlacements: Array<[string, string]> = [
+      ['the placeholder in the query', `https://a.example/r?x=${MARK}{{in_reply_to}}`],
+      ['the placeholder in the host', `https://{{in_reply_to}}.a.example/${MARK}`],
+      ['the placeholder twice', `https://a.example/{{in_reply_to}}/{{in_reply_to}}?q=${MARK}`],
+      ['the placeholder inside a segment', `https://a.example/r-{{in_reply_to}}?q=${MARK}`],
+      ['an unknown placeholder', `https://a.example/{{delivery_id}}?q=${MARK}`],
+    ];
+    for (const [name, value] of refusedPlacements) {
+      it(`create and patch refuse ${name} with 400 and the 400 body does not contain the value; nothing is stored`, async () => {
+        const created = await create();
+        const createRes = await app.request(base, json('POST', { ...VALID_CREATE, replyUrl: value }));
+        const patchRes = await patch(created.endpoint.id, { replyUrl: value });
+        expect(createRes.status).toBe(400);
+        expect(patchRes.status).toBe(400);
+        expect(await createRes.text()).not.toContain(MARK);
+        expect(await patchRes.text()).not.toContain(MARK);
         expect(await stored(created.endpoint.id)).toBeNull();
         expect(await db.selectFrom('inbound_webhook_endpoints').select('id').execute()).toHaveLength(1);
       });
