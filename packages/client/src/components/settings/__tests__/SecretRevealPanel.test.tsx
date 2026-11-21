@@ -2,7 +2,9 @@ import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { render, screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SecretRevealPanel } from '../SecretRevealPanel';
+import { useSecureContext } from '../../../test/secure-context';
 
+useSecureContext();
 afterEach(cleanup);
 
 describe('SecretRevealPanel', () => {

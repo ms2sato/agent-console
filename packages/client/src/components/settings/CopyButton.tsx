@@ -1,16 +1,20 @@
 import { useState } from 'react';
+import { copyToClipboard } from '../../lib/clipboard';
 
 interface CopyButtonProps {
   text: string;
 }
 
-/** Copies `text` to the clipboard; a refused write is reported, never thrown. */
+/**
+ * Copies `text` to the clipboard (with the non-secure-context fallback in
+ * `copyToClipboard`); a refused write is reported, never thrown.
+ */
 export function CopyButton({ text }: CopyButtonProps) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyToClipboard(text);
       setState('copied');
     } catch {
       setState('failed');

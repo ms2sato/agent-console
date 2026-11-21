@@ -4,7 +4,9 @@ import userEvent from '@testing-library/user-event';
 import { ReceiveUrl, RECEIVE_URL_UNSET_HINT } from '../ReceiveUrl';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { installFakeServer } from '../../../test/inbound-webhooks-fake-server';
+import { useSecureContext } from '../../../test/secure-context';
 
+useSecureContext();
 const server = installFakeServer();
 afterAll(() => server.restore());
 beforeEach(() => server.reset());
