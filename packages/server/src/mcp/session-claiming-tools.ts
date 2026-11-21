@@ -32,6 +32,7 @@ export const SESSION_CLAIMING_TOOLS = [
   'set_mcp_server_permission',
   'write_memo',
   'close_session',
+  'reply_to_inbound_webhook',
 ] as const;
 
 export type SessionClaimingTool = (typeof SESSION_CLAIMING_TOOLS)[number];

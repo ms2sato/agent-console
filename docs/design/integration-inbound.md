@@ -956,7 +956,7 @@ Entered-secret handling in the client: the secret input is `type="password"` wit
 | set / change reply URL | do: `POST /` (optional `replyUrl`), `PATCH /:id` (`replyUrl: string`) | do: "Reply URL (optional)" input in `EndpointForm`, create and edit pages **(owner)** | not here: operator-only | not here: operator-only |
 | clear reply URL | do: `PATCH /:id` with `replyUrl: null` | do: emptying the input and saving sends `null` **(owner)** | not here: operator-only | not here: operator-only |
 | read reply URL | do: `replyUrl` on list / get / patch responses | do: prefilled in the edit form; the list row shows only "Replies enabled" when set, nothing when unset **(owner)** | not here: the agent never needs the sender's URL | not here: same |
-| send a reply | not here: an operator has no delivery to answer; replies are an agent action | not here: same | do: `reply_to_inbound_webhook` (in development, see "Signed replies") | do: the same MCP tool (embedded agents reach it through the same MCP server) |
+| send a reply | not here: an operator has no delivery to answer; replies are an agent action | not here: same | do: `reply_to_inbound_webhook` (see "Signed replies") | do: the same MCP tool (embedded agents reach it through the same MCP server) |
 | resend a reply (same id) | not here: same | not here: same | do: `reply_to_inbound_webhook` with `replyId` | do: same |
 | list / read past replies | not here: no reader in this version; the per-attempt log record is the audit trail | not here: same | not here: same | not here: same |
 | read the signature or the secret | not here: never leaves the server | not here: same | not here: same | not here: same |
@@ -971,9 +971,9 @@ Entered-secret handling in the client: the secret input is `type="password"` wit
 - **Interface file `repositories/webhook-endpoint-repository.ts`.** Confirmed (keeps `test-trigger.md`'s interface-only exemption).
 - **Unknown repository is 404, missing is 400.** Revised by the move: the repository is now a path segment, so "missing" cannot occur; an unknown `:repositoryId` is 404 `Repository` on list and create, and an id-scoped route for an endpoint not in that repository is 404 `Inbound webhook endpoint`.
 
-### Signed replies (in development)
+### Signed replies
 
-Some senders accept a reply to a delivery: an HTTP POST to a sender-side URL, signed with the same endpoint secret and the same scheme. A session agent cannot read the secret, and a signature handed back to it would be a valid signature under the receive secret. So the server signs and sends on the agent's behalf and never returns the signature. This feature ships in two steps: the reply URL setting (column, table, wire schema, REST, UI) and then the reply path (signing helper, reply service, MCP tool, notification field, reflection guard). Only the first step exists in code today; the rulings below are the specification of both, and the second step is marked `(in development)` until it lands.
+Some senders accept a reply to a delivery: an HTTP POST to a sender-side URL, signed with the same endpoint secret and the same scheme. A session agent cannot read the secret, and a signature handed back to it would be a valid signature under the receive secret. So the server signs and sends on the agent's behalf and never returns the signature. This feature shipped in two steps: the reply URL setting (column, table, wire schema, REST, UI) and then the reply path (signing helper, reply service, MCP tool, notification field, reflection guard). Both exist in code; the rulings below are their specification.
 
 **R1. Reply URL (operator-set, per endpoint).**
 
@@ -1021,6 +1021,14 @@ Some senders accept a reply to a delivery: an HTTP POST to a sender-side URL, si
 
 **R11. Verification tier.** Unprivileged: no elevation and no OS coupling; the server makes one HTTPS call as itself.
 
+Verification of the reply path, as shipped (recorded proxy):
+
+- A local TLS stub with a certificate generated at run time cannot be set up on agent hosts (certificate generation is refused there), so no verification in this step completes a TLS exchange with a sender.
+- The smoke (`scripts/smoke/check-inbound-webhook-routing.ts`) opens a plain TCP listener on 127.0.0.1 and gives an endpoint `https://127.0.0.1:<port>/replies?token=<marker>` as its reply URL. The server's real outbound call connects, the handshake fails, and the tool returns `outcome: 'no-response'`, `reason: 'connection-failed'` (table row 16). The listener counts connections, so a request made and a request not made are both observed on the wire. It cannot see headers or the signature. Arms: an outbound attempt (the control for the next two), a resend with the same reply id, nothing secret in any result or captured output, a session that was not a target of the delivery (no connection), and an endpoint without a reply URL (no connection).
+- The success path runs in process with a real database, the real endpoint repository, the real reply service and the real MCP handler; only `fetch` is injected, at the service's dependency seam. The injected fetch plays the sender and verifies the signature with its own HMAC code written from the scheme's specification, using the secret captured from the repository's create. What is substituted is the transport only; it is outside the chain this step changes (`outboundFetch` is unchanged and is reached for real by the smoke's outbound arm), and the database, repository, service, MCP handler and signing stay real.
+- Covered only with the injected fetch: response handling (rows 12-14 and 17), the timeout (row 15) and `redirect: 'manual'` against a real 3xx.
+- A completed signed exchange over TLS is first exercised by the first production reply; the operator confirms the tool result shows a 2xx status from the sender.
+
 #### Reply tool behaviour (order of evaluation)
 
 | # | Case | Result |
@@ -1047,6 +1055,14 @@ Some senders accept a reply to a delivery: an HTTP POST to a sender-side URL, si
 | 20 | database write of the reply row fails | tool error, nothing sent |
 | 21 | recording the attempt's outcome (`last_status`) fails after the POST | the result is still returned; warn log |
 | 22 | single-user and multi-user modes | identical (no elevation, no per-user state) |
+
+#### Implementation decisions beyond the table
+
+- A database error while checking ownership propagates as an exception (the MCP layer reports a generic tool error); only a failed check is `Unknown delivery`.
+- A delivery row that exists while the endpoint row is gone (a race with deletion) is `Unknown delivery`.
+- A `retry-after` header that is empty after single-line cleanup is omitted instead of returned as an empty string.
+- A failed write of the attempt counter is the same tool error as row 20 (`The reply could not be recorded; nothing was sent`): nothing is sent.
+- The 20-replies-per-(delivery, session) bound is a count followed by an insert, so two truly concurrent first replies at 19 could both pass; the per-reply attempt bound is atomic (the single guarded `UPDATE`).
 
 #### Reply URL validation (boundary values)
 
