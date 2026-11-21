@@ -94,6 +94,22 @@ describe('useSessionSidePanelsState', () => {
       expect(result.current.railOpen).toBe(true);
       expect(result.current.openSection).toBe('artifacts');
     });
+
+    it('v3 holding malformed JSON with a valid v2 behind it converts from v2', () => {
+      localStorage.setItem(V3_KEY, '{not json');
+      seedV2({ memo: false, todos: false, artifacts: true, bookmarks: false }, true);
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(true);
+      expect(result.current.openSection).toBe('artifacts');
+    });
+
+    it('a valid v3 wins over a valid v2', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: false, openSection: 'bookmarks' }));
+      seedV2({ memo: true, todos: true, artifacts: true, bookmarks: true }, true);
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(false);
+      expect(result.current.openSection).toBe('bookmarks');
+    });
   });
 
   describe('load: v2 record conversion', () => {

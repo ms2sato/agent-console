@@ -72,22 +72,24 @@ function convertLegacyRecord(legacy: LegacyRecord): SessionSidePanelsRecord {
   return { railOpen: legacy.railOpen, openSection: first };
 }
 
+// One try per key: an unreadable or malformed record under one key must not
+// stop the next key from being tried.
 function readStored(key: string): unknown {
-  const stored = localStorage.getItem(key);
-  if (!stored) return undefined;
-  return JSON.parse(stored);
+  try {
+    const stored = localStorage.getItem(key);
+    if (!stored) return undefined;
+    return JSON.parse(stored);
+  } catch {
+    return undefined;
+  }
 }
 
 function getInitialRecord(): SessionSidePanelsRecord {
-  try {
-    const current = readStored(STORAGE_KEY);
-    if (isValidV3Record(current)) return { railOpen: current.railOpen, openSection: current.openSection };
-    const legacy = readStored(LEGACY_STORAGE_KEY);
-    if (isValidRecord(legacy)) return convertLegacyRecord(legacy);
-    return DEFAULT_RECORD;
-  } catch {
-    return DEFAULT_RECORD;
-  }
+  const current = readStored(STORAGE_KEY);
+  if (isValidV3Record(current)) return { railOpen: current.railOpen, openSection: current.openSection };
+  const legacy = readStored(LEGACY_STORAGE_KEY);
+  if (isValidRecord(legacy)) return convertLegacyRecord(legacy);
+  return DEFAULT_RECORD;
 }
 
 function persistRecord(value: SessionSidePanelsRecord): void {
