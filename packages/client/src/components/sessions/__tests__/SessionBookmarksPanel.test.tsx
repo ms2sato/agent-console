@@ -388,6 +388,56 @@ describe('SessionBookmarksPanel', () => {
     expect(screen.getByLabelText('Show add bookmark form')).toBeTruthy();
   });
 
+  describe('add form across header clicks (reset only when this header closes the section)', () => {
+    // `outside` stands in for another section opening, which collapses this
+    // one without going through this panel's own header.
+    function HarnessWithOutsideCollapse() {
+      const [isExpanded, setIsExpanded] = useState(true);
+      return (
+        <>
+          <button type="button" data-testid="outside-collapse" onClick={() => setIsExpanded(false)} />
+          <SessionBookmarksPanel
+            sessionId="session-1"
+            isExpanded={isExpanded}
+            onToggleExpanded={() => setIsExpanded((v) => !v)}
+            compact={false}
+          />
+        </>
+      );
+    }
+
+    it('a section collapsed from outside keeps the typed form, and the header click that reopens it does not hide the form', async () => {
+      mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
+
+      await renderWithRouter(<HarnessWithOutsideCollapse />);
+      await revealAddForm();
+      fireEvent.change(screen.getByLabelText('Bookmark URL'), { target: { value: 'https://typed.example' } });
+
+      fireEvent.click(screen.getByTestId('outside-collapse'));
+      await waitFor(() => expect(screen.getByLabelText('Expand Bookmarks')).toBeTruthy());
+      expect(screen.getByLabelText('Expand Bookmarks').getAttribute('aria-expanded')).toBe('false');
+
+      fireEvent.click(screen.getByLabelText('Expand Bookmarks'));
+
+      await waitFor(() => expect(screen.getByLabelText('Collapse Bookmarks').getAttribute('aria-expanded')).toBe('true'));
+      expect((screen.getByLabelText('Bookmark URL') as HTMLInputElement).value).toBe('https://typed.example');
+    });
+
+    it('the header trigger reports aria-expanded and calls onToggleExpanded once per click', async () => {
+      mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
+      const onToggle = mock(() => {});
+
+      await renderWithRouter(
+        <SessionBookmarksPanel sessionId="session-1" isExpanded={true} onToggleExpanded={onToggle} compact={false} />
+      );
+
+      const header = await screen.findByRole('button', { name: 'Collapse Bookmarks' });
+      expect(header.getAttribute('aria-expanded')).toBe('true');
+      fireEvent.click(header);
+      expect(onToggle).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('collapsing the panel resets the form to hidden, so re-expanding does not restore it', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
 

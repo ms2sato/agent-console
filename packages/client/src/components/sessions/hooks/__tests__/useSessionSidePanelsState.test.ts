@@ -1,270 +1,49 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
-import { useSessionSidePanelsState } from '../useSessionSidePanelsState';
+import { readFileSync } from 'node:fs';
+import { useSessionSidePanelsState, type SessionSidePanelKey } from '../useSessionSidePanelsState';
 
-const STORAGE_KEY = 'agent-console:session-side-panels-v2';
+// Hardcoded literals, deliberately not imported from the hook: the tests pin
+// the on-disk contract itself.
+const V3_KEY = 'agent-console:session-side-panels-v3';
+const V2_KEY = 'agent-console:session-side-panels-v2';
+
+function seedV2(expanded: Record<string, unknown>, railOpen: unknown = true): string {
+  const raw = JSON.stringify({ railOpen, expanded });
+  localStorage.setItem(V2_KEY, raw);
+  return raw;
+}
+
+function storedV3(): unknown {
+  const raw = localStorage.getItem(V3_KEY);
+  return raw === null ? null : JSON.parse(raw);
+}
 
 describe('useSessionSidePanelsState', () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  describe('initial state', () => {
-    it('defaults to the rail closed and all four sections expanded when nothing is stored', () => {
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-    });
-  });
-
-  describe('localStorage initialization', () => {
-    it('never reads a value stored under the OLD (pre-#1640) key', () => {
-      // Hardcoded literal, deliberately not imported from any constant --
-      // this is how the test's reach is measured: if the storage-key
-      // constant in the hook were reverted to this old literal, the hook
-      // would read this seeded value and diverge from the default,
-      // failing this exact assertion. The seeded value is deliberately
-      // NEW-schema-shaped (it has railOpen + expanded) with railOpen TRUE
-      // -- the opposite of the current default -- so a reverted key
-      // produces a detectably WRONG result (rail open) rather than falling
-      // through corrupt-storage validation into the same default anyway.
-      localStorage.setItem(
-        'agent-console:session-side-panels-expanded',
-        JSON.stringify({ railOpen: true, expanded: { memo: false, artifacts: false, bookmarks: false } })
-      );
-
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-    });
-
-    it('reads a previously-persisted record under the NEW key, railOpen and expanded independently', () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: false, expanded: { memo: true, artifacts: false, bookmarks: true } })
-      );
-
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      expect(result.current.railOpen).toBe(false);
-      // A record persisted before the to-do section existed stays valid:
-      // the three stored flags are kept and the new section reads expanded.
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: false, bookmarks: true });
-    });
-
-    it('keeps a stored todos flag when the record carries one', () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: true, expanded: { memo: true, todos: false, artifacts: true, bookmarks: true } })
-      );
-
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      expect(result.current.railOpen).toBe(true);
-      expect(result.current.expanded.todos).toBe(false);
-    });
-
-    it('falls back to the default on invalid JSON', () => {
-      localStorage.setItem(STORAGE_KEY, 'not-json');
-
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-    });
-
-    it('falls back to the default when railOpen is missing', () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ expanded: { memo: false, artifacts: false, bookmarks: false } })
-      );
-
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-    });
-
-    it('falls back to the default when expanded is missing a key', () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: true, expanded: { memo: true, artifacts: false } })
-      );
-
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-    });
-
-    it('falls back to the default on a non-boolean field', () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: 'yes', expanded: { memo: false, artifacts: false, bookmarks: false } })
-      );
-
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-    });
-  });
-
-  describe('toggleRail', () => {
-    it('flips railOpen only, leaving expanded untouched', () => {
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      act(() => {
-        result.current.toggleRail();
-      });
-
-      expect(result.current.railOpen).toBe(true);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-
-      act(() => {
-        result.current.toggleRail();
-      });
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-    });
-
-    it('persists railOpen under the new storage key', () => {
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      act(() => {
-        result.current.toggleRail();
-      });
-
-      expect(localStorage.getItem(STORAGE_KEY)).toBe(
-        JSON.stringify({ railOpen: true, expanded: { memo: true, todos: true, artifacts: true, bookmarks: true } })
-      );
-    });
-  });
-
-  describe('toggleSection', () => {
-    it('flips one section without affecting railOpen or the other sections', () => {
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      act(() => {
-        result.current.toggleSection('memo');
-      });
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: false, todos: true, artifacts: true, bookmarks: true });
-
-      act(() => {
-        result.current.toggleSection('bookmarks');
-      });
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: false, todos: true, artifacts: true, bookmarks: false });
-    });
-
-    it('persists the full updated record to the single global key', () => {
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      act(() => {
-        result.current.toggleSection('memo');
-      });
-
-      expect(localStorage.getItem(STORAGE_KEY)).toBe(
-        JSON.stringify({ railOpen: false, expanded: { memo: false, todos: true, artifacts: true, bookmarks: true } })
-      );
-    });
-  });
-
-  describe('openRailAndExpandSection', () => {
-    it('atomically sets railOpen true and the target section true, in one update', () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: false, bookmarks: false } })
-      );
+  describe('load: nothing usable stored', () => {
+    it('nothing stored: rail closed, memo is the open section', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
       expect(result.current.railOpen).toBe(false);
-
-      act(() => {
-        result.current.openRailAndExpandSection('memo');
-      });
-
-      expect(result.current.railOpen).toBe(true);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: false, bookmarks: false });
+      expect(result.current.openSection).toBe('memo');
     });
 
-    it('is idempotent when the target section is already expanded -- it must not flip it back off', () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: false, expanded: { memo: true, artifacts: false, bookmarks: false } })
-      );
+    it('unparseable JSON under v3 falls back to the default', () => {
+      localStorage.setItem(V3_KEY, '{not json');
       const { result } = renderHook(() => useSessionSidePanelsState());
       expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded.memo).toBe(true);
-
-      act(() => {
-        result.current.openRailAndExpandSection('memo');
-      });
-
-      // This is the case that a two-sequential-toggle implementation would
-      // get wrong: toggling an already-true section would flip it to false.
-      expect(result.current.railOpen).toBe(true);
-      expect(result.current.expanded.memo).toBe(true);
-    });
-  });
-
-  describe('expandSection', () => {
-    it('sets the target section to true without touching railOpen or other sections', () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: false, bookmarks: true } })
-      );
-      const { result } = renderHook(() => useSessionSidePanelsState());
-
-      act(() => {
-        result.current.expandSection('memo');
-      });
-
-      expect(result.current.railOpen).toBe(false);
-      expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: false, bookmarks: true });
+      expect(result.current.openSection).toBe('memo');
     });
 
-    it('is idempotent when the target section is already expanded -- it must not flip it back off', () => {
-      const { result } = renderHook(() => useSessionSidePanelsState());
-      expect(result.current.expanded.memo).toBe(true);
-
-      act(() => {
-        result.current.expandSection('memo');
-      });
-
-      expect(result.current.expanded.memo).toBe(true);
-    });
-  });
-
-  describe('localStorage error handling', () => {
-    // `spyOn(localStorage, 'getItem'/'setItem')` does NOT intercept calls in
-    // this Bun test environment -- measured empirically with a standalone
-    // probe: Bun's built-in `localStorage` global dispatches through an
-    // internal binding that ignores a reassigned/spied property on the
-    // JS-visible object, even with `.mockImplementation()`. A spied
-    // `getItem`/`setItem` that throws is therefore never actually called;
-    // the two tests below would pass vacuously (the real implementation
-    // runs, `getItem` after `localStorage.clear()` returns `null` anyway,
-    // and `setItem` writes successfully) without ever exercising the
-    // hook's catch branch.
-    //
-    // The technique that DOES intercept: replace the entire `localStorage`
-    // global via `Object.defineProperty`, not just one of its methods --
-    // this actually swaps which object the internal binding is proxying to
-    // stdlib method dispatch through. Always restore the original object,
-    // even on assertion failure, so a failing test does not poison every
-    // later test file loaded in the same process.
-    it('handles localStorage.getItem throwing an error by yielding the default', () => {
+    it('localStorage.getItem throwing falls back to the default', () => {
       const original = globalThis.localStorage;
       Object.defineProperty(globalThis, 'localStorage', {
         value: {
           getItem: () => {
-            throw new Error('Storage error');
+            throw new Error('denied');
           },
           setItem: () => {},
           removeItem: () => {},
@@ -273,77 +52,229 @@ describe('useSessionSidePanelsState', () => {
         writable: true,
         configurable: true,
       });
-
       try {
         const { result } = renderHook(() => useSessionSidePanelsState());
-
         expect(result.current.railOpen).toBe(false);
-        expect(result.current.expanded).toEqual({ memo: true, todos: true, artifacts: true, bookmarks: true });
-      } finally {
-        Object.defineProperty(globalThis, 'localStorage', {
-          value: original,
-          writable: true,
-          configurable: true,
-        });
-      }
-    });
-
-    it('handles localStorage.setItem throwing an error gracefully -- state still updates', () => {
-      const original = globalThis.localStorage;
-      Object.defineProperty(globalThis, 'localStorage', {
-        value: {
-          getItem: () => null,
-          setItem: () => {
-            throw new Error('Storage quota exceeded');
-          },
-          removeItem: () => {},
-          clear: () => {},
-        },
-        writable: true,
-        configurable: true,
-      });
-
-      try {
-        const { result } = renderHook(() => useSessionSidePanelsState());
-
+        expect(result.current.openSection).toBe('memo');
         act(() => {
           result.current.toggleRail();
         });
-
         expect(result.current.railOpen).toBe(true);
       } finally {
-        Object.defineProperty(globalThis, 'localStorage', {
-          value: original,
-          writable: true,
-          configurable: true,
-        });
+        Object.defineProperty(globalThis, 'localStorage', { value: original, writable: true, configurable: true });
       }
     });
   });
 
-  describe('storage-key polarity', () => {
-    // `spyOn(localStorage, 'setItem')` cannot be used here -- measured
-    // empirically, Bun's built-in `localStorage` global dispatches
-    // `setItem`/`getItem` through an internal binding that ignores a
-    // reassigned/spied property on the JS-visible object, so the spy is
-    // never invoked regardless of mockImplementation. `getItem` on the
-    // exact literal key has the same detection power for this polarity
-    // check: if the storage-key constant in the hook were reverted to the
-    // old literal, the hook would write there instead and this key would
-    // read back `null`.
-    it('writes under the NEW literal key -- reverting the key constant fails this assertion', () => {
+  describe('load: v3 record', () => {
+    it('reads a valid v3 record', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: true, openSection: 'bookmarks' }));
       const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(true);
+      expect(result.current.openSection).toBe('bookmarks');
+    });
 
-      act(() => {
-        result.current.toggleRail();
-      });
+    it('reads a v3 record whose openSection is null', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: true, openSection: null }));
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.openSection).toBeNull();
+    });
 
-      const raw = localStorage.getItem('agent-console:session-side-panels-v2');
-      expect(raw).not.toBeNull();
-      expect(JSON.parse(raw as string)).toEqual({
-        railOpen: true,
-        expanded: { memo: true, todos: true, artifacts: true, bookmarks: true },
+    it('v3 with an unknown openSection is invalid: default when nothing else is stored', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: true, openSection: 'nope' }));
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(false);
+      expect(result.current.openSection).toBe('memo');
+    });
+
+    it('v3 invalid with a valid v2 behind it: the v2 record is converted', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: false, openSection: 'nope' }));
+      seedV2({ memo: false, todos: false, artifacts: true, bookmarks: true }, true);
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(true);
+      expect(result.current.openSection).toBe('artifacts');
+    });
+
+    it('v3 holding malformed JSON with a valid v2 behind it converts from v2', () => {
+      localStorage.setItem(V3_KEY, '{not json');
+      seedV2({ memo: false, todos: false, artifacts: true, bookmarks: false }, true);
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(true);
+      expect(result.current.openSection).toBe('artifacts');
+    });
+
+    it('a valid v3 wins over a valid v2', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: false, openSection: 'bookmarks' }));
+      seedV2({ memo: true, todos: true, artifacts: true, bookmarks: true }, true);
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(false);
+      expect(result.current.openSection).toBe('bookmarks');
+    });
+  });
+
+  describe('load: v2 record conversion', () => {
+    it('v2 with all four expanded gives memo and keeps railOpen', () => {
+      seedV2({ memo: true, todos: true, artifacts: true, bookmarks: true }, true);
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.openSection).toBe('memo');
+      expect(result.current.railOpen).toBe(true);
+    });
+
+    it('v2 with only artifacts and bookmarks expanded gives artifacts', () => {
+      seedV2({ memo: false, todos: false, artifacts: true, bookmarks: true }, false);
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.openSection).toBe('artifacts');
+      expect(result.current.railOpen).toBe(false);
+    });
+
+    it('v2 with none expanded gives null', () => {
+      seedV2({ memo: false, todos: false, artifacts: false, bookmarks: false });
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.openSection).toBeNull();
+    });
+
+    it('v2 without a todos field and memo false reads todos as expanded', () => {
+      seedV2({ memo: false, artifacts: false, bookmarks: false });
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.openSection).toBe('todos');
+    });
+
+    it('v2 invalid falls back to the default', () => {
+      seedV2({ memo: 'yes', todos: true, artifacts: true, bookmarks: true });
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(false);
+      expect(result.current.openSection).toBe('memo');
+    });
+
+    it('never reads the older pre-v2 key', () => {
+      localStorage.setItem(
+        'agent-console:session-side-panels-expanded',
+        JSON.stringify({ railOpen: true, expanded: { memo: false, artifacts: false, bookmarks: false } }),
+      );
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.railOpen).toBe(false);
+      expect(result.current.openSection).toBe('memo');
+    });
+  });
+
+  describe('toggleSection', () => {
+    it('from null opens the key', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: true, openSection: null }));
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.toggleSection('todos'));
+      expect(result.current.openSection).toBe('todos');
+    });
+
+    it('on the open key closes it', () => {
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.toggleSection('memo'));
+      expect(result.current.openSection).toBeNull();
+    });
+
+    it('on a different key switches to it', () => {
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.toggleSection('bookmarks'));
+      expect(result.current.openSection).toBe('bookmarks');
+    });
+
+    it('never touches railOpen', () => {
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.toggleSection('todos'));
+      expect(result.current.railOpen).toBe(false);
+    });
+  });
+
+  describe('openRailAndExpandSection', () => {
+    it('from null opens the rail and the key', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: false, openSection: null }));
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.openRailAndExpandSection('artifacts'));
+      expect(result.current.railOpen).toBe(true);
+      expect(result.current.openSection).toBe('artifacts');
+    });
+
+    it('on the already-open key keeps it open', () => {
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.openRailAndExpandSection('memo'));
+      expect(result.current.railOpen).toBe(true);
+      expect(result.current.openSection).toBe('memo');
+    });
+
+    it('on a different key closes the other', () => {
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.openRailAndExpandSection('bookmarks'));
+      expect(result.current.openSection).toBe('bookmarks');
+    });
+  });
+
+  describe('expandSection', () => {
+    it('from null opens the key', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: true, openSection: null }));
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.expandSection('memo'));
+      expect(result.current.openSection).toBe('memo');
+    });
+
+    it('on the open key never closes it', () => {
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.expandSection('memo'));
+      expect(result.current.openSection).toBe('memo');
+    });
+
+    it('on a different key closes the other', () => {
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.expandSection('todos'));
+      expect(result.current.openSection).toBe('todos');
+    });
+  });
+
+  describe('toggleRail', () => {
+    it('flips railOpen only and leaves openSection unchanged', () => {
+      localStorage.setItem(V3_KEY, JSON.stringify({ railOpen: true, openSection: 'artifacts' }));
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      act(() => result.current.toggleRail());
+      expect(result.current.railOpen).toBe(false);
+      expect(result.current.openSection).toBe('artifacts');
+      act(() => result.current.toggleRail());
+      expect(result.current.railOpen).toBe(true);
+      expect(result.current.openSection).toBe('artifacts');
+    });
+  });
+
+  describe('persistence', () => {
+    const operations: Array<[string, (h: ReturnType<typeof useSessionSidePanelsState>) => void, unknown]> = [
+      ['toggleRail', (h) => h.toggleRail(), { railOpen: true, openSection: 'memo' }],
+      ['toggleSection', (h) => h.toggleSection('todos'), { railOpen: false, openSection: 'todos' }],
+      ['openRailAndExpandSection', (h) => h.openRailAndExpandSection('artifacts'), { railOpen: true, openSection: 'artifacts' }],
+      ['expandSection', (h) => h.expandSection('bookmarks'), { railOpen: false, openSection: 'bookmarks' }],
+    ];
+
+    for (const [name, run, expected] of operations) {
+      it(`${name} writes the v3 key and never writes or removes the v2 key`, () => {
+        const v2Raw = seedV2({ memo: true, todos: true, artifacts: true, bookmarks: true }, false);
+        const { result } = renderHook(() => useSessionSidePanelsState());
+        act(() => run(result.current));
+        expect(storedV3()).toEqual(expected);
+        expect(localStorage.getItem(V2_KEY)).toBe(v2Raw);
       });
+    }
+
+    it('a v3 write of every section key round-trips through a fresh load', () => {
+      for (const key of ['memo', 'todos', 'artifacts', 'bookmarks'] as SessionSidePanelKey[]) {
+        localStorage.clear();
+        const first = renderHook(() => useSessionSidePanelsState());
+        act(() => first.result.current.openRailAndExpandSection(key));
+        const second = renderHook(() => useSessionSidePanelsState());
+        expect(second.result.current.openSection).toBe(key);
+      }
+    });
+  });
+
+  describe('no data coupling', () => {
+    it('the hook module imports no query hook', () => {
+      const source = readFileSync(new URL('../useSessionSidePanelsState.ts', import.meta.url), 'utf8');
+      const imports = source.split('\n').filter((line) => line.startsWith('import '));
+      expect(imports.join('\n')).not.toMatch(/react-query|use(Session|Query)/);
     });
   });
 });

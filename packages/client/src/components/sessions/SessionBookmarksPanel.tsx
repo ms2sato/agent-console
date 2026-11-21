@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { useSessionBookmarks } from './hooks/useSessionBookmarks';
 import { AccordionSectionBody } from './AccordionSectionBody';
+import { AccordionSectionHeader } from './AccordionSectionHeader';
 import { linkHost } from '../../lib/link-host';
 
 interface SessionBookmarksPanelProps {
@@ -79,27 +80,19 @@ export function SessionBookmarksPanel({ sessionId, isExpanded, onToggleExpanded,
   // R1c: an accordion header row inside the container's single column,
   // separated from sibling sections horizontally (border-b), never by its
   // own border-l. The body stacks directly underneath the header when open.
-  //
-  // The toggle handler unconditionally resets isFormVisible on every click
-  // (open or close), not just on collapse -- harmless on open since the
-  // form always starts hidden anyway, and it preserves the "collapse resets
-  // the form" pin exactly on close.
   return (
     <div className="flex flex-col border-b border-slate-700">
-      <div className="flex items-center justify-between px-3 py-1.5">
-        <button
-          type="button"
-          onClick={() => {
-            onToggleExpanded();
-            setIsFormVisible(false);
-          }}
-          aria-expanded={isExpanded}
-          aria-label={isExpanded ? 'Collapse Bookmarks' : 'Expand Bookmarks'}
-          className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
-        >
-          Bookmarks
-        </button>
-      </div>
+      <AccordionSectionHeader
+        label="Bookmarks"
+        isExpanded={isExpanded}
+        onToggle={() => {
+          onToggleExpanded();
+          // Only closing through this header hides the form; reopening, or
+          // another section closing this one, keeps the typed input.
+          if (isExpanded) setIsFormVisible(false);
+        }}
+        toggleAriaLabel={isExpanded ? 'Collapse Bookmarks' : 'Expand Bookmarks'}
+      />
       <AccordionSectionBody isExpanded={isExpanded}>
         {/* Add form, revealed on a deliberate action */}
         <div className="flex flex-col border-b border-slate-700">

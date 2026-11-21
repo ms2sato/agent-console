@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 import { useState } from 'react';
-import { screen, cleanup, waitFor } from '@testing-library/react';
+import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionArtifactsPanel } from '../SessionArtifactsPanel';
 
@@ -106,6 +106,29 @@ describe('SessionArtifactsPanel', () => {
     await waitFor(() => expect(screen.getByText('Updated Doc')).toBeTruthy());
     expect(screen.getAllByText(/Updated \d|· Updated/)).toHaveLength(1);
     expect(screen.getByText('Plain Doc').parentElement!.textContent).not.toContain('Updated');
+  });
+
+  it('toggles through its header strip by accessible name: aria-expanded follows and the chevron turns down when open', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        artifacts: [
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234, updatedAt: null },
+        ],
+      })
+    );
+
+    await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" initialExpanded={false} />);
+
+    const closed = await screen.findByRole('button', { name: 'Expand Artifacts' });
+    expect(closed.getAttribute('aria-expanded')).toBe('false');
+    expect(closed.textContent).toBe('Artifacts');
+    expect(screen.getByTestId('accordion-section-chevron').className).not.toContain('rotate-90');
+
+    fireEvent.click(closed);
+
+    const open = await screen.findByRole('button', { name: 'Collapse Artifacts' });
+    expect(open.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('accordion-section-chevron').className).toContain('rotate-90');
   });
 
   it('collapses to a header row without a body, and can be re-expanded', async () => {

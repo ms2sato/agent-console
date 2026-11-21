@@ -3,41 +3,39 @@ import { useCallback, useState } from 'react';
 export type SessionSidePanelKey = 'memo' | 'todos' | 'artifacts' | 'bookmarks';
 export type SessionSidePanelsExpanded = Record<SessionSidePanelKey, boolean>;
 
+// At most one section is open at a time, so the open section is ONE value
+// rather than a flag per section: a state with two open sections is not
+// representable (owner direction, 2026-11-21).
 interface SessionSidePanelsRecord {
+  railOpen: boolean;
+  openSection: SessionSidePanelKey | null;
+}
+
+// v3 stores `{ railOpen, openSection }`. The v2 record (`railOpen` plus an
+// `expanded` flag per section) is read once as a fallback and converted, but
+// never written and never removed: an older tab still running the previous
+// code reads it. Older keys (`...-expanded`) stay unread -- there is no
+// migration path from the old all-closed-by-default record.
+const STORAGE_KEY = 'agent-console:session-side-panels-v3';
+const LEGACY_STORAGE_KEY = 'agent-console:session-side-panels-v2';
+const SECTION_KEYS: SessionSidePanelKey[] = ['memo', 'todos', 'artifacts', 'bookmarks'];
+// Sections added after the first release of the v2 shape. A v2 record
+// persisted before such a section existed stays valid (the section reads as
+// expanded) rather than being discarded.
+const SECTIONS_ADDED_LATER: SessionSidePanelKey[] = ['todos'];
+
+// Default: rail closed, Memo is the section that shows when the rail is
+// opened. Applies on first-ever load and whenever storage is unreadable or
+// corrupt.
+const DEFAULT_RECORD: SessionSidePanelsRecord = {
+  railOpen: false,
+  openSection: 'memo',
+};
+
+interface LegacyRecord {
   railOpen: boolean;
   expanded: SessionSidePanelsExpanded;
 }
-
-// Bumped from `agent-console:session-side-panels-expanded`: the persisted
-// shape gained `railOpen` as an independent top-level flag (the side rail's
-// ordinary-accordion refactor). The old key is intentionally never read --
-// there is no migration path from the old all-closed-by-default
-// per-section-only record to this one, and reverting to the old key would
-// silently reintroduce the old default.
-const STORAGE_KEY = 'agent-console:session-side-panels-v2';
-const SECTION_KEYS: SessionSidePanelKey[] = ['memo', 'todos', 'artifacts', 'bookmarks'];
-// Sections added after the first release of this storage shape. A record
-// persisted before such a section existed stays valid (the section reads as
-// expanded) rather than being discarded, which would reset every user's
-// chosen layout on upgrade.
-const SECTIONS_ADDED_LATER: SessionSidePanelKey[] = ['todos'];
-
-// Default is rail CLOSED, every section expanded. This supersedes #1640's
-// R3' (rail open, every section expanded) by owner directive on 2026-09-13.
-// The storage key is deliberately NOT bumped for this change: the persisted
-// shape is unchanged, so existing browsers keep whatever the user last
-// chose -- this default applies on first-ever load and whenever storage is
-// unreadable/corrupt; NOT a choice about which section to open on a later
-// load -- any later load restores whatever the user last had open.
-const DEFAULT_RECORD: SessionSidePanelsRecord = {
-  railOpen: false,
-  expanded: {
-    memo: true,
-    todos: true,
-    artifacts: true,
-    bookmarks: true,
-  },
-};
 
 function isValidExpandedRecord(value: unknown): value is SessionSidePanelsExpanded {
   return (
@@ -50,7 +48,7 @@ function isValidExpandedRecord(value: unknown): value is SessionSidePanelsExpand
   );
 }
 
-function isValidRecord(value: unknown): value is SessionSidePanelsRecord {
+function isValidRecord(value: unknown): value is LegacyRecord {
   return (
     typeof value === 'object' &&
     value !== null &&
@@ -59,16 +57,39 @@ function isValidRecord(value: unknown): value is SessionSidePanelsRecord {
   );
 }
 
-function getInitialRecord(): SessionSidePanelsRecord {
+function isValidV3Record(value: unknown): value is SessionSidePanelsRecord {
+  if (typeof value !== 'object' || value === null) return false;
+  const { railOpen, openSection } = value as Record<string, unknown>;
+  return (
+    typeof railOpen === 'boolean' &&
+    (openSection === null || SECTION_KEYS.some((key) => key === openSection))
+  );
+}
+
+function convertLegacyRecord(legacy: LegacyRecord): SessionSidePanelsRecord {
+  // A section missing from the record reads as expanded (SECTIONS_ADDED_LATER).
+  const first = SECTION_KEYS.find((key) => legacy.expanded[key] ?? SECTIONS_ADDED_LATER.includes(key)) ?? null;
+  return { railOpen: legacy.railOpen, openSection: first };
+}
+
+// One try per key: an unreadable or malformed record under one key must not
+// stop the next key from being tried.
+function readStored(key: string): unknown {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return DEFAULT_RECORD;
-    const parsed: unknown = JSON.parse(stored);
-    if (!isValidRecord(parsed)) return DEFAULT_RECORD;
-    return { ...parsed, expanded: { ...DEFAULT_RECORD.expanded, ...parsed.expanded } };
+    const stored = localStorage.getItem(key);
+    if (!stored) return undefined;
+    return JSON.parse(stored);
   } catch {
-    return DEFAULT_RECORD;
+    return undefined;
   }
+}
+
+function getInitialRecord(): SessionSidePanelsRecord {
+  const current = readStored(STORAGE_KEY);
+  if (isValidV3Record(current)) return { railOpen: current.railOpen, openSection: current.openSection };
+  const legacy = readStored(LEGACY_STORAGE_KEY);
+  if (isValidRecord(legacy)) return convertLegacyRecord(legacy);
+  return DEFAULT_RECORD;
 }
 
 function persistRecord(value: SessionSidePanelsRecord): void {
@@ -81,7 +102,7 @@ function persistRecord(value: SessionSidePanelsRecord): void {
 
 interface UseSessionSidePanelsStateReturn {
   railOpen: boolean;
-  expanded: SessionSidePanelsExpanded;
+  openSection: SessionSidePanelKey | null;
   toggleRail: () => void;
   toggleSection: (key: SessionSidePanelKey) => void;
   openRailAndExpandSection: (key: SessionSidePanelKey) => void;
@@ -89,66 +110,58 @@ interface UseSessionSidePanelsStateReturn {
 }
 
 /**
- * R2: ONE global localStorage key for the whole record -- not per-session
- * keys (sessions accumulate; this is the user's working style, not a
- * session property).
+ * ONE global localStorage key for the whole record -- not per-session keys
+ * (sessions accumulate; this is the user's working style, not a session
+ * property).
  *
- * `railOpen` and `expanded` are independent flags: collapsing the rail never
- * touches which sections are expanded, and toggling a section never touches
- * whether the rail is open. `openRailAndExpandSection` is the one operation
- * that sets both at once (R5a -- clicking a collapsed section's compact
- * label reopens the rail with that section already expanded), and it does
- * so via a single state update so an already-expanded section isn't
- * incorrectly toggled back off.
+ * Single-open accordion (owner direction, 2026-11-21): `openSection` holds
+ * the one open section or `null`. Collapsing the rail never touches
+ * `openSection`, so reopening the rail shows the section that was open.
+ * `openRailAndExpandSection` sets both in a single state update so an
+ * already-open section is not toggled back off.
  */
 export function useSessionSidePanelsState(): UseSessionSidePanelsStateReturn {
   const [record, setRecord] = useState<SessionSidePanelsRecord>(getInitialRecord);
 
+  const update = useCallback((change: (prev: SessionSidePanelsRecord) => SessionSidePanelsRecord) => {
+    setRecord((prev) => {
+      const next = change(prev);
+      persistRecord(next);
+      return next;
+    });
+  }, []);
+
   const toggleRail = useCallback(() => {
-    setRecord((prev) => {
-      const next: SessionSidePanelsRecord = { ...prev, railOpen: !prev.railOpen };
-      persistRecord(next);
-      return next;
-    });
-  }, []);
+    update((prev) => ({ ...prev, railOpen: !prev.railOpen }));
+  }, [update]);
 
-  const toggleSection = useCallback((key: SessionSidePanelKey) => {
-    setRecord((prev) => {
-      const next: SessionSidePanelsRecord = {
-        ...prev,
-        expanded: { ...prev.expanded, [key]: !prev.expanded[key] },
-      };
-      persistRecord(next);
-      return next;
-    });
-  }, []);
+  const toggleSection = useCallback(
+    (key: SessionSidePanelKey) => {
+      update((prev) => ({ ...prev, openSection: prev.openSection === key ? null : key }));
+    },
+    [update],
+  );
 
-  const openRailAndExpandSection = useCallback((key: SessionSidePanelKey) => {
-    setRecord((prev) => {
-      const next: SessionSidePanelsRecord = {
-        railOpen: true,
-        expanded: { ...prev.expanded, [key]: true },
-      };
-      persistRecord(next);
-      return next;
-    });
-  }, []);
+  const openRailAndExpandSection = useCallback(
+    (key: SessionSidePanelKey) => {
+      update(() => ({ railOpen: true, openSection: key }));
+    },
+    [update],
+  );
 
-  // One-directional guarantee: only ever sets a section's expanded flag to
-  // true, never toggles or collapses it. Used when an always-visible header
-  // control (e.g. MemoPanel's Edit button) enters a content-editing mode
-  // that must be visible regardless of the section's prior collapsed state.
-  const expandSection = useCallback((key: SessionSidePanelKey) => {
-    setRecord((prev) => {
-      const next: SessionSidePanelsRecord = { ...prev, expanded: { ...prev.expanded, [key]: true } };
-      persistRecord(next);
-      return next;
-    });
-  }, []);
+  // One-directional: never closes `key`, but does close any other section.
+  // Used when an always-visible header control (e.g. MemoPanel's Edit button)
+  // enters a content-editing mode that must be visible.
+  const expandSection = useCallback(
+    (key: SessionSidePanelKey) => {
+      update((prev) => ({ ...prev, openSection: key }));
+    },
+    [update],
+  );
 
   return {
     railOpen: record.railOpen,
-    expanded: record.expanded,
+    openSection: record.openSection,
     toggleRail,
     toggleSection,
     openRailAndExpandSection,

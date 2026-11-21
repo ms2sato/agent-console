@@ -200,6 +200,22 @@ describe('SessionTodosPanel', () => {
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
+  it('reports the header trigger state through aria-expanded and turns its chevron down only when open', async () => {
+    api.state.todos = [makeTodo()];
+
+    const { unmount } = await renderPanel({ isExpanded: false });
+    const closed = await screen.findByRole('button', { name: 'Expand Todo' });
+    expect(closed.getAttribute('aria-expanded')).toBe('false');
+    expect(closed.textContent).toBe('Todo (1)');
+    expect(screen.getByTestId('accordion-section-chevron').className).not.toContain('rotate-90');
+    unmount();
+
+    await renderPanel({ isExpanded: true });
+    const open = await screen.findByRole('button', { name: 'Collapse Todo' });
+    expect(open.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('accordion-section-chevron').className).toContain('rotate-90');
+  });
+
   it('shows only a labelled rail button with the open count in compact mode', async () => {
     api.state.todos = [makeTodo()];
 

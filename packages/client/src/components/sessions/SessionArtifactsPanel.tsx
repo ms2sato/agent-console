@@ -1,6 +1,7 @@
 import { useSessionArtifacts } from './hooks/useSessionArtifacts';
 import { formatTimestamp } from '../../lib/format';
 import { AccordionSectionBody } from './AccordionSectionBody';
+import { AccordionSectionHeader } from './AccordionSectionHeader';
 
 interface SessionArtifactsPanelProps {
   sessionId: string;
@@ -50,17 +51,12 @@ export function SessionArtifactsPanel({ sessionId, isExpanded, onToggleExpanded,
   // own border-l. The body stacks directly underneath the header when open.
   return (
     <div className="flex flex-col border-b border-slate-700">
-      <div className="flex items-center justify-between px-3 py-1.5">
-        <button
-          type="button"
-          onClick={onToggleExpanded}
-          aria-expanded={isExpanded}
-          aria-label={isExpanded ? 'Collapse Artifacts' : 'Expand Artifacts'}
-          className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
-        >
-          Artifacts
-        </button>
-      </div>
+      <AccordionSectionHeader
+        label="Artifacts"
+        isExpanded={isExpanded}
+        onToggle={onToggleExpanded}
+        toggleAriaLabel={isExpanded ? 'Collapse Artifacts' : 'Expand Artifacts'}
+      />
       <AccordionSectionBody isExpanded={isExpanded} className="min-w-0 max-h-96 overflow-y-auto">
         {artifacts.map((artifact) => (
           <div

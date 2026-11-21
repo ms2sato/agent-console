@@ -7,6 +7,7 @@ import { SessionSidePanelsDrawer } from '../SessionSidePanelsDrawer';
 import { useSessionSidePanelsState } from '../hooks/useSessionSidePanelsState';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { installMockWebSocket } from '../../../test/mock-websocket';
+import { artifactKeys } from '../../../lib/query-keys';
 
 /**
  * `renderWithRouter`'s `rerender` cannot be used to change `open` mid-test:
@@ -177,7 +178,29 @@ function routeFetchDeferred(): { resolveAll: () => void } {
   };
 }
 
-const STORAGE_KEY = 'agent-console:session-side-panels-v2';
+const STORAGE_KEY = 'agent-console:session-side-panels-v3';
+
+function seedRecord(record: { railOpen: boolean; openSection: string | null }): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
+}
+
+const SECTION_HEADER_NAME = /^(Collapse|Expand) (Memo|Todo|Artifacts|Bookmarks)$/;
+
+/** Section header label -> aria-expanded, for the headers currently rendered. */
+function headerStates(): Record<string, boolean> {
+  const states: Record<string, boolean> = {};
+  for (const button of screen.queryAllByRole('button', { name: SECTION_HEADER_NAME })) {
+    const label = (button.getAttribute('aria-label') ?? '').replace(/^(Collapse|Expand) /, '');
+    states[label] = button.getAttribute('aria-expanded') === 'true';
+  }
+  return states;
+}
+
+function openHeaders(): string[] {
+  return Object.entries(headerStates())
+    .filter(([, expanded]) => expanded)
+    .map(([label]) => label);
+}
 
 describe('SessionSidePanelsDrawer', () => {
   let restoreWebSocket: () => void;
@@ -276,14 +299,14 @@ describe('SessionSidePanelsDrawer', () => {
         return base(input);
       });
       await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
-      const todoHeader = await screen.findByLabelText('Collapse Todo');
+      const todoHeader = await screen.findByLabelText('Expand Todo');
       expect(screen.getByText('Todo (1)')).toBeTruthy();
       expect(screen.getByText(TODO_TITLE)).toBeTruthy();
       expect(
         screen.getByLabelText('Collapse Memo').compareDocumentPosition(todoHeader) & Node.DOCUMENT_POSITION_FOLLOWING
       ).toBeTruthy();
       expect(
-        todoHeader.compareDocumentPosition(screen.getByLabelText('Collapse Artifacts')) & Node.DOCUMENT_POSITION_FOLLOWING
+        todoHeader.compareDocumentPosition(screen.getByLabelText('Expand Artifacts')) & Node.DOCUMENT_POSITION_FOLLOWING
       ).toBeTruthy();
     });
 
@@ -294,8 +317,8 @@ describe('SessionSidePanelsDrawer', () => {
       // button inside the drawer (a rail toggle) fails the last assertions.
       await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
       const memoHeader = await waitFor(() => screen.getByLabelText('Collapse Memo'));
-      const artifactsHeader = screen.getByLabelText('Collapse Artifacts');
-      const bookmarksHeader = screen.getByLabelText('Collapse Bookmarks');
+      const artifactsHeader = await waitFor(() => screen.getByLabelText('Expand Artifacts'));
+      const bookmarksHeader = screen.getByLabelText('Expand Bookmarks');
 
       // Node.compareDocumentPosition returns a bitmask; DOCUMENT_POSITION_FOLLOWING (4)
       // means the argument follows the node it's called on.
@@ -325,7 +348,7 @@ describe('SessionSidePanelsDrawer', () => {
       routeFetchEmpty();
       await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
       await waitFor(() => expect(screen.getByLabelText('Collapse Memo')).toBeTruthy());
-      await waitFor(() => expect(screen.getByLabelText('Collapse Bookmarks')).toBeTruthy());
+      await waitFor(() => expect(screen.getByLabelText('Expand Bookmarks')).toBeTruthy());
       expect(screen.queryByLabelText('Collapse Artifacts')).toBeNull();
       expect(screen.queryByLabelText('Expand Artifacts')).toBeNull();
     });
@@ -405,36 +428,89 @@ describe('SessionSidePanelsDrawer', () => {
   });
 
   describe('Persistence (shared record with the desktop rail)', () => {
-    it('collapsing Artifacts here persists to the SAME storage key/shape a fresh hook instance reads back', async () => {
-      // Reach (measured), four mutations, each fails only here:
-      // (a) the hook's STORAGE_KEY changed to '...-v3' (the drawer persists
-      //     under a key other than the one the rail has always used) -- the
-      //     literal STORAGE_KEY read below returns null;
-      // (b) the drawer holding its own `useState` record instead of calling
-      //     `useSessionSidePanelsState()` -- nothing is persisted at all;
-      // (c) the Artifacts panel's `onToggleExpanded` writing 'bookmarks'
-      //     (wrong section) -- 'Expand Artifacts' never appears;
-      // (d) the drawer calling `toggleRail()` on every section toggle -- the
-      //     `railOpen === false` assertions fail.
+    it('opening Artifacts here persists to the SAME v3 key/shape a fresh hook instance reads back', async () => {
+      // Reach (measured), each fails only here: the hook's storage key
+      // changed (the literal read below returns null); the drawer holding
+      // its own `useState` record instead of the shared hook (nothing is
+      // persisted); the Artifacts panel's `onToggleExpanded` toggling a
+      // different section ('Collapse Artifacts' never appears); the drawer
+      // calling `toggleRail()` on every section toggle (the `railOpen ===
+      // false` assertions fail).
       await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
-      await waitFor(() => expect(screen.getByLabelText('Collapse Artifacts')).toBeTruthy());
+      await waitFor(() => expect(screen.getByLabelText('Expand Artifacts')).toBeTruthy());
 
       act(() => {
-        screen.getByLabelText('Collapse Artifacts').click();
+        screen.getByLabelText('Expand Artifacts').click();
       });
 
-      await waitFor(() => expect(screen.getByLabelText('Expand Artifacts')).toBeTruthy());
+      await waitFor(() => expect(screen.getByLabelText('Collapse Artifacts')).toBeTruthy());
 
       const stored = localStorage.getItem(STORAGE_KEY);
       expect(stored).toBeTruthy();
-      const parsed = JSON.parse(stored!) as { railOpen: boolean; expanded: Record<string, boolean> };
-      expect(parsed.expanded.artifacts).toBe(false);
-      // The drawer never writes railOpen -- it stays at its default (false).
-      expect(parsed.railOpen).toBe(false);
+      // The drawer never changes railOpen -- it stays at its default (false).
+      expect(JSON.parse(stored!)).toEqual({ railOpen: false, openSection: 'artifacts' });
 
       const { result } = renderHook(() => useSessionSidePanelsState());
-      expect(result.current.expanded.artifacts).toBe(false);
+      expect(result.current.openSection).toBe('artifacts');
       expect(result.current.railOpen).toBe(false);
+    });
+  });
+
+  describe('Single-open accordion', () => {
+    it('opening one section closes the open one', async () => {
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      await waitFor(() => expect(Object.keys(headerStates()).length).toBe(4));
+      expect(openHeaders()).toEqual(['Memo']);
+
+      act(() => {
+        screen.getByLabelText('Expand Bookmarks').click();
+      });
+
+      await waitFor(() => expect(openHeaders()).toEqual(['Bookmarks']));
+    });
+
+    describe('openSection pointing at an empty Artifacts list', () => {
+      function routeEmptyArtifacts(): void {
+        const base = mockFetch.getMockImplementation()!;
+        mockFetch.mockImplementation((input: RequestInfo | URL) =>
+          urlToString(input).includes('/artifacts') ? Promise.resolve(jsonResponse({ artifacts: [] })) : base(input)
+        );
+      }
+
+      it('renders the other headers collapsed, no Artifacts header, and a Memo click stores openSection memo', async () => {
+        routeEmptyArtifacts();
+        seedRecord({ railOpen: false, openSection: 'artifacts' });
+        await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+
+        await waitFor(() => expect(Object.keys(headerStates()).sort()).toEqual(['Bookmarks', 'Memo', 'Todo']));
+        expect(openHeaders()).toEqual([]);
+        expect(screen.queryByLabelText('Expand Artifacts')).toBeNull();
+        expect(screen.queryByLabelText('Collapse Artifacts')).toBeNull();
+
+        act(() => {
+          screen.getByLabelText('Expand Memo').click();
+        });
+        await waitFor(() => expect(openHeaders()).toEqual(['Memo']));
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEY) as string)).toEqual({ railOpen: false, openSection: 'memo' });
+      });
+
+      it('when an artifact then arrives, Artifacts renders open and the others stay closed', async () => {
+        routeEmptyArtifacts();
+        seedRecord({ railOpen: false, openSection: 'artifacts' });
+        const { queryClient } = await renderWithRouter(
+          <SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />
+        );
+        await waitFor(() => expect(Object.keys(headerStates()).sort()).toEqual(['Bookmarks', 'Memo', 'Todo']));
+
+        routeFetchByPanel();
+        await act(async () => {
+          await queryClient.invalidateQueries({ queryKey: artifactKeys.listBySession('session-1'), exact: true });
+        });
+
+        await waitFor(() => expect(openHeaders()).toEqual(['Artifacts']));
+        expect(headerStates().Memo).toBe(false);
+        expect(headerStates().Bookmarks).toBe(false);
+      });
     });
   });
 
@@ -469,10 +545,7 @@ describe('SessionSidePanelsDrawer', () => {
 
     it('wraps Tab and Shift+Tab across the two real headers when Memo and Bookmarks are collapsed, skipping the collapsed-body tabindex=-1 controls (F2)', async () => {
       routeFetchEmpty();
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: false, bookmarks: false } })
-      );
+      seedRecord({ railOpen: false, openSection: null });
       await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
       const memoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
       const bookmarksHeader = screen.getByLabelText('Expand Bookmarks');
@@ -528,10 +601,7 @@ describe('SessionSidePanelsDrawer', () => {
 
     it('walks forward and wraps Tab through the Todo header, New Todo button and status select once the Todo list has settled empty', async () => {
       routeFetchSettledEmptyTodos();
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: false, expanded: { memo: false, todos: true, artifacts: false, bookmarks: false } })
-      );
+      seedRecord({ railOpen: false, openSection: 'todos' });
       await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
       const memoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
       const todoHeader = await waitFor(() => screen.getByLabelText('Collapse Todo'));
@@ -565,10 +635,7 @@ describe('SessionSidePanelsDrawer', () => {
       // the actual browser behavior is verified only by the Browser QA
       // captures attached to the PR.
       routeFetchEmpty();
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: false, bookmarks: true } })
-      );
+      seedRecord({ railOpen: false, openSection: 'bookmarks' });
       await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
       const memoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
       const bookmarksHeader = screen.getByLabelText('Collapse Bookmarks');
@@ -581,7 +648,7 @@ describe('SessionSidePanelsDrawer', () => {
       // Bookmarks' or Artifacts' wrappers, which also carry `aria-hidden`
       // while collapsed.
       const memoSection = memoHeader.closest('.border-b') as HTMLElement;
-      const memoBodyWrapper = memoSection.querySelector('[aria-hidden]') as HTMLElement;
+      const memoBodyWrapper = memoSection.querySelector('div[aria-hidden]') as HTMLElement;
       expect(memoBodyWrapper).toBeTruthy();
       expect(memoBodyWrapper.getAttribute('inert')).toBe('');
       expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
@@ -671,7 +738,7 @@ describe('SessionSidePanelsDrawer', () => {
       expect(document.activeElement).toBe(editButton);
 
       act(() => {
-        screen.getByLabelText('Collapse Bookmarks').click();
+        screen.getByLabelText('Expand Bookmarks').click();
       });
       expect(document.activeElement).toBe(editButton);
     });

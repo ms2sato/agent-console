@@ -6,6 +6,7 @@ import { fetchSessionMemo, updateSessionMemo } from '../../lib/api';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import { sessionKeys } from '../../lib/query-keys';
 import { AccordionSectionBody } from './AccordionSectionBody';
+import { AccordionSectionHeader } from './AccordionSectionHeader';
 import { UntrustedLink, untrustedUrlTransform } from '../ui/UntrustedMarkdownLink';
 import { MarkdownCodeBlock } from '../ui/MarkdownCodeBlock';
 import { useSessionTerminalRun } from './SessionTerminalRunContext';
@@ -181,32 +182,26 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExp
   // own border-l. The body stacks directly underneath the header when open.
   return (
     <div className="flex flex-col border-b border-slate-700">
-      <div className="flex items-center justify-between px-3 py-1.5">
-        <button
-          type="button"
-          onClick={onToggleExpanded}
-          aria-expanded={isExpanded}
-          aria-label={isExpanded ? 'Collapse Memo' : 'Expand Memo'}
-          className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
-        >
-          Memo
-        </button>
-        <div className="flex items-center gap-1">
-          {mode === 'view' && !isEmpty && (
-            <button
-              onClick={() => {
-                enterEditMode(content ?? '');
-                onEnsureExpanded();
-              }}
-              className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-xs"
-              title="Edit memo"
-              aria-label="Edit memo"
-            >
-              Edit
-            </button>
-          )}
-        </div>
-      </div>
+      <AccordionSectionHeader
+        label={mode === 'edit' && !isExpanded ? 'Memo (editing)' : 'Memo'}
+        isExpanded={isExpanded}
+        onToggle={onToggleExpanded}
+        toggleAriaLabel={isExpanded ? 'Collapse Memo' : 'Expand Memo'}
+      >
+        {mode === 'view' && !isEmpty && (
+          <button
+            onClick={() => {
+              enterEditMode(content ?? '');
+              onEnsureExpanded();
+            }}
+            className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-xs"
+            title="Edit memo"
+            aria-label="Edit memo"
+          >
+            Edit
+          </button>
+        )}
+      </AccordionSectionHeader>
       <AccordionSectionBody
         isExpanded={isExpanded}
         className="memo-content max-h-96 overflow-y-auto px-4 py-3 text-sm text-gray-300"
