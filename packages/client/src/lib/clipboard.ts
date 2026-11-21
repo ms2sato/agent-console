@@ -10,15 +10,20 @@
  * is outside the dialog's focus trap, which pulls focus straight back to the
  * previously focused control: `execCommand('copy')` then still returns `true`
  * but copies the (empty) selection of the wrong element. To avoid that, the
- * textarea is mounted inside the nearest `[role="dialog"]` ancestor of the
- * focused element, and the copy is only attempted when the textarea really
- * holds focus and the full text is selected. Otherwise this reports failure
- * instead of a silent success. The previously focused element is restored
- * afterwards.
+ * textarea is mounted inside the nearest `[role="dialog"]` or
+ * `[role="alertdialog"]` ancestor of the focused element, and the copy is only
+ * attempted when the textarea really holds focus and the full text is
+ * selected. Otherwise this reports failure instead of a silent success. The
+ * previously focused element is restored afterwards.
+ *
+ * A textarea normalizes line breaks (CRLF becomes LF) in its value, and
+ * `selectionEnd` is measured on that normalized value, so the selection is
+ * compared with the textarea's own value length, not with `text.length`.
  */
 function copyViaExecCommand(text: string): boolean {
   const previouslyFocused = document.activeElement;
-  const container = previouslyFocused?.closest('[role="dialog"]') ?? document.body;
+  const container =
+    previouslyFocused?.closest('[role="dialog"], [role="alertdialog"]') ?? document.body;
 
   const textarea = document.createElement('textarea');
   textarea.value = text;
@@ -30,7 +35,7 @@ function copyViaExecCommand(text: string): boolean {
     textarea.focus();
     textarea.select();
     if (document.activeElement !== textarea) return false;
-    if (textarea.selectionStart !== 0 || textarea.selectionEnd !== text.length) return false;
+    if (textarea.selectionStart !== 0 || textarea.selectionEnd !== textarea.value.length) return false;
     return document.execCommand('copy');
   } finally {
     container.removeChild(textarea);

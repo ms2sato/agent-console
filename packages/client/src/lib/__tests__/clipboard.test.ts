@@ -131,11 +131,13 @@ describe('copyToClipboard', () => {
     const originalTextareaFocus = HTMLTextAreaElement.prototype.focus;
     const originalTextareaSelect = HTMLTextAreaElement.prototype.select;
 
-    function setup(execResult = true) {
+    const originalValueDescriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+
+    function setup(execResult = true, role = 'dialog') {
       installUndefinedClipboard();
       installSecureContext(false);
       const dialog = document.createElement('div');
-      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('role', role);
       const button = document.createElement('button');
       dialog.appendChild(button);
       document.body.appendChild(dialog);
@@ -160,6 +162,9 @@ describe('copyToClipboard', () => {
     function teardown(dialog: HTMLElement) {
       HTMLTextAreaElement.prototype.focus = originalTextareaFocus;
       HTMLTextAreaElement.prototype.select = originalTextareaSelect;
+      if (originalValueDescriptor) {
+        Object.defineProperty(HTMLTextAreaElement.prototype, 'value', originalValueDescriptor);
+      }
       dialog.remove();
       restoreClipboard();
       restoreSecureContext();
@@ -206,6 +211,45 @@ describe('copyToClipboard', () => {
         await expect(copyToClipboard('stolen focus')).rejects.toThrow('execCommand("copy") returned false');
         expect(seen.calls).toBe(0);
         expect(document.activeElement).toBe(button);
+      } finally {
+        teardown(dialog);
+      }
+    });
+
+    it('mounts the textarea inside an alertdialog as well', async () => {
+      const { dialog, seen } = setup(true, 'alertdialog');
+      try {
+        await copyToClipboard('inside alertdialog');
+        expect(seen.calls).toBe(1);
+        expect(seen.active?.tagName).toBe('TEXTAREA');
+        expect(seen.parent).toBe(dialog);
+        expect(document.querySelector('textarea')).toBeNull();
+      } finally {
+        teardown(dialog);
+      }
+    });
+
+    // happy-dom keeps CRLF in a textarea's value, unlike real browsers, which
+    // normalize it to LF (so selectionEnd is measured on the shorter value).
+    // The value accessor is stubbed to simulate that normalization.
+    it('copies CRLF text when the textarea normalizes line breaks (simulated)', async () => {
+      const { dialog, seen } = setup(true);
+      if (!originalValueDescriptor?.get || !originalValueDescriptor.set) {
+        throw new Error('expected an accessor-based textarea value in happy-dom');
+      }
+      const { get, set } = originalValueDescriptor;
+      Object.defineProperty(HTMLTextAreaElement.prototype, 'value', {
+        configurable: true,
+        get(this: HTMLTextAreaElement) {
+          return get.call(this);
+        },
+        set(this: HTMLTextAreaElement, v: string) {
+          set.call(this, v.replace(/\r\n/g, '\n'));
+        },
+      });
+      try {
+        await expect(copyToClipboard('a\r\nb')).resolves.toBeUndefined();
+        expect(seen.calls).toBe(1);
       } finally {
         teardown(dialog);
       }
