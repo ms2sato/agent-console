@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '../../../database/schema.js';
 import { createDatabaseForTest } from '../../../database/connection.js';
@@ -502,6 +502,104 @@ describe('replyToInboundWebhook', () => {
     expect(logged()).toContain('last-status-write-failed');
   });
 
+  it('row 23: a database error during the ownership check is a thrown tool error, not "Unknown delivery"; nothing is sent, no reply row, and the error text carries no marker', async () => {
+    await sql`DROP TABLE inbound_event_notifications`.execute(db);
+    let thrown: unknown;
+    try {
+      await reply({ body: { note: BODY_MARKER } });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const text = `${(thrown as Error).name} ${(thrown as Error).message}`;
+    expect(text).not.toBe('Unknown delivery');
+    for (const marker of [URL_MARKER, REPLY_HOST, SECRET_MARKER, SECRET, BODY_MARKER]) {
+      expect(text).not.toContain(marker);
+    }
+    expect(calls).toHaveLength(0);
+    expect(await replyRows()).toHaveLength(0);
+  });
+
+  it('row 25: retry-after empty or whitespace-only after cleanup has no retryAfter key; "120" is returned as "120"', async () => {
+    for (const [header, expected] of [['', undefined], ['   ', undefined], ['\t\n ', undefined], ['120', '120']] as const) {
+      respond = async () => new Response('x', { status: 429, headers: { 'retry-after': header } });
+      const result = okResult(await reply()) as Extract<ReplyResult, { outcome: 'responded' }>;
+      if (expected === undefined) expect('retryAfter' in result).toBe(false);
+      else expect(result.retryAfter).toBe(expected);
+    }
+  });
+
+  it('row 26: when the pre-POST attempt write throws on a resend the tool errors with row 20\'s text, nothing is sent and attempt_count is unchanged', async () => {
+    const first = okResult(await reply());
+    await sql`CREATE TRIGGER fail_attempt_update BEFORE UPDATE OF attempt_count ON inbound_webhook_replies BEGIN SELECT RAISE(ABORT, 'boom'); END`.execute(db);
+    const sent = calls.length;
+    expect(errorOf(await reply({ replyId: first.replyId }))).toBe('The reply could not be recorded; nothing was sent');
+    expect(calls).toHaveLength(sent);
+    expect((await replyRows())[0]!.attempt_count).toBe(1);
+  });
+
+  it('row 26: the attempt is already counted when the fetch runs', async () => {
+    respond = async (call) => {
+      const row = await db
+        .selectFrom('inbound_webhook_replies')
+        .select('attempt_count')
+        .where('id', '=', call.init.headers['webhook-id']!)
+        .executeTakeFirstOrThrow();
+      expect(row.attempt_count).toBe(1);
+      return okResponse();
+    };
+    okResult(await reply());
+  });
+
+  describe('row 27: both caps are atomic', () => {
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+    const slowOk = async () => {
+      await tick();
+      return okResponse();
+    };
+
+    it('25 concurrent new replies for one (delivery, session): exactly 20 attempts, 5 reply-limit refusals, 20 rows, 20 fetch calls', async () => {
+      respond = slowOk;
+      const outcomes = await Promise.all(Array.from({ length: 25 }, () => reply()));
+      expect(outcomes.filter((o) => o.ok)).toHaveLength(MAX_REPLIES_PER_DELIVERY_SESSION);
+      expect(outcomes.filter((o) => !o.ok && o.error === 'Reply limit reached for this delivery')).toHaveLength(5);
+      expect(await replyRows()).toHaveLength(MAX_REPLIES_PER_DELIVERY_SESSION);
+      expect(calls).toHaveLength(MAX_REPLIES_PER_DELIVERY_SESSION);
+    });
+
+    it('15 concurrent resends of a reply with no attempt yet: exactly 10 attempts, 5 attempt-limit refusals, attempt_count 10, 10 fetch calls', async () => {
+      respond = slowOk;
+      // A reply row with attempt_count 0, as left by a crash between the insert and the first attempt.
+      await db
+        .insertInto('inbound_webhook_replies')
+        .values({
+          id: 'reply_fresh',
+          endpoint_id: ENDPOINT_ID,
+          webhook_id: WEBHOOK_ID,
+          session_id: 's1',
+          body_sha256: createHash('sha256').update(JSON.stringify({ text: 'hello' })).digest('hex'),
+          created_at: NOW.toISOString(),
+        })
+        .execute();
+      const outcomes = await Promise.all(Array.from({ length: 15 }, () => reply({ replyId: 'reply_fresh' })));
+      expect(outcomes.filter((o) => o.ok)).toHaveLength(MAX_ATTEMPTS_PER_REPLY);
+      expect(outcomes.filter((o) => !o.ok && o.error === 'Attempt limit reached for this reply')).toHaveLength(5);
+      expect((await replyRows())[0]!.attempt_count).toBe(MAX_ATTEMPTS_PER_REPLY);
+      expect(calls).toHaveLength(MAX_ATTEMPTS_PER_REPLY);
+    });
+
+    it('15 concurrent resends after a first attempt: 9 more attempts fit, 6 are refused, attempt_count 10, 9 more fetch calls', async () => {
+      respond = slowOk;
+      const first = okResult(await reply());
+      calls = [];
+      const outcomes = await Promise.all(Array.from({ length: 15 }, () => reply({ replyId: first.replyId })));
+      expect(outcomes.filter((o) => o.ok)).toHaveLength(MAX_ATTEMPTS_PER_REPLY - 1);
+      expect(outcomes.filter((o) => !o.ok && o.error === 'Attempt limit reached for this reply')).toHaveLength(6);
+      expect((await replyRows())[0]!.attempt_count).toBe(MAX_ATTEMPTS_PER_REPLY);
+      expect(calls).toHaveLength(MAX_ATTEMPTS_PER_REPLY - 1);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Ownership (R3)
   // -------------------------------------------------------------------------
@@ -536,6 +634,16 @@ describe('replyToInboundWebhook', () => {
       const survivors = await db.selectFrom('inbound_event_notifications').selectAll().execute();
       expect(survivors).toHaveLength(1);
       expect(errorOf(await reply())).toBe('Unknown delivery');
+    });
+
+    it('a delivery row that outlives its endpoint (dangling, no cascade) is "Unknown delivery" and nothing is sent', async () => {
+      await sql`PRAGMA foreign_keys = OFF`.execute(db);
+      await sql`DELETE FROM inbound_webhook_endpoints WHERE id = ${ENDPOINT_ID}`.execute(db);
+      await sql`PRAGMA foreign_keys = ON`.execute(db);
+      expect(await db.selectFrom('inbound_webhook_deliveries').selectAll().execute()).toHaveLength(1);
+      expect(errorOf(await reply())).toBe('Unknown delivery');
+      expect(calls).toHaveLength(0);
+      expect(await replyRows()).toHaveLength(0);
     });
 
     it('a ledger row for the same job id with another event_type is "Unknown delivery"', async () => {

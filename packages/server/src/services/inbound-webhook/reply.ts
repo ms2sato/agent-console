@@ -11,7 +11,7 @@
  * The server never retries on its own. This module imports nothing from the action half.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { Database } from '../../database/schema.js';
 import { signStandardWebhook } from '../../lib/inbound-webhook-secret.js';
 import { createLogger } from '../../lib/logger.js';
@@ -297,36 +297,25 @@ export async function replyToInboundWebhook(input: ReplyInput, deps: ReplyDeps):
   let replyId: string;
 
   if (input.replyId === undefined) {
-    // Rows 6, 7
-    const countRow = await deps.db
-      .selectFrom('inbound_webhook_replies')
-      .select((eb) => eb.fn.countAll().as('count'))
-      .where('endpoint_id', '=', endpointId)
-      .where('webhook_id', '=', webhookId)
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    if (Number(countRow?.count ?? 0) >= MAX_REPLIES_PER_DELIVERY_SESSION) {
-      return refuse(REPLY_ERRORS.replyLimitReached, 'reply-limit-reached', { endpointId });
-    }
-
+    // Rows 6, 7: one statement both checks the cap and inserts, so concurrent calls cannot overshoot it.
     replyId = generateId();
+    let inserted: bigint | undefined;
     try {
-      await deps.db
-        .insertInto('inbound_webhook_replies')
-        .values({
-          id: replyId,
-          endpoint_id: endpointId,
-          webhook_id: webhookId,
-          session_id: sessionId,
-          body_sha256: bodyHash,
-          attempt_count: 0,
-          last_status: null,
-          created_at: now().toISOString(),
-          last_attempt_at: null,
-        })
-        .execute();
+      const insertResult = await sql`
+        INSERT INTO inbound_webhook_replies
+          (id, endpoint_id, webhook_id, session_id, body_sha256, attempt_count, last_status, created_at, last_attempt_at)
+        SELECT ${replyId}, ${endpointId}, ${webhookId}, ${sessionId}, ${bodyHash}, 0, NULL, ${now().toISOString()}, NULL
+        WHERE (
+          SELECT count(*) FROM inbound_webhook_replies
+          WHERE endpoint_id = ${endpointId} AND webhook_id = ${webhookId} AND session_id = ${sessionId}
+        ) < ${MAX_REPLIES_PER_DELIVERY_SESSION}
+      `.execute(deps.db);
+      inserted = insertResult.numAffectedRows;
     } catch (error) {
       return refuse(REPLY_ERRORS.recordFailed, 'reply-row-write-failed', { endpointId, errorName: errorName(error) });
+    }
+    if (inserted === undefined || inserted === 0n) {
+      return refuse(REPLY_ERRORS.replyLimitReached, 'reply-limit-reached', { endpointId });
     }
   } else {
     // Rows 8, 9

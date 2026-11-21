@@ -332,12 +332,13 @@ describe('reply_to_inbound_webhook', () => {
 
   it('a thrown service error becomes a generic tool error that does not carry the thrown text', async () => {
     const ids = await createOwnedSession('throw-owner');
-    serviceThrows = new Error('connect failed to https://sender.example/replies?token=URLMARKER-reply-tool');
+    serviceThrows = new Error('connect failed to https://sender.example/replies?token=URLMARKER-reply-tool with whsec_SECRETMARKER-reply-tool');
     const response = await call({ deliveryId: DELIVERY_ID, body: {}, sessionId: ids.sessionId });
 
     const text = errorText(response);
     expect(text).toBe('The reply could not be sent');
     expect(JSON.stringify(response)).not.toContain('URLMARKER');
+    expect(JSON.stringify(response)).not.toContain('SECRETMARKER');
   });
 
   it('without the dependency the tool returns an error result', async () => {

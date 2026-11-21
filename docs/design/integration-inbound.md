@@ -1055,14 +1055,11 @@ Verification of the reply path, as shipped (recorded proxy):
 | 20 | database write of the reply row fails | tool error, nothing sent |
 | 21 | recording the attempt's outcome (`last_status`) fails after the POST | the result is still returned; warn log |
 | 22 | single-user and multi-user modes | identical (no elevation, no per-user state) |
-
-#### Implementation decisions beyond the table
-
-- A database error while checking ownership propagates as an exception (the MCP layer reports a generic tool error); only a failed check is `Unknown delivery`.
-- A delivery row that exists while the endpoint row is gone (a race with deletion) is `Unknown delivery`.
-- A `retry-after` header that is empty after single-line cleanup is omitted instead of returned as an empty string.
-- A failed write of the attempt counter is the same tool error as row 20 (`The reply could not be recorded; nothing was sent`): nothing is sent.
-- The 20-replies-per-(delivery, session) bound is a count followed by an insert, so two truly concurrent first replies at 19 could both pass; the per-reply attempt bound is atomic (the single guarded `UPDATE`).
+| 23 | database error during the ownership check | tool error, nothing sent, no reply row (not `Unknown delivery`, which is a permission answer the agent would act on) |
+| 24 | delivery row exists but the endpoint is gone | `Unknown delivery` |
+| 25 | `retry-after` empty or whitespace-only after cleanup | no `retryAfter` key (`'120'` is returned as `'120'`) |
+| 26 | the attempt counter write | written before the POST; its failure is row 20's text and nothing is sent (any write after the POST is row 21) |
+| 27 | the two caps under concurrent calls | both atomic: one `INSERT ... SELECT` with the count in its `WHERE` (zero rows inserted is row 6) and one guarded `UPDATE` (zero rows updated is row 10) |
 
 #### Reply URL validation (boundary values)
 
