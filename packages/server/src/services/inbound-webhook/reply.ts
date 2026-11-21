@@ -4,13 +4,15 @@
  * A session that received a delivery can answer the sender: one HTTP POST to the endpoint's
  * operator-set reply URL, signed with the endpoint's CURRENT secret under the same scheme the
  * receive half verifies. The signature, the secret and the reply URL never leave this module: they
- * appear in no returned value and no log line. A thrown fetch error is logged by name only.
+ * appear in no returned value and no log line, and neither does the expanded form of the URL. A
+ * thrown fetch error is logged by name only.
  *
  * Every reply has a server-minted id that is also the `webhook-id` header. The reply row is
  * committed BEFORE the first POST, so the id survives a crash or a timeout and a resend reuses it.
  * The server never retries on its own. This module imports nothing from the action half.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER } from '@agent-console/shared';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '../../database/schema.js';
 import { signStandardWebhook } from '../../lib/inbound-webhook-secret.js';
@@ -200,9 +202,9 @@ function escapeRegExp(text: string): string {
 }
 
 /**
- * Needles are the full signature header value and its base64 part, the reply URL as stored,
- * `pathname + search` and `search` of the parsed URL (when `search` is non-empty), and each query
- * value of at least `MIN_REDACTED_QUERY_VALUE_CHARS` characters, raw and percent-decoded. One
+ * Needles are the full signature header value and its base64 part, the reply URL as called (the
+ * expanded one, which is what the sender received), `pathname + search` and `search` of the parsed
+ * URL (when `search` is non-empty), and each query value of at least `MIN_REDACTED_QUERY_VALUE_CHARS` characters, raw and percent-decoded. One
  * alternation, longest first, so a long match is never left half-redacted by a shorter one and the
  * placeholder text is never itself rewritten.
  */
@@ -235,6 +237,16 @@ function buildRedactor(signature: string, replyUrl: string): Redactor {
   if (ordered.length === 0) return (text) => text;
   const pattern = new RegExp(ordered.map(escapeRegExp).join('|'), 'g');
   return (text) => text.replace(pattern, REDACTED);
+}
+
+/**
+ * The URL to call for a stored reply URL: every occurrence of the `{{in_reply_to}}` placeholder is
+ * replaced with the percent-encoded id of the delivery being answered, and nothing else is touched.
+ * Without the placeholder the stored text is returned byte for byte. The id must be one that passed
+ * `isValidWebhookId`, so the result is one path segment that can never be `.` or `..`.
+ */
+export function expandReplyUrl(storedUrl: string, webhookId: string): string {
+  return storedUrl.split(INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER).join(encodeURIComponent(webhookId));
 }
 
 /** Cancel `reader` without ever throwing or waiting past `signal`'s abort. */
@@ -351,8 +363,10 @@ export async function replyToInboundWebhook(input: ReplyInput, deps: ReplyDeps):
   // Rows 5, 18, 19: the reply URL and secret as they are now.
   const endpoint = await deps.endpoints.findWithSecretById(endpointId);
   if (!endpoint) return refuse(REPLY_ERRORS.unknownDelivery, 'endpoint-missing', { endpointId });
-  const replyUrl = endpoint.replyUrl;
-  if (replyUrl === null) return refuse(REPLY_ERRORS.repliesNotEnabled, 'reply-url-not-set', { endpointId });
+  const storedReplyUrl = endpoint.replyUrl;
+  if (storedReplyUrl === null) return refuse(REPLY_ERRORS.repliesNotEnabled, 'reply-url-not-set', { endpointId });
+  // The id comes from the authorised delivery id above, never from the body or a tool argument.
+  const replyUrl = expandReplyUrl(storedReplyUrl, webhookId);
 
   const bodyHash = canonicalBodyHash(body);
   let replyId: string;

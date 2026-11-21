@@ -6,13 +6,15 @@ import { createDatabaseForTest } from '../../../database/connection.js';
 import { rootLogger } from '../../../lib/logger.js';
 import { generateInboundWebhookSecret } from '../../../lib/inbound-webhook-secret.js';
 import { SqliteInboundWebhookEndpointRepository } from '../../../repositories/sqlite-inbound-webhook-endpoint-repository.js';
-import { inboundWebhookDeliveryId } from '../receive.js';
+import { INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER as PLACEHOLDER } from '@agent-console/shared';
+import { inboundWebhookDeliveryId, isValidWebhookId } from '../receive.js';
 import {
   MAX_ATTEMPTS_PER_REPLY,
   MAX_REPLIES_PER_DELIVERY_SESSION,
   MAX_REPLY_BODY_BYTES,
   RESPONSE_BODY_CAP_BYTES,
   RETRY_AFTER_MAX_CHARS,
+  expandReplyUrl,
   replyToInboundWebhook,
   type ReplyFetch,
   type ReplyInput,
@@ -1024,4 +1026,98 @@ describe('replyToInboundWebhook', () => {
     }
     expect(resultText).not.toContain('PROXYTOKEN');
   });
+
+  // -------------------------------------------------------------------------
+  // The {{in_reply_to}} placeholder in the stored reply URL
+  // -------------------------------------------------------------------------
+
+  describe('reply URL placeholder', () => {
+    const TEMPLATE = `https://${REPLY_HOST}/reply/${PLACEHOLDER}`;
+    const ID_WITH_PUNCTUATION = 'Msg.1:a_b-c';
+
+    const useTemplate = async (url: string) => {
+      await endpoints.update('repo-1', ENDPOINT_ID, { replyUrl: url }, NOW.toISOString());
+    };
+    const routeDelivery = async (webhookId: string): Promise<string> => {
+      const deliveryId = inboundWebhookDeliveryId(ENDPOINT_ID, webhookId);
+      await seedDelivery(ENDPOINT_ID, webhookId);
+      await seedRouting('s1', { jobId: deliveryId });
+      return deliveryId;
+    };
+    const lastSegment = (url: string): string => new URL(url).pathname.split('/').pop()!;
+
+    it('T1: the placeholder is replaced by the percent-encoded id and the segment decodes back to the id', async () => {
+      await useTemplate(TEMPLATE);
+      const deliveryId = await routeDelivery(ID_WITH_PUNCTUATION);
+      okResult(await reply({ deliveryId }));
+      expect(calls[0]!.url).toBe(`https://${REPLY_HOST}/reply/Msg.1%3Aa_b-c`);
+      expect(decodeURIComponent(lastSegment(calls[0]!.url))).toBe(ID_WITH_PUNCTUATION);
+    });
+
+    it('T2: a stored URL without the placeholder is called byte for byte', async () => {
+      okResult(await reply());
+      expect(calls[0]!.url).toBe(REPLY_URL);
+    });
+
+    it('T3: a query after the placeholder is unchanged and follows the id', async () => {
+      await useTemplate(`${TEMPLATE}?token=${URL_MARKER}`);
+      okResult(await reply());
+      expect(calls[0]!.url).toBe(`https://${REPLY_HOST}/reply/${WEBHOOK_ID}?token=${URL_MARKER}`);
+    });
+
+    it('T4: nothing in the body changes the URL, whatever its keys are named', async () => {
+      await useTemplate(TEMPLATE);
+      okResult(await reply());
+      const plain = calls[0]!.url;
+      okResult(await reply({ body: { in_reply_to: 'someone-else', [PLACEHOLDER]: 'x', inReplyTo: 'y' } }));
+      expect(calls[1]!.url).toBe(plain);
+      expect(plain).toBe(`https://${REPLY_HOST}/reply/${WEBHOOK_ID}`);
+    });
+
+    it('T5: a 128-character id using every allowed character class parses and decodes back to the id', async () => {
+      const classes = 'AZaz09._:-';
+      const id = `A${classes.repeat(13)}`.slice(0, 128);
+      expect(id).toHaveLength(128);
+      expect(isValidWebhookId(id)).toBe(true);
+      await useTemplate(TEMPLATE);
+      const deliveryId = await routeDelivery(id);
+      okResult(await reply({ deliveryId }));
+      const called = calls[0]!.url;
+      expect(URL.canParse(called)).toBe(true);
+      expect(decodeURIComponent(lastSegment(called))).toBe(id);
+    });
+
+    it('T6: a resend produces the same URL; an edit between attempts takes effect', async () => {
+      await useTemplate(TEMPLATE);
+      const first = okResult(await reply());
+      okResult(await reply({ replyId: first.replyId }));
+      expect(calls[1]!.url).toBe(calls[0]!.url);
+
+      await useTemplate(`https://other.example/v2/${PLACEHOLDER}/done`);
+      okResult(await reply({ replyId: first.replyId }));
+      expect(calls[2]!.url).toBe(`https://other.example/v2/${WEBHOOK_ID}/done`);
+    });
+
+    it('T7: an echo of the expanded URL or its query is redacted; the bare id echoed alone is returned', async () => {
+      await useTemplate(`${TEMPLATE}?token=${URL_MARKER}`);
+      const called = `https://${REPLY_HOST}/reply/${WEBHOOK_ID}?token=${URL_MARKER}`;
+      respond = async () => new Response(`posted ${called}; token ${URL_MARKER}; id ${WEBHOOK_ID}`, { status: 200 });
+      const result = okResult(await reply()) as Extract<ReplyResult, { outcome: 'responded' }>;
+      expect(result.responseBody).not.toContain(URL_MARKER);
+      expect(result.responseBody).not.toContain(REPLY_HOST);
+      expect(result.responseBody).toBe(`posted [redacted]; token [redacted]; id ${WEBHOOK_ID}`);
+    });
+
+    it('T9: expandReplyUrl leaves a placeholder-free URL identical, replaces every occurrence, and never throws for a valid id', () => {
+      const plain = `https://${REPLY_HOST}/r/{in_reply_to}?q=1`;
+      expect(expandReplyUrl(plain, 'Ev1')).toBe(plain);
+      expect(expandReplyUrl(`https://h/${PLACEHOLDER}`, 'Ev1')).toBe('https://h/Ev1');
+      expect(expandReplyUrl(`https://h/${PLACEHOLDER}/${PLACEHOLDER}`, 'a:b')).toBe('https://h/a%3Ab/a%3Ab');
+      for (const id of ['0', 'a', 'A.b', 'x:y:z', 'a-b_c', 'a'.repeat(128), `Z${':'.repeat(127)}`]) {
+        expect(isValidWebhookId(id)).toBe(true);
+        expect(() => expandReplyUrl(`https://h/${PLACEHOLDER}`, id)).not.toThrow();
+      }
+    });
+  });
+
 });

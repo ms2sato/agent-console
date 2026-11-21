@@ -194,6 +194,43 @@ describe('EndpointForm', () => {
       expect(replyInput().getAttribute('aria-describedby')).toBeNull();
     });
 
+    it('the helper text explains the placeholder, with the example address', () => {
+      setup();
+      expect(document.body.textContent).toContain(
+        'To address the message being answered, put {{in_reply_to}} as a path segment, for example https://example.com/reply/{{in_reply_to}}; the server replaces it with that message\'s id.',
+      );
+      expect(document.body.textContent).toContain('Leave empty to refuse replies. An https address; it is never shown to agents.');
+    });
+
+    it('a valid placeholder URL enables submit and is sent as typed', async () => {
+      const submit = setup();
+      fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'L' } });
+      fireEvent.change(screen.getByLabelText('Instruction text'), { target: { value: 'x' } });
+      fireEvent.change(replyInput(), { target: { value: 'https://sender.example.com/reply/{{in_reply_to}}?t=abc' } });
+      expect(submitButton().disabled).toBe(false);
+      await userEvent.setup().click(submitButton());
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect((submit.mock.calls[0]![0] as EndpointFormPayload).replyUrl).toBe('https://sender.example.com/reply/{{in_reply_to}}?t=abc');
+    });
+
+    it('a placeholder in the query shows the placement message without echoing the value, and disables submit', async () => {
+      const submit = setup();
+      fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'L' } });
+      fireEvent.change(screen.getByLabelText('Instruction text'), { target: { value: 'x' } });
+      fireEvent.change(replyInput(), { target: { value: 'https://sender.example.com/r?x={{in_reply_to}}SECRETMARK' } });
+      expect(screen.getByText('Reply URL may contain {{in_reply_to}} only once, as a whole path segment')).toBeTruthy();
+      expect(submitButton().disabled).toBe(true);
+      await userEvent.setup().click(submitButton());
+      expect(submit).not.toHaveBeenCalled();
+      expect(screen.getByText('Reply URL may contain {{in_reply_to}} only once, as a whole path segment').textContent).not.toContain('SECRETMARK');
+    });
+
+    it('an unknown placeholder shows the unknown-placeholder message', () => {
+      setup();
+      fireEvent.change(replyInput(), { target: { value: 'https://sender.example.com/{{delivery_id}}' } });
+      expect(screen.getByText('Reply URL contains an unknown placeholder')).toBeTruthy();
+    });
+
     it('an invalid value shows an inline error that does not echo it, and nothing is sent', async () => {
       const submit = setup({ mode: 'edit', initial: editInitial(null) });
       fireEvent.change(replyInput(), { target: { value: 'http://sender.example.com/?token=SECRETMARK' } });

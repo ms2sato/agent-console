@@ -77,6 +77,12 @@
  *             B   S2 replies to E1's delivery: "Unknown delivery", no connection, no new row.
  *             C   S1 replies to E2's delivery: "Replies are not enabled for this endpoint", no
  *                 connection, no new row.
+ *             A4  Endpoint E3's reply URL is the listener address with the `{{in_reply_to}}` placeholder
+ *                 as its last path segment and the query marker after it. S1 replies to E3's delivery:
+ *                 no-response/connection-failed, attempt 1, listener +1 connection (the real outbound
+ *                 call accepted the expanded URL); the placeholder literal and the query marker are
+ *                 absent from every tool result. The listener cannot see the request path, so the path
+ *                 itself is NOT observed here (the unit tests pin it) and no polarity is claimed.
  *           Not covered here: a completed TLS exchange, response handling over a real socket and the
  *           real timeout (those run in process with an injected fetch, a recorded proxy for the
  *           transport only).
@@ -876,6 +882,10 @@ async function main(): Promise<void> {
     };
     const e1 = await createEndpoint('Smoke reply enabled', { replyUrl });
     const e2 = await createEndpoint('Smoke reply disabled', {});
+    // E3: the reply URL carries the {{in_reply_to}} placeholder as its last path segment, query marker after it.
+    const e3 = await createEndpoint('Smoke reply placeholder', {
+      replyUrl: `https://127.0.0.1:${listenerPort}/reply/{{in_reply_to}}?token=${urlMarker}`,
+    });
 
     // S1 = L (a target of both deliveries). S2 = a fresh session that is a target of neither.
     const sessionS2 = await createSession(baseUrl, { type: 'quick', locationPath: repoDir, agentId: agent.id });
@@ -898,6 +908,7 @@ async function main(): Promise<void> {
     const stubBeforeReply = stubRequests.length;
     const deliveryE1 = await deliverTo(e1, `${WEBHOOK_ID}-reply-on`);
     const deliveryE2 = await deliverTo(e2, `${WEBHOOK_ID}-reply-off`);
+    const deliveryE3 = await deliverTo(e3, `${WEBHOOK_ID}-reply-placeholder`);
 
     let toolCallId = 100;
     const callTool = async (name: string, args: Record<string, unknown>): Promise<{ isError: boolean; text: string }> => {
@@ -976,16 +987,35 @@ async function main(): Promise<void> {
     expect(listenerConnections === connectionsBeforeC, '(6) C: the listener saw no new connection', `before=${connectionsBeforeC} after=${listenerConnections}`);
     expect(countReplyRows() === rowsBeforeC, '(6) C: no reply row was created', `rows=${countReplyRows()} before=${rowsBeforeC}`);
 
+    // A4: an endpoint whose reply URL carries the placeholder. The real outbound call must accept the expanded
+    // URL (one new connection, then the handshake fails). The listener cannot see the request path, so what the
+    // path carried is proven in process by the unit tests, not here (no polarity is claimed for this arm).
+    const connectionsBeforeA4 = listenerConnections;
+    const a4 = await callTool('reply_to_inbound_webhook', { sessionId: sessionL.id, deliveryId: deliveryE3, body: REPLY_BODY });
+    toolTexts.push(a4.text);
+    const a4Result = (a4.isError ? {} : JSON.parse(a4.text || '{}')) as ReplyResult;
+    expect(
+      !a4.isError && a4Result.outcome === 'no-response' && a4Result.reason === 'connection-failed' && a4Result.attempt === 1,
+      '(6) A4: a reply to the placeholder endpoint\'s delivery returns no-response / connection-failed, attempt 1',
+      a4.text.slice(0, 300),
+    );
+    expect(listenerConnections === connectionsBeforeA4 + 1, '(6) A4: the listener saw exactly one new connection (the expanded URL was accepted by the real outbound call)', `before=${connectionsBeforeA4} after=${listenerConnections}`);
+    console.log(`    A4 tool result (truncated): ${a4.text.slice(0, 200)}`);
+    expect(
+      toolTexts.every((t) => !t.includes('{{in_reply_to}}') && !t.includes(urlMarker)),
+      '(6) A4: the placeholder literal and the query marker appear in no tool result',
+    );
+
     // A3: nothing secret leaves, over A1 and A2 (and the refusals). Control: the captured output is non-empty
     // and carries the reply's own ids, so the scan below is looking at a stream that demonstrably sees them.
     const idsLogged = await waitFor(() => stdoutBuf.includes(replyId) && stdoutBuf.includes(deliveryE1), 15_000, "the child's stdout to carry the reply's ids");
     expect(idsLogged && stdoutBuf.length > 0, '(6) A3: POSITIVE CONTROL: the child\'s captured stdout carries the reply id and the delivery id', stdoutBuf.slice(-300));
     // The scan itself runs in `finally`, after the child exited and both output readers drained, so output
     // that arrives after this point (a resend's late log chunk) is inside what is scanned.
-    finalSecrecyScan = { secrets: [e1.secret, e2.secret, urlMarker, listenerHostPort], toolTexts };
+    finalSecrecyScan = { secrets: [e1.secret, e2.secret, e3.secret, urlMarker, listenerHostPort], toolTexts };
 
     // Let E's turns for these deliveries finish before teardown deletes its session (not an assertion).
-    await waitFor(() => stubRequests.length >= stubBeforeReply + 2, 30_000, "E's turns for the two reply-arm deliveries");
+    await waitFor(() => stubRequests.length >= stubBeforeReply + 3, 30_000, "E's turns for the three reply-arm deliveries");
     await Bun.sleep(1_000);
     void stdoutBuf;
     void stderrBuf;

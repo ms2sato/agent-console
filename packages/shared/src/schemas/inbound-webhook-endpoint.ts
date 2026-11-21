@@ -2,6 +2,7 @@ import * as v from 'valibot';
 import {
   INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH,
   INBOUND_WEBHOOK_LABEL_MAX_LENGTH,
+  INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER as IN_REPLY_TO_PLACEHOLDER,
   INBOUND_WEBHOOK_REPLY_URL_MAX_LENGTH,
 } from '../types/inbound-webhook-endpoint.js';
 
@@ -69,10 +70,21 @@ function parseUrl(value: string): URL | null {
   return URL.canParse(value) ? new URL(value) : null;
 }
 
+/** True when the placeholder is absent, or occurs once as a whole path segment (not in the host or the query). */
+function placeholderPlacementIsValid(value: string): boolean {
+  if (!value.includes(IN_REPLY_TO_PLACEHOLDER)) return true;
+  if (value.split(IN_REPLY_TO_PLACEHOLDER).length !== 2) return false;
+  const match = /^https:\/\/([^/?#]*)([^?#]*)/i.exec(value);
+  // A value that does not start like an https URL is reported by the checks above.
+  if (match === null) return true;
+  return match[2]!.split('/').includes(IN_REPLY_TO_PLACEHOLDER);
+}
+
 /**
  * The address a signed reply is posted to, set by an operator: 1 to 2048 characters, no
  * leading or trailing whitespace (the value is never trimmed), no control character, an `https:` URL
- * with no credentials and no fragment. Query strings, ports and any hostname are accepted.
+ * with no credentials and no fragment. Query strings, ports and any hostname are accepted. The path may
+ * carry `{{in_reply_to}}` once as a whole segment; every other `{{` or `}}` is refused.
  *
  * Every step carries a custom message that names only the rule: the reply URL may carry a token in
  * its query, valibot's default messages embed the received value, and the API error handler logs
@@ -105,6 +117,18 @@ export const InboundWebhookReplyUrlSchema = v.pipe(
   }, 'Reply URL must not contain credentials'),
   // A raw `#` is the fragment delimiter, including an empty one that `URL#hash` reads as ''.
   v.check((value) => !value.includes('#'), 'Reply URL must not contain a fragment'),
+  // The allowed placeholder is replaced by a space so that removing it can never join two brace characters.
+  v.check(
+    (value) => {
+      const rest = value.split(IN_REPLY_TO_PLACEHOLDER).join(' ');
+      return !rest.includes('{{') && !rest.includes('}}');
+    },
+    'Reply URL contains an unknown placeholder',
+  ),
+  v.check(
+    placeholderPlacementIsValid,
+    `Reply URL may contain ${IN_REPLY_TO_PLACEHOLDER} only once, as a whole path segment`,
+  ),
 );
 
 export const CreateInboundWebhookEndpointRequestSchema = v.strictObject({

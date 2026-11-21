@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH,
   INBOUND_WEBHOOK_LABEL_MAX_LENGTH,
+  INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER,
 } from '@agent-console/shared';
 import {
   validateEnteredSecret,
@@ -134,7 +135,8 @@ export function EndpointForm({ mode, initial, isPending, onSubmit }: EndpointFor
           />
         </label>
         <span className="text-gray-500">
-          Where a signed reply to a delivery is sent. Leave empty to refuse replies. An https address; it is never shown to agents.
+          Where a signed reply to a delivery is sent. Leave empty to refuse replies. An https address; it is never shown to agents.{' '}
+          {`To address the message being answered, put ${INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER} as a path segment, for example https://example.com/reply/${INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER}; the server replaces it with that message's id.`}
         </span>
         {replyUrlError && (
           <span id={REPLY_URL_ERROR_ID} className="text-red-400">
