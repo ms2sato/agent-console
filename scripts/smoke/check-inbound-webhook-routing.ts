@@ -57,6 +57,30 @@
  *           pin is hardcoded and forbids a fake host, so it is covered in process by an injected
  *           fetch (a recorded proxy for the real Firebase host).
  *
+ *   (6) SIGNED REPLY (last again): the `reply_to_inbound_webhook` MCP tool through the real `/mcp`
+ *           endpoint. Endpoint E1 is created through the real REST route WITH a reply URL that points
+ *           at a plain TCP listener (no TLS, no certificate) hosted by this script; endpoint E2 has no
+ *           reply URL. One signed delivery each, both routed to L (S1); S2 is a fresh session that is a
+ *           target of neither. The listener counts connections, so a request made and a request not made
+ *           are both observed on the wire (it cannot see headers or the signature; the signed request
+ *           content is verified in process by the unit tests). The server's real outbound call connects,
+ *           the TLS handshake fails, and the tool answers `no-response` / `connection-failed`.
+ *           POSITIVE CONTROL: each delivery's notification in L carries `delivery_id=<delivery id>`.
+ *             A1  S1 replies to E1's delivery: no-response/connection-failed, attempt 1, a reply id,
+ *                 listener +1 connection, a reply row with attempt_count 1 and last_status NULL (read
+ *                 from the child's SQLite file with a read-only handle). The control for B and C.
+ *             A2  S1 resends with that reply id and the same body: same id, attempt 2, listener +1,
+ *                 attempt_count 2, no new row.
+ *             A3  Over A1/A2 and the refusals: no tool result and none of the child's captured output
+ *                 carries either secret, the reply URL's query marker or the listener's address;
+ *                 control: that output does carry the reply id and the delivery id.
+ *             B   S2 replies to E1's delivery: "Unknown delivery", no connection, no new row.
+ *             C   S1 replies to E2's delivery: "Replies are not enabled for this endpoint", no
+ *                 connection, no new row.
+ *           Not covered here: a completed TLS exchange, response handling over a real socket and the
+ *           real timeout (those run in process with an injected fetch, a recorded proxy for the
+ *           transport only).
+ *
  * The request signature is computed HERE from the Standard Webhooks specification (HMAC-SHA256
  * over `{id}.{timestamp}.{body}`, keyed by the base64-decoded part of the secret after `whsec_`),
  * never by importing the production verifier, so a production signer or verifier that drifted
@@ -272,6 +296,7 @@ async function main(): Promise<void> {
   let stdoutBuf = '';
   let stderrBuf = '';
   let stubServer: ReturnType<typeof Bun.serve> | undefined;
+  let replyListener: Bun.TCPSocketListener<undefined> | undefined;
   const sessionsToDelete: string[] = [];
   let printStubStateOnFailure: (() => void) | undefined;
 
@@ -535,7 +560,7 @@ async function main(): Promise<void> {
     expect(accepted.status === 200 && acceptedBody?.ok === true && acceptedBody.duplicate !== true, 'DELIVERY: the signed POST is accepted (200, not a duplicate)', `status=${accepted.status} body=${JSON.stringify(acceptedBody)}`);
     expect(countDeliveries() === 1 && countJobs() === 1, 'DELIVERY: exactly one deliveries row and one inbound-webhook:process job were created', `deliveries=${countDeliveries()} jobs=${countJobs()}`);
 
-    const tagFoundInL = await waitFor(() => readSafe(outputPathL).slice(beforeL.length).includes(TAG), 45_000, "L's output file to contain the external:message tag");
+    const tagFoundInL = await waitFor(() => { const since = readSafe(outputPathL).slice(beforeL.length); return since.includes(TAG) && since.includes('intent=triage'); }, 45_000, "L's output file to contain the external:message tag");
     const newL = readSafe(outputPathL).slice(beforeL.length);
     expect(tagFoundInL, `(1) L's real worker output file gained ${TAG}`, newL.slice(-600));
 
@@ -546,6 +571,7 @@ async function main(): Promise<void> {
       "(1) L's delivery files live under messages/<session>/<worker>/inbound-webhook/<deliveryId>/",
       pathsL.dir,
     );
+    // The terminal can break a long notification line at an arbitrary column, so field text is matched with line breaks removed.
     for (const [needle, what] of [
       ['type=external:message', 'type'],
       ['source=webhook', 'source'],
@@ -556,7 +582,7 @@ async function main(): Promise<void> {
       [`body_path=${pathsL.bodyPath}`, 'the body path'],
       ['intent=triage', 'intent'],
     ] as const) {
-      expect(newL.includes(needle), `(1) L's notification carries ${what}`, needle);
+      expect(newL.replace(/\r?\n/g, '').includes(needle), `(1) L's notification carries ${what}`, needle);
     }
     expect(
       !newL.includes('SECOND-LINE-MARKER') && !newL.includes(TOKEN_LOOKING) && !FILE_HOST_PATTERN.test(newL) && !newL.includes(RAW_EVENT_TEXT) && !newL.includes('slack_message') && !newL.includes(BLOCK_MARKER),
@@ -693,7 +719,11 @@ async function main(): Promise<void> {
     const refusedRes = await post({ webhookId: refusedWebhookId, rawBody: JSON.stringify(REFUSED_BODY) });
     expect(refusedRes.status === 200, '(5) the signed POST with a refused file host is accepted (200)', `status=${refusedRes.status}`);
     const tagFoundL2 = await waitFor(
-      () => tagCount(readSafe(outputPathL).slice(beforeL2.length)) >= 1,
+      () => {
+        // The whole notification line (it ends with the intent field), not just its tag: the line is written in chunks.
+        const since = readSafe(outputPathL).slice(beforeL2.length);
+        return tagCount(since) >= 1 && since.includes('intent=triage');
+      },
       45_000,
       "L's output file to contain the tag of the second delivery",
     );
@@ -716,8 +746,8 @@ async function main(): Promise<void> {
       newL2.slice(-600),
     );
     expect(
-      newL2.includes(`body_path=${pathsL2.bodyPath} attachments_fetched=0 attachments_skipped=1 intent=triage`),
-      "(5) the count fields sit after body_path and before intent",
+      newL2.replace(/\r?\n/g, '').includes(`body_path=${pathsL2.bodyPath} delivery_id=${refusedDeliveryId} attachments_fetched=0 attachments_skipped=1 intent=triage`),
+      "(5) the count fields sit after body_path and delivery_id and before intent",
       newL2.slice(-600),
     );
     // (iii) nothing was written as an attachment.
@@ -764,6 +794,159 @@ async function main(): Promise<void> {
     // Let E's turn for this event finish before teardown deletes its session (not an assertion).
     await waitFor(() => stubRequests.length > stubBefore, 30_000, "E's turn for the second delivery");
     await Bun.sleep(1_000);
+
+    // ===================================================================
+    // (6) SIGNED REPLY: the tool, its ownership and reply-URL refusals, and the real outbound attempt up to
+    // the TLS handshake. Last, so every earlier baseline is untouched. No certificate is involved: the reply
+    // URL points at a plain TCP listener, so the server's real outbound call connects, the handshake fails and
+    // the tool reports `connection-failed`. The listener counts connections, so a request made and a request
+    // not made are both observed on the wire; it cannot see headers or the signature.
+    // ===================================================================
+    console.log('\n==> SIGNED REPLY: reply tool arms against a plain TCP listener (no TLS)');
+    let listenerConnections = 0;
+    const listener = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: {
+        open(socket) {
+          listenerConnections++;
+          socket.end();
+        },
+        data() {},
+      },
+    });
+    replyListener = listener;
+    const listenerPort = listener.port;
+    const urlMarker = `REPLYURLMARKER${process.pid}`;
+    const replyUrl = `https://127.0.0.1:${listenerPort}/replies?token=${urlMarker}`;
+    const listenerHostPort = `127.0.0.1:${listenerPort}`;
+
+    const createEndpoint = async (label: string, extra: Record<string, unknown>): Promise<{ id: string; secret: string }> => {
+      const res = await fetch(`${baseUrl}/api/repositories/${repository.id}/inbound-webhook-endpoints`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, instructionText: INSTRUCTION, ...extra }),
+      });
+      if (res.status !== 201) bail(`creating endpoint '${label}' failed (status ${res.status})`);
+      const json = (await res.json()) as { endpoint?: { id: string }; secret?: string };
+      if (!json.endpoint?.id || !json.secret) bail(`endpoint '${label}' creation returned no id or secret`);
+      return { id: json.endpoint.id, secret: json.secret };
+    };
+    const e1 = await createEndpoint('Smoke reply enabled', { replyUrl });
+    const e2 = await createEndpoint('Smoke reply disabled', {});
+
+    // S1 = L (a target of both deliveries). S2 = a fresh session that is a target of neither.
+    const sessionS2 = await createSession(baseUrl, { type: 'quick', locationPath: repoDir, agentId: agent.id });
+    sessionsToDelete.unshift(sessionS2.id);
+
+    const REPLY_DELIVERY_BODY = JSON.stringify({ schema_version: 1, message: 'Reply arm delivery', slack_channel: 'C123', slack_ts: '1700000002.000100' });
+    const deliverTo = async (endpoint: { id: string; secret: string }, webhookId: string): Promise<string> => {
+      const dId = `inbound-webhook:${endpoint.id}:${webhookId}`;
+      const beforeDelivery = readSafe(outputPathL);
+      const res = await post({ endpoint: endpoint.id, secretToSign: endpoint.secret, webhookId, rawBody: REPLY_DELIVERY_BODY });
+      expect(res.status === 200, `(6) the signed delivery ${webhookId} is accepted (200)`, `status=${res.status}`);
+      const noted = await waitFor(
+        () => readSafe(outputPathL).slice(beforeDelivery.length).replace(/\r?\n/g, '').includes(`delivery_id=${dId}`),
+        45_000,
+        `L's output to carry delivery_id=${dId}`,
+      );
+      expect(noted, `(6) POSITIVE CONTROL: L's notification for ${webhookId} carries delivery_id=<the delivery id>`, readSafe(outputPathL).slice(beforeDelivery.length).slice(-500));
+      return dId;
+    };
+    const stubBeforeReply = stubRequests.length;
+    const deliveryE1 = await deliverTo(e1, `${WEBHOOK_ID}-reply-on`);
+    const deliveryE2 = await deliverTo(e2, `${WEBHOOK_ID}-reply-off`);
+
+    let toolCallId = 100;
+    const callTool = async (name: string, args: Record<string, unknown>): Promise<{ isError: boolean; text: string }> => {
+      const res = await fetch(`${baseUrl}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Mcp-Session-Id': mcpSessionId },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name, arguments: args }, id: toolCallId++ }),
+      });
+      const json = (await res.json()) as { result?: { content?: { text?: string }[]; isError?: boolean } };
+      return { isError: json.result?.isError === true, text: json.result?.content?.[0]?.text ?? '' };
+    };
+    interface ReplyResult { replyId?: string; attempt?: number; outcome?: string; reason?: string }
+    const REPLY_BODY = { text: 'Reply arm answer', n: 1 };
+    const replyRow = (id: string) =>
+      queryOne<{ attempt_count: number; last_status: number | null }>('SELECT attempt_count, last_status FROM inbound_webhook_replies WHERE id = ?', id);
+    const countReplyRows = (): number => countOf('SELECT COUNT(*) as c FROM inbound_webhook_replies');
+    const toolTexts: string[] = [];
+    /** A tool error arrives as `{ "error": "<message>" }` text. */
+    const errorMessageOf = (r: { isError: boolean; text: string }): string | null => {
+      if (!r.isError) return null;
+      try {
+        return (JSON.parse(r.text) as { error?: string }).error ?? null;
+      } catch {
+        return r.text;
+      }
+    };
+
+    // A1: the outbound attempt (the control for B and C).
+    const connectionsBeforeA1 = listenerConnections;
+    const rowsBeforeA1 = countReplyRows();
+    const a1 = await callTool('reply_to_inbound_webhook', { sessionId: sessionL.id, deliveryId: deliveryE1, body: REPLY_BODY });
+    toolTexts.push(a1.text);
+    const a1Result = (a1.isError ? {} : JSON.parse(a1.text || '{}')) as ReplyResult;
+    const replyId = a1Result.replyId ?? '';
+    expect(
+      !a1.isError && a1Result.outcome === 'no-response' && a1Result.reason === 'connection-failed' && a1Result.attempt === 1 && /^reply_[0-9a-f-]{36}$/.test(replyId),
+      '(6) A1: S1 replying to E1\'s delivery returns no-response / connection-failed, attempt 1, a reply_<uuid> id',
+      a1.text.slice(0, 300),
+    );
+    expect(listenerConnections === connectionsBeforeA1 + 1, '(6) A1: the listener saw exactly one new connection (the real outbound attempt)', `before=${connectionsBeforeA1} after=${listenerConnections}`);
+    const rowA1 = replyRow(replyId);
+    expect(
+      rowA1?.attempt_count === 1 && rowA1.last_status === null && countReplyRows() === rowsBeforeA1 + 1,
+      '(6) A1: one new reply row with attempt_count 1 and last_status NULL',
+      JSON.stringify(rowA1),
+    );
+
+    // A2: a resend with the returned id and the same body.
+    const connectionsBeforeA2 = listenerConnections;
+    const a2 = await callTool('reply_to_inbound_webhook', { sessionId: sessionL.id, deliveryId: deliveryE1, body: REPLY_BODY, replyId });
+    toolTexts.push(a2.text);
+    const a2Result = (a2.isError ? {} : JSON.parse(a2.text || '{}')) as ReplyResult;
+    expect(
+      !a2.isError && a2Result.replyId === replyId && a2Result.attempt === 2 && a2Result.reason === 'connection-failed',
+      '(6) A2: the resend keeps the same reply id and is attempt 2',
+      a2.text.slice(0, 300),
+    );
+    expect(listenerConnections === connectionsBeforeA2 + 1, '(6) A2: the listener saw exactly one more connection', `before=${connectionsBeforeA2} after=${listenerConnections}`);
+    expect(replyRow(replyId)?.attempt_count === 2 && countReplyRows() === rowsBeforeA1 + 1, '(6) A2: the same row now has attempt_count 2 and no row was added', JSON.stringify(replyRow(replyId)));
+
+    // B: a session that was not a target of the delivery. Read after the call returns, next to A1/A2 above.
+    const connectionsBeforeB = listenerConnections;
+    const rowsBeforeB = countReplyRows();
+    const b = await callTool('reply_to_inbound_webhook', { sessionId: sessionS2.id, deliveryId: deliveryE1, body: REPLY_BODY });
+    toolTexts.push(b.text);
+    expect(errorMessageOf(b) === 'Unknown delivery', '(6) B: S2 (not a target) replying to E1\'s delivery is the error "Unknown delivery"', b.text.slice(0, 300));
+    expect(listenerConnections === connectionsBeforeB, '(6) B: the listener saw no new connection', `before=${connectionsBeforeB} after=${listenerConnections}`);
+    expect(countReplyRows() === rowsBeforeB, '(6) B: no reply row was created', `rows=${countReplyRows()} before=${rowsBeforeB}`);
+
+    // C: an endpoint without a reply URL.
+    const connectionsBeforeC = listenerConnections;
+    const rowsBeforeC = countReplyRows();
+    const c = await callTool('reply_to_inbound_webhook', { sessionId: sessionL.id, deliveryId: deliveryE2, body: REPLY_BODY });
+    toolTexts.push(c.text);
+    expect(errorMessageOf(c) === 'Replies are not enabled for this endpoint', '(6) C: S1 replying to E2\'s delivery is the error "Replies are not enabled for this endpoint"', c.text.slice(0, 300));
+    expect(listenerConnections === connectionsBeforeC, '(6) C: the listener saw no new connection', `before=${connectionsBeforeC} after=${listenerConnections}`);
+    expect(countReplyRows() === rowsBeforeC, '(6) C: no reply row was created', `rows=${countReplyRows()} before=${rowsBeforeC}`);
+
+    // A3: nothing secret leaves, over A1 and A2 (and the refusals). Control: the captured output is non-empty
+    // and carries the reply's own ids, so the scan below is looking at a stream that demonstrably sees them.
+    const idsLogged = await waitFor(() => stdoutBuf.includes(replyId) && stdoutBuf.includes(deliveryE1), 15_000, "the child's stdout to carry the reply's ids");
+    expect(idsLogged && stdoutBuf.length > 0, '(6) A3: POSITIVE CONTROL: the child\'s captured stdout carries the reply id and the delivery id', stdoutBuf.slice(-300));
+    const everything = [stdoutBuf, stderrBuf, ...toolTexts].join('\n');
+    expect(
+      !everything.includes(e1.secret) && !everything.includes(e2.secret) && !everything.includes(urlMarker) && !everything.includes(listenerHostPort),
+      '(6) A3: neither endpoint secret, the reply URL query marker nor the listener address appears in any tool result or captured server output',
+    );
+
+    // Let E's turns for these deliveries finish before teardown deletes its session (not an assertion).
+    await waitFor(() => stubRequests.length >= stubBeforeReply + 2, 30_000, "E's turns for the two reply-arm deliveries");
+    await Bun.sleep(1_000);
     void stdoutBuf;
     void stderrBuf;
   } finally {
@@ -789,6 +972,7 @@ async function main(): Promise<void> {
       await proc.exited;
     }
     if (stubServer) stubServer.stop(true);
+    if (replyListener) replyListener.stop(true);
     try {
       rmSync(scratchRoot, { recursive: true, force: true });
       console.log(`\n==> cleaned up scratch root: ${scratchRoot}`);
