@@ -626,7 +626,7 @@ async function main(): Promise<void> {
       '(1) body.md carries the poster `- App ID:` line after `- Timestamp:` and no `Bot ID` line (the malformed bot_id is omitted)',
       bodyL.slice(0, 800),
     );
-    expect(!newL.includes(POSTER_APP_ID), "(1) the poster app id value is absent from L's output file (it is in body.md only)", newL.slice(-600));
+    expect(!newL.replace(/\r?\n/g, '').includes(POSTER_APP_ID), "(1) the poster app id value is absent from L's output file (it is in body.md only)", newL.slice(-600));
 
     // (2) embedded: read only after the turn settles.
     interface NdjsonLine { type?: string; state?: string; text?: string; notification?: { kind?: string } }
