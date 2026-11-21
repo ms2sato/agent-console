@@ -17,7 +17,7 @@ import { createLogger } from '../../lib/logger.js';
 import type { InboundWebhookEndpointRepository } from '../../repositories/webhook-endpoint-repository.js';
 import { PermanentHandlerError } from '../inbound/job-handler.js';
 import { fetchAttachments, type AttachmentFetch, type AttachmentFetchLimits, type FetchedAttachment } from './attachments.js';
-import { projectSlackContent, sanitizeMultiline, toSingleLine } from './slack-content.js';
+import { projectSlackContent, readPosterIdentity, sanitizeMultiline, toSingleLine, type PosterIdentity } from './slack-content.js';
 
 const logger = createLogger('inbound-webhook-receive');
 
@@ -307,7 +307,8 @@ export interface DeliveryEndpoint {
 export interface DeliveryContent {
   /**
    * Sanitized projection of the untrusted sender message: its text, the Slack content projection
-   * (blocks and attachments, text only), permalink, channel, timestamp and fetched attachment names.
+   * (blocks and attachments, text only), permalink, channel, timestamp, the poster's `app_id` /
+   * `bot_id` when they match the id shape, and fetched attachment names.
    */
   bodyMarkdown: string;
   /** The operator's `instruction_text` as stored at the process-time re-read, byte for byte. */
@@ -349,8 +350,9 @@ function toSummary(message: string | undefined): string {
  * Projection of `message`, `slack_permalink`, `slack_channel` and `slack_ts`, a text-only
  * projection of `slack_message.blocks` / `slack_message.attachments` (the `## Content` section,
  * between `## Message` and `## Details`; see `slack-content.ts`), plus the LOCAL names of the
- * fetched attachments. The `slack_message` object itself, every other key of it, and the
- * `slack_files` entries never enter it: the first is the raw event, the second carries short-lived
+ * fetched attachments, and the poster's `slack_message.app_id` / `.bot_id` when each matches the
+ * id shape (the only keys of `slack_message` read besides `blocks` and `attachments`). The
+ * `slack_message` object itself, every other key of it, and the `slack_files` entries never enter it: the first is the raw event, the second carries short-lived
  * download-token URLs, and a listed attachment is only ever a file name under `attachments/` (the
  * sanitized name, not the declared name, mimetype or size). With no section, the output is
  * identical to a message without `slack_message`.
@@ -358,6 +360,7 @@ function toSummary(message: string | undefined): string {
 function buildBodyMarkdown(
   body: InboundWebhookBody,
   section: string[] | null,
+  poster: PosterIdentity,
   attachments: { names: string[]; skipped: number },
 ): string {
   const lines = ['# Inbound webhook message', '', '## Message', '', sanitizeMultiline(body.message ?? '')];
@@ -366,6 +369,8 @@ function buildBodyMarkdown(
   if (body.slack_permalink !== undefined) details.push(`- Permalink: ${toSingleLine(body.slack_permalink)}`);
   if (body.slack_channel !== undefined) details.push(`- Channel: ${toSingleLine(body.slack_channel)}`);
   if (body.slack_ts !== undefined) details.push(`- Timestamp: ${toSingleLine(body.slack_ts)}`);
+  if (poster.appId.kind === 'shown') details.push(`- App ID: ${poster.appId.value}`);
+  if (poster.botId.kind === 'shown') details.push(`- Bot ID: ${poster.botId.value}`);
   if (details.length > 0) lines.push('', '## Details', '', ...details);
   if (attachments.names.length > 0 || attachments.skipped > 0) {
     lines.push('', '## Attachments', '');
@@ -397,13 +402,16 @@ export async function prepareDelivery(
     ? { fetched: [], skipped: 0 }
     : await fetchAttachments(files, { fetch: deps.attachmentFetch, limits: deps.attachmentLimits });
   const projection = projectSlackContent(body.slack_message, body.slack_message_truncated === true);
+  const poster = readPosterIdentity(body.slack_message);
   if (body.slack_message !== undefined) {
-    // Counts only, never a payload string.
+    // Counts and kinds only, never a payload string.
     logger.info(
       {
         deliveryId: payload.jobId,
         endpointId: endpoint.id,
         ...projection.counts,
+        appId: poster.appId.kind,
+        botId: poster.botId.kind,
         senderTruncated: body.slack_message_truncated === true,
       },
       'Slack content projected',
@@ -413,7 +421,7 @@ export async function prepareDelivery(
     ? toSummary(body.message)
     : toSummary(projection.firstLine ?? undefined);
   return {
-    bodyMarkdown: buildBodyMarkdown(body, projection.section, { names: fetched.map((file) => file.name), skipped }),
+    bodyMarkdown: buildBodyMarkdown(body, projection.section, poster, { names: fetched.map((file) => file.name), skipped }),
     instructionMarkdown: endpoint.instructionText,
     summary,
     url: body.slack_permalink ?? null,

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   projectSlackContent,
+  readPosterIdentity,
   sanitizeMultiline,
   toSingleLine,
   SLACK_CONTENT_MAX_BYTES,
@@ -368,5 +369,50 @@ describe('sanitizers', () => {
     expect(sanitizeMultiline('a\r\nb\tc\u0000d')).toBe('a\nb\tcd');
     expect(sanitizeMultiline('a\u000bb\u000cc')).toBe('abc');
     expect(sanitizeMultiline('a\u000bb\u000cc\rd\ne\tf')).toBe('abcd\ne\tf');
+  });
+});
+
+describe('readPosterIdentity', () => {
+  const ABSENT = { kind: 'absent' } as const;
+  const REJECTED = { kind: 'rejected' } as const;
+  const shown = (value: string) => ({ kind: 'shown', value }) as const;
+
+  it('(T1) reports both ids absent for an undefined message and for an empty one', () => {
+    expect(readPosterIdentity(undefined)).toEqual({ appId: ABSENT, botId: ABSENT });
+    expect(readPosterIdentity({})).toEqual({ appId: ABSENT, botId: ABSENT });
+  });
+
+  it('(T2) shows a well-formed app id and bot id under their own keys', () => {
+    expect(readPosterIdentity({ app_id: 'A0123ABCD', bot_id: 'B0123ABCD' })).toEqual({
+      appId: shown('A0123ABCD'),
+      botId: shown('B0123ABCD'),
+    });
+  });
+
+  it('(T3) accepts 1 and 32 characters and rejects 33 and the empty string', () => {
+    expect(readPosterIdentity({ app_id: 'A' }).appId).toEqual(shown('A'));
+    expect(readPosterIdentity({ app_id: 'A'.repeat(32) }).appId).toEqual(shown('A'.repeat(32)));
+    expect(readPosterIdentity({ app_id: 'A'.repeat(33) }).appId).toEqual(REJECTED);
+    expect(readPosterIdentity({ app_id: '' }).appId).toEqual(REJECTED);
+    expect(readPosterIdentity({ bot_id: 'B'.repeat(33) }).botId).toEqual(REJECTED);
+  });
+
+  it('(T4) rejects every value that does not match as received', () => {
+    const bad: unknown[] = ['a0123', ' A1', 'A1 ', 'A-1', 'A1\n- Channel: X', 123, null, {}, ['A1']];
+    for (const value of bad) {
+      expect(readPosterIdentity({ app_id: value }).appId).toEqual(REJECTED);
+      expect(readPosterIdentity({ bot_id: value }).botId).toEqual(REJECTED);
+    }
+  });
+
+  it('(T5) rejects one id without affecting the other', () => {
+    expect(readPosterIdentity({ app_id: 'A0123ABCD', bot_id: 'b-1' })).toEqual({ appId: shown('A0123ABCD'), botId: REJECTED });
+    expect(readPosterIdentity({ app_id: 'bad id', bot_id: 'B0123ABCD' })).toEqual({ appId: REJECTED, botId: shown('B0123ABCD') });
+  });
+
+  it('reads the top level only and never throws on a throwing getter', () => {
+    expect(readPosterIdentity({ bot_profile: { app_id: 'APROFILE1' } })).toEqual({ appId: ABSENT, botId: ABSENT });
+    const hostile = { get app_id(): string { throw new Error('boom'); } };
+    expect(readPosterIdentity(hostile).appId).toEqual(REJECTED);
   });
 });
