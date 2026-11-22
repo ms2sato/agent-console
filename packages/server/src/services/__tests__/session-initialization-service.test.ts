@@ -48,6 +48,44 @@ const noopSweepOrphanProcessesImpl: typeof sweepOrphanProcesses = async () => ({
 
 const TEST_SERVER_PID = 99999;
 
+/**
+ * Raw-insert a session whose single worker fails `hydrate()` with
+ * `DataIntegrityError` (an agent worker missing `agent_id`) -- `findAll()`
+ * silently skips it ("unreadable"), while a raw `db.selectFrom('sessions')`
+ * query still sees it directly. Same shapes as
+ * `sqlite-session-repository.test.ts`'s "data integrity handling" describe
+ * block. Used by the Issue #2306 tests below.
+ */
+async function seedUnreadableSession(db: Kysely<Database>, sessionId: string): Promise<void> {
+  await db
+    .insertInto('sessions')
+    .values({
+      id: sessionId,
+      type: 'quick',
+      location_path: '/unreadable/path',
+      server_pid: null,
+      created_at: new Date().toISOString(),
+      initial_prompt: null,
+      title: null,
+      repository_id: null,
+      worktree_id: null,
+    })
+    .execute();
+  await db
+    .insertInto('workers')
+    .values({
+      id: `${sessionId}-worker`,
+      session_id: sessionId,
+      type: 'agent',
+      name: 'Agent',
+      created_at: new Date().toISOString(),
+      pid: null,
+      agent_id: null, // Missing required field for agent -- hydrate() throws DataIntegrityError.
+      base_commit: null,
+    })
+    .execute();
+}
+
 function createMockSessionRepository(sessions: PersistedSession[]): SessionRepository {
   let storedSessions = [...sessions];
   return {
@@ -1287,9 +1325,11 @@ describe('SessionInitializationService integration (real DB → mapper → servi
     // Seed via the real repository (upsert path, unaffected by this bug)
     // plus raw inserts for the dependents -- same shapes as the
     // dependent-row-preservation tests in
-    // sqlite-session-repository.test.ts case (a). initialize() calls
-    // sessionRepository.saveAll() internally; before the fix, that call
-    // cascade-deleted both rows below.
+    // sqlite-session-repository.test.ts case (a). Before Issue #2306's fix,
+    // initialize() called sessionRepository.saveAll() internally, whose
+    // DELETE-all-not-in-set contract cascade-deleted both rows below. It now
+    // calls persistSessionsToSave(), which upserts via save() and never
+    // deletes.
     const session = buildPersistedQuickSession({ id: 'sess-1762', locationPath: '/some/path' });
     await sessionRepository.save(session);
 
@@ -1321,10 +1361,12 @@ describe('SessionInitializationService integration (real DB → mapper → servi
       })
       .execute();
 
-    // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
-    // 2026-09-20) -- initialize() calls saveAll() at the end of
-    // initializeSessions(), which used to unconditionally `DELETE FROM
-    // sessions` before re-inserting, cascade-deleting both rows below.
+    // Polarity: fails against the pre-fix saveAll() call (measured
+    // 2026-09-20) -- initialize() used to call saveAll() at the end of
+    // initializeSessions(), whose NOT-IN-the-saved-set delete cascaded
+    // through both rows below (sess-1762 is in the saved set here, so this
+    // is the NOT IN branch of saveAll's delete, not the whole-table delete --
+    // see Issue #2306's own repro for that branch instead).
     const { service } = createServiceWithRealRepo();
     await service.initialize();
 
@@ -1339,6 +1381,124 @@ describe('SessionInitializationService integration (real DB → mapper → servi
     const notification = await db
       .selectFrom('inbound_event_notifications')
       .where('id', '=', 'notif-1762')
+      .selectAll()
+      .executeTakeFirst();
+    expect(notification?.status).toBe('pending');
+  });
+
+  // ============================================================
+  // Issue #2306: findAll()-unreadable rows must survive initialize()
+  // ============================================================
+
+  it('T2: preserves an unreadable row when every readable session is orphaned by a missing path (trigger B, sessionsToSave empty)', async () => {
+    // The only session findAll() can see (the unreadable one is skipped
+    // entirely) has a non-existent locationPath, so it is routed to
+    // orphanSessions and deleted individually -- sessionsToSave ends up
+    // empty. Before the fix this hit saveAll([])'s whole-table-delete
+    // branch, wiping the unreadable row below.
+    const pathMissingSession = buildPersistedQuickSession({
+      id: 'path-missing-2306',
+      locationPath: '/nonexistent/2306',
+      serverPid: 12345, // dead
+    });
+    await sessionRepository.save(pathMissingSession);
+    await seedUnreadableSession(db, 'unreadable-2306-trigger-b');
+
+    const workerOutputFileManager = createMockWorkerOutputFileManager();
+    const jobQueue = createMockJobQueue();
+    const service = new SessionInitializationService({
+      sessionRepository,
+      pathExists: async () => false,
+      isSessionInMemory: () => false,
+      workerOutputFileManager,
+      jobQueue,
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick', '/test/config'),
+      baseDirForPersistedSession: () => '/test/config/_quick',
+      getServerPid: () => TEST_SERVER_PID,
+      resolveSpawnUsername: async (createdBy) => createdBy ?? 'test-server-user',
+      sweepOrphanProcessesImpl: noopSweepOrphanProcessesImpl,
+    });
+
+    await service.initialize();
+
+    // The path-missing session was correctly removed as an orphan -- this
+    // is expected, pre-existing behavior, unrelated to this bug.
+    expect(await sessionRepository.findById('path-missing-2306')).toBeNull();
+
+    // The unreadable row -- and its worker -- must survive even though
+    // sessionsToSave ended up empty.
+    const row = await db
+      .selectFrom('sessions')
+      .where('id', '=', 'unreadable-2306-trigger-b')
+      .selectAll()
+      .executeTakeFirst();
+    expect(row).toBeDefined();
+    const workers = await db
+      .selectFrom('workers')
+      .where('session_id', '=', 'unreadable-2306-trigger-b')
+      .selectAll()
+      .execute();
+    expect(workers).toHaveLength(1);
+  });
+
+  it('T5: preserves designation and pending notification rows for an unreadable session (Issue #2306 analog of Issue 1762)', async () => {
+    // A sibling healthy session is required to actually exercise the bug:
+    // if the unreadable session were the ONLY session, findAll() would
+    // return [], so the pre-fix guard's `persistedSessions.length > 0`
+    // would ALSO be false and saveAll() would never be called at all --
+    // the bug wouldn't manifest regardless of fix/no-fix. With a healthy
+    // sibling present, sessionsToSave = [healthy session] (trigger A,
+    // non-empty), so pre-fix code calls saveAll([healthy]), whose NOT-IN
+    // delete removes the unreadable session -- and, via FK cascade, the
+    // designation and notification rows below -- exactly like Issue 1762.
+    await sessionRepository.save(buildPersistedQuickSession({
+      id: 'healthy-2306-siblings',
+      locationPath: '/some/path',
+    }));
+    await seedUnreadableSession(db, 'unreadable-2306-siblings');
+
+    await db
+      .insertInto('repositories')
+      .values({
+        id: 'repo-2306',
+        name: 'r',
+        path: '/r',
+      })
+      .execute();
+    await db
+      .insertInto('repository_orchestrator_sessions')
+      .values({ repository_id: 'repo-2306', session_id: 'unreadable-2306-siblings' })
+      .execute();
+    await db
+      .insertInto('inbound_event_notifications')
+      .values({
+        id: 'notif-2306',
+        job_id: 'job-2306',
+        session_id: 'unreadable-2306-siblings',
+        worker_id: 'w-2306',
+        handler_id: 'h-2306',
+        event_type: 'ci:completed',
+        event_summary: 's',
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        notified_at: null,
+      })
+      .execute();
+
+    const { service } = createServiceWithRealRepo();
+    await service.initialize();
+
+    const designation = await db
+      .selectFrom('repository_orchestrator_sessions')
+      .where('repository_id', '=', 'repo-2306')
+      .where('session_id', '=', 'unreadable-2306-siblings')
+      .selectAll()
+      .executeTakeFirst();
+    expect(designation).toBeDefined();
+
+    const notification = await db
+      .selectFrom('inbound_event_notifications')
+      .where('id', '=', 'notif-2306')
       .selectAll()
       .executeTakeFirst();
     expect(notification?.status).toBe('pending');
@@ -1463,5 +1623,57 @@ describe('SessionInitializationService orphan cleanup transaction (real DB, real
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  // ============================================================
+  // Issue #2306: findAll()-unreadable rows must survive
+  // persistSessionsToSave() on both db-presence branches (trigger A:
+  // sessionsToSave non-empty, the saveAll NOT-IN-delete branch pre-fix)
+  // ============================================================
+
+  it('T1: preserves an unreadable row and its worker when saved through the db-transaction branch', async () => {
+    await sessionRepository.save(buildPersistedQuickSession({
+      id: 'healthy-2306-a',
+      locationPath: '/some/path',
+    }));
+    await seedUnreadableSession(db, 'unreadable-2306-a');
+
+    await createService({ withDb: true }).initialize();
+
+    const row = await db
+      .selectFrom('sessions')
+      .where('id', '=', 'unreadable-2306-a')
+      .selectAll()
+      .executeTakeFirst();
+    expect(row).toBeDefined();
+    const workers = await db
+      .selectFrom('workers')
+      .where('session_id', '=', 'unreadable-2306-a')
+      .selectAll()
+      .execute();
+    expect(workers).toHaveLength(1);
+  });
+
+  it('T3: preserves the same scenario when saved through the no-shared-executor branch (db absent)', async () => {
+    await sessionRepository.save(buildPersistedQuickSession({
+      id: 'healthy-2306-b',
+      locationPath: '/some/path',
+    }));
+    await seedUnreadableSession(db, 'unreadable-2306-b');
+
+    await createService({ withDb: false }).initialize();
+
+    const row = await db
+      .selectFrom('sessions')
+      .where('id', '=', 'unreadable-2306-b')
+      .selectAll()
+      .executeTakeFirst();
+    expect(row).toBeDefined();
+    const workers = await db
+      .selectFrom('workers')
+      .where('session_id', '=', 'unreadable-2306-b')
+      .selectAll()
+      .execute();
+    expect(workers).toHaveLength(1);
   });
 });
