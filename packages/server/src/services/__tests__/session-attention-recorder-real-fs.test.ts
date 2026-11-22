@@ -123,6 +123,7 @@ describe('recordSessionsNeedingAttention boot wiring, real disk', () => {
     await assertRealFs('session-attention-recorder-real-fs.test.ts');
 
     configDir = mkdtempSync(path.join(os.tmpdir(), 'session-attention-recorder-config-'));
+    const originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
     process.env.AGENT_CONSOLE_HOME = configDir;
 
     const dbPath = makeTmpDbPath('session-attention-recorder-dbpath');
@@ -162,7 +163,11 @@ describe('recordSessionsNeedingAttention boot wiring, real disk', () => {
       expect(item!.status).toBe('open');
     } finally {
       removeTmpDbPath(dbPath);
-      delete process.env.AGENT_CONSOLE_HOME;
+      if (originalAgentConsoleHome === undefined) {
+        delete process.env.AGENT_CONSOLE_HOME;
+      } else {
+        process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+      }
     }
   });
 
@@ -180,6 +185,7 @@ describe('recordSessionsNeedingAttention boot wiring, real disk', () => {
     await assertRealFs('session-attention-recorder-real-fs.test.ts');
 
     configDir = mkdtempSync(path.join(os.tmpdir(), 'session-attention-recorder-config-'));
+    const originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
     process.env.AGENT_CONSOLE_HOME = configDir;
 
     const dbPath = makeTmpDbPath('session-attention-recorder-orphaned-dbpath');
@@ -207,7 +213,11 @@ describe('recordSessionsNeedingAttention boot wiring, real disk', () => {
       expect(item!.status).toBe('open');
     } finally {
       removeTmpDbPath(dbPath);
-      delete process.env.AGENT_CONSOLE_HOME;
+      if (originalAgentConsoleHome === undefined) {
+        delete process.env.AGENT_CONSOLE_HOME;
+      } else {
+        process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+      }
     }
   });
 });
