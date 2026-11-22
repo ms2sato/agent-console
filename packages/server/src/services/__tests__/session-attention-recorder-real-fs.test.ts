@@ -105,29 +105,34 @@ describe('recordSessionsNeedingAttention boot wiring, real disk', () => {
   }
 
   /**
-   * Known, pre-existing limitation (not something this recorder introduced
-   * or is expected to fix): `SessionInitializationService.initializeSessions()`'s
-   * `saveAll()` call -- which runs on every boot, before
-   * `recordSessionsNeedingAttention` ever gets a chance -- persists exactly
-   * the session set it iterated via `SessionRepository.findAll()`, which
-   * silently SKIPS an unreadable row. Whenever at least one OTHER session
-   * also exists, that `saveAll()` call deletes every row not in its own
-   * set, including the unreadable row and its worker, as a side effect of
-   * restarting -- before any attention item can ever be recorded for it.
-   * See Issue #2306 for the root cause and a standalone repro.
+   * Fixed by Issue #2306: `SessionInitializationService.initializeSessions()`
+   * used to call `SessionRepository.saveAll()` on every boot -- before
+   * `recordSessionsNeedingAttention` ever got a chance -- which persisted
+   * exactly the session set it iterated via `findAll()` (which silently
+   * SKIPS an unreadable row) and deleted every row NOT in that set.
+   * Whenever at least one other session also existed, that deleted the
+   * unreadable row and its worker as a side effect of restarting, before
+   * any attention item could ever be recorded for it. `initializeSessions()`
+   * now persists sessions individually via `save()` (no delete side
+   * effect), so the unreadable row survives the restart -- and because
+   * `recordSessionsNeedingAttention` reads `findAllSessionRefs()` (which
+   * sees the row directly, unlike `findAll()`), it now also gets an
+   * attention item, same as an orphaned row would.
    */
-  it('a pre-seeded unreadable row does NOT survive a restart when another session exists (known limitation, see #2306)', async () => {
+  it('a pre-seeded unreadable row survives a restart when another session exists, and gets an attention item', async () => {
     await assertRealFs('session-attention-recorder-real-fs.test.ts');
 
     configDir = mkdtempSync(path.join(os.tmpdir(), 'session-attention-recorder-config-'));
+    const originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
     process.env.AGENT_CONSOLE_HOME = configDir;
 
     const dbPath = makeTmpDbPath('session-attention-recorder-dbpath');
     try {
       const seedContext = await createTestContext({ dbPath, ptyProvider: createMockPtyProvider() });
       // An ordinary, healthy session coexisting with the unreadable row is
-      // what triggers the #2306 saveAll() side effect -- this is the
-      // realistic-deployment shape, not an empty database.
+      // the realistic-deployment shape (not an empty database) -- this is
+      // exactly the shape that used to trigger the #2306 saveAll() side
+      // effect, before the fix.
       await seedContext.sessionManager.createSession({ type: 'quick', locationPath: '/tmp' });
 
       const user = await seedContext.userRepository.upsertByOsUid(11, 'kate', '/home/kate');
@@ -136,22 +141,33 @@ describe('recordSessionsNeedingAttention boot wiring, real disk', () => {
 
       appContext = await createTestContext({ dbPath, ptyProvider: createMockPtyProvider() });
 
-      // The unreadable row is gone from `sessions` entirely (direct read,
-      // not `findById` -- which hydrates and would reject/behave oddly for
-      // a now-corrupt id that no longer exists).
+      // The unreadable row -- and its worker -- survive the restart
+      // (direct read, not `findById` -- which hydrates and would
+      // reject/behave oddly for a corrupt row).
       const row = await appContext.db
         .selectFrom('sessions')
         .where('id', '=', 'unreadable-t8')
         .selectAll()
         .executeTakeFirst();
-      expect(row).toBeUndefined();
+      expect(row).toBeDefined();
+      const workerRow = await appContext.db
+        .selectFrom('workers')
+        .where('session_id', '=', 'unreadable-t8')
+        .selectAll()
+        .executeTakeFirst();
+      expect(workerRow).toBeDefined();
 
-      // No attention item was ever recorded for it.
+      // An attention item is now recorded for it.
       const item = await appContext.todoRepository.findById(sessionAttentionTodoId('unreadable-t8'));
-      expect(item).toBeNull();
+      expect(item).not.toBeNull();
+      expect(item!.status).toBe('open');
     } finally {
       removeTmpDbPath(dbPath);
-      delete process.env.AGENT_CONSOLE_HOME;
+      if (originalAgentConsoleHome === undefined) {
+        delete process.env.AGENT_CONSOLE_HOME;
+      } else {
+        process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+      }
     }
   });
 
@@ -161,14 +177,15 @@ describe('recordSessionsNeedingAttention boot wiring, real disk', () => {
    * instead of an unreadable one: an orphaned row is itself hydratable, so
    * `SessionInitializationService.initializeSessions()` includes it in its
    * own `sessionsToSave` set (it is explicitly preserved, never
-   * auto-deleted) and the #2306 saveAll() side effect above does not apply
-   * to it. With no other session in the database, a real two-boot cycle
-   * must still produce an open attention item for it.
+   * auto-deleted), so it was never affected by the #2306 bug the test
+   * above covers. With no other session in the database, a real two-boot
+   * cycle must still produce an open attention item for it.
    */
   it('an orphaned row (alone in the database) has an open item after a real restart', async () => {
     await assertRealFs('session-attention-recorder-real-fs.test.ts');
 
     configDir = mkdtempSync(path.join(os.tmpdir(), 'session-attention-recorder-config-'));
+    const originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
     process.env.AGENT_CONSOLE_HOME = configDir;
 
     const dbPath = makeTmpDbPath('session-attention-recorder-orphaned-dbpath');
@@ -196,7 +213,11 @@ describe('recordSessionsNeedingAttention boot wiring, real disk', () => {
       expect(item!.status).toBe('open');
     } finally {
       removeTmpDbPath(dbPath);
-      delete process.env.AGENT_CONSOLE_HOME;
+      if (originalAgentConsoleHome === undefined) {
+        delete process.env.AGENT_CONSOLE_HOME;
+      } else {
+        process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+      }
     }
   });
 });

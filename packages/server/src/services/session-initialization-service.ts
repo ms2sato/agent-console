@@ -336,10 +336,13 @@ export class SessionInitializationService {
       }
     }
 
-    // Save all sessions (dead-server sessions prepared for auto-resume, others unchanged)
-    if (sessionsToSave.length > 0 || persistedSessions.length > 0) {
-      await this.deps.sessionRepository.saveAll(sessionsToSave);
-    }
+    // Save sessions individually (dead-server sessions prepared for auto-resume,
+    // others unchanged) -- never saveAll(), whose contract deletes every session
+    // NOT in the passed set. A session findAll() silently skips as unreadable
+    // (DataIntegrityError during hydrate) can never be in sessionsToSave, so
+    // saveAll(sessionsToSave) would delete it -- and its worker rows -- on
+    // essentially every restart.
+    await this.persistSessionsToSave(sessionsToSave);
 
     logger.info({
       autoResumeSessions: autoResumeSessionIds.length,
@@ -350,6 +353,29 @@ export class SessionInitializationService {
     }, 'Initialized sessions from persistence');
 
     return autoResumeSessionIds;
+  }
+
+  /**
+   * Persist each of `sessions` via `save()` (upsert; no delete side effect),
+   * never via `saveAll()` -- see the call site's comment for why. Mirrors
+   * `deleteOrphanRow`'s db-presence branching: with an injected `db`, every
+   * save runs inside ONE transaction; without it, each session is saved
+   * separately (no shared executor).
+   */
+  private async persistSessionsToSave(sessions: PersistedSession[]): Promise<void> {
+    if (sessions.length === 0) return;
+    const { db, sessionRepository } = this.deps;
+    if (db) {
+      await db.transaction().execute(async (trx) => {
+        for (const session of sessions) {
+          await sessionRepository.save(session, trx);
+        }
+      });
+      return;
+    }
+    for (const session of sessions) {
+      await sessionRepository.save(session);
+    }
   }
 
   /**
