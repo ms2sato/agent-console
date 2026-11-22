@@ -1610,6 +1610,118 @@ describe('SqliteSessionRepository', () => {
     });
   });
 
+  describe('findAllSessionRefs', () => {
+    it('returns an empty array for an empty table', async () => {
+      expect(await repository.findAllSessionRefs()).toEqual([]);
+    });
+
+    it('returns a healthy row, an orphaned row, and a row findAll() skips as corrupted, with their columns as stored', async () => {
+      // Healthy row.
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'healthy-session',
+          type: 'quick',
+          location_path: '/path/healthy',
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: 'Healthy Title',
+          repository_id: null,
+          worktree_id: null,
+          created_by: 'user-1',
+        })
+        .execute();
+
+      // Orphaned row.
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'orphaned-session',
+          type: 'worktree',
+          location_path: '/path/orphaned',
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: null,
+          repository_id: 'repo-1',
+          worktree_id: 'main',
+          recovery_state: 'orphaned',
+          orphaned_reason: 'worktree-missing',
+        })
+        .execute();
+
+      // Corrupted row: findAll() skips it (agent worker with no agent_id).
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'corrupted-session-for-refs',
+          type: 'quick',
+          location_path: '/path/corrupted',
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+      await db
+        .insertInto('workers')
+        .values({
+          id: 'corrupted-worker-for-refs',
+          session_id: 'corrupted-session-for-refs',
+          type: 'agent',
+          name: 'Agent',
+          created_at: new Date().toISOString(),
+          pid: null,
+          agent_id: null,
+          base_commit: null,
+        })
+        .execute();
+
+      // Control: findAll() omits the corrupted session.
+      const all = await repository.findAll();
+      expect(all.map((s) => s.id).sort()).toEqual(['healthy-session', 'orphaned-session']);
+
+      const refs = await repository.findAllSessionRefs();
+      expect(refs).toHaveLength(3);
+
+      const healthy = refs.find((r) => r.id === 'healthy-session');
+      expect(healthy).toEqual({
+        id: 'healthy-session',
+        title: 'Healthy Title',
+        repositoryId: null,
+        locationPath: '/path/healthy',
+        createdBy: 'user-1',
+        recoveryState: 'healthy',
+        orphanedReason: null,
+      });
+
+      const orphaned = refs.find((r) => r.id === 'orphaned-session');
+      expect(orphaned).toEqual({
+        id: 'orphaned-session',
+        title: null,
+        repositoryId: 'repo-1',
+        locationPath: '/path/orphaned',
+        createdBy: null,
+        recoveryState: 'orphaned',
+        orphanedReason: 'worktree-missing',
+      });
+
+      const corrupted = refs.find((r) => r.id === 'corrupted-session-for-refs');
+      expect(corrupted).toEqual({
+        id: 'corrupted-session-for-refs',
+        title: null,
+        repositoryId: null,
+        locationPath: '/path/corrupted',
+        createdBy: null,
+        recoveryState: 'healthy',
+        orphanedReason: null,
+      });
+    });
+  });
+
   describe('listSessionDataScopeSlugs', () => {
     const insertSession = (
       id: string,

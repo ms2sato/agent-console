@@ -139,6 +139,7 @@ describe('AppContext', () => {
         findById: async () => null,
         findByServerPid: async () => [],
         findPaused: async () => [],
+        findAllSessionRefs: async () => [],
         save: async () => {},
         saveAll: async () => {},
         delete: async () => {},
