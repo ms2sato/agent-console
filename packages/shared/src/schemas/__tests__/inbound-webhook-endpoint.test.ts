@@ -285,6 +285,7 @@ describe('reply URL placeholder boundary table', () => {
     ['single braces stay literal text', 'https://host/r/{in_reply_to}'],
     ['a literal dot segment elsewhere leaves the id in place', `https://host/./${PLACEHOLDER}/./b`],
     ['a dot segment before the placeholder keeps it', `https://host/a/../${PLACEHOLDER}`],
+    ['a segment equal to the usual stand-in text does not matter when the id survives', `https://host/Ab0/${PLACEHOLDER}`],
   ];
   for (const [name, url] of accepted) {
     it(`accepts: ${name}`, () => {
@@ -304,6 +305,10 @@ describe('reply URL placeholder boundary table', () => {
     ['a later literal dot-dot cancels it', `https://host/reply/${PLACEHOLDER}/../done`, MSG_PLACEMENT],
     ['a later percent-encoded dot-dot cancels it', `https://host/reply/${PLACEHOLDER}/%2e%2e/done`, MSG_PLACEMENT],
     ['a later mixed-case encoded dot-dot cancels it', `https://host/reply/${PLACEHOLDER}/.%2E`, MSG_PLACEMENT],
+    ['a dot-dot cancels it after a segment named like the stand-in', `https://host/Ab0/${PLACEHOLDER}/..`, MSG_PLACEMENT],
+    ['an encoded dot-dot cancels it after a segment named like the stand-in', `https://host/Ab0/${PLACEHOLDER}/%2e%2e/x`, MSG_PLACEMENT],
+    ['a later segment named like the stand-in does not hide the cancelled id', `https://host/${PLACEHOLDER}/../Ab0`, MSG_PLACEMENT],
+    ['a dot-dot cancels it with a stand-in-named segment before and after', `https://host/Ab0/${PLACEHOLDER}/../done`, MSG_PLACEMENT],
     ['an unknown name', 'https://host/r/{{delivery_id}}', MSG_UNKNOWN],
     ['wrong case', 'https://host/r/{{IN_REPLY_TO}}', MSG_UNKNOWN],
     ['inner spaces', 'https://host/r/{{ in_reply_to }}', MSG_UNKNOWN],
