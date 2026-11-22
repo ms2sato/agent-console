@@ -16,6 +16,8 @@ import { JOB_TYPES } from '../jobs/index.js';
 import { createLogger } from '../lib/logger.js';
 import { SessionInitializationService } from './session-initialization-service.js';
 import type { sweepOrphanProcesses } from './orphan-process-sweeper.js';
+import { sessionAttentionTodoId } from '@agent-console/shared';
+import { DataIntegrityError } from '../database/mappers.js';
 
 const logger = createLogger('session-deletion');
 
@@ -109,9 +111,11 @@ export class SessionDeletionService {
    * not emit by itself.
    *
    * Every path that deletes the row also withdraws the session's open
-   * session-scoped TODO items (`TodoRepository.withdrawOpenSessionScoped`), in
-   * the same transaction wherever one exists, so no open item outlives the
-   * session that was its only audience.
+   * session-scoped TODO items (`TodoRepository.withdrawOpenSessionScoped`)
+   * and its own recorded attention item, if any (`sessionAttentionTodoId`,
+   * `TodoRepository.withdrawOpenById`), in the same transaction wherever
+   * one exists, so no open item outlives the session that was its only
+   * audience.
    *
    * Without an injected `db` the writes run separately (enqueue first, as
    * before) and a warning says so.
@@ -126,11 +130,13 @@ export class SessionDeletionService {
         await db.transaction().execute(async (trx) => {
           await sessionRepository.delete(id, trx);
           await todoRepository.withdrawOpenSessionScoped(id, trx);
+          await todoRepository.withdrawOpenById(sessionAttentionTodoId(id), trx);
         });
         return;
       }
       await sessionRepository.delete(id);
       await todoRepository?.withdrawOpenSessionScoped(id);
+      await todoRepository?.withdrawOpenById(sessionAttentionTodoId(id));
       return;
     }
     const payload = { sessionId: id, scope: scopeInfo.scope, slug: scopeInfo.slug };
@@ -142,12 +148,14 @@ export class SessionDeletionService {
       await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload);
       await sessionRepository.delete(id);
       await todoRepository?.withdrawOpenSessionScoped(id);
+      await todoRepository?.withdrawOpenById(sessionAttentionTodoId(id));
       return;
     }
     await db.transaction().execute(async (trx) => {
       await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload, { executor: trx });
       await sessionRepository.delete(id, trx);
       await todoRepository?.withdrawOpenSessionScoped(id, trx);
+      await todoRepository?.withdrawOpenById(sessionAttentionTodoId(id), trx);
     });
     jobQueue.wake();
   }
@@ -292,8 +300,12 @@ export class SessionDeletionService {
   }
 
   /**
-   * Force delete a session, whether it's in memory or only in persistence.
-   * Used for orphaned sessions that exist only in sessions.json.
+   * Force delete a session, whether it's in memory, only in persistence
+   * (e.g. a paused or orphaned row), or unreadable (a row
+   * `SessionRepository.findAll()` skips because hydration throws
+   * `DataIntegrityError`). An unreadable row's output and memo cleanup are
+   * skipped (there is no scope or path to resolve them from); the row
+   * itself is still deleted.
    * @returns true if session was deleted, false if not found
    */
   async forceDeleteSession(id: string): Promise<boolean> {
@@ -303,16 +315,36 @@ export class SessionDeletionService {
       return true;
     }
 
-    // Check persistence for orphaned session
-    const persisted = await this.deps.sessionRepository.findById(id);
-    if (persisted) {
-      let resolver: SessionDataPathResolver | null;
-      try {
-        resolver = this.deps.getPathResolverForPersistedSession(persisted);
-      } catch {
-        resolver = null;
+    // Check persistence for a session not in memory (orphaned, paused, or
+    // unreadable). `findById` throws `DataIntegrityError` for a row that
+    // cannot be hydrated; that is NOT "not found" -- the row exists, it is
+    // just unreadable -- so it is caught and handled as a third case
+    // alongside "found" and "not found". Any other error still propagates.
+    let persisted: Awaited<ReturnType<typeof this.deps.sessionRepository.findById>>;
+    let unreadable = false;
+    try {
+      persisted = await this.deps.sessionRepository.findById(id);
+    } catch (err) {
+      if (!(err instanceof DataIntegrityError)) throw err;
+      unreadable = true;
+      persisted = null;
+    }
+    if (persisted || unreadable) {
+      let resolver: SessionDataPathResolver | null = null;
+      let scopeInfo: ReturnType<typeof this.deps.getPersistedSessionScope> = null;
+      if (persisted) {
+        try {
+          resolver = this.deps.getPathResolverForPersistedSession(persisted);
+        } catch {
+          resolver = null;
+        }
+        scopeInfo = this.deps.getPersistedSessionScope(persisted);
+      } else {
+        logger.warn(
+          { sessionId: id, method: 'forceDeleteSession' },
+          'Session row is unreadable; skipping output and memo cleanup',
+        );
       }
-      const scopeInfo = this.deps.getPersistedSessionScope(persisted);
 
       // Cleanup of worker output files (same job as deleteSession), committed
       // together with the row delete.
@@ -336,7 +368,7 @@ export class SessionDeletionService {
         } catch (err) {
           logger.warn({ sessionId: id, err }, 'Failed to clean memo file');
         }
-      } else {
+      } else if (persisted) {
         logger.warn({ sessionId: id, method: 'forceDeleteSession' }, 'No resolver; skipping memo cleanup');
       }
       // Broadcast deletion to connected clients

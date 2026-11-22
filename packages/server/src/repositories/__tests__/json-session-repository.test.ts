@@ -147,6 +147,52 @@ describe('JsonSessionRepository', () => {
     });
   });
 
+  describe('findAllSessionRefs', () => {
+    it('returns an empty array when no sessions file exists', async () => {
+      expect(await repository.findAllSessionRefs()).toEqual([]);
+    });
+
+    it('maps a worktree and a quick session to their ref shape', async () => {
+      const testSessions = [
+        buildPersistedWorktreeSession({
+          id: 'worktree-session',
+          repositoryId: 'repo-1',
+          title: 'Worktree Title',
+          createdBy: 'user-1',
+          recoveryState: 'orphaned',
+          orphanedReason: 'worktree-missing',
+        }),
+        buildPersistedQuickSession({ id: 'quick-session' }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const refs = await repository.findAllSessionRefs();
+      expect(refs).toHaveLength(2);
+
+      const worktreeRef = refs.find((r) => r.id === 'worktree-session');
+      expect(worktreeRef).toEqual({
+        id: 'worktree-session',
+        title: 'Worktree Title',
+        repositoryId: 'repo-1',
+        locationPath: '/test/worktree',
+        createdBy: 'user-1',
+        recoveryState: 'orphaned',
+        orphanedReason: 'worktree-missing',
+      });
+
+      const quickRef = refs.find((r) => r.id === 'quick-session');
+      expect(quickRef).toEqual({
+        id: 'quick-session',
+        title: null,
+        repositoryId: null,
+        locationPath: '/test/quick',
+        createdBy: null,
+        recoveryState: null,
+        orphanedReason: null,
+      });
+    });
+  });
+
   describe('findPaused', () => {
     it('should return sessions with null serverPid', async () => {
       const testSessions = [

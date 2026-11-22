@@ -10,6 +10,7 @@ import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteSessionRepository } from '../../repositories/sqlite-session-repository.js';
 import { SqliteTodoRepository } from '../../repositories/sqlite-todo-repository.js';
 import type { CreateTodoParams } from '../../repositories/todo-repository.js';
+import { sessionAttentionTodoId } from '@agent-console/shared';
 import { rootLogger } from '../../lib/logger.js';
 import type { NotificationManager } from '../notifications/notification-manager.js';
 import type { MessageService } from '../message-service.js';
@@ -88,6 +89,7 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
       update: mock(async () => true),
       delete: mock(async () => {}),
       findPaused: mock(async () => []),
+      findAllSessionRefs: mock(async () => []),
     },
     workerManager: asWorkerManager({
       killWorker: mock(async () => {}),
@@ -362,6 +364,7 @@ describe('SessionDeletionService', () => {
           update: mock(async () => true),
           delete: mock(async () => { throw new Error('Persistence failure'); }),
           findPaused: mock(async () => []),
+          findAllSessionRefs: mock(async () => []),
         },
       });
       const service = new SessionDeletionService(deps);
@@ -603,6 +606,7 @@ describe('SessionDeletionService', () => {
           update: mock(async () => true),
           delete: mock(async () => {}),
           findPaused: mock(async () => []),
+          findAllSessionRefs: mock(async () => []),
         },
         getSessionLifecycleCallbacks: () => ({ onSessionDeleted }),
       });
@@ -640,6 +644,7 @@ describe('SessionDeletionService', () => {
           update: mock(async () => true),
           delete: mock(async () => {}),
           findPaused: mock(async () => []),
+          findAllSessionRefs: mock(async () => []),
         },
       });
       const service = new SessionDeletionService(deps);
@@ -663,6 +668,7 @@ describe('SessionDeletionService', () => {
           update: mock(async () => true),
           delete: mock(async () => {}),
           findPaused: mock(async () => []),
+          findAllSessionRefs: mock(async () => []),
         },
         memoService: asMemoService({
           deleteMemo: mock(async () => { throw new Error('memo error'); }),
@@ -936,6 +942,18 @@ describe('SessionDeletionService TODO withdrawal (real DB)', () => {
 
         expect(await statuses()).toEqual({ 'survivor-open': 'open' });
       });
+
+      it("withdraws the session's own attention item, if one is open; a different session's item is untouched", async () => {
+        await seedSession('doomed');
+        await seedSession('survivor');
+        await todoRepository.create(todo(sessionAttentionTodoId('doomed'), { scope: 'global', sessionId: 'doomed' }));
+        await todoRepository.create(todo(sessionAttentionTodoId('survivor'), { scope: 'global', sessionId: 'survivor' }));
+
+        expect(await settle(createService(path).deleteSession('doomed'))).toBe(true);
+
+        expect((await statuses())[sessionAttentionTodoId('doomed')]).toBe('withdrawn');
+        expect((await statuses())[sessionAttentionTodoId('survivor')]).toBe('open');
+      });
     });
   }
 
@@ -947,6 +965,32 @@ describe('SessionDeletionService TODO withdrawal (real DB)', () => {
 
     expect((await statuses())['open-question']).toBe('withdrawn');
     expect((await statuses())['open-global-action']).toBe('open');
+  });
+
+  it('forceDeleteSession also withdraws the session own attention item', async () => {
+    await sessionRepository.save(buildPersistedWorktreeSession({ id: 'doomed' }));
+    await todoRepository.create(todo(sessionAttentionTodoId('doomed'), { scope: 'global', sessionId: 'doomed' }));
+
+    expect(await settle(createService({ withDb: true, scope: true }).forceDeleteSession('doomed'))).toBe(true);
+
+    expect((await statuses())[sessionAttentionTodoId('doomed')]).toBe('withdrawn');
+  });
+
+  it("transaction path: withdrawOpenById's executor is the same transaction object sessionRepository.delete receives", async () => {
+    await seedSession('doomed');
+    await todoRepository.create(todo(sessionAttentionTodoId('doomed'), { scope: 'global', sessionId: 'doomed' }));
+
+    const deleteSpy = spyOn(sessionRepository, 'delete');
+    const withdrawByIdSpy = spyOn(todoRepository, 'withdrawOpenById');
+
+    expect(await settle(createService({ withDb: true, scope: true }).deleteSession('doomed'))).toBe(true);
+
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(withdrawByIdSpy).toHaveBeenCalledTimes(1);
+    const deleteExecutor = deleteSpy.mock.calls[0]?.[1];
+    const withdrawByIdExecutor = withdrawByIdSpy.mock.calls[0]?.[1];
+    expect(deleteExecutor).toBeDefined();
+    expect(withdrawByIdExecutor).toBe(deleteExecutor);
   });
 
   it('transaction path: a failing withdraw rolls the row delete and the cleanup job back', async () => {

@@ -120,4 +120,29 @@ export interface SessionRepository {
    * @returns Array of paused, healthy sessions (orphans excluded)
    */
   findPaused(): Promise<PersistedSession[]>;
+
+  /**
+   * Every session row's identifying columns, with NO worker join and NO
+   * hydration -- so a row `findAll()` skips because hydration throws
+   * `DataIntegrityError` is still reported here. The reader behind
+   * `recordSessionsNeedingAttention`: it needs to know a row exists and
+   * what it claims about itself, independent of whether the row can be
+   * fully hydrated.
+   */
+  findAllSessionRefs(): Promise<SessionRef[]>;
+}
+
+/**
+ * A session row's identity and attention-relevant columns, read without
+ * hydration (no worker join, no `DataIntegrityError` risk). See
+ * {@link SessionRepository.findAllSessionRefs}.
+ */
+export interface SessionRef {
+  id: string;
+  title: string | null;
+  repositoryId: string | null;
+  locationPath: string;
+  createdBy: string | null;
+  recoveryState: string | null;
+  orphanedReason: string | null;
 }

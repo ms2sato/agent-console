@@ -9,7 +9,7 @@ import * as crypto from 'crypto';
 import type { Kysely } from 'kysely';
 import type { PersistedSession } from './persisted-types.js';
 import type { Database } from '../database/schema.js';
-import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
+import type { SessionRepository, SessionRef, SessionUpdateFields } from './session-repository.js';
 import { createLogger } from '../lib/logger.js';
 import { isErrnoException } from '../lib/type-guards.js';
 
@@ -154,5 +154,21 @@ export class JsonSessionRepository implements SessionRepository {
         (s.serverPid === null || s.serverPid === undefined) &&
         s.recoveryState !== 'orphaned'
     );
+  }
+
+  // JSON rows never throw `DataIntegrityError` -- `findAll()` never skips
+  // one -- so "unreadable" is vacuous for this backend; the mapping below
+  // only carries findAll()'s own rows through.
+  async findAllSessionRefs(): Promise<SessionRef[]> {
+    const sessions = await this.findAll();
+    return sessions.map((s) => ({
+      id: s.id,
+      title: s.title ?? null,
+      repositoryId: s.type === 'worktree' ? s.repositoryId : null,
+      locationPath: s.locationPath,
+      createdBy: s.createdBy ?? null,
+      recoveryState: s.recoveryState ?? null,
+      orphanedReason: s.orphanedReason ?? null,
+    }));
   }
 }

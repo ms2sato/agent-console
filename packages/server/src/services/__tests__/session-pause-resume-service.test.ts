@@ -114,6 +114,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
       update: mock(async () => true),
       delete: mock(async () => {}),
       findPaused: mock(async () => []),
+      findAllSessionRefs: mock(async () => []),
     },
     workerManager: {
       killWorker: mock(async () => {}),

@@ -103,6 +103,7 @@ import { SqliteBookmarkRepository } from './repositories/sqlite-bookmark-reposit
 import { SqliteTodoRepository } from './repositories/sqlite-todo-repository.js';
 import { SqliteMcpServerPermissionRepository } from './repositories/sqlite-mcp-server-permission-repository.js';
 import { SqliteNotificationCursorRepository } from './repositories/sqlite-notification-cursor-repository.js';
+import { recordSessionsNeedingAttention } from './services/session-attention-recorder.js';
 import { NotificationService as NotificationServiceClass } from './services/notification-service.js';
 
 const logger = createLogger('app-context');
@@ -509,6 +510,16 @@ export async function createAppContext(
     executeHookCommand: (...args) => worktreeService.executeHookCommand(...args),
     sharedAccountLookup: sharedAccountRegistry,
     usernameLookup,
+  });
+
+  // 6.3. Record a human TODO item for every session needing attention
+  // (unreadable or orphaned rows), and withdraw stale items for rows that
+  // no longer need one. Best-effort: never throws.
+  await recordSessionsNeedingAttention({
+    sessionRepository,
+    todoRepository,
+    userRepository,
+    getRepositoryName: (id) => repositoryManager.getRepository(id)?.name,
   });
 
   // 6.4. Register the worktree:delete job handler now that worktreeService,
@@ -1032,6 +1043,17 @@ export async function createTestContext(
     executeHookCommand: (...args) => worktreeService.executeHookCommand(...args),
     sharedAccountLookup: sharedAccountRegistry,
     usernameLookup,
+  });
+
+  // Record a human TODO item for every session needing attention (see the
+  // analogous comment in createAppContext). The test context factory takes
+  // the same path so a test seeding an unreadable/orphaned row before this
+  // function finishes construction observes the recorded item.
+  await recordSessionsNeedingAttention({
+    sessionRepository,
+    todoRepository,
+    userRepository,
+    getRepositoryName: (id) => repositoryManager.getRepository(id)?.name,
   });
 
   // Register the worktree:delete job handler now that worktreeService,

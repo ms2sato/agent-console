@@ -1,5 +1,5 @@
 import type { Kysely, Transaction } from 'kysely';
-import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
+import type { SessionRepository, SessionRef, SessionUpdateFields } from './session-repository.js';
 import type { PersistedSession } from './persisted-types.js';
 import type { Database, Session } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
@@ -287,6 +287,22 @@ export class SqliteSessionRepository implements SessionRepository {
       }
     }
     return results;
+  }
+
+  async findAllSessionRefs(): Promise<SessionRef[]> {
+    const rows = await this.db
+      .selectFrom('sessions')
+      .select(['id', 'title', 'repository_id', 'location_path', 'created_by', 'recovery_state', 'orphaned_reason'])
+      .execute();
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      repositoryId: r.repository_id,
+      locationPath: r.location_path,
+      createdBy: r.created_by,
+      recoveryState: r.recovery_state,
+      orphanedReason: r.orphaned_reason,
+    }));
   }
 
   // ========== Private Helper Methods ==========

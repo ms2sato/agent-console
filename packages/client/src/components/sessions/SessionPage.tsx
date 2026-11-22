@@ -23,7 +23,17 @@ import { TabLabel } from './TabLabel';
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
-import type { AgentDefinition, EmbeddedAgentWorker, Session, Worker } from '@agent-console/shared';
+import {
+  SESSION_DELETE_REMOVES_HEADING,
+  SESSION_DELETE_REMOVES,
+  SESSION_DELETE_KEEPS_HEADING,
+  SESSION_DELETE_KEEPS,
+  SESSION_DELETE_UNRESOLVED_NOTE,
+  type AgentDefinition,
+  type EmbeddedAgentWorker,
+  type Session,
+  type Worker,
+} from '@agent-console/shared';
 import { CreatorBadge } from './CreatorBadge';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { SessionSidePanels } from './SessionSidePanels';
@@ -522,6 +532,21 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           <p className="text-sm text-gray-500 mb-6 font-mono bg-slate-800 p-2 rounded">
             {formatPath(state.session.locationPath)}
           </p>
+          <div className="text-left mb-6">
+            <p className="text-sm font-semibold text-gray-300 mb-1">{SESSION_DELETE_REMOVES_HEADING}</p>
+            <ul className="text-sm text-gray-400 list-disc list-inside mb-3">
+              {SESSION_DELETE_REMOVES.map((sentence) => (
+                <li key={sentence}>{sentence}</li>
+              ))}
+            </ul>
+            <p className="text-sm font-semibold text-gray-300 mb-1">{SESSION_DELETE_KEEPS_HEADING}</p>
+            <ul className="text-sm text-gray-400 list-disc list-inside mb-3">
+              {SESSION_DELETE_KEEPS.map((sentence) => (
+                <li key={sentence}>{sentence}</li>
+              ))}
+            </ul>
+            <p className="text-xs text-gray-500">{SESSION_DELETE_UNRESOLVED_NOTE}</p>
+          </div>
           {orphanDeleteError && (
             <p className="text-xs text-red-400 bg-red-950/50 p-2 rounded mb-4">
               {orphanDeleteError}

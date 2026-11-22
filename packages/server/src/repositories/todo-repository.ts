@@ -237,4 +237,7 @@ export interface TodoRepository {
    * Returns the number of rows changed (0 for a session with no items).
    */
   withdrawOpenSessionScoped(sessionId: string, executor?: TodoExecutor): Promise<number>;
+
+  /** `open` to `withdrawn` for one item by id. True when a row changed. */
+  withdrawOpenById(id: string, executor?: TodoExecutor): Promise<boolean>;
 }
