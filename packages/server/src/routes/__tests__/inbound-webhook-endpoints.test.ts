@@ -805,6 +805,27 @@ describe('Inbound webhook endpoint routes', () => {
       });
     }
 
+    const refusedPlacements: Array<[string, string]> = [
+      ['the placeholder in the query', `https://a.example/r?x=${MARK}{{in_reply_to}}`],
+      ['the placeholder in the host', `https://{{in_reply_to}}.a.example/${MARK}`],
+      ['the placeholder twice', `https://a.example/{{in_reply_to}}/{{in_reply_to}}?q=${MARK}`],
+      ['the placeholder inside a segment', `https://a.example/r-{{in_reply_to}}?q=${MARK}`],
+      ['an unknown placeholder', `https://a.example/{{delivery_id}}?q=${MARK}`],
+    ];
+    for (const [name, value] of refusedPlacements) {
+      it(`create and patch refuse ${name} with 400 and the 400 body does not contain the value; nothing is stored`, async () => {
+        const created = await create();
+        const createRes = await app.request(base, json('POST', { ...VALID_CREATE, replyUrl: value }));
+        const patchRes = await patch(created.endpoint.id, { replyUrl: value });
+        expect(createRes.status).toBe(400);
+        expect(patchRes.status).toBe(400);
+        expect(await createRes.text()).not.toContain(MARK);
+        expect(await patchRes.text()).not.toContain(MARK);
+        expect(await stored(created.endpoint.id)).toBeNull();
+        expect(await db.selectFrom('inbound_webhook_endpoints').select('id').execute()).toHaveLength(1);
+      });
+    }
+
     it('null on create is 400', async () => {
       const res = await app.request(base, json('POST', { ...VALID_CREATE, replyUrl: null }));
       expect(res.status).toBe(400);
@@ -825,6 +846,24 @@ describe('Inbound webhook endpoint routes', () => {
         const res = await app.request(base, json('POST', { ...VALID_CREATE, replyUrl: value }));
         expect(res.status).toBe(201);
       }
+    });
+
+    it('create and patch accept a placeholder URL; get, list and patch return it unexpanded and the row stores it as entered', async () => {
+      const withPlaceholder = 'https://a.example/reply/{{in_reply_to}}?t=abc';
+      const created = await create({ ...VALID_CREATE, replyUrl: withPlaceholder });
+      const id = created.endpoint.id;
+      expect(created.endpoint.replyUrl).toBe(withPlaceholder);
+      expect(await stored(id)).toBe(withPlaceholder);
+      const got = v.parse(InboundWebhookEndpointResponseSchema, await (await app.request(`${base}/${id}`)).json());
+      expect(got.endpoint.replyUrl).toBe(withPlaceholder);
+      const listed = v.parse(InboundWebhookEndpointsListResponseSchema, await (await app.request(base)).json());
+      expect(listed.endpoints[0]?.replyUrl).toBe(withPlaceholder);
+
+      const other = 'https://a.example/v2/{{in_reply_to}}/done';
+      const patched = await patch(id, { replyUrl: other });
+      expect(patched.status).toBe(200);
+      expect(v.parse(InboundWebhookEndpointResponseSchema, await patched.json()).endpoint.replyUrl).toBe(other);
+      expect(await stored(id)).toBe(other);
     });
 
     it('a patch body with none of label, instructionText, replyUrl is 400', async () => {

@@ -99,6 +99,14 @@ describe('validateReplyUrl', () => {
     expect(validateReplyUrl('https://sender.example.com/#MARK')).toBe('Reply URL must not contain a fragment');
     expect(validateReplyUrl(' https://sender.example.com')).toBe('Reply URL must not have leading or trailing whitespace');
   });
+
+  it('surfaces the two placeholder messages and accepts a whole-segment placeholder', () => {
+    expect(validateReplyUrl('https://sender.example.com/reply/{{in_reply_to}}')).toBeNull();
+    expect(validateReplyUrl('https://sender.example.com/r?x={{in_reply_to}}')).toBe(
+      'Reply URL may contain {{in_reply_to}} only once, as a whole path segment',
+    );
+    expect(validateReplyUrl('https://sender.example.com/{{other}}')).toBe('Reply URL contains an unknown placeholder');
+  });
 });
 
 describe('replyUrlRequestField', () => {

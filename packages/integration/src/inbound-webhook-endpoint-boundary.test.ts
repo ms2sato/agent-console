@@ -140,6 +140,16 @@ describe('Client-Server Boundary: inbound webhook endpoints', () => {
     expect(after.endpoint.replyUrl).toBeNull();
   });
 
+  it('a reply URL with the {{in_reply_to}} placeholder crosses the wire unexpanded: create, then list through the real client schema', async () => {
+    const replyUrl = 'https://sender.example.com/reply/{{in_reply_to}}?t=abc';
+    const createdRes = await request('POST', '', { label: 'Slack', instructionText: 'x', replyUrl });
+    expect(createdRes.status).toBe(201);
+    const created = v.parse(InboundWebhookEndpointWithSecretResponseSchema, await createdRes.json());
+    expect(created.endpoint.replyUrl).toBe(replyUrl);
+    const listed = v.parse(InboundWebhookEndpointsListResponseSchema, await (await request('GET', '')).json());
+    expect(listed.endpoints.map((e) => e.replyUrl)).toEqual([replyUrl]);
+  });
+
   it('control: an endpoint created without replyUrl reads null on the wire, and a body without the key fails the strict response schema', async () => {
     const created = v.parse(
       InboundWebhookEndpointWithSecretResponseSchema,

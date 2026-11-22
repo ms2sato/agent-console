@@ -12,3 +12,10 @@ export const INBOUND_WEBHOOK_INSTRUCTION_TEXT_MAX_LENGTH = 4000;
  * `inbound_webhook_endpoints` carries a length CHECK reading the same number.
  */
 export const INBOUND_WEBHOOK_REPLY_URL_MAX_LENGTH = 2048;
+
+/**
+ * The one placeholder a reply URL may carry, as a whole path segment. At send time the server
+ * replaces it with the percent-encoded `webhook-id` of the delivery being answered. A closed set:
+ * any other `{{` or `}}` in a reply URL is refused.
+ */
+export const INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER = '{{in_reply_to}}';

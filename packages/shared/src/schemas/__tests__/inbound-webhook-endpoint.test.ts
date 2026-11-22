@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
+import { INBOUND_WEBHOOK_REPLY_URL_IN_REPLY_TO_PLACEHOLDER as PLACEHOLDER } from '../../types/inbound-webhook-endpoint';
 import {
   CreateInboundWebhookEndpointRequestSchema,
   InboundWebhookSecretSchema,
@@ -265,6 +266,90 @@ describe('reply URL validation table', () => {
 
   it('the schema is also used on its own (the client form validates with it)', () => {
     expect(v.safeParse(InboundWebhookReplyUrlSchema, 'https://a.example/').success).toBe(true);
+  });
+});
+
+/** The `{{in_reply_to}}` boundary table of the Reply URL: every row, for create and for update. */
+describe('reply URL placeholder boundary table', () => {
+  const MSG_UNKNOWN = 'Reply URL contains an unknown placeholder';
+  const MSG_PLACEMENT = `Reply URL may contain ${PLACEHOLDER} only once, as a whole path segment`;
+  const createWith = (replyUrl: unknown) =>
+    v.safeParse(CreateInboundWebhookEndpointRequestSchema, { ...VALID_CREATE, replyUrl });
+  const updateWith = (replyUrl: unknown) => v.safeParse(UpdateInboundWebhookEndpointRequestSchema, { replyUrl });
+
+  const accepted: Array<[string, string]> = [
+    ['no brace pair', 'https://host/reply/1'],
+    ['placeholder as the last segment', `https://host/reply/${PLACEHOLDER}`],
+    ['placeholder as a middle segment', `https://host/a/${PLACEHOLDER}/b`],
+    ['placeholder followed by a query', `https://host/r/${PLACEHOLDER}?t=abc`],
+    ['single braces stay literal text', 'https://host/r/{in_reply_to}'],
+    ['a literal dot segment elsewhere leaves the id in place', `https://host/./${PLACEHOLDER}/./b`],
+    ['a dot segment before the placeholder keeps it', `https://host/a/../${PLACEHOLDER}`],
+    ['a segment equal to the usual stand-in text does not matter when the id survives', `https://host/Ab0/${PLACEHOLDER}`],
+  ];
+  for (const [name, url] of accepted) {
+    it(`accepts: ${name}`, () => {
+      expect(createWith(url).success).toBe(true);
+      expect(updateWith(url).success).toBe(true);
+      const parsed = v.safeParse(InboundWebhookReplyUrlSchema, url);
+      expect(parsed.success && parsed.output).toBe(url);
+    });
+  }
+
+  const refused: Array<[string, string, string]> = [
+    ['twice', `https://host/${PLACEHOLDER}/${PLACEHOLDER}`, MSG_PLACEMENT],
+    ['in the query', `https://host/r?x=${PLACEHOLDER}`, MSG_PLACEMENT],
+    ['in the host (URL parsing alone accepts it)', `https://${PLACEHOLDER}.host/x`, MSG_PLACEMENT],
+    ['as a segment prefix', `https://host/r-${PLACEHOLDER}`, MSG_PLACEMENT],
+    ['as a segment suffix', `https://host/${PLACEHOLDER}x`, MSG_PLACEMENT],
+    ['a later literal dot-dot cancels it', `https://host/reply/${PLACEHOLDER}/../done`, MSG_PLACEMENT],
+    ['a later percent-encoded dot-dot cancels it', `https://host/reply/${PLACEHOLDER}/%2e%2e/done`, MSG_PLACEMENT],
+    ['a later mixed-case encoded dot-dot cancels it', `https://host/reply/${PLACEHOLDER}/.%2E`, MSG_PLACEMENT],
+    ['a dot-dot cancels it after a segment named like the stand-in', `https://host/Ab0/${PLACEHOLDER}/..`, MSG_PLACEMENT],
+    ['an encoded dot-dot cancels it after a segment named like the stand-in', `https://host/Ab0/${PLACEHOLDER}/%2e%2e/x`, MSG_PLACEMENT],
+    ['a later segment named like the stand-in does not hide the cancelled id', `https://host/${PLACEHOLDER}/../Ab0`, MSG_PLACEMENT],
+    ['a dot-dot cancels it with a stand-in-named segment before and after', `https://host/Ab0/${PLACEHOLDER}/../done`, MSG_PLACEMENT],
+    ['an unknown name', 'https://host/r/{{delivery_id}}', MSG_UNKNOWN],
+    ['wrong case', 'https://host/r/{{IN_REPLY_TO}}', MSG_UNKNOWN],
+    ['inner spaces', 'https://host/r/{{ in_reply_to }}', MSG_UNKNOWN],
+    ['a lone opening pair', 'https://host/r/{{', MSG_UNKNOWN],
+    ['a lone closing pair', 'https://host/r/}}', MSG_UNKNOWN],
+  ];
+  for (const [name, url, firstMessage] of refused) {
+    it(`refuses: ${name}`, () => {
+      for (const result of [createWith(url), updateWith(url), v.safeParse(InboundWebhookReplyUrlSchema, url)]) {
+        expect(result.success).toBe(false);
+        const messages = (result.issues ?? []).map((issue) => issue.message);
+        expect(messages.length).toBeGreaterThan(0);
+        expect(messages[0]).toBe(firstMessage);
+        for (const message of messages) expect(message).not.toContain('host');
+      }
+    });
+  }
+
+  it('the host row is refused by the placement check, with every URL check passing', () => {
+    const result = v.safeParse(InboundWebhookReplyUrlSchema, `https://${PLACEHOLDER}.host/x`);
+    expect(URL.canParse(`https://${PLACEHOLDER}.host/x`)).toBe(true);
+    expect((result.issues ?? []).map((issue) => issue.message)).toEqual([MSG_PLACEMENT]);
+  });
+
+  it('2,048 characters including the placeholder are accepted; 2,049 are refused', () => {
+    const prefix = 'https://a.example/';
+    const pad = (length: number) => prefix + 'x'.repeat(length - prefix.length - PLACEHOLDER.length - 1) + '/' + PLACEHOLDER;
+    expect(pad(2048)).toHaveLength(2048);
+    expect(pad(2049)).toHaveLength(2049);
+    expect(createWith(pad(2048)).success).toBe(true);
+    expect(updateWith(pad(2048)).success).toBe(true);
+    expect(createWith(pad(2049)).success).toBe(false);
+    expect(updateWith(pad(2049)).success).toBe(false);
+  });
+
+  it('no message echoes the submitted value', () => {
+    for (const url of [`https://host/r?x=${MARKER}${PLACEHOLDER}`, `https://host/${MARKER}/{{x}}`]) {
+      const result = v.safeParse(InboundWebhookReplyUrlSchema, url);
+      expect(result.success).toBe(false);
+      for (const issue of result.issues ?? []) expect(issue.message).not.toContain(MARKER);
+    }
   });
 });
 
