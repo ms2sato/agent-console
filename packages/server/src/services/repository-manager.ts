@@ -106,9 +106,11 @@ export function buildMissingRefspecMessage(repoPath: string): string {
 export interface RepositoryDependencyCallbacks {
   getSessionsUsingRepository: (repositoryId: string) => { id: string; title?: string }[];
   /**
-   * Persisted (paused, or otherwise not currently active in memory) worktree
-   * sessions for the repository. Single writer:
-   * `SessionManager.getInactiveSessionsUsingRepository`.
+   * Every persisted session row that references the repository and is not
+   * currently active in memory — paused sessions, plus any zombie row that
+   * is neither active nor cleanly paused, INCLUDING a row that cannot be
+   * hydrated (read from its claim columns only, no hydration). Single
+   * writer: `SessionManager.getInactiveSessionsUsingRepository`.
    */
   getInactiveSessionsUsingRepository: (repositoryId: string) => Promise<{ id: string; title?: string }[]>;
 }
@@ -116,8 +118,11 @@ export interface RepositoryDependencyCallbacks {
 /**
  * Thrown by {@link RepositoryManager.assertRepositoryNotInUse} when a
  * repository has active and/or inactive (paused) sessions attached to it.
- * Mirrors `CloneNameConflictError` (`repository-clone-service.ts`) so route
- * handlers can map it to a `409 Conflict` via a single `instanceof` check.
+ * The inactive half counts every persisted session row that references the
+ * repository, including one that cannot be hydrated — see
+ * `SessionManager.getInactiveSessionsUsingRepository`. Mirrors
+ * `CloneNameConflictError` (`repository-clone-service.ts`) so route handlers
+ * can map it to a `409 Conflict` via a single `instanceof` check.
  */
 export class RepositoryInUseError extends Error {
   constructor(message: string) {
@@ -519,7 +524,10 @@ export class RepositoryManager {
   /**
    * Throw {@link RepositoryInUseError} when a repository has any active
    * (in-memory) or inactive (persisted, e.g. paused) worktree session
-   * attached to it. Single writer for this gate — the
+   * attached to it. The inactive half is read from its claim columns only,
+   * without hydration (`SessionRepository.findSessionRefsByRepositoryId`),
+   * so a session row that cannot be hydrated still counts as in-use rather
+   * than being invisible to this gate. Single writer for this gate — the
    * `DELETE /api/repositories/:id` route previously duplicated this exact
    * logic inline; it now calls this method instead.
    *

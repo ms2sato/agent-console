@@ -256,6 +256,23 @@ export class SqliteSessionRepository implements SessionRepository {
     return updated;
   }
 
+  /**
+   * The id and title of every persisted session row that references the
+   * repository, read from the `id`, `title` and `repository_id` columns only:
+   * no worker join and no hydration, so a row `findAll()` skips as corrupted
+   * is still returned. One caller: the unregister in-use gate.
+   */
+  async findSessionRefsByRepositoryId(
+    repositoryId: string,
+  ): Promise<Array<{ id: string; title: string | null }>> {
+    const rows = await this.db
+      .selectFrom('sessions')
+      .where('repository_id', '=', repositoryId)
+      .select(['id', 'title'])
+      .execute();
+    return rows.map((row) => ({ id: row.id, title: row.title }));
+  }
+
   async findPaused(): Promise<PersistedSession[]> {
     // Orphaned sessions also have server_pid = null (set during orphan
     // detection) but must not be surfaced as paused. Filter them out here so

@@ -107,4 +107,74 @@ describe('unregisterRepository refuses a repository with a paused session, and r
     expect(persisted).not.toBeNull();
     expect(persisted!.pausedAt).toBeUndefined();
   });
+
+  it('refuses to unregister while a session row that cannot be hydrated is attached, and unregisters once that row is gone', async () => {
+    appContext = await createTestContext();
+
+    const repo = await appContext.repositoryManager.registerRepository(REPO_PATH);
+
+    const sessionId = 'corrupt-row-session-1';
+    await appContext.sessionRepository.save({
+      id: sessionId,
+      type: 'worktree',
+      locationPath: WORKTREE_PATH,
+      repositoryId: repo.id,
+      worktreeId: 'main',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      workers: [],
+      serverPid: null,
+      title: 'Corrupt Row Session',
+    });
+
+    // Corrupt worker row (agent without agent_id) makes `hydrate` throw
+    // DataIntegrityError for this session, same fixture shape as
+    // sqlite-session-repository.test.ts's "data integrity handling" tests.
+    await appContext.db
+      .insertInto('workers')
+      .values({
+        id: 'corrupt-worker-1',
+        session_id: sessionId,
+        type: 'agent',
+        name: 'Agent',
+        created_at: new Date().toISOString(),
+        pid: null,
+        agent_id: null,
+        base_commit: null,
+      })
+      .execute();
+
+    // Control: the corrupted row really is invisible to findAll().
+    expect((await appContext.sessionRepository.findAll()).map((s) => s.id)).not.toContain(
+      sessionId,
+    );
+
+    let caught: unknown;
+    try {
+      await appContext.repositoryManager.unregisterRepository(repo.id);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RepositoryInUseError);
+    expect((caught as Error).message).toContain('Corrupt Row Session');
+    expect((caught as Error).message).toContain('(inactive)');
+
+    // Nothing was destructively cleaned up: the repository and the session
+    // row are both still present.
+    expect(appContext.repositoryManager.getRepository(repo.id)).toBeDefined();
+    const row = await appContext.db
+      .selectFrom('sessions')
+      .where('id', '=', sessionId)
+      .selectAll()
+      .executeTakeFirst();
+    expect(row).toBeDefined();
+
+    // Control for the refusal: once the corrupt row (and its worker) is
+    // gone, the unregister succeeds.
+    await appContext.db.deleteFrom('workers').where('session_id', '=', sessionId).execute();
+    await appContext.db.deleteFrom('sessions').where('id', '=', sessionId).execute();
+
+    const result = await appContext.repositoryManager.unregisterRepository(repo.id);
+    expect(result).toBe(true);
+    expect(appContext.repositoryManager.getRepository(repo.id)).toBeUndefined();
+  });
 });

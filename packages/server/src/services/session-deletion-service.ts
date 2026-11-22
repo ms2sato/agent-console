@@ -170,11 +170,18 @@ export class SessionDeletionService {
    * is already gone by this point, so propagating would make
    * `deleteSession`'s catch block call `setSession` and restore an
    * in-memory session whose persisted row no longer exists -- a worse
-   * inconsistency than a stray open TODO item. A withdrawal left open this
-   * way is not a dead end: `recordSessionsNeedingAttention`'s boot-time
-   * sweep already withdraws any attention item whose session no longer
-   * needs one, and the session-scoped item's own session is gone too, so
-   * nothing is permanently stuck open.
+   * inconsistency than a stray open TODO item. The two withdrawals have
+   * different recovery stories once left open this way: `withdrawOpenById`'s
+   * target is the session's own global attention item, and
+   * `recordSessionsNeedingAttention`'s boot-time sweep withdraws any such
+   * item whose session no longer needs one, so a failure here is corrected
+   * on the next boot. `withdrawOpenSessionScoped`'s targets are the
+   * session's ordinary `scope: 'session'` items; nothing sweeps those, so a
+   * failure here leaves them open and attached to the now-deleted session
+   * id indefinitely. That is accepted as harmless (the session is gone, so
+   * nothing can act on them through the UI or MCP), not as recovered -- see
+   * the warning message below, which says so rather than claiming a
+   * recovery path that does not exist for this one.
    */
   private async withdrawTodosAfterCommit(id: string): Promise<void> {
     const { todoRepository } = this.deps;
@@ -183,7 +190,7 @@ export class SessionDeletionService {
     } catch (err) {
       logger.warn(
         { sessionId: id, err },
-        'Failed to withdraw session-scoped TODO items after a committed delete; the boot pass will catch stragglers',
+        'Failed to withdraw session-scoped TODO items after a committed delete; they will stay open, attached to the deleted session (no sweep recovers this)',
       );
     }
     try {

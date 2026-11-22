@@ -144,6 +144,7 @@ describe('AppContext', () => {
         saveAll: async () => {},
         delete: async () => {},
         update: async () => false,
+        findSessionRefsByRepositoryId: async () => [],
       };
 
       appContext = await createTestContext({
