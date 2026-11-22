@@ -226,11 +226,21 @@ describe('JsonSessionRepository', () => {
 
   describe('findSessionRefsByRepositoryId', () => {
     it("returns the repository's worktree sessions and excludes quick sessions and other repositories", async () => {
+      // quick-same-repo-id shares `repo-x` under a (persisted-shape-only)
+      // repositoryId field a quick session never legitimately carries, so
+      // the type check -- not just the repositoryId check -- is what excludes
+      // it; without this fixture, removing the `type === 'worktree'` filter
+      // would leave this test passing.
+      const quickSameRepoId = {
+        ...buildPersistedQuickSession({ id: 'quick-same-repo-id' }),
+        repositoryId: 'repo-x',
+      };
       const testSessions = [
         buildPersistedWorktreeSession({ id: 'repo-x-1', repositoryId: 'repo-x', title: 'First' }),
         buildPersistedWorktreeSession({ id: 'repo-x-2', repositoryId: 'repo-x' }),
         buildPersistedWorktreeSession({ id: 'repo-y-1', repositoryId: 'repo-y' }),
         buildPersistedQuickSession({ id: 'quick-1' }),
+        quickSameRepoId,
       ];
       fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
 
