@@ -2272,20 +2272,24 @@ export class SessionManager {
   }
 
   /**
-   * Get all persisted worktree sessions for a repository that are NOT
-   * currently active in memory — paused sessions, plus any zombie row that
-   * is neither active nor cleanly paused. This is the single writer for
-   * the "inactive" half of the unregister-repository in-use gate; it
-   * replaces a duplicate check that used to live in the
-   * DELETE /api/repositories/:id route handler.
+   * Get all persisted session rows for a repository that are NOT currently
+   * active in memory — paused sessions, plus any zombie row that is neither
+   * active nor cleanly paused. Read without hydration (see
+   * `SessionRepository.findSessionRefsByRepositoryId`), so a row that cannot
+   * be hydrated is still included. This is the single writer for the
+   * "inactive" half of the unregister-repository in-use gate; it replaces a
+   * duplicate check that used to live in the DELETE /api/repositories/:id
+   * route handler.
    */
-  async getInactiveSessionsUsingRepository(repositoryId: string): Promise<Session[]> {
+  async getInactiveSessionsUsingRepository(
+    repositoryId: string,
+  ): Promise<Array<{ id: string; title?: string }>> {
     const activeSessions = this.getSessionsUsingRepository(repositoryId);
     const activeIds = new Set(activeSessions.map((s) => s.id));
-    const persisted = await this.sessionRepository.findAll();
-    return persisted
-      .filter((ps) => !activeIds.has(ps.id) && ps.type === 'worktree' && ps.repositoryId === repositoryId)
-      .map((ps) => this.persistedToPublicSession(ps));
+    const refs = await this.sessionRepository.findSessionRefsByRepositoryId(repositoryId);
+    return refs
+      .filter((ref) => !activeIds.has(ref.id))
+      .map((ref) => ({ id: ref.id, title: ref.title ?? undefined }));
   }
 
   // ========== Worker Operations (delegated to WorkerLifecycleManager) ==========

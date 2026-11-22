@@ -88,6 +88,7 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
       update: mock(async () => true),
       delete: mock(async () => {}),
       findPaused: mock(async () => []),
+      findSessionRefsByRepositoryId: mock(async () => []),
     },
     workerManager: asWorkerManager({
       killWorker: mock(async () => {}),
@@ -362,6 +363,7 @@ describe('SessionDeletionService', () => {
           update: mock(async () => true),
           delete: mock(async () => { throw new Error('Persistence failure'); }),
           findPaused: mock(async () => []),
+          findSessionRefsByRepositoryId: mock(async () => []),
         },
       });
       const service = new SessionDeletionService(deps);
@@ -603,6 +605,7 @@ describe('SessionDeletionService', () => {
           update: mock(async () => true),
           delete: mock(async () => {}),
           findPaused: mock(async () => []),
+          findSessionRefsByRepositoryId: mock(async () => []),
         },
         getSessionLifecycleCallbacks: () => ({ onSessionDeleted }),
       });
@@ -640,6 +643,7 @@ describe('SessionDeletionService', () => {
           update: mock(async () => true),
           delete: mock(async () => {}),
           findPaused: mock(async () => []),
+          findSessionRefsByRepositoryId: mock(async () => []),
         },
       });
       const service = new SessionDeletionService(deps);
@@ -663,6 +667,7 @@ describe('SessionDeletionService', () => {
           update: mock(async () => true),
           delete: mock(async () => {}),
           findPaused: mock(async () => []),
+          findSessionRefsByRepositoryId: mock(async () => []),
         },
         memoService: asMemoService({
           deleteMemo: mock(async () => { throw new Error('memo error'); }),
