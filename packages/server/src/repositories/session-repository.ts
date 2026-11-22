@@ -120,4 +120,12 @@ export interface SessionRepository {
    * @returns Array of paused, healthy sessions (orphans excluded)
    */
   findPaused(): Promise<PersistedSession[]>;
+
+  /**
+   * The id and title of every persisted session row that references the
+   * repository, read from the `id`, `title` and `repository_id` columns only:
+   * no worker join and no hydration, so a row `findAll()` skips as corrupted
+   * is still returned. One caller: the unregister in-use gate.
+   */
+  findSessionRefsByRepositoryId(repositoryId: string): Promise<Array<{ id: string; title: string | null }>>;
 }

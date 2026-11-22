@@ -1684,6 +1684,110 @@ describe('SqliteSessionRepository', () => {
     });
   });
 
+  describe('findSessionRefsByRepositoryId', () => {
+    const insertSessionRef = (
+      id: string,
+      overrides: Partial<{
+        type: 'worktree' | 'quick';
+        repository_id: string | null;
+        worktree_id: string | null;
+        title: string | null;
+      }> = {},
+    ) =>
+      db
+        .insertInto('sessions')
+        .values({
+          id,
+          type: 'worktree',
+          location_path: `/path/${id}`,
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: null,
+          repository_id: 'repo-x',
+          worktree_id: 'main',
+          ...overrides,
+        })
+        .execute();
+
+    // Reach (measured): implementing the reader through findAll() again
+    // fails this test (the corrupted session is missing from the result).
+    it('returns a session findAll() skips as corrupted (corrupt worker row), as well as a healthy one', async () => {
+      await insertSessionRef('healthy');
+      await insertSessionRef('corrupted');
+      // Corrupted worker (agent without agent_id) makes hydrate throw DataIntegrityError.
+      await db
+        .insertInto('workers')
+        .values({
+          id: 'corrupted-worker-ref',
+          session_id: 'corrupted',
+          type: 'agent',
+          name: 'Agent',
+          created_at: new Date().toISOString(),
+          pid: null,
+          agent_id: null,
+          base_commit: null,
+        })
+        .execute();
+
+      // Control: findAll() omits the corrupted session.
+      expect((await repository.findAll()).map((s) => s.id)).toEqual(['healthy']);
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs.map((r) => r.id).sort()).toEqual(['corrupted', 'healthy']);
+    });
+
+    // Reach (measured): the session's own columns (not a worker row) fail
+    // hydration here -- a worktree row with a NULL worktree_id.
+    it('returns a row whose own columns fail hydration', async () => {
+      await insertSessionRef('healthy');
+      await insertSessionRef('bad-worktree-id', { worktree_id: null });
+
+      // Control: findAll() omits the row whose own columns fail hydration.
+      expect((await repository.findAll()).map((s) => s.id)).toEqual(['healthy']);
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs.map((r) => r.id).sort()).toEqual(['bad-worktree-id', 'healthy']);
+    });
+
+    // Reach (measured): adding a `type = 'worktree'` filter to the reader's
+    // query turns this test red (per D2).
+    it('returns a row whose type is not a known session type', async () => {
+      await insertSessionRef('healthy');
+      await insertSessionRef('bogus-type', { type: 'bogus-type' as 'worktree' | 'quick' });
+
+      // Control: findAll() omits the unknown-type row.
+      expect((await repository.findAll()).map((s) => s.id)).toEqual(['healthy']);
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs.map((r) => r.id).sort()).toEqual(['bogus-type', 'healthy']);
+    });
+
+    it('excludes rows of another repository and rows with a NULL repository_id', async () => {
+      await insertSessionRef('kept');
+      await insertSessionRef('other-repo', { repository_id: 'repo-y' });
+      await insertSessionRef('no-repo', { repository_id: null });
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs.map((r) => r.id)).toEqual(['kept']);
+    });
+
+    it('returns an empty array when no row references the repository', async () => {
+      await insertSessionRef('other-repo', { repository_id: 'repo-y' });
+
+      expect(await repository.findSessionRefsByRepositoryId('repo-x')).toEqual([]);
+    });
+
+    it('returns a NULL title as null and a set title as the string', async () => {
+      await insertSessionRef('no-title', { title: null });
+      await insertSessionRef('with-title', { title: 'My Session' });
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs).toContainEqual({ id: 'no-title', title: null });
+      expect(refs).toContainEqual({ id: 'with-title', title: 'My Session' });
+    });
+  });
+
   describe('update', () => {
     it('should update pausedAt field', async () => {
       const session = buildPersistedWorktreeSession({

@@ -22,6 +22,7 @@ function createMockSessionRepository(overrides?: Partial<SessionRepository>): Se
     delete: mock(() => Promise.resolve()),
     update: mock(() => Promise.resolve(true)),
     findPaused: mock(() => Promise.resolve([])),
+    findSessionRefsByRepositoryId: mock(() => Promise.resolve([])),
     ...overrides,
   };
 }
