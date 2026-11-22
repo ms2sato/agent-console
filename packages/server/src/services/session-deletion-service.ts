@@ -118,7 +118,11 @@ export class SessionDeletionService {
    * audience.
    *
    * Without an injected `db` the writes run separately (enqueue first, as
-   * before) and a warning says so.
+   * before) and a warning says so. In that case the row delete and the TODO
+   * withdrawals are three SEPARATE, non-transactional statements with no way
+   * to make them atomic; once the row delete has committed, a withdrawal
+   * failure must never be treated as "the delete didn't happen" (see
+   * `withdrawTodosAfterCommit`).
    */
   private async deleteRowWithCleanupJob(
     id: string,
@@ -135,8 +139,7 @@ export class SessionDeletionService {
         return;
       }
       await sessionRepository.delete(id);
-      await todoRepository?.withdrawOpenSessionScoped(id);
-      await todoRepository?.withdrawOpenById(sessionAttentionTodoId(id));
+      await this.withdrawTodosAfterCommit(id);
       return;
     }
     const payload = { sessionId: id, scope: scopeInfo.scope, slug: scopeInfo.slug };
@@ -147,8 +150,7 @@ export class SessionDeletionService {
       );
       await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload);
       await sessionRepository.delete(id);
-      await todoRepository?.withdrawOpenSessionScoped(id);
-      await todoRepository?.withdrawOpenById(sessionAttentionTodoId(id));
+      await this.withdrawTodosAfterCommit(id);
       return;
     }
     await db.transaction().execute(async (trx) => {
@@ -158,6 +160,40 @@ export class SessionDeletionService {
       await todoRepository?.withdrawOpenById(sessionAttentionTodoId(id), trx);
     });
     jobQueue.wake();
+  }
+
+  /**
+   * Withdraw a deleted session's TODO items (its open session-scoped items
+   * and its own recorded attention item, if any) AFTER the row delete that
+   * made them stale has already committed, outside a transaction. Each
+   * withdrawal's failure is logged and swallowed, never rethrown: the row
+   * is already gone by this point, so propagating would make
+   * `deleteSession`'s catch block call `setSession` and restore an
+   * in-memory session whose persisted row no longer exists -- a worse
+   * inconsistency than a stray open TODO item. A withdrawal left open this
+   * way is not a dead end: `recordSessionsNeedingAttention`'s boot-time
+   * sweep already withdraws any attention item whose session no longer
+   * needs one, and the session-scoped item's own session is gone too, so
+   * nothing is permanently stuck open.
+   */
+  private async withdrawTodosAfterCommit(id: string): Promise<void> {
+    const { todoRepository } = this.deps;
+    try {
+      await todoRepository?.withdrawOpenSessionScoped(id);
+    } catch (err) {
+      logger.warn(
+        { sessionId: id, err },
+        'Failed to withdraw session-scoped TODO items after a committed delete; the boot pass will catch stragglers',
+      );
+    }
+    try {
+      await todoRepository?.withdrawOpenById(sessionAttentionTodoId(id));
+    } catch (err) {
+      logger.warn(
+        { sessionId: id, err },
+        'Failed to withdraw the attention item after a committed delete; the boot pass will catch it',
+      );
+    }
   }
 
   /**

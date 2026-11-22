@@ -519,8 +519,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     };
 
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="card text-center max-w-md">
+      <div className="flex-1 min-h-0 overflow-y-auto flex justify-center">
+        <div className="card text-center max-w-md my-auto">
           <h2 className="text-xl font-semibold mb-4 text-red-400 flex items-center justify-center gap-2">
             <AlertCircleIcon className="w-5 h-5" />
             Session Unrecoverable

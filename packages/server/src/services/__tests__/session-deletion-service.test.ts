@@ -1007,6 +1007,56 @@ describe('SessionDeletionService TODO withdrawal (real DB)', () => {
     expect((await statuses())['open-question']).toBe('open');
   });
 
+  it('no-db fallback path: a failing attention-item withdrawal after a committed delete does not restore the in-memory session', async () => {
+    await seedSession('doomed');
+    await todoRepository.create(todo(sessionAttentionTodoId('doomed'), { scope: 'global', sessionId: 'doomed' }));
+    const warnSpy = spyOn(rootLogger, 'warn');
+    // An earlier file's unrestored spy on the same method is returned as-is
+    // with its accumulated calls; count only the calls made from here.
+    warnSpy.mockClear();
+    spyOn(todoRepository, 'withdrawOpenById').mockRejectedValue(new Error('injected withdraw failure'));
+
+    try {
+      expect(await settle(createService({ withDb: false, scope: true }).deleteSession('doomed'))).toBe(true);
+
+      // The row IS gone -- the delete committed before the withdrawal ever
+      // ran -- so the in-memory session must NOT be restored.
+      expect(await sessionRepository.findById('doomed')).toBeNull();
+      expect(memory.has('doomed')).toBe(false);
+
+      const failureWarns = warnSpy.mock.calls.filter((call) =>
+        JSON.stringify(call).includes('attention item after a committed delete'),
+      );
+      expect(failureWarns).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('no-db fallback path: a failing session-scoped withdrawal after a committed delete does not restore the in-memory session', async () => {
+    await seedSession('doomed');
+    await seedTodos();
+    const warnSpy = spyOn(rootLogger, 'warn');
+    warnSpy.mockClear();
+    spyOn(todoRepository, 'withdrawOpenSessionScoped').mockRejectedValue(new Error('injected withdraw failure'));
+
+    try {
+      expect(await settle(createService({ withDb: false, scope: true }).deleteSession('doomed'))).toBe(true);
+
+      expect(await sessionRepository.findById('doomed')).toBeNull();
+      expect(memory.has('doomed')).toBe(false);
+
+      const failureWarns = warnSpy.mock.calls.filter((call) =>
+        JSON.stringify(call).includes('session-scoped TODO items after a committed delete'),
+      );
+      expect(failureWarns).toHaveLength(1);
+      // The attention-item withdrawal still ran (it is a separate try/catch).
+      expect((await statuses())['open-question']).toBe('open');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('transaction path: a failing row delete leaves the items open', async () => {
     await seedSession('doomed');
     await seedTodos();

@@ -6,8 +6,6 @@
  * of the production repositories.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import * as path from 'path';
-import * as os from 'os';
 import {
   SESSION_ATTENTION_TODO_ID_PREFIX,
   sessionAttentionTodoId,
@@ -324,43 +322,8 @@ describe('recordSessionsNeedingAttention (Issue #2295)', () => {
     expect(await appContext.todoRepository.findById(sessionAttentionTodoId(okId))).not.toBeNull();
   });
 
-  describe('T8: boot wiring', () => {
-    // `bun:sqlite`'s file I/O is a native binding, not Node's `fs` module,
-    // so a real tmp path (not a memfs path) is required here -- same
-    // reasoning and cleanup pattern as
-    // `app-context.test.ts`'s "createTestContext dbPath option" describe.
-    function makeTmpDbPath(): string {
-      return path.join(
-        os.tmpdir(),
-        `session-attention-recorder-dbpath-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`,
-      );
-    }
-
-    function removeTmpDbPath(dbPath: string): void {
-      Bun.spawnSync(['sh', '-c', `rm -f -- ${dbPath}*`]);
-    }
-
-    it('a pre-seeded unreadable row has an open item right after construction', async () => {
-      // Build a first context to get a dbPath on disk, pre-seed an
-      // unreadable row directly, close it, then boot a SECOND context
-      // against the same file: the recorder's call inside
-      // createTestContext must run against this pre-existing row before
-      // the function even returns.
-      const dbPath = makeTmpDbPath();
-      try {
-        const seedContext = await createTestContext({ dbPath });
-        const user = await seedContext.userRepository.upsertByOsUid(11, 'kate', '/home/kate');
-        await insertUnreadableSessionRow(seedContext, 'unreadable-t8', user.id);
-        await shutdownAppContext(seedContext);
-
-        appContext = await createTestContext({ dbPath });
-
-        const item = await appContext.todoRepository.findById(sessionAttentionTodoId('unreadable-t8'));
-        expect(item).not.toBeNull();
-        expect(item!.status).toBe('open');
-      } finally {
-        removeTmpDbPath(dbPath);
-      }
-    });
-  });
+  // T8 (boot wiring, pre-seeded real on-disk row) lives in
+  // `session-attention-recorder-real-fs.test.ts`: it reopens a real
+  // file-backed `bun:sqlite` database, which this file's memfs-poisoned
+  // process cannot exercise correctly.
 });
