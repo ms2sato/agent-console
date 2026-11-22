@@ -455,4 +455,14 @@ export class SqliteTodoRepository implements TodoRepository {
     }
     return count;
   }
+
+  async withdrawOpenById(id: string, executor?: TodoExecutor): Promise<boolean> {
+    const result = await (executor ?? this.db)
+      .updateTable('todos')
+      .set({ status: 'withdrawn', updated_at: new Date().toISOString() })
+      .where('id', '=', id)
+      .where('status', '=', 'open')
+      .executeTakeFirst();
+    return affectedRows(result) > 0n;
+  }
 }

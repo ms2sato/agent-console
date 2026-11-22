@@ -11,7 +11,13 @@ import type { UseWorktreeDeletionTasksReturn } from '../../../hooks/useWorktreeD
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { installMockWebSocket, MockWebSocket } from '../../../test/mock-websocket';
 import { _resetTerminals } from '../../terminal/terminal-store';
-import type { Session, Worker } from '@agent-console/shared';
+import {
+  SESSION_DELETE_REMOVES,
+  SESSION_DELETE_KEEPS,
+  SESSION_DELETE_UNRESOLVED_NOTE,
+  type Session,
+  type Worker,
+} from '@agent-console/shared';
 import { completeWireBody } from '../../../test/wire-fixtures';
 import { recordFocusCalls } from '../../../test/recordFocusCalls';
 import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
@@ -1223,5 +1229,59 @@ describe('SessionPage owner badge (Issue #684)', () => {
 
     await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
     expect(screen.queryByTestId('session-creator-username')).toBeNull();
+  });
+});
+
+describe('SessionPage orphaned session card (Issue #2295)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetch.mockReset();
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    cleanup();
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('explains what deleting the orphaned session removes and keeps', async () => {
+    routeFetch([], { status: 'inactive', recoveryState: 'orphaned' });
+    await renderSessionPage();
+
+    await waitFor(() => expect(screen.getByText('Session Unrecoverable')).toBeTruthy());
+
+    for (const sentence of SESSION_DELETE_REMOVES) {
+      expect(screen.getByText(sentence)).toBeTruthy();
+    }
+    for (const sentence of SESSION_DELETE_KEEPS) {
+      expect(screen.getByText(sentence)).toBeTruthy();
+    }
+    expect(screen.getByText(SESSION_DELETE_UNRESOLVED_NOTE)).toBeTruthy();
+
+    // Literal pins (independent of either array's contents): if SESSION_DELETE_REMOVES
+    // or SESSION_DELETE_KEEPS were emptied, every loop assertion above would pass
+    // vacuously, but these hard-coded sentences would still be expected and would
+    // fail to render, catching the mutation the array-only loops cannot (Issue #2295 M7).
+    expect(screen.getByText("The session's memo.")).toBeTruthy();
+    expect(screen.getByText('The git branch and its commits.')).toBeTruthy();
   });
 });

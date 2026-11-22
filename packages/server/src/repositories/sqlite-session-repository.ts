@@ -1,5 +1,5 @@
 import type { Kysely, Transaction } from 'kysely';
-import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
+import type { SessionRepository, SessionRef, SessionUpdateFields } from './session-repository.js';
 import type { PersistedSession } from './persisted-types.js';
 import type { Database, Session } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
@@ -256,6 +256,23 @@ export class SqliteSessionRepository implements SessionRepository {
     return updated;
   }
 
+  /**
+   * The id and title of every persisted session row that references the
+   * repository, read from the `id`, `title` and `repository_id` columns only:
+   * no worker join and no hydration, so a row `findAll()` skips as corrupted
+   * is still returned. One caller: the unregister in-use gate.
+   */
+  async findSessionRefsByRepositoryId(
+    repositoryId: string,
+  ): Promise<Array<{ id: string; title: string | null }>> {
+    const rows = await this.db
+      .selectFrom('sessions')
+      .where('repository_id', '=', repositoryId)
+      .select(['id', 'title'])
+      .execute();
+    return rows.map((row) => ({ id: row.id, title: row.title }));
+  }
+
   async findPaused(): Promise<PersistedSession[]> {
     // Orphaned sessions also have server_pid = null (set during orphan
     // detection) but must not be surfaced as paused. Filter them out here so
@@ -287,6 +304,22 @@ export class SqliteSessionRepository implements SessionRepository {
       }
     }
     return results;
+  }
+
+  async findAllSessionRefs(): Promise<SessionRef[]> {
+    const rows = await this.db
+      .selectFrom('sessions')
+      .select(['id', 'title', 'repository_id', 'location_path', 'created_by', 'recovery_state', 'orphaned_reason'])
+      .execute();
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      repositoryId: r.repository_id,
+      locationPath: r.location_path,
+      createdBy: r.created_by,
+      recoveryState: r.recovery_state,
+      orphanedReason: r.orphaned_reason,
+    }));
   }
 
   // ========== Private Helper Methods ==========

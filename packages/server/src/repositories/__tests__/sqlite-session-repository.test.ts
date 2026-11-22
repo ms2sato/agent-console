@@ -1610,6 +1610,118 @@ describe('SqliteSessionRepository', () => {
     });
   });
 
+  describe('findAllSessionRefs', () => {
+    it('returns an empty array for an empty table', async () => {
+      expect(await repository.findAllSessionRefs()).toEqual([]);
+    });
+
+    it('returns a healthy row, an orphaned row, and a row findAll() skips as corrupted, with their columns as stored', async () => {
+      // Healthy row.
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'healthy-session',
+          type: 'quick',
+          location_path: '/path/healthy',
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: 'Healthy Title',
+          repository_id: null,
+          worktree_id: null,
+          created_by: 'user-1',
+        })
+        .execute();
+
+      // Orphaned row.
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'orphaned-session',
+          type: 'worktree',
+          location_path: '/path/orphaned',
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: null,
+          repository_id: 'repo-1',
+          worktree_id: 'main',
+          recovery_state: 'orphaned',
+          orphaned_reason: 'worktree-missing',
+        })
+        .execute();
+
+      // Corrupted row: findAll() skips it (agent worker with no agent_id).
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'corrupted-session-for-refs',
+          type: 'quick',
+          location_path: '/path/corrupted',
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+      await db
+        .insertInto('workers')
+        .values({
+          id: 'corrupted-worker-for-refs',
+          session_id: 'corrupted-session-for-refs',
+          type: 'agent',
+          name: 'Agent',
+          created_at: new Date().toISOString(),
+          pid: null,
+          agent_id: null,
+          base_commit: null,
+        })
+        .execute();
+
+      // Control: findAll() omits the corrupted session.
+      const all = await repository.findAll();
+      expect(all.map((s) => s.id).sort()).toEqual(['healthy-session', 'orphaned-session']);
+
+      const refs = await repository.findAllSessionRefs();
+      expect(refs).toHaveLength(3);
+
+      const healthy = refs.find((r) => r.id === 'healthy-session');
+      expect(healthy).toEqual({
+        id: 'healthy-session',
+        title: 'Healthy Title',
+        repositoryId: null,
+        locationPath: '/path/healthy',
+        createdBy: 'user-1',
+        recoveryState: 'healthy',
+        orphanedReason: null,
+      });
+
+      const orphaned = refs.find((r) => r.id === 'orphaned-session');
+      expect(orphaned).toEqual({
+        id: 'orphaned-session',
+        title: null,
+        repositoryId: 'repo-1',
+        locationPath: '/path/orphaned',
+        createdBy: null,
+        recoveryState: 'orphaned',
+        orphanedReason: 'worktree-missing',
+      });
+
+      const corrupted = refs.find((r) => r.id === 'corrupted-session-for-refs');
+      expect(corrupted).toEqual({
+        id: 'corrupted-session-for-refs',
+        title: null,
+        repositoryId: null,
+        locationPath: '/path/corrupted',
+        createdBy: null,
+        recoveryState: 'healthy',
+        orphanedReason: null,
+      });
+    });
+  });
+
   describe('listSessionDataScopeSlugs', () => {
     const insertSession = (
       id: string,
@@ -1681,6 +1793,110 @@ describe('SqliteSessionRepository', () => {
       await insertSession('quick-type', { type: 'quick', data_scope_slug: 'org/quicktype' });
 
       expect(await listSessionDataScopeSlugs(db)).toEqual([{ repositoryId: 'repo-1', slug: 'org/kept' }]);
+    });
+  });
+
+  describe('findSessionRefsByRepositoryId', () => {
+    const insertSessionRef = (
+      id: string,
+      overrides: Partial<{
+        type: 'worktree' | 'quick';
+        repository_id: string | null;
+        worktree_id: string | null;
+        title: string | null;
+      }> = {},
+    ) =>
+      db
+        .insertInto('sessions')
+        .values({
+          id,
+          type: 'worktree',
+          location_path: `/path/${id}`,
+          server_pid: null,
+          created_at: new Date().toISOString(),
+          initial_prompt: null,
+          title: null,
+          repository_id: 'repo-x',
+          worktree_id: 'main',
+          ...overrides,
+        })
+        .execute();
+
+    // Reach (measured): implementing the reader through findAll() again
+    // fails this test (the corrupted session is missing from the result).
+    it('returns a session findAll() skips as corrupted (corrupt worker row), as well as a healthy one', async () => {
+      await insertSessionRef('healthy');
+      await insertSessionRef('corrupted');
+      // Corrupted worker (agent without agent_id) makes hydrate throw DataIntegrityError.
+      await db
+        .insertInto('workers')
+        .values({
+          id: 'corrupted-worker-ref',
+          session_id: 'corrupted',
+          type: 'agent',
+          name: 'Agent',
+          created_at: new Date().toISOString(),
+          pid: null,
+          agent_id: null,
+          base_commit: null,
+        })
+        .execute();
+
+      // Control: findAll() omits the corrupted session.
+      expect((await repository.findAll()).map((s) => s.id)).toEqual(['healthy']);
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs.map((r) => r.id).sort()).toEqual(['corrupted', 'healthy']);
+    });
+
+    // Reach (measured): the session's own columns (not a worker row) fail
+    // hydration here -- a worktree row with a NULL worktree_id.
+    it('returns a row whose own columns fail hydration', async () => {
+      await insertSessionRef('healthy');
+      await insertSessionRef('bad-worktree-id', { worktree_id: null });
+
+      // Control: findAll() omits the row whose own columns fail hydration.
+      expect((await repository.findAll()).map((s) => s.id)).toEqual(['healthy']);
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs.map((r) => r.id).sort()).toEqual(['bad-worktree-id', 'healthy']);
+    });
+
+    // Reach (measured): adding a `type = 'worktree'` filter to the reader's
+    // query turns this test red (per D2).
+    it('returns a row whose type is not a known session type', async () => {
+      await insertSessionRef('healthy');
+      await insertSessionRef('bogus-type', { type: 'bogus-type' as 'worktree' | 'quick' });
+
+      // Control: findAll() omits the unknown-type row.
+      expect((await repository.findAll()).map((s) => s.id)).toEqual(['healthy']);
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs.map((r) => r.id).sort()).toEqual(['bogus-type', 'healthy']);
+    });
+
+    it('excludes rows of another repository and rows with a NULL repository_id', async () => {
+      await insertSessionRef('kept');
+      await insertSessionRef('other-repo', { repository_id: 'repo-y' });
+      await insertSessionRef('no-repo', { repository_id: null });
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs.map((r) => r.id)).toEqual(['kept']);
+    });
+
+    it('returns an empty array when no row references the repository', async () => {
+      await insertSessionRef('other-repo', { repository_id: 'repo-y' });
+
+      expect(await repository.findSessionRefsByRepositoryId('repo-x')).toEqual([]);
+    });
+
+    it('returns a NULL title as null and a set title as the string', async () => {
+      await insertSessionRef('no-title', { title: null });
+      await insertSessionRef('with-title', { title: 'My Session' });
+
+      const refs = await repository.findSessionRefsByRepositoryId('repo-x');
+      expect(refs).toContainEqual({ id: 'no-title', title: null });
+      expect(refs).toContainEqual({ id: 'with-title', title: 'My Session' });
     });
   });
 

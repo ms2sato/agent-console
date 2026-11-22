@@ -574,8 +574,8 @@ describe('SessionManager', () => {
 
       const inactive = await manager.getInactiveSessionsUsingRepository('repo-1');
 
-      expect(inactive.map((s: Session) => s.id)).toEqual(['paused-session-1']);
-      expect(inactive.every((s: Session) => s.id !== activeSession.id)).toBe(true);
+      expect(inactive.map((s) => s.id)).toEqual(['paused-session-1']);
+      expect(inactive.every((s) => s.id !== activeSession.id)).toBe(true);
     });
 
     it('returns an empty array when there are no inactive sessions for the repository', async () => {

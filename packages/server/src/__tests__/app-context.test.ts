@@ -139,10 +139,12 @@ describe('AppContext', () => {
         findById: async () => null,
         findByServerPid: async () => [],
         findPaused: async () => [],
+        findAllSessionRefs: async () => [],
         save: async () => {},
         saveAll: async () => {},
         delete: async () => {},
         update: async () => false,
+        findSessionRefsByRepositoryId: async () => [],
       };
 
       appContext = await createTestContext({

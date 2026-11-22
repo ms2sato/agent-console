@@ -1153,6 +1153,50 @@ describe('SqliteTodoRepository', () => {
     });
   });
 
+  describe('withdrawOpenById', () => {
+    it('open -> withdrawn, returns true', async () => {
+      await repository.create(params({ id: 'open-item' }));
+      expect(await repository.withdrawOpenById('open-item')).toBe(true);
+      expect((await repository.findById('open-item'))!.status).toBe('withdrawn');
+    });
+
+    it('returns false for a done item, and leaves it unchanged', async () => {
+      await repository.create(params({ id: 'done-item' }));
+      await repository.resolve('done-item', { text: 'ok', resolvedByUserId: 'u' });
+      expect(await repository.withdrawOpenById('done-item')).toBe(false);
+      expect((await repository.findById('done-item'))!.status).toBe('done');
+    });
+
+    it('returns false for a dismissed item, and leaves it unchanged', async () => {
+      await repository.create(params({ id: 'dismissed-item' }));
+      await repository.dismiss('dismissed-item');
+      expect(await repository.withdrawOpenById('dismissed-item')).toBe(false);
+      expect((await repository.findById('dismissed-item'))!.status).toBe('dismissed');
+    });
+
+    it('returns false for an unknown id', async () => {
+      expect(await repository.withdrawOpenById('no-such-id')).toBe(false);
+    });
+
+    it('commits with the enclosing transaction and rolls back with it', async () => {
+      await repository.create(params({ id: 'txn-item' }));
+
+      await db
+        .transaction()
+        .execute(async (trx) => {
+          await repository.withdrawOpenById('txn-item', trx);
+          throw new Error('abort');
+        })
+        .catch(() => undefined);
+      expect((await repository.findById('txn-item'))!.status).toBe('open');
+
+      await db.transaction().execute(async (trx) => {
+        expect(await repository.withdrawOpenById('txn-item', trx)).toBe(true);
+      });
+      expect((await repository.findById('txn-item'))!.status).toBe('withdrawn');
+    });
+  });
+
   describe('listAgentCommentsFor', () => {
     async function setCommentTime(commentId: string, createdAt: string): Promise<void> {
       await db.updateTable('todo_comments').set({ created_at: createdAt }).where('id', '=', commentId).execute();
