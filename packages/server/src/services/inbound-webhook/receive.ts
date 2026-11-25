@@ -16,12 +16,12 @@ import { computeStandardWebhookDigest, isPreviousSecretActive } from '../../lib/
 import { createLogger } from '../../lib/logger.js';
 import type { InboundWebhookEndpointRepository } from '../../repositories/webhook-endpoint-repository.js';
 import { PermanentHandlerError } from '../inbound/job-handler.js';
-import { fetchAttachments, type AttachmentFetch, type AttachmentFetchLimits, type FetchedAttachment } from './attachments.js';
+import { fetchAttachments, type AttachmentFetch, type AttachmentFileEntry, type AttachmentFetchLimits, type FetchedAttachment } from './attachments.js';
 import { projectSlackContent, readPosterIdentity, sanitizeMultiline, toSingleLine, type PosterIdentity } from './slack-content.js';
 
 const logger = createLogger('inbound-webhook-receive');
 
-/** The sender caps its body at 256 KiB before dropping `slack_message`; this leaves headroom. */
+/** The sender caps its body at 256 KiB before dropping the source event; this leaves headroom. */
 export const INBOUND_WEBHOOK_MAX_BODY_BYTES = 512 * 1024;
 
 /** Replay window, applied to both directions (past and future). */
@@ -125,13 +125,42 @@ const SlackFileSchema = v.object({
 });
 
 /**
- * The sender's body (schema_version 1). Non-strict: unknown keys are ignored and missing keys are
- * absent. Beyond the types, the one requirement is that the message carries something to read:
- * `message` or `slack_message`.
+ * The body as every consumer below this parser sees it, whichever version the sender used. The
+ * two readers map into this shape; nothing downstream reads a version-specific key.
  */
-const InboundWebhookBodySchema = v.pipe(
+export interface InboundMessage {
+  schemaVersion: 1 | 2;
+  /** Sender text. Empty when the body carried none. */
+  message: string;
+  permalink: string | null;
+  channel: string | null;
+  ts: string | null;
+  files: AttachmentFileEntry[];
+  /** The raw source event whose blocks / attachments are projected, or null when there is none. */
+  sourceEvent: Record<string, unknown> | null;
+  /** The sender dropped (part of) the source event to fit its own size limit. */
+  sourceEventTruncated: boolean;
+}
+
+export type InboundWebhookRefusalReason = 'invalid-request' | 'unsupported-schema-version';
+
+export type ParseInboundWebhookBodyResult =
+  | { ok: true; message: InboundMessage }
+  | {
+      ok: false;
+      reason: InboundWebhookRefusalReason;
+      /** The received `schema_version`, only when it is a finite number (never any other value). */
+      schemaVersion?: number;
+    };
+
+const refuse = (reason: InboundWebhookRefusalReason, schemaVersion?: number): ParseInboundWebhookBodyResult =>
+  schemaVersion === undefined ? { ok: false, reason } : { ok: false, reason, schemaVersion };
+
+// Version 1 reader. Non-strict: unknown keys are ignored and missing keys are absent. Beyond the
+// types, the one requirement is that the body carries something to read: `message` or
+// `slack_message`. `schema_version` is not declared: the dispatch below has already decided it.
+const BodyV1Schema = v.pipe(
   v.object({
-    schema_version: v.optional(v.number()),
     event_id: v.optional(v.string()),
     team_id: v.optional(v.string()),
     matched_triggers: v.optional(v.array(v.string())),
@@ -150,18 +179,100 @@ const InboundWebhookBodySchema = v.pipe(
   ),
 );
 
-export type InboundWebhookBody = v.InferOutput<typeof InboundWebhookBodySchema>;
+function readBodyV1(json: Record<string, unknown>): ParseInboundWebhookBodyResult {
+  const result = v.safeParse(BodyV1Schema, json);
+  if (!result.success) return refuse('invalid-request');
+  const body = result.output;
+  return {
+    ok: true,
+    message: {
+      schemaVersion: 1,
+      message: body.message ?? '',
+      permalink: body.slack_permalink ?? null,
+      channel: body.slack_channel ?? null,
+      ts: body.slack_ts ?? null,
+      files: body.slack_files ?? [],
+      sourceEvent: body.slack_message ?? null,
+      sourceEventTruncated: body.slack_message_truncated === true,
+    },
+  };
+}
 
-/** Parse the raw body text. `null` for invalid JSON, a non-object, a wrong type or no message. */
-export function parseInboundWebhookBody(rawBody: string): InboundWebhookBody | null {
+// Version 2 reader. Non-strict at every level: the sender may add keys within a version. The
+// reply address the sender carries (`hikyac.reply`) is deliberately not declared, so it is not read.
+const BodyV2Schema = v.object({
+  message: v.string(),
+  hikyac: v.object({
+    permalink: v.nullable(v.string()),
+    files: v.array(SlackFileSchema),
+  }),
+  source: v.object({ type: v.string() }),
+});
+
+// Read only when `source.type` is `slack`; any other source type is never looked into.
+const SlackSourceV2Schema = v.object({
+  ids: v.object({ channel: v.string(), ts: v.string() }),
+  event: v.nullable(v.record(v.string(), v.unknown())),
+  truncated: v.boolean(),
+});
+
+const HIKYAC_VERSION = 1;
+const SLACK_SOURCE_TYPE = 'slack';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readBodyV2(json: Record<string, unknown>): ParseInboundWebhookBodyResult {
+  // The envelope version inside `hikyac` is checked first: a body whose envelope this reader does
+  // not know is refused as unsupported whatever else is wrong with it.
+  if (isPlainObject(json.hikyac) && json.hikyac.v !== HIKYAC_VERSION) {
+    return refuse('unsupported-schema-version', 2);
+  }
+  const result = v.safeParse(BodyV2Schema, json);
+  if (!result.success) return refuse('invalid-request');
+  const body = result.output;
+  const base = {
+    schemaVersion: 2 as const,
+    message: body.message,
+    permalink: body.hikyac.permalink,
+    files: body.hikyac.files,
+  };
+  if (body.source.type !== SLACK_SOURCE_TYPE) {
+    return { ok: true, message: { ...base, channel: null, ts: null, sourceEvent: null, sourceEventTruncated: false } };
+  }
+  const source = v.safeParse(SlackSourceV2Schema, (json as { source: unknown }).source);
+  if (!source.success) return refuse('invalid-request');
+  return {
+    ok: true,
+    message: {
+      ...base,
+      channel: source.output.ids.channel,
+      ts: source.output.ids.ts,
+      sourceEvent: source.output.event,
+      sourceEventTruncated: source.output.truncated,
+    },
+  };
+}
+
+/**
+ * Parse the raw body text into the normalised message, dispatching on `schema_version`: absent or
+ * `1` to the version 1 reader, `2` to the version 2 reader, any other value is refused as an
+ * unsupported version. A reader that fails is a refusal; there is no fallback to the other reader.
+ */
+export function parseInboundWebhookBody(rawBody: string): ParseInboundWebhookBodyResult {
   let json: unknown;
   try {
     json = JSON.parse(rawBody);
   } catch {
-    return null;
+    return refuse('invalid-request');
   }
-  const result = v.safeParse(InboundWebhookBodySchema, json);
-  return result.success ? result.output : null;
+  if (!isPlainObject(json)) return refuse('invalid-request');
+  if (!Object.hasOwn(json, 'schema_version')) return readBodyV1(json);
+  const version = json.schema_version;
+  if (version === 1) return readBodyV1(json);
+  if (version === 2) return readBodyV2(json);
+  return refuse('unsupported-schema-version', typeof version === 'number' && Number.isFinite(version) ? version : undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +363,16 @@ export async function receiveInboundWebhook(input: ReceiveInput, deps: ReceiveDe
     return { kind: 'duplicate' };
   }
 
-  if (parseInboundWebhookBody(input.rawBody) === null) {
-    logger.warn({ endpointId, reason: 'invalid-request' }, 'Inbound webhook refused');
+  const parsedBody = parseInboundWebhookBody(input.rawBody);
+  if (!parsedBody.ok) {
+    logger.warn(
+      {
+        endpointId,
+        reason: parsedBody.reason,
+        ...(parsedBody.schemaVersion === undefined ? {} : { schemaVersion: parsedBody.schemaVersion }),
+      },
+      'Inbound webhook refused',
+    );
     return { kind: 'invalid_request' };
   }
 
@@ -347,28 +466,28 @@ function toSummary(message: string | undefined): string {
 }
 
 /**
- * Projection of `message`, `slack_permalink`, `slack_channel` and `slack_ts`, a text-only
- * projection of `slack_message.blocks` / `slack_message.attachments` (the `## Content` section,
- * between `## Message` and `## Details`; see `slack-content.ts`), plus the LOCAL names of the
- * fetched attachments, and the poster's `slack_message.app_id` / `.bot_id` when each matches the
- * id shape (the only keys of `slack_message` read besides `blocks` and `attachments`). The
- * `slack_message` object itself, every other key of it, and the `slack_files` entries never enter it: the first is the raw event, the second carries short-lived
- * download-token URLs, and a listed attachment is only ever a file name under `attachments/` (the
- * sanitized name, not the declared name, mimetype or size). With no section, the output is
- * identical to a message without `slack_message`.
+ * Projection of the normalised message: its text, permalink, channel and timestamp, a text-only
+ * projection of the source event's `blocks` / `attachments` (the `## Content` section, between
+ * `## Message` and `## Details`; see `slack-content.ts`), plus the LOCAL names of the fetched
+ * attachments, and the poster's `app_id` / `bot_id` when each matches the id shape (the only keys
+ * of the source event read besides `blocks` and `attachments`). The source event itself, every
+ * other key of it, and the file entries never enter it: the first is the raw event, the second
+ * carries short-lived download-token URLs, and a listed attachment is only ever a file name under
+ * `attachments/` (the sanitized name, not the declared name, mimetype or size). With no section,
+ * the output is identical to a message without a source event.
  */
 function buildBodyMarkdown(
-  body: InboundWebhookBody,
+  message: InboundMessage,
   section: string[] | null,
   poster: PosterIdentity,
   attachments: { names: string[]; skipped: number },
 ): string {
-  const lines = ['# Inbound webhook message', '', '## Message', '', sanitizeMultiline(body.message ?? '')];
+  const lines = ['# Inbound webhook message', '', '## Message', '', sanitizeMultiline(message.message)];
   if (section !== null) lines.push('', ...section);
   const details: string[] = [];
-  if (body.slack_permalink !== undefined) details.push(`- Permalink: ${toSingleLine(body.slack_permalink)}`);
-  if (body.slack_channel !== undefined) details.push(`- Channel: ${toSingleLine(body.slack_channel)}`);
-  if (body.slack_ts !== undefined) details.push(`- Timestamp: ${toSingleLine(body.slack_ts)}`);
+  if (message.permalink !== null) details.push(`- Permalink: ${toSingleLine(message.permalink)}`);
+  if (message.channel !== null) details.push(`- Channel: ${toSingleLine(message.channel)}`);
+  if (message.ts !== null) details.push(`- Timestamp: ${toSingleLine(message.ts)}`);
   if (poster.appId.kind === 'shown') details.push(`- App ID: ${poster.appId.value}`);
   if (poster.botId.kind === 'shown') details.push(`- Bot ID: ${poster.botId.value}`);
   if (details.length > 0) lines.push('', '## Details', '', ...details);
@@ -393,38 +512,39 @@ export async function prepareDelivery(
   if (!endpoint) {
     throw new PermanentHandlerError(`Inbound webhook endpoint no longer exists: ${payload.endpointId}`);
   }
-  const body = parseInboundWebhookBody(payload.rawPayload);
-  if (body === null) {
+  const parsed = parseInboundWebhookBody(payload.rawPayload);
+  if (!parsed.ok) {
     throw new PermanentHandlerError('Stored inbound webhook payload does not match the body schema');
   }
-  const files = body.slack_files ?? [];
+  const message = parsed.message;
+  const files = message.files;
   const { fetched, skipped } = files.length === 0
     ? { fetched: [], skipped: 0 }
     : await fetchAttachments(files, { fetch: deps.attachmentFetch, limits: deps.attachmentLimits });
-  const projection = projectSlackContent(body.slack_message, body.slack_message_truncated === true);
-  const poster = readPosterIdentity(body.slack_message);
-  if (body.slack_message !== undefined) {
-    // Counts and kinds only, never a payload string.
-    logger.info(
-      {
-        deliveryId: payload.jobId,
-        endpointId: endpoint.id,
-        ...projection.counts,
-        appId: poster.appId.kind,
-        botId: poster.botId.kind,
-        senderTruncated: body.slack_message_truncated === true,
-      },
-      'Slack content projected',
-    );
-  }
-  const summary = toSingleLine(body.message ?? '') !== ''
-    ? toSummary(body.message)
+  const sourceEvent = message.sourceEvent ?? undefined;
+  const projection = projectSlackContent(sourceEvent, message.sourceEventTruncated);
+  const poster = readPosterIdentity(sourceEvent);
+  // Counts and kinds only, never a payload string.
+  logger.info(
+    {
+      deliveryId: payload.jobId,
+      endpointId: endpoint.id,
+      schemaVersion: message.schemaVersion,
+      ...projection.counts,
+      appId: poster.appId.kind,
+      botId: poster.botId.kind,
+      senderTruncated: message.sourceEventTruncated,
+    },
+    'Slack content projected',
+  );
+  const summary = toSingleLine(message.message) !== ''
+    ? toSummary(message.message)
     : toSummary(projection.firstLine ?? undefined);
   return {
-    bodyMarkdown: buildBodyMarkdown(body, projection.section, poster, { names: fetched.map((file) => file.name), skipped }),
+    bodyMarkdown: buildBodyMarkdown(message, projection.section, poster, { names: fetched.map((file) => file.name), skipped }),
     instructionMarkdown: endpoint.instructionText,
     summary,
-    url: body.slack_permalink ?? null,
+    url: message.permalink,
     deliveryId: payload.jobId,
     endpoint: { id: endpoint.id, repositoryId: endpoint.repositoryId, label: endpoint.label },
     attachments: fetched,
