@@ -87,6 +87,16 @@
  *           real timeout (those run in process with an injected fetch, a recorded proxy for the
  *           transport only).
  *
+ *   (7) BODY VERSION 2 (after every arm above, so their baselines are untouched): a signed
+ *           `schema_version: 2` delivery routed to L. Its `body.md` shows the Permalink, Channel,
+ *           Timestamp and App ID lines and the block marker under `## Content`; the reply address
+ *           the body carries (a marker) is absent from `body.md`, from L's output file and from
+ *           everything the child printed (also in the final secrecy scan); the child's projection
+ *           record names `schemaVersion: 2` for that delivery. Then a signed `schema_version: 3`
+ *           body is answered 400 with no new deliveries row and no job, against the positive control
+ *           that the version 2 delivery moved both counters, and the child logs the
+ *           `unsupported-schema-version` reason.
+ *
  * The request signature is computed HERE from the Standard Webhooks specification (HMAC-SHA256
  * over `{id}.{timestamp}.{body}`, keyed by the base64-decoded part of the secret after `whsec_`),
  * never by importing the production verifier, so a production signer or verifier that drifted
@@ -278,6 +288,36 @@ const SENDER_BODY = {
     blocks: [{ type: 'section', block_id: BLOCK_ID_MARKER, text: { type: 'mrkdwn', text: BLOCK_MARKER } }],
   },
 };
+
+// Arm (7): a body of schema_version 2 (the reader the sender's newer body shape needs). Every key a reader must NOT
+// surface carries a marker: the reply address (never read) and the raw event's other keys.
+const V2_REPLY_URL_MARKER = 'SMOKE-V2-REPLY-URL-MARKER';
+const V2_BLOCK_MARKER = 'SMOKE-V2-BLOCK-CONTENT-MARKER';
+const V2_APP_ID = 'A0V2SMOKE1';
+const V2_PERMALINK = 'https://example.slack.com/archives/C777/p1700000002000100';
+const V2_BODY = {
+  schema_version: 2,
+  message: 'Version two delivery',
+  hikyac: {
+    v: 1,
+    reply: { url: `https://sender.example.com/webhook/reply/${V2_REPLY_URL_MARKER}` },
+    triggers: ['mention'],
+    permalink: V2_PERMALINK,
+    thread_key: 'th_smoke',
+    files: [],
+  },
+  source: {
+    type: 'slack',
+    ids: { team_id: 'T1', channel: 'C777', ts: '1700000002.000100', thread_ts: null, event_id: 'Ev-V2' },
+    event: {
+      app_id: V2_APP_ID,
+      blocks: [{ type: 'section', block_id: BLOCK_ID_MARKER, text: { type: 'mrkdwn', text: V2_BLOCK_MARKER } }],
+    },
+    truncated: false,
+  },
+};
+/** Arm (7b): a version this receiver does not read. */
+const UNSUPPORTED_VERSION_BODY = { ...V2_BODY, schema_version: 3 };
 
 /** Upper bound on waiting for the child's output readers to reach end of stream after the child exited. */
 const DRAIN_DEADLINE_MS = 5_000;
@@ -1016,6 +1056,101 @@ async function main(): Promise<void> {
 
     // Let E's turns for these deliveries finish before teardown deletes its session (not an assertion).
     await waitFor(() => stubRequests.length >= stubBeforeReply + 3, 30_000, "E's turns for the three reply-arm deliveries");
+    await Bun.sleep(1_000);
+
+    // ===================================================================
+    // (7) BODY VERSION 2: last, so every baseline above is untouched. Both parts use the main endpoint's counters.
+    // ===================================================================
+    console.log('\n==> BODY VERSION 2: a signed schema_version 2 delivery, then a schema_version 3 one');
+    const v2WebhookId = `${WEBHOOK_ID}-v2`;
+    const v2DeliveryId = `inbound-webhook:${endpointId}:${v2WebhookId}`;
+    const beforeL3 = readSafe(outputPathL);
+    const stdoutBeforeV2 = stdoutBuf.length;
+    const stubBeforeV2 = stubRequests.length;
+    const deliveriesBeforeV2 = countDeliveries();
+    const jobsBeforeV2 = countJobs();
+    const v2Res = await post({ webhookId: v2WebhookId, rawBody: JSON.stringify(V2_BODY) });
+    expect(v2Res.status === 200, '(7a) the signed schema_version 2 POST is accepted (200)', `status=${v2Res.status}`);
+    const tagFoundL3 = await waitFor(
+      () => {
+        const since = readSafe(outputPathL).slice(beforeL3.length).replace(/\r?\n/g, '');
+        return tagCount(since) >= 1 && since.includes('intent=triage');
+      },
+      45_000,
+      "L's output file to contain the tag of the version 2 delivery",
+    );
+    const newL3 = readSafe(outputPathL).slice(beforeL3.length);
+    expect(tagFoundL3, `(7a) POSITIVE CONTROL: L's output gained ${TAG} for the version 2 delivery`, newL3.slice(-600));
+    const countersMovedByV2 = countDeliveries() === deliveriesBeforeV2 + 1 && countJobs() === jobsBeforeV2 + 1;
+    expect(countersMovedByV2, '(7a) POSITIVE CONTROL: the version 2 delivery moved the deliveries and jobs counters by one each', `deliveries=${countDeliveries()} jobs=${countJobs()}`);
+    const pathsL3 = resolverFor(sessionL.id).getInboundWebhookDeliveryPaths(sessionL.id, workerL.id, v2DeliveryId);
+    const bodyL3 = readSafe(pathsL3.bodyPath);
+    expect(existsSync(pathsL3.bodyPath) && bodyL3.includes('Version two delivery'), "(7a) body.md exists in L's delivery directory and carries the sender message", bodyL3.slice(0, 300));
+    expect(
+      bodyL3.includes(`- Permalink: ${V2_PERMALINK}`) &&
+        bodyL3.includes('- Channel: C777') &&
+        bodyL3.includes('- Timestamp: 1700000002.000100') &&
+        bodyL3.includes(`- App ID: ${V2_APP_ID}`),
+      '(7a) body.md shows the Permalink, Channel, Timestamp and App ID lines read from the version 2 body',
+      bodyL3.slice(0, 500),
+    );
+    const contentAt = bodyL3.indexOf('## Content');
+    expect(
+      contentAt > bodyL3.indexOf('## Message') && bodyL3.indexOf(V2_BLOCK_MARKER) > contentAt && bodyL3.indexOf(V2_BLOCK_MARKER) < bodyL3.indexOf('## Details'),
+      '(7a) body.md carries the block marker under ## Content, between ## Message and ## Details',
+      bodyL3.slice(0, 500),
+    );
+    // The reply address is never read: absent from body.md, L's output and everything the child printed.
+    const v2ChildOutputDrained = await waitFor(() => stdoutBuf.slice(stdoutBeforeV2).includes('Slack content projected'), 15_000, "the child's stdout to carry the projection record of the version 2 delivery");
+    expect(
+      !bodyL3.includes(V2_REPLY_URL_MARKER) && !newL3.includes(V2_REPLY_URL_MARKER) && !stdoutBuf.includes(V2_REPLY_URL_MARKER) && !stderrBuf.includes(V2_REPLY_URL_MARKER),
+      "(7a) the reply address marker is absent from body.md, from L's output file and from the child's captured stdout and stderr",
+      bodyL3.slice(0, 300),
+    );
+    // (7c) the child's own record names the version it read, for this delivery.
+    // The dev logger colours values with ANSI escapes; strip them so a number is matched as printed text.
+    const stdoutSinceV2 = stdoutBuf.slice(stdoutBeforeV2).replace(/\u001b\[[0-9;]*m/g, '');
+    let projectedWithVersion2 = false;
+    for (let at = stdoutSinceV2.indexOf('Slack content projected'); at !== -1; at = stdoutSinceV2.indexOf('Slack content projected', at + 1)) {
+      const window = stdoutSinceV2.slice(Math.max(0, at - 700), at + 700);
+      if (window.includes(v2DeliveryId) && /schemaVersion"?:\s*2\b/.test(window)) projectedWithVersion2 = true;
+    }
+    expect(
+      v2ChildOutputDrained && projectedWithVersion2,
+      '(7c) the child server\'s stdout carries the projection record of the version 2 delivery with schemaVersion 2',
+      stdoutSinceV2.slice(-800),
+    );
+    const v2JobDone = await waitFor(
+      () => queryOne<{ status: string }>('SELECT status FROM jobs WHERE id = ?', v2DeliveryId)?.status === JOB_STATUS.COMPLETED,
+      30_000,
+      'the version 2 delivery job to complete',
+    );
+    expect(v2JobDone && queryOne<{ attempts: number }>('SELECT attempts FROM jobs WHERE id = ?', v2DeliveryId)?.attempts === 0, '(7a) the version 2 delivery job completed on its first attempt', '');
+
+    // (7b) a version this receiver does not read is a permanent 400 and leaves no row, against the positive control above.
+    const stdoutBeforeV3 = stdoutBuf.length;
+    const deliveriesBeforeV3 = countDeliveries();
+    const jobsBeforeV3 = countJobs();
+    const v3Res = await post({ webhookId: `${WEBHOOK_ID}-v3`, rawBody: JSON.stringify(UNSUPPORTED_VERSION_BODY) });
+    expect(v3Res.status === 400, '(7b) a signed schema_version 3 POST is answered 400', `status=${v3Res.status}`);
+    expect(
+      countersMovedByV2 && countDeliveries() === deliveriesBeforeV3 && countJobs() === jobsBeforeV3 && deliveriesBeforeV3 === deliveriesBeforeV2 + 1,
+      '(7b) the schema_version 3 POST created no deliveries row and no job (the control above shows those counters do move)',
+      `deliveries=${countDeliveries()} jobs=${countJobs()} before=${deliveriesBeforeV3}/${jobsBeforeV3}`,
+    );
+    const refusalReasonLogged = await waitFor(
+      () => {
+        const since = stdoutBuf.slice(stdoutBeforeV3);
+        return since.includes('Inbound webhook refused') && since.includes('unsupported-schema-version');
+      },
+      15_000,
+      "the child's stdout to carry the unsupported-schema-version refusal record",
+    );
+    expect(refusalReasonLogged, '(7b) the child server\'s stdout carries the refusal record with reason unsupported-schema-version', stdoutBuf.slice(stdoutBeforeV3).slice(-600));
+    // The reply address marker is also part of the final secrecy scan, after the child exited and both readers drained.
+    if (finalSecrecyScan) finalSecrecyScan.secrets.push(V2_REPLY_URL_MARKER);
+    // Let E's turn for the version 2 delivery finish before teardown deletes its session (not an assertion).
+    await waitFor(() => stubRequests.length > stubBeforeV2, 30_000, "E's turn for the version 2 delivery");
     await Bun.sleep(1_000);
     void stdoutBuf;
     void stderrBuf;

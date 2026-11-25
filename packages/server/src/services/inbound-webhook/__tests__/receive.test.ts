@@ -142,13 +142,13 @@ describe('parseInboundWebhookBody', () => {
     const parsed = parseInboundWebhookBody(
       JSON.stringify({ schema_version: 1, message: 'hi', matched_triggers: ['mention'], future_key: { a: 1 } }),
     );
-    expect(parsed?.message).toBe('hi');
-    expect(parsed).not.toHaveProperty('future_key');
+    expect(parsed.ok && parsed.message.message).toBe('hi');
+    expect(parsed.ok && parsed.message).not.toHaveProperty('future_key');
   });
 
   it('accepts an empty message and a body with only slack_message', () => {
-    expect(parseInboundWebhookBody('{"message":""}')).not.toBeNull();
-    expect(parseInboundWebhookBody('{"slack_message":{"text":"x"},"slack_message_truncated":true}')).not.toBeNull();
+    expect(parseInboundWebhookBody('{"message":""}').ok).toBe(true);
+    expect(parseInboundWebhookBody('{"slack_message":{"text":"x"},"slack_message_truncated":true}').ok).toBe(true);
   });
 
   const refused: Array<[string, string]> = [
@@ -166,7 +166,7 @@ describe('parseInboundWebhookBody', () => {
     ['a string matched_triggers', '{"message":"x","matched_triggers":"mention"}'],
   ];
   for (const [name, text] of refused) {
-    it(`refuses ${name}`, () => expect(parseInboundWebhookBody(text)).toBeNull());
+    it(`refuses ${name}`, () => expect(parseInboundWebhookBody(text).ok).toBe(false));
   }
 });
 
@@ -664,7 +664,7 @@ describe('prepareDelivery', () => {
       expect(content.bodyMarkdown).toContain('The sender shortened the Slack message');
     });
 
-    it('logs counts only, once, and only when slack_message is present', async () => {
+    it('logs counts only, once per delivery, with or without a source event', async () => {
       const sentinel = 'LOG-SENTINEL-XYZ';
       const infoSpy = spyOn(rootLogger, 'info');
       try {
@@ -677,6 +677,7 @@ describe('prepareDelivery', () => {
         expect(projected[0]![0]).toEqual({
           deliveryId: 'inbound-webhook:ep-1:Ev1',
           endpointId: 'ep-1',
+          schemaVersion: 1,
           blocksSeen: 2,
           attachmentsSeen: 0,
           chunks: 1,
@@ -690,7 +691,9 @@ describe('prepareDelivery', () => {
 
         infoSpy.mockClear();
         await prepareDelivery(payloadOf({ message: 'no event' }), { endpoints });
-        expect(infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'))).toHaveLength(0);
+        const withoutEvent = infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'));
+        expect(withoutEvent).toHaveLength(1);
+        expect(withoutEvent[0]![0]).toMatchObject({ schemaVersion: 1, blocksSeen: 0, appId: 'absent', botId: 'absent' });
       } finally {
         infoSpy.mockRestore();
       }
@@ -993,5 +996,406 @@ describe('the reply URL stays off every agent-visible surface', () => {
       const text = await Bun.file(file).text();
       expect(text, file).not.toMatch(/reply_url|replyUrl|inboundWebhookEndpointRepository/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// schema_version dispatch and the version 2 reader
+// ---------------------------------------------------------------------------
+
+const FILE_URL = 'https://firebasestorage.googleapis.com/v0/b/bucket-NEUTRAL/o/f1?alt=media&token=tok-NEUTRAL-V2';
+const SECTION_EVENT = { app_id: 'A0123ABCD', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'BLOCK-MARKER' } }] };
+const PERMALINK = 'https://example.slack.com/archives/C1/p1';
+
+function v2Body(over: Record<string, unknown> = {}, hikyac: Record<string, unknown> = {}, source: Record<string, unknown> = {}) {
+  return {
+    schema_version: 2,
+    message: 'hello',
+    hikyac: {
+      v: 1,
+      reply: { url: 'https://sender.example.com/webhook/reply/abc' },
+      triggers: ['mention'],
+      permalink: PERMALINK,
+      thread_key: 'th_1',
+      files: [],
+      ...hikyac,
+    },
+    source: {
+      type: 'slack',
+      ids: { team_id: 'T1', channel: 'C1', ts: '1.2', thread_ts: null, event_id: 'Ev1' },
+      event: null,
+      truncated: false,
+      ...source,
+    },
+    ...over,
+  };
+}
+
+/** A deep copy of `v2Body()` with the value at `path` removed, or replaced when `value` is given. */
+function v2With(path: string[], value?: unknown): unknown {
+  const body = JSON.parse(JSON.stringify(v2Body())) as Record<string, unknown>;
+  let node: Record<string, unknown> = body;
+  for (const key of path.slice(0, -1)) node = node[key] as Record<string, unknown>;
+  const last = path[path.length - 1] as string;
+  if (arguments.length === 2) node[last] = value;
+  else delete node[last];
+  return body;
+}
+
+describe('parseInboundWebhookBody: schema_version dispatch', () => {
+  const v1Text = (versionText?: string) =>
+    `{${versionText === undefined ? '' : `"schema_version":${versionText},`}"message":"m","slack_channel":"C1"}`;
+  const v2Text = (versionText: string) => JSON.stringify(v2Body()).replace('"schema_version":2', `"schema_version":${versionText}`);
+
+  // (T1) one case per row of the decision table
+  const readers: Array<[string, string, 1 | 2]> = [
+    ['key absent', v1Text(), 1],
+    ['1', v1Text('1'), 1],
+    ['1.0', v1Text('1.0'), 1],
+    ['2', v2Text('2'), 2],
+    ['2.0', v2Text('2.0'), 2],
+  ];
+  for (const [name, text, version] of readers) {
+    it(`(T1) schema_version ${name} is read by the version ${version} reader`, () => {
+      const parsed = parseInboundWebhookBody(text);
+      expect(parsed.ok && parsed.message.schemaVersion).toBe(version);
+    });
+  }
+
+  const unsupported: Array<[string, string, number | undefined]> = [
+    ['0', v1Text('0'), 0],
+    ['3', v1Text('3'), 3],
+    ['1.5', v1Text('1.5'), 1.5],
+    ['-1', v1Text('-1'), -1],
+    ['"2" (a string)', v1Text('"2"'), undefined],
+    ['null', v1Text('null'), undefined],
+    ['true', v1Text('true'), undefined],
+    ['an object', v1Text('{"a":1}'), undefined],
+    ['a number too large for a double', v1Text('1e999'), undefined],
+  ];
+  for (const [name, text, schemaVersion] of unsupported) {
+    it(`(T1) schema_version ${name} is refused as unsupported, reporting the number only when it is finite`, () => {
+      const parsed = parseInboundWebhookBody(text);
+      expect(parsed).toEqual(schemaVersion === undefined ? { ok: false, reason: 'unsupported-schema-version' } : { ok: false, reason: 'unsupported-schema-version', schemaVersion });
+    });
+  }
+
+  for (const [name, text] of [['a non-JSON text', '{nope'], ['an array', '[]'], ['a string', '"x"'], ['a number', '2'], ['null', 'null']] as const) {
+    it(`(T1) ${name} is refused as an invalid request`, () => {
+      expect(parseInboundWebhookBody(text)).toEqual({ ok: false, reason: 'invalid-request' });
+    });
+  }
+
+  it('(T1) a failed reader is a refusal, never a fallback to the other reader', () => {
+    // A valid version 1 body that claims version 2: the version 2 reader refuses it.
+    expect(parseInboundWebhookBody('{"schema_version":2,"message":"m","slack_channel":"C1"}')).toEqual({ ok: false, reason: 'invalid-request' });
+    // A valid version 2 body with the version key removed is read as version 1 (message present), carrying none of its fields.
+    const { schema_version: _dropped, ...withoutVersion } = v2Body();
+    const parsed = parseInboundWebhookBody(JSON.stringify(withoutVersion));
+    expect(parsed.ok && parsed.message).toMatchObject({ schemaVersion: 1, message: 'hello', permalink: null, channel: null });
+  });
+});
+
+describe('parseInboundWebhookBody: version 2 reader', () => {
+  const read = (body: unknown) => parseInboundWebhookBody(JSON.stringify(body));
+
+  it('maps a full slack body into the normalised shape', () => {
+    const parsed = read(v2Body({}, { files: [{ name: 'a.png', url: FILE_URL }] }, { event: { a: 1 }, truncated: true }));
+    expect(parsed).toEqual({
+      ok: true,
+      message: {
+        schemaVersion: 2,
+        message: 'hello',
+        permalink: PERMALINK,
+        channel: 'C1',
+        ts: '1.2',
+        files: [{ name: 'a.png', url: FILE_URL }],
+        sourceEvent: { a: 1 },
+        sourceEventTruncated: true,
+      },
+    });
+  });
+
+  // (T2) every required key missing, and each with a wrong type
+  const invalid: Array<[string, unknown]> = [
+    ['message missing', v2With(['message'])],
+    ['message a number', v2With(['message'], 5)],
+    ['message null', v2With(['message'], null)],
+    ['hikyac missing', v2With(['hikyac'])],
+    ['hikyac a string', v2With(['hikyac'], 'x')],
+    ['hikyac an array', v2With(['hikyac'], [])],
+    ['hikyac.permalink missing', v2With(['hikyac', 'permalink'])],
+    ['hikyac.permalink a number', v2With(['hikyac', 'permalink'], 5)],
+    ['hikyac.files missing', v2With(['hikyac', 'files'])],
+    ['hikyac.files null', v2With(['hikyac', 'files'], null)],
+    ['hikyac.files a string', v2With(['hikyac', 'files'], 'u')],
+    ['a hikyac.files element with a wrong typed name', v2With(['hikyac', 'files'], [{ name: 5 }])],
+    ['source missing', v2With(['source'])],
+    ['source a string', v2With(['source'], 'slack')],
+    ['source.type missing', v2With(['source', 'type'])],
+    ['source.type a number', v2With(['source', 'type'], 5)],
+    ['source.ids missing', v2With(['source', 'ids'])],
+    ['source.ids a string', v2With(['source', 'ids'], 'x')],
+    ['source.ids.channel missing', v2With(['source', 'ids', 'channel'])],
+    ['source.ids.channel a number', v2With(['source', 'ids', 'channel'], 5)],
+    ['source.ids.channel null', v2With(['source', 'ids', 'channel'], null)],
+    ['source.ids.ts missing', v2With(['source', 'ids', 'ts'])],
+    ['source.ids.ts a number', v2With(['source', 'ids', 'ts'], 1.2)],
+    ['source.event missing', v2With(['source', 'event'])],
+    ['source.event a string', v2With(['source', 'event'], 'x')],
+    ['source.truncated missing', v2With(['source', 'truncated'])],
+    ['source.truncated a string', v2With(['source', 'truncated'], 'false')],
+  ];
+  for (const [name, body] of invalid) {
+    it(`(T2) refuses: ${name}`, () => expect(read(body)).toEqual({ ok: false, reason: 'invalid-request' }));
+  }
+
+  // hikyac.v is the envelope version: anything but the number 1 (including absent) is an unsupported version.
+  const badEnvelope: Array<[string, unknown]> = [
+    ['hikyac.v 2', v2With(['hikyac', 'v'], 2)],
+    ['hikyac.v 0', v2With(['hikyac', 'v'], 0)],
+    ['hikyac.v "1"', v2With(['hikyac', 'v'], '1')],
+    ['hikyac.v missing', v2With(['hikyac', 'v'])],
+  ];
+  for (const [name, body] of badEnvelope) {
+    it(`(T2) ${name} is refused as an unsupported version`, () => {
+      expect(read(body)).toEqual({ ok: false, reason: 'unsupported-schema-version', schemaVersion: 2 });
+    });
+  }
+
+  it('accepts unknown extra keys at the top level, in hikyac, in source and in source.ids', () => {
+    const body = v2Body({ extra: 1 }, { extra: [1] }, { extra: { a: 1 }, ids: { channel: 'C1', ts: '1.2', extra: true } });
+    const parsed = read(body);
+    expect(parsed.ok && parsed.message).toMatchObject({ schemaVersion: 2, channel: 'C1', ts: '1.2' });
+  });
+
+  it('a non-slack source is not looked into: its ids, event and truncated may be absent or ill-typed', () => {
+    for (const source of [{ type: 'other' }, { type: 'other', ids: 5, event: 'x', truncated: 'no' }]) {
+      const parsed = read({ ...v2Body(), source });
+      expect(parsed.ok && parsed.message).toMatchObject({ channel: null, ts: null, sourceEvent: null, sourceEventTruncated: false });
+    }
+  });
+});
+
+describe('inbound body schema_version 2', () => {
+  let db: Kysely<Database>;
+  let endpoints: SqliteInboundWebhookEndpointRepository;
+  let jobQueue: JobQueue;
+  const stubFetch = async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+  const payloadOf = (body: unknown): InboundWebhookProcessPayload => ({
+    jobId: 'inbound-webhook:ep-1:Ev1',
+    endpointId: 'ep-1',
+    rawPayload: JSON.stringify(body),
+    receivedAt: NOW.toISOString(),
+  });
+  const deliver = (body: unknown) => prepareDelivery(payloadOf(body), { endpoints, attachmentFetch: stubFetch });
+
+  beforeEach(async () => {
+    db = await createDatabaseForTest();
+    await db.insertInto('repositories').values({ id: 'repo-1', name: 'r', path: '/tmp/r' }).execute();
+    endpoints = new SqliteInboundWebhookEndpointRepository(db);
+    await endpoints.create({
+      id: 'ep-1',
+      label: 'Slack',
+      repositoryId: 'repo-1',
+      instructionText: 'Do the thing',
+      secret: VECTOR_SECRET,
+      now: '2026-11-07T00:00:00.000Z',
+    });
+    jobQueue = new JobQueue(db, { concurrency: 1 });
+  });
+
+  afterEach(async () => {
+    await db.destroy();
+  });
+
+  describe('boundary values (T3)', () => {
+    it('an empty message with a projectable block takes its summary from the first projected line', async () => {
+      const content = await deliver(v2Body({ message: '' }, {}, { event: SECTION_EVENT }));
+      expect(content.summary).toBe('BLOCK-MARKER');
+      expect(content.bodyMarkdown).toContain('## Content');
+    });
+
+    it('hikyac.files [] means no attachments and no section', async () => {
+      const content = await deliver(v2Body());
+      expect(content).toMatchObject({ hasAttachments: false, attachmentsFetched: 0, attachmentsSkipped: 0 });
+      expect(content.bodyMarkdown).not.toContain('Attachments');
+    });
+
+    it('hikyac.permalink null means url null and no Permalink line (the Channel and Timestamp lines remain)', async () => {
+      const content = await deliver(v2Body({}, { permalink: null }));
+      expect(content.url).toBeNull();
+      expect(content.bodyMarkdown).not.toContain('Permalink');
+      expect(content.bodyMarkdown).toContain('- Channel: C1');
+      expect(content.bodyMarkdown).toContain('- Timestamp: 1.2');
+    });
+
+    it('source.event null with truncated false has no ## Content', async () => {
+      const content = await deliver(v2Body());
+      expect(content.bodyMarkdown).not.toContain('## Content');
+    });
+
+    it('source.event null with truncated true renders the section with the sender-shortened notice', async () => {
+      const content = await deliver(v2Body({}, {}, { truncated: true }));
+      expect(content.bodyMarkdown).toContain('## Content');
+      expect(content.bodyMarkdown).toContain('The sender shortened the Slack message');
+    });
+
+    it('hikyac.reply null is accepted', async () => {
+      const content = await deliver(v2Body({}, { reply: null }));
+      expect(content.summary).toBe('hello');
+    });
+
+    it('unknown extra keys at every level are accepted and reach nothing', async () => {
+      const content = await deliver(v2Body({ extra_top: 'EXTRA-TOP' }, { extra_h: 'EXTRA-H' }, { extra_s: 'EXTRA-S', ids: { channel: 'C1', ts: '1.2', extra_i: 'EXTRA-I' } }));
+      for (const marker of ['EXTRA-TOP', 'EXTRA-H', 'EXTRA-S', 'EXTRA-I', 'th_1']) expect(JSON.stringify(content)).not.toContain(marker);
+    });
+  });
+
+  it('(T4) a source of another type delivers the message, permalink and files only', async () => {
+    const body = v2Body(
+      {},
+      { files: [{ name: 'one.png', mimetype: 'image/png', size: 3, url: FILE_URL }] },
+      { type: 'other', ids: { channel: 'C-IGNORED', ts: '9.9' }, event: SECTION_EVENT, truncated: true },
+    );
+    const content = await deliver(body);
+    expect(content.bodyMarkdown).toContain('hello');
+    expect(content.bodyMarkdown).toContain(`- Permalink: ${PERMALINK}`);
+    expect(content.bodyMarkdown).toContain('- attachments/one.png');
+    for (const absent of ['Channel', 'Timestamp', 'App ID', 'Bot ID', '## Content', 'BLOCK-MARKER', 'C-IGNORED', 'sender shortened']) {
+      expect(content.bodyMarkdown).not.toContain(absent);
+    }
+    const bare = await deliver({ ...v2Body(), source: { type: 'other' } });
+    expect(bare.bodyMarkdown).toContain(`- Permalink: ${PERMALINK}`);
+    expect(bare.bodyMarkdown).not.toContain('Channel');
+  });
+
+  describe('equivalence with version 1 (T5)', () => {
+    const FILE = { name: 'one.png', mimetype: 'image/png', size: 3, url: FILE_URL };
+    const compare = async (v1: unknown, v2: unknown) => {
+      const a = await deliver(v1);
+      const b = await deliver(v2);
+      expect(b.bodyMarkdown).toBe(a.bodyMarkdown);
+      expect(b.summary).toBe(a.summary);
+      expect(b.url).toBe(a.url);
+      expect(b.attachmentsFetched).toBe(a.attachmentsFetched);
+      expect(b.attachmentsSkipped).toBe(a.attachmentsSkipped);
+      expect(b.hasAttachments).toBe(a.hasAttachments);
+      return a;
+    };
+
+    it('the same message, permalink, channel, ts, file, one section block, app id, not truncated', async () => {
+      const a = await compare(
+        { schema_version: 1, message: 'hello', slack_permalink: PERMALINK, slack_channel: 'C1', slack_ts: '1.2', slack_files: [FILE], slack_message: SECTION_EVENT, slack_message_truncated: false },
+        v2Body({}, { files: [FILE] }, { event: SECTION_EVENT, truncated: false }),
+      );
+      // Control: the compared output is not the trivial one.
+      expect(a.bodyMarkdown).toContain('## Content');
+      expect(a.bodyMarkdown).toContain('- Permalink: ');
+      expect(a.bodyMarkdown).toContain('- App ID: A0123ABCD');
+      expect(a.bodyMarkdown).toContain('- attachments/one.png');
+      expect(a.hasAttachments).toBe(true);
+    });
+
+    it('"v1 truncated with no slack_message" equals "v2 event null, truncated true"', async () => {
+      const a = await compare(
+        { schema_version: 1, message: 'hello', slack_permalink: PERMALINK, slack_channel: 'C1', slack_ts: '1.2', slack_message_truncated: true },
+        v2Body({}, {}, { event: null, truncated: true }),
+      );
+      expect(a.bodyMarkdown).toContain('The sender shortened the Slack message');
+    });
+  });
+
+  it('(T8) a human-mention-shaped version 2 body is byte-identical to the version 1 body without slack_message', async () => {
+    const mention = v2Body({}, {}, { event: { blocks: [{ type: 'rich_text', elements: [] }] } });
+    const v1 = await deliver({ message: 'hello', slack_permalink: PERMALINK, slack_channel: 'C1', slack_ts: '1.2' });
+    const v2 = await deliver(mention);
+    expect(v2.bodyMarkdown).toBe(v1.bodyMarkdown);
+    expect(v2.bodyMarkdown).toContain('## Details');
+    expect(v2.bodyMarkdown).not.toContain('## Content');
+  });
+
+  describe('the reply address and refusals at receiveInboundWebhook', () => {
+    const MARK = 'REPLY-MARKER-7f3a';
+    const SECRET = VECTOR_SECRET;
+    const signedInput = (body: unknown, webhookId: string): ReceiveInput => {
+      const rawBody = JSON.stringify(body);
+      const timestamp = String(NOW_SECONDS);
+      return { endpointId: 'ep-1', rawBody, webhookId, timestamp, signature: sign(SECRET, webhookId, timestamp, rawBody) };
+    };
+    const deps = () => ({ endpoints, db, jobQueue, now: () => NOW });
+    const rows = async () => ({
+      deliveries: await db.selectFrom('inbound_webhook_deliveries').selectAll().execute(),
+      jobs: await db.selectFrom('jobs').selectAll().execute(),
+    });
+
+    it('(T6) the reply address in a version 2 body reaches no content field and no log call', async () => {
+      const body = v2Body({}, { reply: { url: `https://sender.example.com/webhook/reply/${MARK}` } }, { event: SECTION_EVENT });
+      const spies = (['debug', 'info', 'warn', 'error'] as const).map((level) => spyOn(rootLogger, level));
+      try {
+        expect(await receiveInboundWebhook(signedInput(body, 'Ev1'), deps())).toEqual({ kind: 'accepted' });
+        const stored = (await rows()).jobs[0]?.payload ?? '';
+        // Controls: the body really carries the marker, and the spies really saw the projection record.
+        expect(stored).toContain(MARK);
+        const content = await prepareDelivery(payloadOf(body), { endpoints, attachmentFetch: stubFetch });
+        expect(spies.some((spy) => spy.mock.calls.some((call) => call.includes('Slack content projected')))).toBe(true);
+
+        for (const field of [content.bodyMarkdown, content.summary, content.url ?? '']) expect(field).not.toContain(MARK);
+        const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+        expect(logged).not.toContain(MARK);
+        expect(logged).not.toContain('sender.example.com');
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    });
+
+    it('(T7) a signed schema_version 3 body is refused with no row and no job, against a version 2 positive control', async () => {
+      const warn = spyOn(rootLogger, 'warn');
+      try {
+        const refused = await receiveInboundWebhook(signedInput({ ...v2Body(), schema_version: 3 }, 'Ev3'), deps());
+        expect(refused).toEqual({ kind: 'invalid_request' });
+        expect(await rows()).toEqual({ deliveries: [], jobs: [] });
+        const record = warn.mock.calls.find((call) => call.includes('Inbound webhook refused'));
+        expect(record?.[0]).toEqual({ endpointId: 'ep-1', reason: 'unsupported-schema-version', schemaVersion: 3 });
+
+        const accepted = await receiveInboundWebhook(signedInput(v2Body(), 'Ev2'), deps());
+        expect(accepted).toEqual({ kind: 'accepted' });
+        const after = await rows();
+        expect(after.deliveries.map((d) => d.webhook_id)).toEqual(['Ev2']);
+        expect(after.jobs).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a non-number schema_version is refused as unsupported and the value is never logged', async () => {
+      const warn = spyOn(rootLogger, 'warn');
+      try {
+        const refused = await receiveInboundWebhook(signedInput({ ...v2Body(), schema_version: 'SECRET-VERSION-TEXT' }, 'EvS'), deps());
+        expect(refused).toEqual({ kind: 'invalid_request' });
+        const record = warn.mock.calls.find((call) => call.includes('Inbound webhook refused'));
+        expect(record?.[0]).toEqual({ endpointId: 'ep-1', reason: 'unsupported-schema-version' });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRET-VERSION-TEXT');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a malformed version 2 body is refused as an invalid request', async () => {
+      const warn = spyOn(rootLogger, 'warn');
+      try {
+        const refused = await receiveInboundWebhook(signedInput(v2With(['hikyac']), 'EvM'), deps());
+        expect(refused).toEqual({ kind: 'invalid_request' });
+        const record = warn.mock.calls.find((call) => call.includes('Inbound webhook refused'));
+        expect(record?.[0]).toEqual({ endpointId: 'ep-1', reason: 'invalid-request' });
+        expect(await rows()).toEqual({ deliveries: [], jobs: [] });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('prepareDelivery throws PermanentHandlerError when the stored payload does not parse', async () => {
+      await expect(prepareDelivery(payloadOf({ ...v2Body(), schema_version: 3 }), { endpoints })).rejects.toBeInstanceOf(PermanentHandlerError);
+    });
   });
 });
