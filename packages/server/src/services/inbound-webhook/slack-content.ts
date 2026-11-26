@@ -1,11 +1,10 @@
 /**
  * Text-only projection of a Slack message's Block Kit content into the `## Content` section of
- * `body.md`. The message is the version 1 `slack_message` or the version 2 `source.event`; this file
- * says `slack_message` for either.
+ * `body.md`. The message is the body's `source.event`.
  *
  * Only strings found in the positions the design doc's projection table lists are written; every
- * other key of the untrusted `slack_message` (user, `block_id`, URLs, image fields, action values,
- * `slack_message.text` itself) is never read. The one exception is the poster identity
+ * other key of the untrusted `source.event` (user, `block_id`, URLs, image fields, action values,
+ * `source.event.text` itself) is never read. The one exception is the poster identity
  * (`app_id`, `bot_id`, top level), which {@link readPosterIdentity} shape-validates. The text is displayed as sent: no
  * entity decoding, no rewriting of Slack tokens, and nothing is derived from it (no counts of
  * findings, no severity, no routing).
@@ -28,9 +27,9 @@ const SENDER_TRUNCATED_NOTICE =
   '(The sender shortened the Slack message to fit its size limit; content may be missing.)';
 
 export interface SlackContentCounts {
-  /** Entries of `slack_message.blocks` (top level), whatever their shape. */
+  /** Entries of `source.event.blocks` (top level), whatever their shape. */
   blocksSeen: number;
-  /** Entries of `slack_message.attachments`, whatever their shape. */
+  /** Entries of `source.event.attachments`, whatever their shape. */
   attachmentsSeen: number;
   /** Projected chunks (one per rendered block or attachment), before any cut. */
   chunks: number;
@@ -146,7 +145,7 @@ function readPosterId(message: Record<string, unknown> | undefined, key: 'app_id
 }
 
 /**
- * The poster's `slack_message.app_id` and `slack_message.bot_id` (top level only), each shown only
+ * The poster's `source.event.app_id` and `source.event.bot_id` (top level only), each shown only
  * when it matches the shape. Pure; never throws, for any input value.
  */
 export function readPosterIdentity(slackMessage: Record<string, unknown> | undefined): PosterIdentity {

@@ -14,12 +14,13 @@ import { SqliteInboundWebhookEndpointRepository } from '../../repositories/sqlit
 import { INBOUND_WEBHOOK_MAX_BODY_BYTES } from '../../services/inbound-webhook/receive.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
 import { webhooks } from '../webhooks.js';
+import { v2Body } from '../../__tests__/utils/inbound-webhook-body.js';
 
 const SECRET = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
 const NOW = new Date('2023-11-14T22:13:20.000Z');
 const NOW_SECONDS = 1700000000;
 const BODY_SENTINEL = 'BODY-SENTINEL-7f3a';
-const BODY = JSON.stringify({ schema_version: 1, message: `hello ${BODY_SENTINEL}` });
+const BODY = JSON.stringify(v2Body({ message: `hello ${BODY_SENTINEL}` }));
 
 function signature(id: string, ts: string | number, body: string, secret = SECRET): string {
   const key = Buffer.from(secret.slice('whsec_'.length), 'base64');
@@ -129,7 +130,7 @@ describe('POST /webhooks/in/:endpointId', () => {
 
   it('400 invalid webhook-id and 400 malformed body, both leave no row', async () => {
     expect((await post('ep-1', { id: '../x' })).status).toBe(400);
-    expect((await post('ep-1', { body: '{"message":5}' })).status).toBe(400);
+    expect((await post('ep-1', { body: JSON.stringify(v2Body({ message: 5 })) })).status).toBe(400);
     expect((await post('ep-1', { body: 'not json' })).status).toBe(400);
     expect(await counts()).toEqual({ deliveries: 0, jobs: 0 });
   });
@@ -165,7 +166,8 @@ describe('POST /webhooks/in/:endpointId', () => {
     expect(withLength.status).toBe(413);
     expect(await counts()).toEqual({ deliveries: 0, jobs: 0 });
 
-    const underBody = JSON.stringify({ message: 'x'.repeat(INBOUND_WEBHOOK_MAX_BODY_BYTES - 100) });
+    const envelopeBytes = JSON.stringify(v2Body({ message: '' })).length;
+    const underBody = JSON.stringify(v2Body({ message: 'x'.repeat(INBOUND_WEBHOOK_MAX_BODY_BYTES - 100 - envelopeBytes) }));
     expect((await post('ep-1', { body: underBody })).status).toBe(200);
   });
 
@@ -232,7 +234,7 @@ describe('POST /webhooks/in/:endpointId', () => {
         const badSig = signature('Ev1', NOW_SECONDS, BODY, 'whsec_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
         await post('ep-1', { sig: badSig });
         await post('ep-1', { id: '../x' });
-        await post('ep-1', { body: `{"message":5,"k":"${BODY_SENTINEL}"}` });
+        await post('ep-1', { body: JSON.stringify(v2Body({ message: 5, k: BODY_SENTINEL })) });
         await post('ep-1');
         const calls = spies.flatMap((spy) => spy.mock.calls);
         const logged = serialize(calls);

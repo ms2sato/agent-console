@@ -27,6 +27,7 @@ import { McpTokenRegistry } from '../../../mcp/mcp-auth.js';
 import { AnnotationService } from '../../annotation-service.js';
 import { initializeInboundIntegration } from '../index.js';
 import { repositoryLookupFromSlug } from '../../../__tests__/utils/repository-lookup-mock.js';
+import { v2Body } from '../../../__tests__/utils/inbound-webhook-body.js';
 
 /** `JobQueue` has private fields; `Partial<JobQueue>` keeps the brand, so one cast type-checks. */
 function asJobQueue(stub: Partial<JobQueue>): JobQueue {
@@ -112,7 +113,7 @@ describe('initializeInboundIntegration: job handler registration', () => {
     return {
       jobId: `inbound-webhook:${endpointId}:wh-1`,
       endpointId,
-      rawPayload: JSON.stringify({ message: 'hello' }),
+      rawPayload: JSON.stringify(v2Body()),
       receivedAt: '2026-11-08T00:00:00.000Z',
     };
   }
@@ -188,10 +189,9 @@ describe('initializeInboundIntegration: job handler registration', () => {
       const handler = registered.get(JOB_TYPES.INBOUND_WEBHOOK_PROCESS) as JobHandler<InboundWebhookProcessPayload>;
       const payload = {
         ...payloadFor('ep-files'),
-        rawPayload: JSON.stringify({
-          message: 'hello',
-          slack_files: [{ name: 'a.bin', url: 'https://firebasestorage.googleapis.com/v0/b/bucket-NEUTRAL/o/doc-1?alt=media&token=tok-NEUTRAL-0004' }],
-        }),
+        rawPayload: JSON.stringify(
+          v2Body({}, { files: [{ name: 'a.bin', url: 'https://firebasestorage.googleapis.com/v0/b/bucket-NEUTRAL/o/doc-1?alt=media&token=tok-NEUTRAL-0004' }] }),
+        ),
       };
 
       await handler(payload);

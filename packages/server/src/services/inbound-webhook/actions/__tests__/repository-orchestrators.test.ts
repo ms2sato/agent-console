@@ -35,6 +35,7 @@ import { repositoryLookupFromSlug } from '../../../../__tests__/utils/repository
 import { inboundWebhookDeliveryId } from '../../receive.js';
 import type { AttachmentFetch, AttachmentFetchLimits } from '../../attachments.js';
 import { rootLogger } from '../../../../lib/logger.js';
+import { v2Body } from '../../../../__tests__/utils/inbound-webhook-body.js';
 
 const TEST_CONFIG_DIR = '/test/config-inbound-webhook-action';
 const TEST_REPO_PATH = '/test/repo-inbound-webhook-action';
@@ -54,15 +55,14 @@ const EMBEDDED_DEF = {
   updatedAt: '2024-01-01T00:00:00.000Z',
 };
 const TOKEN_LOOKING = 'tok-TOKENLIKE-SUBSTRING';
-const SENDER_BODY = {
-  schema_version: 1,
-  message: 'Deploy finished\nsecond line',
-  slack_channel: 'C123',
-  slack_ts: '1700000000.000100',
-  slack_permalink: 'https://example.slack.com/archives/C123/p1700000000000100',
-  slack_files: [{ name: 'a.png', url: `https://files.slack.com/files-pri/T1-F1/a.png?t=${TOKEN_LOOKING}` }],
-  slack_message: { text: 'RAW-SLACK-EVENT-TEXT', user: 'U1' },
-};
+const SENDER_BODY = v2Body(
+  { message: 'Deploy finished\nsecond line' },
+  {
+    permalink: 'https://example.slack.com/archives/C123/p1700000000000100',
+    files: [{ name: 'a.png', url: `https://files.slack.com/files-pri/T1-F1/a.png?t=${TOKEN_LOOKING}` }],
+  },
+  { ids: { channel: 'C123', ts: '1700000000.000100' }, event: { text: 'RAW-SLACK-EVENT-TEXT', user: 'U1' } },
+);
 
 const ptyFactory = createMockPtyFactory();
 
@@ -229,7 +229,7 @@ describe('inbound webhook action: repository orchestrators', () => {
     expect(fs.readFileSync(paths.instructionPath, 'utf-8')).toBe(INSTRUCTION);
     const body = fs.readFileSync(paths.bodyPath, 'utf-8');
     expect(body).toContain('Deploy finished');
-    for (const forbidden of ['slack_message', 'RAW-SLACK-EVENT-TEXT', 'slack_files', 'files.slack.com', TOKEN_LOOKING]) {
+    for (const forbidden of ['slack_message', 'RAW-SLACK-EVENT-TEXT', 'slack_files', 'hikyac', 'source.event', 'files.slack.com', TOKEN_LOOKING]) {
       expect(body).not.toContain(forbidden);
     }
     const written = ptyFactory.instances.flatMap((pty) => pty.writtenData).join('');
@@ -359,6 +359,23 @@ describe('inbound webhook action: repository orchestrators', () => {
     expect(fs.readFileSync(pathsOf(session.id, worker.id, payload.jobId).instructionPath, 'utf-8')).toBe(edited);
   });
 
+  it('(T4) a stored version 1 body throws PermanentHandlerError without delivery and without files (control: a current body for the same target writes both)', async () => {
+    const handler = registerOnCapturingQueue();
+    const { session, worker } = await designatedSession();
+    const deliveries = watchDeliveries();
+    const refused = payloadOf('wh-v1', { schema_version: 1, message: 'old shape' });
+
+    await expect(handler(refused)).rejects.toBeInstanceOf(PermanentHandlerError);
+
+    expect(deliveries).toEqual([]);
+    expect(fs.existsSync(pathsOf(session.id, worker.id, refused.jobId).dir)).toBe(false);
+
+    const control = payloadOf('wh-current');
+    await handler(control);
+    expect(deliveries).toHaveLength(1);
+    expect(fs.existsSync(pathsOf(session.id, worker.id, control.jobId).bodyPath)).toBe(true);
+  });
+
   it('a deleted endpoint throws PermanentHandlerError without delivery and without files', async () => {
     const handler = registerOnCapturingQueue();
     const { session, worker } = await designatedSession();
@@ -402,7 +419,7 @@ describe('inbound webhook action: repository orchestrators', () => {
       { name: '../../escape.txt', mimetype: 'text/plain', size: 3, url: attUrl('doc-2') },
       { name: 'missing.png', mimetype: 'image/png', size: 9, url: attUrl('doc-3') },
     ];
-    const BODY = { message: 'See attached', slack_files: FILES };
+    const BODY = v2Body({ message: 'See attached' }, { files: FILES });
 
     let fetchCalls: string[];
     const stubFetch: AttachmentFetch = async (url) => {
@@ -520,7 +537,7 @@ describe('inbound webhook action: repository orchestrators', () => {
             attachmentLimits: limits,
           });
           const { session, worker } = await designatedSession();
-          const payload = payloadOf(`wh-stage-${label.replace(/\W+/g, '-')}`, { message: 'collide', slack_files: files });
+          const payload = payloadOf(`wh-stage-${label.replace(/\W+/g, '-')}`, v2Body({ message: 'collide' }, { files }));
 
           await handler(payload);
 
@@ -538,11 +555,11 @@ describe('inbound webhook action: repository orchestrators', () => {
       }
     });
 
-    it('a message without slack_files: no attachments directory and none of the count fields', async () => {
+    it('a message with no files: no attachments directory and none of the count fields', async () => {
       const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
       const { session, worker } = await designatedSession();
       const deliveries = watchDeliveries();
-      const payload = payloadOf('wh-att-4', { message: 'plain' });
+      const payload = payloadOf('wh-att-4', v2Body({ message: 'plain' }, { files: [] }));
 
       await handler(payload);
 
@@ -556,7 +573,7 @@ describe('inbound webhook action: repository orchestrators', () => {
       const handler = registerOnCapturingQueue({ attachmentFetch: stubFetch, attachmentLimits: limits });
       const { session, worker } = await designatedSession();
       const deliveries = watchDeliveries();
-      const payload = payloadOf('wh-att-5', { message: 'm', slack_files: [{ name: 'x', url: 'https://files.slack.com/x?t=1' }] });
+      const payload = payloadOf('wh-att-5', v2Body({ message: 'm' }, { files: [{ name: 'x', url: 'https://files.slack.com/x?t=1' }] }));
 
       await handler(payload);
 
