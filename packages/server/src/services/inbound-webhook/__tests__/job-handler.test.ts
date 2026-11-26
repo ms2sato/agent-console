@@ -1,6 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import type { InboundWebhookProcessPayload } from '@agent-console/shared';
 import { createInboundWebhookJobHandler } from '../job-handler.js';
+import { v2Body } from '../../../__tests__/utils/inbound-webhook-body.js';
 import { PermanentHandlerError } from '../../../jobs/index.js';
 import { inboundWebhookDeliveryId } from '../receive.js';
 import type { RepositoryOrchestratorsDeps } from '../actions/repository-orchestrators.js';
@@ -8,7 +9,7 @@ import type { RepositoryOrchestratorsDeps } from '../actions/repository-orchestr
 const PAYLOAD: InboundWebhookProcessPayload = {
   jobId: inboundWebhookDeliveryId('ep-1', 'wh-1'),
   endpointId: 'ep-1',
-  rawPayload: JSON.stringify({ message: 'hello' }),
+  rawPayload: JSON.stringify(v2Body()),
   receivedAt: '2026-11-08T00:00:00.000Z',
 };
 

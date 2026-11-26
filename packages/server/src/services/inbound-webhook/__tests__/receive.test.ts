@@ -9,6 +9,7 @@ import { SqliteInboundWebhookEndpointRepository } from '../../../repositories/sq
 import { PermanentHandlerError } from '../../inbound/job-handler.js';
 import { rootLogger } from '../../../lib/logger.js';
 import { signStandardWebhook } from '../../../lib/inbound-webhook-secret.js';
+import { v2Body } from '../../../__tests__/utils/inbound-webhook-body.js';
 // Fictional values from a public repository's sender fixture.
 import golden from './fixtures/slack-blocks-golden.json';
 import {
@@ -28,6 +29,7 @@ import {
 const VECTOR_SECRET = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
 const VECTOR_ID = 'msg_2KWPBgLlAfxdpx2AI54pPJ85f4W';
 const VECTOR_TS = '1700000000';
+// Signed by the known-answer vectors but never parsed, so its body shape does not matter.
 const VECTOR_BODY = '{"schema_version":1,"message":"hello","slack_channel":"C1","slack_ts":"1.2"}';
 const VECTOR_SIG = 'Qq+5BnyniH/+EyUET01awGu+n4p3UudG/i/3JJ18Rcw=';
 // Same message signed with the LITERAL secret string as key (the wrong derivation).
@@ -138,32 +140,13 @@ describe('isValidWebhookId', () => {
 });
 
 describe('parseInboundWebhookBody', () => {
-  it('accepts the sender shape and ignores unknown keys', () => {
-    const parsed = parseInboundWebhookBody(
-      JSON.stringify({ schema_version: 1, message: 'hi', matched_triggers: ['mention'], future_key: { a: 1 } }),
-    );
-    expect(parsed.ok && parsed.message.message).toBe('hi');
-    expect(parsed.ok && parsed.message).not.toHaveProperty('future_key');
-  });
-
-  it('accepts an empty message and a body with only slack_message', () => {
-    expect(parseInboundWebhookBody('{"message":""}').ok).toBe(true);
-    expect(parseInboundWebhookBody('{"slack_message":{"text":"x"},"slack_message_truncated":true}').ok).toBe(true);
-  });
-
   const refused: Array<[string, string]> = [
     ['invalid JSON', '{not json'],
     ['empty text', ''],
     ['null', 'null'],
     ['an array', '[]'],
     ['a string', '"x"'],
-    ['an empty object (no message at all)', '{}'],
-    ['a number message', '{"message":5}'],
-    ['a null message', '{"message":null}'],
     ['a string schema_version', '{"message":"x","schema_version":"1"}'],
-    ['a non-array slack_files', '{"message":"x","slack_files":"u"}'],
-    ['a string slack_message', '{"slack_message":"x"}'],
-    ['a string matched_triggers', '{"message":"x","matched_triggers":"mention"}'],
   ];
   for (const [name, text] of refused) {
     it(`refuses ${name}`, () => expect(parseInboundWebhookBody(text).ok).toBe(false));
@@ -228,7 +211,7 @@ describe('receiveInboundWebhook', () => {
   let wakeSpy: ReturnType<typeof spyOn>;
   const ENDPOINT_ID = 'ep-1';
   const SECRET = VECTOR_SECRET;
-  const BODY = JSON.stringify({ schema_version: 1, message: 'hello', slack_channel: 'C1', slack_ts: '1.2' });
+  const BODY = JSON.stringify(v2Body());
   let clock: Date;
 
   const deps = () => ({ endpoints, db, jobQueue, now: () => clock });
@@ -478,11 +461,44 @@ describe('receiveInboundWebhook', () => {
       });
     }
 
+    describe('a version 1 body', () => {
+      const V1_BODY = JSON.stringify({ schema_version: 1, message: 'm', slack_channel: 'C1' });
+      const refusedRecords = async (rawBody: string) => {
+        const warn = spyOn(rootLogger, 'warn');
+        try {
+          expect(await receiveInboundWebhook(input({ rawBody }), deps())).toEqual({ kind: 'invalid_request' });
+          return warn.mock.calls.filter((call) => call.includes('Inbound webhook refused')).map((call) => call[0]);
+        } finally {
+          warn.mockRestore();
+        }
+      };
+
+      it('(T3) correctly signed: 400, no row, no job, one refusal record reporting schemaVersion 1', async () => {
+        const records = await refusedRecords(V1_BODY);
+        expect(records).toEqual([{ endpointId: ENDPOINT_ID, reason: 'unsupported-schema-version', schemaVersion: 1 }]);
+        expect(await rows()).toEqual({ deliveries: [], jobs: [] });
+        expect(wakeSpy).not.toHaveBeenCalled();
+      });
+
+      it('(T3) correctly signed without the schema_version key: the same, with no schemaVersion on the record', async () => {
+        const records = await refusedRecords('{"message":"m"}');
+        expect(records).toEqual([{ endpointId: ENDPOINT_ID, reason: 'unsupported-schema-version' }]);
+        expect(await rows()).toEqual({ deliveries: [], jobs: [] });
+        expect(wakeSpy).not.toHaveBeenCalled();
+      });
+
+      it('(T3) with a wrong signature it is still 401: the signature is checked before the body', async () => {
+        const signature = sign('whsec_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'Ev1', NOW_SECONDS, V1_BODY);
+        expect(await receiveInboundWebhook(input({ rawBody: V1_BODY, signature }), deps())).toEqual({ kind: 'unauthorized' });
+        expect(await rows()).toEqual({ deliveries: [], jobs: [] });
+      });
+    });
+
     const invalidBodies: Array<[string, string]> = [
       ['invalid JSON', '{nope'],
       ['an array', '[]'],
-      ['wrong types', '{"message":5}'],
-      ['no message', '{"schema_version":1}'],
+      ['wrong types', JSON.stringify(v2With(['message'], 5))],
+      ['no message', JSON.stringify(v2With(['message']))],
     ];
     for (const [name, rawBody] of invalidBodies) {
       it(`${name}, correctly signed`, async () => {
@@ -568,7 +584,7 @@ describe('prepareDelivery', () => {
 
   it('builds content without any action attached', async () => {
     const content = await prepareDelivery(
-      payloadOf({ message: 'hello\nworld', slack_permalink: 'https://x.slack.com/archives/C1/p1', slack_channel: 'C1', slack_ts: '1.2' }),
+      payloadOf(v2Body({ message: 'hello\nworld' }, { permalink: 'https://x.slack.com/archives/C1/p1' }, { ids: IDS })),
       { endpoints },
     );
     expect(content.deliveryId).toBe('inbound-webhook:ep-1:Ev1');
@@ -584,40 +600,43 @@ describe('prepareDelivery', () => {
   });
 
   it('has url null and no details section when the sender omitted them', async () => {
-    const content = await prepareDelivery(payloadOf({ message: 'x' }), { endpoints });
+    const content = await prepareDelivery(payloadOf(v2Body({ message: 'x' }, { permalink: null }, { type: 'other' })), { endpoints });
     expect(content.url).toBeNull();
     expect(content.bodyMarkdown).not.toContain('Details');
   });
 
-  it('never projects slack_message.text, non-content keys of slack_message (the poster app_id / bot_id are the only exception), or slack_files, even when the payload carries them', async () => {
+  it('never projects source.event.text, non-content keys of source.event (the poster app_id / bot_id are the only exception), or hikyac.files, even when the payload carries them', async () => {
     const token = 'TOKEN-SENTINEL-123';
     const content = await prepareDelivery(
-      payloadOf({
-        message: 'plain',
-        // bot_id fails the id shape here, so it is not shown either; bot_profile.app_id is never read.
-        slack_message: { text: 'RAW-EVENT-SENTINEL', user: 'USER-SENTINEL', username: 'USERNAME-SENTINEL', bot_profile: { app_id: 'APROFILE1' }, bot_id: 'BOT-SENTINEL', blocks: [{ type: 'rich_text', block_id: 'BLOCK-ID-SENTINEL' }] },
-        slack_files: [{ name: 'a.png', mimetype: 'image/png', size: 5, url: `https://firebasestorage.googleapis.com/v0/b/x/o/a?alt=media&token=${token}` }],
-      }),
+      payloadOf(
+        v2Body(
+          { message: 'plain' },
+          { files: [{ name: 'a.png', mimetype: 'image/png', size: 5, url: `https://firebasestorage.googleapis.com/v0/b/x/o/a?alt=media&token=${token}` }] },
+          // bot_id fails the id shape here, so it is not shown either; bot_profile.app_id is never read.
+          { event: { text: 'RAW-EVENT-SENTINEL', user: 'USER-SENTINEL', username: 'USERNAME-SENTINEL', bot_profile: { app_id: 'APROFILE1' }, bot_id: 'BOT-SENTINEL', blocks: [{ type: 'rich_text', block_id: 'BLOCK-ID-SENTINEL' }] } },
+        ),
+      ),
       // The file is not fetchable here, so no local name is listed either.
       { endpoints, attachmentFetch: async () => new Response('', { status: 404 }) },
     );
     const everything = JSON.stringify(content);
-    for (const forbidden of ['RAW-EVENT-SENTINEL', 'USER-SENTINEL', 'USERNAME-SENTINEL', 'APROFILE1', 'BOT-SENTINEL', 'BLOCK-ID-SENTINEL', token, 'firebasestorage', 'slack_message', 'slack_files', 'a.png']) {
+    for (const forbidden of ['RAW-EVENT-SENTINEL', 'USER-SENTINEL', 'USERNAME-SENTINEL', 'APROFILE1', 'BOT-SENTINEL', 'BLOCK-ID-SENTINEL', token, 'firebasestorage', 'slack_message', 'slack_files', 'hikyac', 'source.event', 'a.png']) {
       expect(everything).not.toContain(forbidden);
     }
   });
 
   describe('slack content projection', () => {
     it('leaves the body byte-identical when there is nothing to project', async () => {
-      const plain = await prepareDelivery(payloadOf({ message: 'hi' }), { endpoints });
-      expect(plain.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n');
-      const withEvent = await prepareDelivery(payloadOf({ message: 'hi', slack_message: { text: 'x', user: 'U1' } }), { endpoints });
+      const bodyOf = (event: Record<string, unknown> | null) => payloadOf(v2Body({ message: 'hi' }, {}, { ids: IDS, event }));
+      const plain = await prepareDelivery(bodyOf(null), { endpoints });
+      expect(plain.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n\n## Details\n\n- Channel: C1\n- Timestamp: 1.2\n');
+      const withEvent = await prepareDelivery(bodyOf({ text: 'x', user: 'U1' }), { endpoints });
       expect(withEvent.bodyMarkdown).toBe(plain.bodyMarkdown);
     });
 
     it('places ## Content between ## Message and ## Details, and keeps the message as the summary', async () => {
       const content = await prepareDelivery(
-        payloadOf({ ...golden, slack_channel: 'C1', slack_ts: '1.2' }),
+        payloadOf(v2Body({ message: golden.message }, {}, { ids: IDS, event: golden.slack_message })),
         { endpoints },
       );
       const body = content.bodyMarkdown;
@@ -634,32 +653,32 @@ describe('prepareDelivery', () => {
 
     it('takes the summary from the first projected line when the message is empty or blank', async () => {
       for (const message of ['', '   ']) {
-        const content = await prepareDelivery(payloadOf({ message, slack_message: golden.slack_message }), { endpoints });
+        const content = await prepareDelivery(payloadOf(v2Body({ message }, {}, { event: golden.slack_message })), { endpoints });
         expect(content.summary).toBe('<!channel>');
       }
       const headerFirst = await prepareDelivery(
-        payloadOf({ slack_message: { blocks: [{ type: 'divider' }, { type: 'header', text: { text: 'Head' } }] } }),
+        payloadOf(v2Body({ message: '' }, {}, { event: { blocks: [{ type: 'divider' }, { type: 'header', text: { text: 'Head' } }] } })),
         { endpoints },
       );
       expect(headerFirst.summary).toBe('Head');
     });
 
     it('falls back to the fixed summary when nothing is projected', async () => {
-      expect((await prepareDelivery(payloadOf({ slack_message: {} }), { endpoints })).summary).toBe('Inbound webhook message');
-      expect((await prepareDelivery(payloadOf({ slack_message: { blocks: [{ type: 'divider' }] } }), { endpoints })).summary).toBe('Inbound webhook message');
+      expect((await prepareDelivery(payloadOf(v2Body({ message: '' }, {}, { event: {} })), { endpoints })).summary).toBe('Inbound webhook message');
+      expect((await prepareDelivery(payloadOf(v2Body({ message: '' }, {}, { event: { blocks: [{ type: 'divider' }] } })), { endpoints })).summary).toBe('Inbound webhook message');
     });
 
     it('does not fail the delivery on malformed blocks and shows the count line', async () => {
       const content = await prepareDelivery(
-        payloadOf({ slack_message: { blocks: [null, { type: 'section' }] } }),
+        payloadOf(v2Body({ message: '' }, {}, { event: { blocks: [null, { type: 'section' }] } })),
         { endpoints },
       );
       expect(content.bodyMarkdown).toContain('(2 blocks without projectable text not shown.)');
       expect(content.summary).toBe('Inbound webhook message');
     });
 
-    it('renders the section when the sender shortened the message, even with no slack_message', async () => {
-      const content = await prepareDelivery(payloadOf({ message: 'hi', slack_message_truncated: true }), { endpoints });
+    it('renders the section when the sender shortened the message, even with no source event', async () => {
+      const content = await prepareDelivery(payloadOf(v2Body({ message: 'hi' }, {}, { event: null, truncated: true })), { endpoints });
       expect(content.bodyMarkdown).toContain('## Content');
       expect(content.bodyMarkdown).toContain('The sender shortened the Slack message');
     });
@@ -669,7 +688,7 @@ describe('prepareDelivery', () => {
       const infoSpy = spyOn(rootLogger, 'info');
       try {
         await prepareDelivery(
-          payloadOf({ message: sentinel, slack_message: { text: sentinel, blocks: [{ type: 'section', text: { text: sentinel } }, { type: 'image', title: sentinel }] } }),
+          payloadOf(v2Body({ message: sentinel }, {}, { event: { text: sentinel, blocks: [{ type: 'section', text: { text: sentinel } }, { type: 'image', title: sentinel }] } })),
           { endpoints },
         );
         const projected = infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'));
@@ -677,7 +696,7 @@ describe('prepareDelivery', () => {
         expect(projected[0]![0]).toEqual({
           deliveryId: 'inbound-webhook:ep-1:Ev1',
           endpointId: 'ep-1',
-          schemaVersion: 1,
+          schemaVersion: 2,
           blocksSeen: 2,
           attachmentsSeen: 0,
           chunks: 1,
@@ -690,10 +709,10 @@ describe('prepareDelivery', () => {
         expect(JSON.stringify(infoSpy.mock.calls)).not.toContain(sentinel);
 
         infoSpy.mockClear();
-        await prepareDelivery(payloadOf({ message: 'no event' }), { endpoints });
+        await prepareDelivery(payloadOf(v2Body({ message: 'no event' })), { endpoints });
         const withoutEvent = infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'));
         expect(withoutEvent).toHaveLength(1);
-        expect(withoutEvent[0]![0]).toMatchObject({ schemaVersion: 1, blocksSeen: 0, appId: 'absent', botId: 'absent' });
+        expect(withoutEvent[0]![0]).toMatchObject({ schemaVersion: 2, blocksSeen: 0, appId: 'absent', botId: 'absent' });
       } finally {
         infoSpy.mockRestore();
       }
@@ -701,11 +720,13 @@ describe('prepareDelivery', () => {
   });
 
   describe('poster identity', () => {
-    const base = { message: 'hi', slack_channel: 'C1', slack_ts: '1.2' };
+    /** `message` "hi" from channel C1 at 1.2, with `event` as the source event. */
+    const posted = (event: Record<string, unknown> | null, hikyac: Record<string, unknown> = {}) =>
+      payloadOf(v2Body({ message: 'hi' }, hikyac, { ids: IDS, event }));
 
     it('(T6) renders the five Details lines in order', async () => {
       const content = await prepareDelivery(
-        payloadOf({ ...base, slack_permalink: 'https://x.slack.com/archives/C1/p1', slack_message: { app_id: 'A0123ABCD', bot_id: 'B0123ABCD' } }),
+        posted({ app_id: 'A0123ABCD', bot_id: 'B0123ABCD' }, { permalink: 'https://x.slack.com/archives/C1/p1' }),
         { endpoints },
       );
       expect(content.bodyMarkdown).toBe(
@@ -728,26 +749,26 @@ describe('prepareDelivery', () => {
       );
     });
 
-    it('(T7) renders ## Details with the two id lines alone', async () => {
+    it('(T7) renders the two id lines after Timestamp', async () => {
       const content = await prepareDelivery(
-        payloadOf({ message: 'hi', slack_message: { app_id: 'A0123ABCD', bot_id: 'B0123ABCD' } }),
+        posted({ app_id: 'A0123ABCD', bot_id: 'B0123ABCD' }),
         { endpoints },
       );
-      expect(content.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n\n## Details\n\n- App ID: A0123ABCD\n- Bot ID: B0123ABCD\n');
+      expect(content.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n\n## Details\n\n- Channel: C1\n- Timestamp: 1.2\n- App ID: A0123ABCD\n- Bot ID: B0123ABCD\n');
     });
 
     it('(A2/A3) renders one id alone when the other is malformed', async () => {
       const content = await prepareDelivery(
-        payloadOf({ message: 'hi', slack_message: { app_id: 'A0123ABCD', bot_id: 'b-1' } }),
+        posted({ app_id: 'A0123ABCD', bot_id: 'b-1' }),
         { endpoints },
       );
-      expect(content.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n\n## Details\n\n- App ID: A0123ABCD\n');
+      expect(content.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n\n## Details\n\n- Channel: C1\n- Timestamp: 1.2\n- App ID: A0123ABCD\n');
       expect(content.bodyMarkdown).not.toContain('Bot ID');
     });
 
     it('(T8) writes nothing of an id that carries a newline and a heading', async () => {
       const content = await prepareDelivery(
-        payloadOf({ ...base, slack_message: { app_id: 'A1\n## Injected' } }),
+        posted({ app_id: 'A1\n## Injected' }),
         { endpoints },
       );
       expect(content.bodyMarkdown).not.toContain('Injected');
@@ -755,17 +776,14 @@ describe('prepareDelivery', () => {
     });
 
     it('(T9) leaves the body byte-identical when the only ids are malformed and nothing is projected', async () => {
-      const plain = await prepareDelivery(payloadOf({ message: 'hi' }), { endpoints });
-      const withBad = await prepareDelivery(
-        payloadOf({ message: 'hi', slack_message: { app_id: 'bad id', text: 'x' } }),
-        { endpoints },
-      );
+      const plain = await prepareDelivery(posted(null), { endpoints });
+      const withBad = await prepareDelivery(posted({ app_id: 'bad id', text: 'x' }), { endpoints });
       expect(withBad.bodyMarkdown).toBe(plain.bodyMarkdown);
     });
 
     it('(T11/A5) keeps summary, url and the rest of the content equal to the same body without ids', async () => {
-      const bodyOf = (slackMessage: Record<string, unknown>) =>
-        payloadOf({ message: 'hello', slack_permalink: 'https://x.slack.com/archives/C1/p1', slack_message: slackMessage });
+      const bodyOf = (event: Record<string, unknown>) =>
+        payloadOf(v2Body({ message: 'hello' }, { permalink: 'https://x.slack.com/archives/C1/p1' }, { event }));
       const without = await prepareDelivery(bodyOf({ text: 'x' }), { endpoints });
       const withIds = await prepareDelivery(bodyOf({ text: 'x', app_id: 'A0123ABCD', bot_id: 'B0123ABCD' }), { endpoints });
       expect(withIds.summary).toBe(without.summary);
@@ -781,7 +799,7 @@ describe('prepareDelivery', () => {
     it('(A6) logs the kinds of both ids and never a value', async () => {
       const infoSpy = spyOn(rootLogger, 'info');
       try {
-        await prepareDelivery(payloadOf({ message: 'hi', slack_message: { app_id: 'A0123ABCD', bot_id: 'b-1' } }), { endpoints });
+        await prepareDelivery(posted({ app_id: 'A0123ABCD', bot_id: 'b-1' }), { endpoints });
         const projected = infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'));
         expect(projected).toHaveLength(1);
         expect(projected[0]![0]).toMatchObject({ appId: 'shown', botId: 'rejected' });
@@ -807,29 +825,33 @@ describe('prepareDelivery', () => {
       calls.length = 0;
     });
 
-    it('a message without slack_files has no attachments, 0/0 counts, hasAttachments false and no section', async () => {
-      const content = await prepareDelivery(payloadOf({ message: 'x' }), { endpoints, attachmentFetch: stubFetch });
+    it('a message with no files has no attachments, 0/0 counts, hasAttachments false and no section', async () => {
+      const content = await prepareDelivery(payloadOf(v2Body({ message: 'x' })), { endpoints, attachmentFetch: stubFetch });
       expect(content).toMatchObject({ attachments: [], attachmentsFetched: 0, attachmentsSkipped: 0, hasAttachments: false });
       expect(content.bodyMarkdown).not.toContain('Attachments');
       expect(calls).toEqual([]);
     });
 
-    it('an empty slack_files array counts as no attachments', async () => {
-      const content = await prepareDelivery(payloadOf({ message: 'x', slack_files: [] }), { endpoints, attachmentFetch: stubFetch });
+    it('an empty hikyac.files array counts as no attachments', async () => {
+      const content = await prepareDelivery(payloadOf(v2Body({ message: 'x' }, { files: [] })), { endpoints, attachmentFetch: stubFetch });
       expect(content).toMatchObject({ attachmentsFetched: 0, attachmentsSkipped: 0, hasAttachments: false });
     });
 
     it('fetches each file once, lists the LOCAL names under attachments/, counts the failure, and carries no URL or token anywhere', async () => {
       const content = await prepareDelivery(
-        payloadOf({
-          message: 'with files',
-          slack_files: [
-            { name: 'one.png', mimetype: 'image/png', size: 3, url: fileUrl(1) },
-            { name: '../../two.png', url: fileUrl(2) },
-            { name: 'three.txt', url: fileUrl(3) },
-            { name: 'four.txt', url: 'https://evil.test/four' },
-          ],
-        }),
+        payloadOf(
+          v2Body(
+            { message: 'with files' },
+            {
+              files: [
+                { name: 'one.png', mimetype: 'image/png', size: 3, url: fileUrl(1) },
+                { name: '../../two.png', url: fileUrl(2) },
+                { name: 'three.txt', url: fileUrl(3) },
+                { name: 'four.txt', url: 'https://evil.test/four' },
+              ],
+            },
+          ),
+        ),
         { endpoints, attachmentFetch: stubFetch },
       );
       expect(calls).toHaveLength(3);
@@ -847,7 +869,7 @@ describe('prepareDelivery', () => {
 
     it('a failing fetch never fails the delivery: the body is built and everything is counted skipped', async () => {
       const content = await prepareDelivery(
-        payloadOf({ message: 'still delivered', slack_files: [{ name: 'a.png', url: fileUrl(1) }] }),
+        payloadOf(v2Body({ message: 'still delivered' }, { files: [{ name: 'a.png', url: fileUrl(1) }] })),
         { endpoints, attachmentFetch: async () => { throw new Error('network down'); } },
       );
       expect(content.bodyMarkdown).toContain('still delivered');
@@ -856,7 +878,7 @@ describe('prepareDelivery', () => {
 
     it('applies injected limits: the count cap leaves the rest skipped', async () => {
       const content = await prepareDelivery(
-        payloadOf({ message: 'x', slack_files: [1, 3, 4].map((n) => ({ name: `f${n}`, url: fileUrl(n) })) }),
+        payloadOf(v2Body({ message: 'x' }, { files: [1, 3, 4].map((n) => ({ name: `f${n}`, url: fileUrl(n) })) })),
         { endpoints, attachmentFetch: stubFetch, attachmentLimits: { timeoutMs: 1000, maxBytes: 100, maxCount: 2 } },
       );
       expect(calls).toHaveLength(2);
@@ -866,7 +888,7 @@ describe('prepareDelivery', () => {
 
   it('strips control characters but keeps newline and tab in the body projection', async () => {
     const content = await prepareDelivery(
-      payloadOf({ message: 'a\u001b[31mb\u0000c\u009bd\re\u000bv\u000cw\nf\tg' }),
+      payloadOf(v2Body({ message: 'a\u001b[31mb\u0000c\u009bd\re\u000bv\u000cw\nf\tg' })),
       { endpoints },
     );
     expect(content.bodyMarkdown).toContain('a[31mbcdevw\nf\tg');
@@ -876,7 +898,7 @@ describe('prepareDelivery', () => {
   it('renders the exact VT, FF and CR input as abcd, newline, e, tab, f in both ## Message and ## Content', async () => {
     const raw = 'a\u000bb\u000cc\rd\ne\tf';
     const content = await prepareDelivery(
-      payloadOf({ message: raw, slack_message: { blocks: [{ type: 'section', text: { type: 'mrkdwn', text: raw } }] } }),
+      payloadOf(v2Body({ message: raw }, {}, { event: { blocks: [{ type: 'section', text: { type: 'mrkdwn', text: raw } }] } })),
       { endpoints },
     );
     const body = content.bodyMarkdown;
@@ -886,33 +908,58 @@ describe('prepareDelivery', () => {
   });
 
   it('uses a fixed summary when the sender text is empty', async () => {
-    expect((await prepareDelivery(payloadOf({ message: '' }), { endpoints })).summary).toBe('Inbound webhook message');
-    expect((await prepareDelivery(payloadOf({ slack_message: { text: 'x' } }), { endpoints })).summary).toBe('Inbound webhook message');
+    expect((await prepareDelivery(payloadOf(v2Body({ message: '' })), { endpoints })).summary).toBe('Inbound webhook message');
+    expect((await prepareDelivery(payloadOf(v2Body({ message: '' }, {}, { event: { text: 'x' } })), { endpoints })).summary).toBe('Inbound webhook message');
   });
 
   it('carries the instruction text as of the re-read, not as of receipt', async () => {
     await endpoints.update('repo-1', 'ep-1', { instructionText: 'NEW\ntext' }, '2026-11-07T01:00:00.000Z');
-    const content = await prepareDelivery(payloadOf({ message: 'x' }), { endpoints });
+    const content = await prepareDelivery(payloadOf(v2Body()), { endpoints });
     expect(content.instructionMarkdown).toBe('NEW\ntext');
   });
 
   it('a deleted endpoint is a PermanentHandlerError', async () => {
     await endpoints.delete('repo-1', 'ep-1');
-    await expect(prepareDelivery(payloadOf({ message: 'x' }), { endpoints })).rejects.toBeInstanceOf(PermanentHandlerError);
+    await expect(prepareDelivery(payloadOf(v2Body()), { endpoints })).rejects.toBeInstanceOf(PermanentHandlerError);
   });
 
   it('a cascade-deleted endpoint (its repository deleted) is a PermanentHandlerError', async () => {
     await db.deleteFrom('repositories').where('id', '=', 'repo-1').execute();
     expect(await endpoints.findWithSecretById('ep-1')).toBeNull();
-    await expect(prepareDelivery(payloadOf({ message: 'x' }), { endpoints })).rejects.toBeInstanceOf(PermanentHandlerError);
+    await expect(prepareDelivery(payloadOf(v2Body()), { endpoints })).rejects.toBeInstanceOf(PermanentHandlerError);
   });
 
   it('a stored payload that no longer parses is a PermanentHandlerError', async () => {
     await expect(prepareDelivery(payloadOf('{broken'), { endpoints })).rejects.toBeInstanceOf(PermanentHandlerError);
   });
 
+  it('(T4) a stored version 1 body is a PermanentHandlerError: no attachment fetch, no projection record', async () => {
+    const calls: string[] = [];
+    const infoSpy = spyOn(rootLogger, 'info');
+    try {
+      const stored = {
+        schema_version: 1,
+        message: 'm',
+        slack_files: [{ name: 'a.png', url: 'https://firebasestorage.googleapis.com/v0/b/bucket-NEUTRAL/o/f1?alt=media' }],
+      };
+      await expect(
+        prepareDelivery(payloadOf(stored), {
+          endpoints,
+          attachmentFetch: async (url) => {
+            calls.push(url);
+            return new Response('', { status: 200 });
+          },
+        }),
+      ).rejects.toBeInstanceOf(PermanentHandlerError);
+      expect(calls).toEqual([]);
+      expect(infoSpy.mock.calls.filter((call) => call.includes('Slack content projected'))).toEqual([]);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
   describe('summary truncation', () => {
-    const summaryOf = async (message: string) => (await prepareDelivery(payloadOf({ message }), { endpoints })).summary;
+    const summaryOf = async (message: string) => (await prepareDelivery(payloadOf(v2Body({ message })), { endpoints })).summary;
 
     it('keeps 159 and 160 characters whole', async () => {
       expect(await summaryOf('a'.repeat(159))).toBe('a'.repeat(159));
@@ -966,7 +1013,7 @@ describe('the reply URL stays off every agent-visible surface', () => {
       expect((await endpoints.findWithSecretById('ep-1'))?.replyUrl).toBe(REPLY_URL);
 
       const content = await prepareDelivery(
-        { jobId: 'inbound-webhook:ep-1:Ev1', endpointId: 'ep-1', rawPayload: JSON.stringify({ message: 'hi' }), receivedAt: NOW.toISOString() },
+        { jobId: 'inbound-webhook:ep-1:Ev1', endpointId: 'ep-1', rawPayload: JSON.stringify(v2Body()), receivedAt: NOW.toISOString() },
         { endpoints },
       );
       const serialized = JSON.stringify(content);
@@ -1000,36 +1047,13 @@ describe('the reply URL stays off every agent-visible surface', () => {
 });
 
 // ---------------------------------------------------------------------------
-// schema_version dispatch and the version 2 reader
+// schema_version dispatch and the body reader
 // ---------------------------------------------------------------------------
 
 const FILE_URL = 'https://firebasestorage.googleapis.com/v0/b/bucket-NEUTRAL/o/f1?alt=media&token=tok-NEUTRAL-V2';
 const SECTION_EVENT = { app_id: 'A0123ABCD', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'BLOCK-MARKER' } }] };
 const PERMALINK = 'https://example.slack.com/archives/C1/p1';
-
-function v2Body(over: Record<string, unknown> = {}, hikyac: Record<string, unknown> = {}, source: Record<string, unknown> = {}) {
-  return {
-    schema_version: 2,
-    message: 'hello',
-    hikyac: {
-      v: 1,
-      reply: { url: 'https://sender.example.com/webhook/reply/abc' },
-      triggers: ['mention'],
-      permalink: PERMALINK,
-      thread_key: 'th_1',
-      files: [],
-      ...hikyac,
-    },
-    source: {
-      type: 'slack',
-      ids: { team_id: 'T1', channel: 'C1', ts: '1.2', thread_ts: null, event_id: 'Ev1' },
-      event: null,
-      truncated: false,
-      ...source,
-    },
-    ...over,
-  };
-}
+const IDS = { channel: 'C1', ts: '1.2' };
 
 /** A deep copy of `v2Body()` with the value at `path` removed, or replaced when `value` is given. */
 function v2With(path: string[], value?: unknown): unknown {
@@ -1048,19 +1072,51 @@ describe('parseInboundWebhookBody: schema_version dispatch', () => {
   const v2Text = (versionText: string) => JSON.stringify(v2Body()).replace('"schema_version":2', `"schema_version":${versionText}`);
 
   // (T1) one case per row of the decision table
-  const readers: Array<[string, string, 1 | 2]> = [
-    ['key absent', v1Text(), 1],
-    ['1', v1Text('1'), 1],
-    ['1.0', v1Text('1.0'), 1],
-    ['2', v2Text('2'), 2],
-    ['2.0', v2Text('2.0'), 2],
-  ];
-  for (const [name, text, version] of readers) {
-    it(`(T1) schema_version ${name} is read by the version ${version} reader`, () => {
+  for (const [name, text] of [['2', v2Text('2')], ['2.0', v2Text('2.0')]] as const) {
+    it(`(T1) schema_version ${name} is read`, () => {
       const parsed = parseInboundWebhookBody(text);
-      expect(parsed.ok && parsed.message.schemaVersion).toBe(version);
+      expect(parsed.ok && parsed.message.schemaVersion).toBe(2);
     });
   }
+
+  // The refused bodies below are complete version 1 bodies, so a reader for that shape coming back fails these.
+  it('(T1) a body without the schema_version key is refused as unsupported, with no schemaVersion', () => {
+    const parsed = parseInboundWebhookBody('{"message":"m"}');
+    expect(parsed).toEqual({ ok: false, reason: 'unsupported-schema-version' });
+    expect('schemaVersion' in parsed).toBe(false);
+  });
+
+  for (const versionText of ['1', '1.0']) {
+    it(`(T1) schema_version ${versionText} is refused as unsupported, reporting 1`, () => {
+      expect(parseInboundWebhookBody(v1Text(versionText))).toEqual({
+        ok: false,
+        reason: 'unsupported-schema-version',
+        schemaVersion: 1,
+      });
+    });
+  }
+
+  it('(T2) an empty object is refused as unsupported, with no schemaVersion', () => {
+    const parsed = parseInboundWebhookBody('{}');
+    expect(parsed).toEqual({ ok: false, reason: 'unsupported-schema-version' });
+    expect('schemaVersion' in parsed).toBe(false);
+  });
+
+  it('(T2) schema_version 2 alone reaches the reader and fails it', () => {
+    expect(parseInboundWebhookBody('{"schema_version":2}')).toEqual({ ok: false, reason: 'invalid-request' });
+  });
+
+  it('(T2) a body carrying both key sets is read from the version 2 keys', () => {
+    const parsed = parseInboundWebhookBody(
+      JSON.stringify({
+        ...v2Body({}, { permalink: PERMALINK }, { ids: IDS }),
+        slack_channel: 'C-OLD',
+        slack_ts: '9.9',
+        slack_permalink: 'https://example.slack.com/archives/C-OLD/p9',
+      }),
+    );
+    expect(parsed.ok && parsed.message).toMatchObject({ channel: 'C1', permalink: PERMALINK });
+  });
 
   const unsupported: Array<[string, string, number | undefined]> = [
     ['0', v1Text('0'), 0],
@@ -1086,13 +1142,14 @@ describe('parseInboundWebhookBody: schema_version dispatch', () => {
     });
   }
 
-  it('(T1) a failed reader is a refusal, never a fallback to the other reader', () => {
-    // A valid version 1 body that claims version 2: the version 2 reader refuses it.
+  it('(T1) version 1 keys claiming version 2 fail the reader, and a version 2 body without the key is refused', () => {
+    // A complete version 1 body that claims version 2: the reader refuses it.
     expect(parseInboundWebhookBody('{"schema_version":2,"message":"m","slack_channel":"C1"}')).toEqual({ ok: false, reason: 'invalid-request' });
-    // A valid version 2 body with the version key removed is read as version 1 (message present), carrying none of its fields.
+    // A complete version 2 body with the version key removed is not read at all.
     const { schema_version: _dropped, ...withoutVersion } = v2Body();
     const parsed = parseInboundWebhookBody(JSON.stringify(withoutVersion));
-    expect(parsed.ok && parsed.message).toMatchObject({ schemaVersion: 1, message: 'hello', permalink: null, channel: null });
+    expect(parsed).toEqual({ ok: false, reason: 'unsupported-schema-version' });
+    expect('schemaVersion' in parsed).toBe(false);
   });
 });
 
@@ -1100,7 +1157,9 @@ describe('parseInboundWebhookBody: version 2 reader', () => {
   const read = (body: unknown) => parseInboundWebhookBody(JSON.stringify(body));
 
   it('maps a full slack body into the normalised shape', () => {
-    const parsed = read(v2Body({}, { files: [{ name: 'a.png', url: FILE_URL }] }, { event: { a: 1 }, truncated: true }));
+    const parsed = read(
+      v2Body({ message: 'hello' }, { permalink: PERMALINK, files: [{ name: 'a.png', url: FILE_URL }] }, { ids: IDS, event: { a: 1 }, truncated: true }),
+    );
     expect(parsed).toEqual({
       ok: true,
       message: {
@@ -1223,11 +1282,16 @@ describe('inbound body schema_version 2', () => {
     });
 
     it('hikyac.permalink null means url null and no Permalink line (the Channel and Timestamp lines remain)', async () => {
-      const content = await deliver(v2Body({}, { permalink: null }));
+      const content = await deliver(v2Body({}, { permalink: null }, { ids: IDS }));
       expect(content.url).toBeNull();
       expect(content.bodyMarkdown).not.toContain('Permalink');
       expect(content.bodyMarkdown).toContain('- Channel: C1');
       expect(content.bodyMarkdown).toContain('- Timestamp: 1.2');
+    });
+
+    it('a non-slack source with a null permalink and no files has no ## Details at all', async () => {
+      const content = await deliver(v2Body({ message: 'hi' }, { permalink: null, files: [] }, { type: 'other' }));
+      expect(content.bodyMarkdown).toBe('# Inbound webhook message\n\n## Message\n\nhi\n');
     });
 
     it('source.event null with truncated false has no ## Content', async () => {
@@ -1242,20 +1306,20 @@ describe('inbound body schema_version 2', () => {
     });
 
     it('hikyac.reply null is accepted', async () => {
-      const content = await deliver(v2Body({}, { reply: null }));
+      const content = await deliver(v2Body({ message: 'hello' }, { reply: null }));
       expect(content.summary).toBe('hello');
     });
 
     it('unknown extra keys at every level are accepted and reach nothing', async () => {
-      const content = await deliver(v2Body({ extra_top: 'EXTRA-TOP' }, { extra_h: 'EXTRA-H' }, { extra_s: 'EXTRA-S', ids: { channel: 'C1', ts: '1.2', extra_i: 'EXTRA-I' } }));
+      const content = await deliver(v2Body({ extra_top: 'EXTRA-TOP' }, { extra_h: 'EXTRA-H', thread_key: 'th_1' }, { extra_s: 'EXTRA-S', ids: { channel: 'C1', ts: '1.2', extra_i: 'EXTRA-I' } }));
       for (const marker of ['EXTRA-TOP', 'EXTRA-H', 'EXTRA-S', 'EXTRA-I', 'th_1']) expect(JSON.stringify(content)).not.toContain(marker);
     });
   });
 
   it('(T4) a source of another type delivers the message, permalink and files only', async () => {
     const body = v2Body(
-      {},
-      { files: [{ name: 'one.png', mimetype: 'image/png', size: 3, url: FILE_URL }] },
+      { message: 'hello' },
+      { permalink: PERMALINK, files: [{ name: 'one.png', mimetype: 'image/png', size: 3, url: FILE_URL }] },
       { type: 'other', ids: { channel: 'C-IGNORED', ts: '9.9' }, event: SECTION_EVENT, truncated: true },
     );
     const content = await deliver(body);
@@ -1265,52 +1329,16 @@ describe('inbound body schema_version 2', () => {
     for (const absent of ['Channel', 'Timestamp', 'App ID', 'Bot ID', '## Content', 'BLOCK-MARKER', 'C-IGNORED', 'sender shortened']) {
       expect(content.bodyMarkdown).not.toContain(absent);
     }
-    const bare = await deliver({ ...v2Body(), source: { type: 'other' } });
+    const bare = await deliver({ ...v2Body({}, { permalink: PERMALINK }), source: { type: 'other' } });
     expect(bare.bodyMarkdown).toContain(`- Permalink: ${PERMALINK}`);
     expect(bare.bodyMarkdown).not.toContain('Channel');
   });
 
-  describe('equivalence with version 1 (T5)', () => {
-    const FILE = { name: 'one.png', mimetype: 'image/png', size: 3, url: FILE_URL };
-    const compare = async (v1: unknown, v2: unknown) => {
-      const a = await deliver(v1);
-      const b = await deliver(v2);
-      expect(b.bodyMarkdown).toBe(a.bodyMarkdown);
-      expect(b.summary).toBe(a.summary);
-      expect(b.url).toBe(a.url);
-      expect(b.attachmentsFetched).toBe(a.attachmentsFetched);
-      expect(b.attachmentsSkipped).toBe(a.attachmentsSkipped);
-      expect(b.hasAttachments).toBe(a.hasAttachments);
-      return a;
-    };
-
-    it('the same message, permalink, channel, ts, file, one section block, app id, not truncated', async () => {
-      const a = await compare(
-        { schema_version: 1, message: 'hello', slack_permalink: PERMALINK, slack_channel: 'C1', slack_ts: '1.2', slack_files: [FILE], slack_message: SECTION_EVENT, slack_message_truncated: false },
-        v2Body({}, { files: [FILE] }, { event: SECTION_EVENT, truncated: false }),
-      );
-      // Control: the compared output is not the trivial one.
-      expect(a.bodyMarkdown).toContain('## Content');
-      expect(a.bodyMarkdown).toContain('- Permalink: ');
-      expect(a.bodyMarkdown).toContain('- App ID: A0123ABCD');
-      expect(a.bodyMarkdown).toContain('- attachments/one.png');
-      expect(a.hasAttachments).toBe(true);
-    });
-
-    it('"v1 truncated with no slack_message" equals "v2 event null, truncated true"', async () => {
-      const a = await compare(
-        { schema_version: 1, message: 'hello', slack_permalink: PERMALINK, slack_channel: 'C1', slack_ts: '1.2', slack_message_truncated: true },
-        v2Body({}, {}, { event: null, truncated: true }),
-      );
-      expect(a.bodyMarkdown).toContain('The sender shortened the Slack message');
-    });
-  });
-
-  it('(T8) a human-mention-shaped version 2 body is byte-identical to the version 1 body without slack_message', async () => {
-    const mention = v2Body({}, {}, { event: { blocks: [{ type: 'rich_text', elements: [] }] } });
-    const v1 = await deliver({ message: 'hello', slack_permalink: PERMALINK, slack_channel: 'C1', slack_ts: '1.2' });
-    const v2 = await deliver(mention);
-    expect(v2.bodyMarkdown).toBe(v1.bodyMarkdown);
+  it('(T8) a human-mention-shaped body is byte-identical to the body without a source event', async () => {
+    const bodyOf = (event: Record<string, unknown> | null) => v2Body({ message: 'hello' }, { permalink: PERMALINK }, { ids: IDS, event });
+    const plain = await deliver(bodyOf(null));
+    const v2 = await deliver(bodyOf({ blocks: [{ type: 'rich_text', elements: [] }] }));
+    expect(v2.bodyMarkdown).toBe(plain.bodyMarkdown);
     expect(v2.bodyMarkdown).toContain('## Details');
     expect(v2.bodyMarkdown).not.toContain('## Content');
   });

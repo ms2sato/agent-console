@@ -25,8 +25,8 @@
  *           paths, intent); neither the second line of the instruction nor any sender-only
  *           key or file URL appears there. `body.md` and `instruction.md` exist in L's own
  *           delivery directory before the notification, `instruction.md` equals the stored
- *           multi-line CRLF text byte for byte, and `body.md` carries no `slack_message`
- *           key, no `slack_files` URL and no token-looking substring.
+ *           multi-line CRLF text byte for byte, and `body.md` carries no raw body key, no
+ *           `hikyac.files` URL and no token-looking substring.
  *   (2) EMBEDDED target E (stub provider, the shape of scenario 4c in the issue-label smoke):
  *           the target's NDJSON gains exactly one `user-message` with
  *           `notification.kind === 'inbound-event'` carrying the tag, the stub saw exactly one
@@ -44,7 +44,7 @@
  *           ledger row per target, tags in the output file).
  *
  *   (5) ATTACHMENT REFUSAL (offline negative arm, last so the baselines above are untouched): a
- *           second signed delivery whose `slack_files` entry points at a host outside the
+ *           second signed delivery whose `hikyac.files` entry points at a host outside the
  *           allowlist that can never resolve (an RFC 2606 `.invalid` name). Positive control in
  *           the same arm: the body reaches L (tag in its output, `body.md` on disk). Then
  *           `attachments_fetched=0 attachments_skipped=1` in L's notification, no attachment
@@ -87,7 +87,7 @@
  *           real timeout (those run in process with an injected fetch, a recorded proxy for the
  *           transport only).
  *
- *   (7) BODY VERSION 2 (after every arm above, so their baselines are untouched): a signed
+ *   (7) BODY VERSIONS (after every arm above, so their baselines are untouched): a signed
  *           `schema_version: 2` delivery routed to L. Its `body.md` shows the Permalink, Channel,
  *           Timestamp and App ID lines and the block marker under `## Content`; the reply address
  *           the body carries (a marker) is absent from `body.md`, from L's output file and from
@@ -95,7 +95,9 @@
  *           record names `schemaVersion: 2` for that delivery. Then a signed `schema_version: 3`
  *           body is answered 400 with no new deliveries row and no job, against the positive control
  *           that the version 2 delivery moved both counters, and the child logs the
- *           `unsupported-schema-version` reason.
+ *           `unsupported-schema-version` reason. (7d) A signed, otherwise valid `schema_version: 1`
+ *           body is refused the same way: 400, no deliveries row, no job, the same reason logged.
+ *           Every other delivery in this run is a `schema_version: 2` body.
  *
  * The request signature is computed HERE from the Standard Webhooks specification (HMAC-SHA256
  * over `{id}.{timestamp}.{body}`, keyed by the base64-decoded part of the secret after `whsec_`),
@@ -262,11 +264,14 @@ const REFUSED_FILE_TOKEN = 'tok-NEUTRAL-0001';
 const REFUSAL_LOG_MESSAGE = 'Inbound webhook attachment skipped';
 const REFUSAL_LOG_REASON = 'url-refused';
 const REFUSED_BODY = {
-  schema_version: 1,
+  schema_version: 2,
   message: 'Second delivery, attachment host not allowed',
-  slack_channel: 'C123',
-  slack_ts: '1700000001.000100',
-  slack_files: [{ name: 'b.png', url: `https://attachments-NEUTRAL.invalid/files/b.png?token=${REFUSED_FILE_TOKEN}` }],
+  hikyac: {
+    v: 1,
+    permalink: null,
+    files: [{ name: 'b.png', url: `https://attachments-NEUTRAL.invalid/files/b.png?token=${REFUSED_FILE_TOKEN}` }],
+  },
+  source: { type: 'slack', ids: { channel: 'C123', ts: '1700000001.000100' }, event: null, truncated: false },
 };
 /** The POST-to-tag time must stay far below the 10 s attachment timeout; generous for a loaded runner. */
 const REFUSAL_ARM_MAX_ELAPSED_MS = 5_000;
@@ -274,23 +279,29 @@ const TAG = '[inbound:external:message]';
 // A made-up poster app id (well-formed), and a bot id that fails the id shape so no `Bot ID` line may appear.
 const POSTER_APP_ID = 'A0123ABCD';
 const SENDER_BODY = {
-  schema_version: 1,
+  schema_version: 2,
   message: 'Deploy finished\nsecond sender line',
-  slack_channel: 'C123',
-  slack_ts: '1700000000.000100',
-  slack_permalink: 'https://example.slack.com/archives/C123/p1700000000000100',
-  slack_files: [{ name: 'a.png', url: `https://files.slack.com/files-pri/T1-F1/a.png?t=${TOKEN_LOOKING}` }],
-  slack_message: {
-    text: RAW_EVENT_TEXT,
-    user: 'U1',
-    app_id: POSTER_APP_ID,
-    bot_id: 'b-1',
-    blocks: [{ type: 'section', block_id: BLOCK_ID_MARKER, text: { type: 'mrkdwn', text: BLOCK_MARKER } }],
+  hikyac: {
+    v: 1,
+    permalink: 'https://example.slack.com/archives/C123/p1700000000000100',
+    files: [{ name: 'a.png', url: `https://files.slack.com/files-pri/T1-F1/a.png?t=${TOKEN_LOOKING}` }],
+  },
+  source: {
+    type: 'slack',
+    ids: { channel: 'C123', ts: '1700000000.000100' },
+    event: {
+      text: RAW_EVENT_TEXT,
+      user: 'U1',
+      app_id: POSTER_APP_ID,
+      bot_id: 'b-1',
+      blocks: [{ type: 'section', block_id: BLOCK_ID_MARKER, text: { type: 'mrkdwn', text: BLOCK_MARKER } }],
+    },
+    truncated: false,
   },
 };
 
-// Arm (7): a body of schema_version 2 (the reader the sender's newer body shape needs). Every key a reader must NOT
-// surface carries a marker: the reply address (never read) and the raw event's other keys.
+// Arm (7): a body whose every key a reader must NOT surface carries a marker: the reply address (never read) and
+// the raw event's other keys.
 const V2_REPLY_URL_MARKER = 'SMOKE-V2-REPLY-URL-MARKER';
 const V2_BLOCK_MARKER = 'SMOKE-V2-BLOCK-CONTENT-MARKER';
 const V2_APP_ID = 'A0V2SMOKE1';
@@ -318,6 +329,8 @@ const V2_BODY = {
 };
 /** Arm (7b): a version this receiver does not read. */
 const UNSUPPORTED_VERSION_BODY = { ...V2_BODY, schema_version: 3 };
+/** Arm (7d): a complete version 1 body, refused like any other unread version. */
+const VERSION_1_BODY = { schema_version: 1, message: 'Version one delivery' };
 
 /** Upper bound on waiting for the child's output readers to reach end of stream after the child exited. */
 const DRAIN_DEADLINE_MS = 5_000;
@@ -656,7 +669,7 @@ async function main(): Promise<void> {
       );
     }
     expect(
-      !newL.includes('SECOND-LINE-MARKER') && !newL.includes(TOKEN_LOOKING) && !FILE_HOST_PATTERN.test(newL) && !newL.includes(RAW_EVENT_TEXT) && !newL.includes('slack_message') && !newL.includes(BLOCK_MARKER),
+      !newL.includes('SECOND-LINE-MARKER') && !newL.includes(TOKEN_LOOKING) && !FILE_HOST_PATTERN.test(newL) && !newL.includes(RAW_EVENT_TEXT) && !newL.includes('hikyac') && !newL.includes('source.event') && !newL.includes(BLOCK_MARKER),
       "(1) L's output carries neither the instruction's second line nor any sender-only key, raw event text, block content, file URL or token",
       newL.slice(-600),
     );
@@ -669,12 +682,12 @@ async function main(): Promise<void> {
     expect(bodyL.includes('Deploy finished'), '(1) body.md carries the sender message (positive control for the absence checks below)', bodyL.slice(0, 300));
     expect(
       bodyL.includes('## Content') && bodyL.includes(BLOCK_MARKER),
-      '(1) body.md carries the block text under `## Content` (the projection of slack_message.blocks)',
+      '(1) body.md carries the block text under `## Content` (the projection of source.event.blocks)',
       bodyL.slice(0, 600),
     );
     expect(
-      !bodyL.includes('slack_message') && !bodyL.includes(BLOCK_ID_MARKER) && !bodyL.includes('slack_files') && !FILE_HOST_PATTERN.test(bodyL) && !bodyL.includes(TOKEN_LOOKING) && !bodyL.includes(RAW_EVENT_TEXT),
-      '(1) body.md carries no slack_message key, no slack_files URL and no token-looking substring',
+      !bodyL.includes('hikyac') && !bodyL.includes(BLOCK_ID_MARKER) && !bodyL.includes('source.event') && !FILE_HOST_PATTERN.test(bodyL) && !bodyL.includes(TOKEN_LOOKING) && !bodyL.includes(RAW_EVENT_TEXT),
+      '(1) body.md carries no raw body key, no hikyac.files URL and no token-looking substring',
       bodyL.slice(0, 600),
     );
 
@@ -931,7 +944,12 @@ async function main(): Promise<void> {
     const sessionS2 = await createSession(baseUrl, { type: 'quick', locationPath: repoDir, agentId: agent.id });
     sessionsToDelete.unshift(sessionS2.id);
 
-    const REPLY_DELIVERY_BODY = JSON.stringify({ schema_version: 1, message: 'Reply arm delivery', slack_channel: 'C123', slack_ts: '1700000002.000100' });
+    const REPLY_DELIVERY_BODY = JSON.stringify({
+      schema_version: 2,
+      message: 'Reply arm delivery',
+      hikyac: { v: 1, permalink: null, files: [] },
+      source: { type: 'slack', ids: { channel: 'C123', ts: '1700000002.000100' }, event: null, truncated: false },
+    });
     const deliverTo = async (endpoint: { id: string; secret: string }, webhookId: string): Promise<string> => {
       const dId = `inbound-webhook:${endpoint.id}:${webhookId}`;
       const beforeDelivery = readSafe(outputPathL);
@@ -1059,9 +1077,9 @@ async function main(): Promise<void> {
     await Bun.sleep(1_000);
 
     // ===================================================================
-    // (7) BODY VERSION 2: last, so every baseline above is untouched. Both parts use the main endpoint's counters.
+    // (7) BODY VERSIONS: last, so every baseline above is untouched. Every part uses the main endpoint's counters.
     // ===================================================================
-    console.log('\n==> BODY VERSION 2: a signed schema_version 2 delivery, then a schema_version 3 one');
+    console.log('\n==> BODY VERSIONS: a signed schema_version 2 delivery, then a schema_version 3 one and a version 1 one');
     const v2WebhookId = `${WEBHOOK_ID}-v2`;
     const v2DeliveryId = `inbound-webhook:${endpointId}:${v2WebhookId}`;
     const beforeL3 = readSafe(outputPathL);
@@ -1147,6 +1165,27 @@ async function main(): Promise<void> {
       "the child's stdout to carry the unsupported-schema-version refusal record",
     );
     expect(refusalReasonLogged, '(7b) the child server\'s stdout carries the refusal record with reason unsupported-schema-version', stdoutBuf.slice(stdoutBeforeV3).slice(-600));
+
+    // (7d) an otherwise valid version 1 body is refused the same way, against the same positive control.
+    const stdoutBeforeV1 = stdoutBuf.length;
+    const deliveriesBeforeV1 = countDeliveries();
+    const jobsBeforeV1 = countJobs();
+    const v1Res = await post({ webhookId: `${WEBHOOK_ID}-v1`, rawBody: JSON.stringify(VERSION_1_BODY) });
+    expect(v1Res.status === 400, '(7d) a signed schema_version 1 POST is answered 400', `status=${v1Res.status}`);
+    expect(
+      countersMovedByV2 && countDeliveries() === deliveriesBeforeV1 && countJobs() === jobsBeforeV1,
+      '(7d) the schema_version 1 POST created no deliveries row and no job (the control above shows those counters do move)',
+      `deliveries=${countDeliveries()} jobs=${countJobs()} before=${deliveriesBeforeV1}/${jobsBeforeV1}`,
+    );
+    const v1RefusalLogged = await waitFor(
+      () => {
+        const since = stdoutBuf.slice(stdoutBeforeV1);
+        return since.includes('Inbound webhook refused') && since.includes('unsupported-schema-version');
+      },
+      15_000,
+      "the child's stdout to carry the refusal record of the schema_version 1 POST",
+    );
+    expect(v1RefusalLogged, '(7d) the child server\'s stdout carries the refusal record with reason unsupported-schema-version', stdoutBuf.slice(stdoutBeforeV1).slice(-600));
     // The reply address marker is also part of the final secrecy scan, after the child exited and both readers drained.
     if (finalSecrecyScan) finalSecrecyScan.secrets.push(V2_REPLY_URL_MARKER);
     // Let E's turn for the version 2 delivery finish before teardown deletes its session (not an assertion).

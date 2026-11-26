@@ -1,7 +1,7 @@
 /**
  * Attachment fetch of the generic signed inbound webhook (receive half).
  *
- * The sender's file entry `url` (version 1 `slack_files[].url`, version 2 `hikyac.files[].url`) is a short-lived download-token URL on one fixed host. It is
+ * The sender's file entry `url` (`hikyac.files[].url`) is a short-lived download-token URL on one fixed host. It is
  * read here once, fetched once into memory and discarded: the URL and its token appear in no
  * returned value, no thrown error and no log line. Everything is best effort. A file that is
  * refused, slow, too large or failing is skipped and counted, never retried, and never stops the
@@ -28,7 +28,7 @@ const MAX_NAME_BYTES = 240;
 /** A trailing `.xxx` longer than this (dot included, in code points) is not treated as an extension. */
 const MAX_EXTENSION_CODE_POINTS = 20;
 
-/** A file entry as either body reader parses it (version 1 `slack_files`, version 2 `hikyac.files`). */
+/** A file entry as the body reader parses it (`hikyac.files`). */
 export interface AttachmentFileEntry {
   name?: string;
   mimetype?: string;

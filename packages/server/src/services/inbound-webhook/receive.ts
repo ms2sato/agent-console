@@ -125,11 +125,11 @@ const SlackFileSchema = v.object({
 });
 
 /**
- * The body as every consumer below this parser sees it, whichever version the sender used. The
- * two readers map into this shape; nothing downstream reads a version-specific key.
+ * The body as every consumer below this parser sees it. The reader maps into this shape; nothing
+ * downstream reads a body key.
  */
 export interface InboundMessage {
-  schemaVersion: 1 | 2;
+  schemaVersion: 2;
   /** Sender text. Empty when the body carried none. */
   message: string;
   permalink: string | null;
@@ -156,49 +156,7 @@ export type ParseInboundWebhookBodyResult =
 const refuse = (reason: InboundWebhookRefusalReason, schemaVersion?: number): ParseInboundWebhookBodyResult =>
   schemaVersion === undefined ? { ok: false, reason } : { ok: false, reason, schemaVersion };
 
-// Version 1 reader. Non-strict: unknown keys are ignored and missing keys are absent. Beyond the
-// types, the one requirement is that the body carries something to read: `message` or
-// `slack_message`. `schema_version` is not declared: the dispatch below has already decided it.
-const BodyV1Schema = v.pipe(
-  v.object({
-    event_id: v.optional(v.string()),
-    team_id: v.optional(v.string()),
-    matched_triggers: v.optional(v.array(v.string())),
-    message: v.optional(v.string()),
-    slack_channel: v.optional(v.string()),
-    slack_ts: v.optional(v.string()),
-    slack_thread_ts: v.optional(v.string()),
-    slack_permalink: v.optional(v.string()),
-    slack_files: v.optional(v.array(SlackFileSchema)),
-    slack_message: v.optional(v.record(v.string(), v.unknown())),
-    slack_message_truncated: v.optional(v.boolean()),
-  }),
-  v.check(
-    (body) => body.message !== undefined || body.slack_message !== undefined,
-    'Body carries neither message nor slack_message',
-  ),
-);
-
-function readBodyV1(json: Record<string, unknown>): ParseInboundWebhookBodyResult {
-  const result = v.safeParse(BodyV1Schema, json);
-  if (!result.success) return refuse('invalid-request');
-  const body = result.output;
-  return {
-    ok: true,
-    message: {
-      schemaVersion: 1,
-      message: body.message ?? '',
-      permalink: body.slack_permalink ?? null,
-      channel: body.slack_channel ?? null,
-      ts: body.slack_ts ?? null,
-      files: body.slack_files ?? [],
-      sourceEvent: body.slack_message ?? null,
-      sourceEventTruncated: body.slack_message_truncated === true,
-    },
-  };
-}
-
-// Version 2 reader. Non-strict at every level: the sender may add keys within a version. The
+// The body reader. Non-strict at every level: the sender may add keys within a version. The
 // reply address the sender carries (`hikyac.reply`) is deliberately not declared, so it is not read.
 const BodyV2Schema = v.object({
   message: v.string(),
@@ -256,9 +214,8 @@ function readBodyV2(json: Record<string, unknown>): ParseInboundWebhookBodyResul
 }
 
 /**
- * Parse the raw body text into the normalised message, dispatching on `schema_version`: absent or
- * `1` to the version 1 reader, `2` to the version 2 reader, any other value is refused as an
- * unsupported version. A reader that fails is a refusal; there is no fallback to the other reader.
+ * Parse the raw body text into the normalised message. Only `schema_version` 2 is read; an absent
+ * key or any other value is refused as an unsupported version. A body the reader fails on is refused.
  */
 export function parseInboundWebhookBody(rawBody: string): ParseInboundWebhookBodyResult {
   let json: unknown;
@@ -268,9 +225,8 @@ export function parseInboundWebhookBody(rawBody: string): ParseInboundWebhookBod
     return refuse('invalid-request');
   }
   if (!isPlainObject(json)) return refuse('invalid-request');
-  if (!Object.hasOwn(json, 'schema_version')) return readBodyV1(json);
+  if (!Object.hasOwn(json, 'schema_version')) return refuse('unsupported-schema-version');
   const version = json.schema_version;
-  if (version === 1) return readBodyV1(json);
   if (version === 2) return readBodyV2(json);
   return refuse('unsupported-schema-version', typeof version === 'number' && Number.isFinite(version) ? version : undefined);
 }

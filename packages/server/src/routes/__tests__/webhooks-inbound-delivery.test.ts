@@ -30,6 +30,7 @@ import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-looku
 import { inboundWebhookDeliveryId } from '../../services/inbound-webhook/receive.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
 import { webhooks } from '../webhooks.js';
+import { v2Body } from '../../__tests__/utils/inbound-webhook-body.js';
 
 const TEST_CONFIG_DIR = '/test/config-inbound-webhook-route';
 const TEST_REPO_PATH = '/test/repo-inbound-webhook-route';
@@ -40,15 +41,14 @@ const NOW = new Date('2023-11-14T22:13:20.000Z');
 const NOW_SECONDS = 1700000000;
 const INSTRUCTION = 'Line one\r\nLine two  \n\nlast line with trailing newline\n';
 const TOKEN_LOOKING = 'tok-TOKENLIKE-SUBSTRING';
-const SENDER_BODY = {
-  schema_version: 1,
-  message: 'Deploy finished\nsecond line',
-  slack_channel: 'C123',
-  slack_ts: '1700000000.000100',
-  slack_permalink: 'https://example.slack.com/archives/C123/p1700000000000100',
-  slack_files: [{ name: 'a.png', url: `https://files.slack.com/files-pri/T1-F1/a.png?t=${TOKEN_LOOKING}` }],
-  slack_message: { text: 'RAW-SLACK-EVENT-TEXT', user: 'U1' },
-};
+const SENDER_BODY = v2Body(
+  { message: 'Deploy finished\nsecond line' },
+  {
+    permalink: 'https://example.slack.com/archives/C123/p1700000000000100',
+    files: [{ name: 'a.png', url: `https://files.slack.com/files-pri/T1-F1/a.png?t=${TOKEN_LOOKING}` }],
+  },
+  { ids: { channel: 'C123', ts: '1700000000.000100' }, event: { text: 'RAW-SLACK-EVENT-TEXT', user: 'U1' } },
+);
 
 const ptyFactory = createMockPtyFactory();
 
