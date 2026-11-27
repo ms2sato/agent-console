@@ -94,6 +94,19 @@ const REPO_ROOT = new URL('../..', import.meta.url).pathname;
 const failures: string[] = [];
 let passes = 0;
 
+// Captured server stdout/stderr -- 'ignore' by default would leave a
+// SCENARIO 5 digest failure undiagnosable (was the flush never run, did the
+// readiness gate cap out, or did delivery fail?). Populated by two
+// fire-and-forget read loops started right after the server is spawned; see
+// `check-webhook-issue-label-routing.ts`'s identical pattern.
+let stdoutBuf = '';
+let stderrBuf = '';
+
+// Set when SCENARIO 5's digest-appearance assertion fails, so the teardown
+// block below can keep the scratch root on disk for inspection instead of
+// deleting it.
+let scenario5DigestFailed = false;
+
 function expect(cond: boolean, label: string, detail?: string): void {
   if (cond) {
     console.log(`  OK    ${label}`);
@@ -327,9 +340,24 @@ async function main(): Promise<void> {
         HOST: '127.0.0.1',
         CLAUDE_CONFIG_DIR: claudeConfigDir,
       },
-      stdout: 'ignore',
-      stderr: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
     });
+
+    // Fire-and-forget: drain both streams into buffers for the whole run's
+    // lifetime, so a SCENARIO 5 diagnostic dump can grep the server's own
+    // log lines after the fact. Mirrors `check-webhook-issue-label-routing.ts`.
+    const decoder = new TextDecoder();
+    void (async () => {
+      for await (const chunk of proc!.stdout as ReadableStream<Uint8Array>) {
+        stdoutBuf += decoder.decode(chunk);
+      }
+    })();
+    void (async () => {
+      for await (const chunk of proc!.stderr as ReadableStream<Uint8Array>) {
+        stderrBuf += decoder.decode(chunk);
+      }
+    })();
 
     await waitForServerReady(baseUrl);
     console.log('==> disposable server is ready');
@@ -552,6 +580,10 @@ async function main(): Promise<void> {
     }
     console.log(`==> baseline output length for C: ${baselineOutputC.length} bytes (stable)`);
 
+    // Baseline for the diagnostic dump below: only stdout produced BY this
+    // resume (and the flush it triggers) should be inspected on failure.
+    const stdoutLenBeforeScenario5 = stdoutBuf.length;
+
     const resumeByPRes = await callMcpTool(baseUrl, mcpSessionId, 'resume_session', {
       sessionId: sessionC.id,
       fromSessionId: sessionP.id,
@@ -577,6 +609,40 @@ async function main(): Promise<void> {
     const afterDigest = readOutputFileSafe(outputPathC);
     expect(digestFound, 'SCENARIO 5: C\'s worker output file gains the [internal:paused-digest] notification text', afterDigest.slice(baselineOutputC.length).slice(0, 500));
 
+    if (!digestFound) {
+      // Diagnostic-only output -- not a new assertion, does not affect
+      // pass/fail or the exit code. Distinguishes three failure shapes: the
+      // flush never ran, the readiness gate capped out but the flush still
+      // ran (or failed) afterward, or the write landed but late/elsewhere.
+      scenario5DigestFailed = true;
+      const stdoutSinceScenario5 = stdoutBuf.slice(stdoutLenBeforeScenario5);
+      const markers: Array<{ name: string; text: string }> = [
+        { name: 'readiness gate capped out', text: 'Agent worker was not ready before the deferred digest; proceeding' },
+        { name: 'flush completed', text: 'Flushed deferred notifications' },
+        { name: 'digest delivery failed', text: 'Failed to deliver the paused-session digest' },
+        { name: 'read-more file write failed (flush aborted)', text: 'Failed to write the deferred read-more file' },
+      ];
+      console.log('\n==> SCENARIO 5 DIAGNOSTIC DUMP (digest never appeared within the wait window)');
+      for (const marker of markers) {
+        const matchingLines = stdoutSinceScenario5
+          .split('\n')
+          .filter((line) => line.includes(marker.text));
+        if (matchingLines.length > 0) {
+          console.log(`  [${marker.name}] YES:`);
+          for (const line of matchingLines) console.log(`    ${line}`);
+        } else {
+          console.log(`  [${marker.name}] NO (not found in server stdout since the resume call)`);
+        }
+      }
+      const remainingDeferredRows = countDeferredRows(sessionC.id, agentWorkerC.id);
+      console.log(`  [deferred_worker_notifications rows remaining for C] ${remainingDeferredRows}`);
+      console.log(`  [C's worker output file, last 1000 chars]\n${afterDigest.slice(-1000)}`);
+      if (stderrBuf.length > 0) {
+        console.log(`  [server stderr, last 1000 chars]\n${stderrBuf.slice(-1000)}`);
+      }
+      console.log('==> END SCENARIO 5 DIAGNOSTIC DUMP');
+    }
+
     // ===================================================================
     // SCENARIO 6: a second resume_session from P returns changed:false (C
     // is already active).
@@ -594,11 +660,15 @@ async function main(): Promise<void> {
       proc.kill();
       await proc.exited;
     }
-    try {
-      rmSync(scratchRoot, { recursive: true, force: true });
-      console.log(`\n==> cleaned up scratch root: ${scratchRoot}`);
-    } catch (err) {
-      console.error(`==> WARNING: failed to clean up ${scratchRoot}: ${String(err)}`);
+    if (scenario5DigestFailed) {
+      console.log(`\n==> KEEPING scratch root for inspection (SCENARIO 5 digest failure): ${scratchRoot}`);
+    } else {
+      try {
+        rmSync(scratchRoot, { recursive: true, force: true });
+        console.log(`\n==> cleaned up scratch root: ${scratchRoot}`);
+      } catch (err) {
+        console.error(`==> WARNING: failed to clean up ${scratchRoot}: ${String(err)}`);
+      }
     }
   }
 
