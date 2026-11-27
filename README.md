@@ -285,8 +285,10 @@ This adds the MCP server to `~/.claude.json`. All Claude Code instances (includi
 
 | Tool | Description |
 |------|-------------|
-| `list_sessions` | List all active sessions with worker activity states |
-| `get_session_status` | Get a specific session's status, workers, and parent info |
+| `list_sessions` | List all active sessions with worker activity states; pass `includePaused: true` to also list paused sessions with `pausedAt` |
+| `get_session_status` | Get a specific session's status, workers, and parent info; also answers for a paused session (`paused: true`, `pausedAt` set) |
+| `pause_session` | Pause a session you may operate (your own delegate, or a repository you are a designated Orchestrator of): kills its PTY workers and frees memory while keeping its data on disk |
+| `resume_session` | Resume a paused session you may operate: reloads it from disk, restores its workers, and continues its previous conversation |
 | `close_session` | Close a session and clean up its workers |
 | `restart_all_agents` | Restart all workers with a live process across the sessions you may operate (PTY agent workers and active embedded-agent workers) |
 

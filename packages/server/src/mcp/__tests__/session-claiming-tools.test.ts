@@ -100,6 +100,17 @@ describe('SESSION_CLAIMING_TOOLS registry', () => {
     expect(block!.body).toContain("{ toolName: 'reply_to_inbound_webhook' }");
   });
 
+  it('lists pause_session and resume_session, and each registration calls the gate under its own name (Issue #2315)', () => {
+    expect(SESSION_CLAIMING_TOOLS).toContain('pause_session');
+    expect(SESSION_CLAIMING_TOOLS).toContain('resume_session');
+    const pauseBlock = claiming.find((b) => b.name === 'pause_session');
+    const resumeBlock = claiming.find((b) => b.name === 'resume_session');
+    expect(pauseBlock).toBeDefined();
+    expect(resumeBlock).toBeDefined();
+    expect(pauseBlock!.body).toContain("{ toolName: 'pause_session' }");
+    expect(resumeBlock!.body).toContain("{ toolName: 'resume_session' }");
+  });
+
   it('has no duplicate names', () => {
     expect(new Set(SESSION_CLAIMING_TOOLS).size).toBe(SESSION_CLAIMING_TOOLS.length);
   });

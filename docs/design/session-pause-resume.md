@@ -164,8 +164,8 @@ A repository can configure a `pause_command` and a `resume_command` (columns on 
 |---|---|---|---|---|---|---|---|
 | configure pause command | do: textarea "Pause Command (optional)", placeholder `docker compose stop` | do: "Pause Command" row | not here: the card shows only the setup command today (same as cleanup) | do: `pauseCommand` param, echoed in the result | not here: cleanup is not listed either | do: `pauseCommand` in the request schema | -- |
 | configure resume command | do: textarea "Resume Command (optional)", placeholder `docker compose start` | do: "Resume Command" row | not here (same) | do: `resumeCommand` | not here | do | -- |
-| run pause command | -- | -- | -- | not here: no MCP pause exists | -- | -- (`POST /:id/pause` runs it) | do: on `pauseCommandResult.success === false` the failure is recorded on the session's stop task in `SessionStopTasksContext` (root) and a non-blocking failure dialog renders at the root over the current page; the normal navigation is unchanged (it does not wait for the dialog); success shows nothing |
-| run resume command | -- | -- | -- | not here | -- | -- (`POST /:id/resume` runs it) | do: the same root-level dialog on `resumeCommandResult.success === false`; every resume caller (session page, dashboard banner, sidebar) reports into the same slot; success shows nothing |
+| run pause command | -- | -- | -- | not here (`update_repository` only edits the command text; see the MCP Surface subsection below for the separate `pause_session` tool, which runs it) | -- | -- (`POST /:id/pause` runs it) | do: on `pauseCommandResult.success === false` the failure is recorded on the session's stop task in `SessionStopTasksContext` (root) and a non-blocking failure dialog renders at the root over the current page; the normal navigation is unchanged (it does not wait for the dialog); success shows nothing |
+| run resume command | -- | -- | -- | not here (see `resume_session` below) | -- | -- (`POST /:id/resume` runs it) | do: the same root-level dialog on `resumeCommandResult.success === false`; every resume caller (session page, dashboard banner, sidebar) reports into the same slot; success shows nothing |
 | run resume command on auto-resume at server start | -- | -- | -- | -- | -- | -- | not here: a server restart resumes workers only; the resume command runs only on a user resume, after its pause command (owner, 2026-10-18) |
 | run on server shutdown / restart | -- | -- | -- | -- | -- | not here: no pause call exists on that path; becomes a row when graceful shutdown lands | -- |
 
@@ -175,6 +175,42 @@ Implementation notes for the two decisions above:
 
 - **Where the failure is held.** The `session-paused` WebSocket frame reaches the client before the pause response, and the session page, which issued the request, unmounts when that frame arrives. State kept in the page or its dialog is therefore lost before the response carrying `pauseCommandResult` lands, so the failure lives at the root, where the pause task already lives.
 - **Auto-resume at server start.** `initialize()` calls `resumeSession(id, false)`, so the resume command is skipped there while workers are still resumed; the REST resume passes the default `true`.
+
+#### MCP Surface
+
+MCP tools `pause_session` and `resume_session` (Issue #2315) let an agent pause and resume a session it may operate, so a delegate that is waiting a long time (for example, for a human merge) can stop holding memory and processes. Both tools call only `sessionManager.pauseSession` / `sessionManager.resumeSession` -- the same entry points the REST routes call -- so this subsection is additive to the REST/UI behaviour described above, not a second implementation of it.
+
+**Authorization (MCP only; REST stays ungated, a team operation per owner decision 2026-10-14).** Both tools take `sessionId` (the target) and `fromSessionId` (the caller, resolved via `resolveSelfIdentity` exactly as `send_session_message` does). A call is allowed when ALL of the following hold, checked in this order, before any state change and before either tool's idempotent "already paused" / "already live" answer:
+
+1. **Ownership** -- `checkCallerOwnsSession(caller, { sessionId: target.id, createdBy: target.createdBy }, mode, { toolName })`, the same gate `close_session` / `remove_worktree` use. Both tool names are in `SESSION_CLAIMING_TOOLS` (`session-claiming-tools.ts`).
+2. **The caller session exists in memory** -- `sessionManager.getSession(fromSessionId)`, else the `send_session_message`-style "Sender session ... not found" error.
+3. **Relationship** -- `checkPauseResumeRelationship` (`packages/server/src/mcp/pause-resume-authorization.ts`, a pure function): `target.parentSessionId === fromSessionId`, OR the target is a worktree session and `repositoryManager.getRepository(target.repositoryId)?.orchestratorSessionIds` includes `fromSessionId`.
+4. **Not self** -- `fromSessionId !== target.id`, checked first inside `checkPauseResumeRelationship`: a session can never pause or resume itself through MCP, even when it is its own repository's designated Orchestrator.
+
+Rule 3's Orchestrator fallback exists because `parentSessionId` is fixed at creation; when an Orchestrator session is replaced, its paused delegates would otherwise be un-resumable through MCP -- the same fallback inbound event routing already uses for a dead parent. Under the default `AGENT_CONSOLE_MCP_AUTH=warn`, a tokenless terminal agent's `fromSessionId` is self-declared, so rule 3 is a guard against a wrong id rather than a security boundary, the same standing as every other session-claiming tool in that mode.
+
+**Decision table:**
+
+| Surface | pause | resume | list / status |
+|---|---|---|---|
+| MCP | `pause_session`: rules 1-4 above. Worktree sessions only (a quick target is refused after authorization, as "Quick sessions cannot be paused"). | `resume_session`: rules 1-4 above. | `list_sessions`: unchanged by default; `includePaused: true` appends paused sessions (each with `paused: true`, `pausedAt`, and `activityState: 'unknown'` workers). `get_session_status`: also answers for a paused session (`paused: true`, `pausedAt`); a live session's answer gains `paused: false`. Both stay ungated reads. |
+| REST | unchanged (`POST /api/sessions/:id/pause`, ungated) | unchanged (`POST /api/sessions/:id/resume`, ungated) | unchanged |
+| UI | unchanged | unchanged | unchanged |
+
+**Results and boundaries:**
+
+`pause_session` result: `{ sessionId, state: 'paused', changed: boolean, pausedAt: string, pauseCommandResult? }`. `resume_session` result: `{ sessionId, state: 'active', changed: boolean, workers: [...], resumeCommandResult? }`.
+
+| Target state at call time | `pause_session` | `resume_session` |
+|---|---|---|
+| live, worktree | pauses; `changed: true` | `changed: false`, no resume command run, nothing activated |
+| paused | `changed: false`, `pausedAt` from the row, no pause command run | resumes; `changed: true` |
+| live, quick | error "Quick sessions cannot be paused" | n/a |
+| orphaned row | error (not found as a pause target) | error carrying `SessionOrphanedError`'s message |
+| unknown id | error "Session not found: `<id>`" | error "Session not found: `<id>`" |
+| resume returns `null` (worktree path gone, another resume in flight) | n/a | error "Failed to resume session `<id>`" (the session stays paused) |
+
+**Ordering: send a message before resuming, not after.** `send_session_message`'s description states this directly (and accepts a paused target: the message is deferred, see "Data Preservation" above). Sending immediately after `resume_session` races the agent reaching its prompt; sending first and then calling `resume_session` delivers the message in the resume digest, which already waits for the agent to be ready. A `resume: true` flag on `send_session_message` was considered and rejected for this reason -- the existing two-call order already does it, and does it better.
 
 #### Deprecate: Delete for Pause Intent
 
