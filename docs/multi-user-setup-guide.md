@@ -576,6 +576,11 @@ that picks it up:
 scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun
 ```
 
+`--upgrade-bun` additionally needs `curl` and `unzip` on the host (same as
+`rsync`, this repo does not install them automatically -- `sudo apt-get
+install -y curl unzip` if missing); the script checks for both up front and
+exits before touching the build directory if either is absent.
+
 Without `--upgrade-bun`, every ordinary deploy still reports the drift: a
 `WARN` line naming both the live and the pinned version, printed in the
 script's `==> Bun version` section, never blocking the deploy.

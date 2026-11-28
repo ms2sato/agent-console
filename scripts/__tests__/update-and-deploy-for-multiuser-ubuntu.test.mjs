@@ -136,27 +136,42 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: --upgrade-bun CLI flag and 
     expect(bunVersionHeading).toBeLessThan(copyHeading);
   });
 
-  it('the pinned version is read from the DEPLOY TARGET\'s docker/bun-sha256.txt via the same awk extraction as docker/fetch-bun.sh, never a second read from ${SRC}', () => {
+  it('the pinned version is read from the DEPLOY TARGET\'s docker/bun-sha256.txt via the same awk extraction as docker/fetch-bun.sh, elevated as the service user (Architect ruling), never a second read from ${SRC}', () => {
     expect(scriptText).toContain(
-      'PINNED_BUN_VERSION="$(awk \'$1 !~ /^#/ && NF == 3 { print $1; exit }\' "${DST}/docker/bun-sha256.txt")"',
+      'if PINNED_BUN="$(sudo -u "${SERVICE_USER}" awk \'$1 !~ /^#/ && NF == 3 { print $1; exit }\' "${DST}/docker/bun-sha256.txt" 2>&1)" && [ -n "${PINNED_BUN}" ]; then',
     );
     expect(scriptText).not.toContain('${SRC}/docker/bun-sha256.txt');
+    // Never an UNELEVATED read of ${DST} -- that is exactly the shape that
+    // failed closed with "Permission denied" on a real multi-user host
+    // (the deploy target is owned by the service user, not the operator).
+    expect(scriptText).not.toMatch(/(?<!sudo -u "\$\{SERVICE_USER\}" )awk '\$1 !~ \/\^#\/ && NF == 3/);
+  });
+
+  it('both the live and pinned reads are the CONDITION of an `if`, never a bare assignment that could trip `set -e` on failure', () => {
+    expect(scriptText).toContain('if LIVE_BUN="$(/usr/local/bin/bun --version 2>&1)"; then');
+    expect(scriptText).toContain('  LIVE_BUN_OK=1');
+    expect(scriptText).toContain('  LIVE_BUN_OK=0');
+    expect(scriptText).toContain('  PINNED_BUN_OK=1');
+    expect(scriptText).toContain('  PINNED_BUN_OK=0');
+    // No elevation prefix on the live-version read itself (A5: no elevation
+    // needed -- /usr/local/bin/bun is mode 0755, world-executable).
+    expect(scriptText).not.toMatch(/sudo[^\n]*\/usr\/local\/bin\/bun --version 2>&1/);
   });
 
   it('without --upgrade-bun: every branch is non-blocking (no exit) and the WARN lines name both versions or the read failure', () => {
-    const noFlag = scriptText.slice(idxOf('if [ "${UPGRADE_BUN}" -eq 0 ]; then'), idxOf('else\n  echo "    --upgrade-bun:'));
+    const noFlag = scriptText.slice(idxOf('if [ "${UPGRADE_BUN}" -eq 0 ]; then'), idxOf('else\n  if [ "${PINNED_BUN_OK}" -eq 1 ]; then'));
     expect(noFlag).not.toContain('exit 1');
     expect(noFlag).not.toContain('exit 0');
     expect(scriptText).toContain(
-      'WARN: /usr/local/bin/bun is ${LIVE_BUN_VERSION}, the deployed tree pins ${PINNED_BUN_VERSION} -- re-run with --upgrade-bun to install the pinned version',
+      'WARN: could not determine the live or pinned bun version (live: ${LIVE_BUN:-<unavailable>}; pinned: ${PINNED_BUN:-<unavailable>}) -- see scripts/setup-multiuser-for-ubuntu.sh Step 6b and docker/bun-sha256.txt',
     );
-    expect(scriptText).toContain('WARN: could not read /usr/local/bin/bun --version');
-    // No elevation prefix on the version read itself (A5: no elevation needed).
-    expect(scriptText).toContain('LIVE_BUN_VERSION="$(/usr/local/bin/bun --version 2>"${LIVE_BUN_ERR}")"');
+    expect(scriptText).toContain(
+      'WARN: live bun (${LIVE_BUN}) differs from the deployed .bun-version (${PINNED_BUN}) -- re-run with --upgrade-bun to update /usr/local/bin/bun, or see docs/multi-user-setup-guide.md',
+    );
   });
 
   it('with --upgrade-bun: fetch+verify goes through docker/fetch-bun.sh via bare sudo, never `sudo -u "${SERVICE_USER}"`, and BUN_DOWNLOAD_BASE_URL/BUN_FETCH_ARCH are forwarded explicitly (never a sudoers env_keep change)', () => {
-    const upgradeBranch = scriptText.slice(idxOf('echo "    --upgrade-bun: fetching bun'), idxOf('echo ""\necho "==> 6/7'));
+    const upgradeBranch = scriptText.slice(idxOf('BUN_SCRATCH_DIR="$(sudo mktemp -d)"'), idxOf('echo ""\necho "==> 6/7'));
     expect(upgradeBranch).not.toMatch(/sudo -u "\$\{SERVICE_USER\}"/);
     expect(upgradeBranch).not.toContain('sudo -u "${SERVICE_USER}" -i');
     expect(scriptText).toContain(
@@ -165,20 +180,38 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: --upgrade-bun CLI flag and 
     expect(scriptText).toContain('sudo install -m0755 "${BUN_SCRATCH_DIR}/bun" /usr/local/bin/bun');
   });
 
-  it('with --upgrade-bun: reuses assert_unified_bun_executable (no second executability check) and fails closed on a post-install version mismatch, before the restart', () => {
-    const upgradeIdx = idxOf('echo "    --upgrade-bun: fetching bun');
+  it('with --upgrade-bun: reuses assert_unified_bun_executable (no second executability check) and fails closed on a post-install version mismatch, before the restart, but only when the pinned value was itself readable', () => {
+    const upgradeIdx = idxOf('BUN_SCRATCH_DIR="$(sudo mktemp -d)"');
     const assertIdx = idxOf('assert_unified_bun_executable "/usr/local/bin/bun" || exit 1');
     const mismatchIdx = idxOf(
-      'echo "Error: installed /usr/local/bin/bun reports ${INSTALLED_BUN_VERSION}, expected ${PINNED_BUN_VERSION} -- refusing to restart" >&2',
+      'echo "Error: installed /usr/local/bin/bun reports ${INSTALLED_BUN_VERSION}, expected ${PINNED_BUN} -- refusing to restart" >&2',
     );
     const restartIdx = idxOf('sudo systemctl restart "${SERVICE_NAME}"');
     expect(assertIdx).toBeGreaterThan(upgradeIdx);
     expect(assertIdx).toBeLessThan(mismatchIdx);
     expect(mismatchIdx).toBeLessThan(restartIdx);
+    expect(scriptText).toContain('if [ "${PINNED_BUN_OK}" -eq 1 ] && [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then');
     // Only ONE call (as opposed to a mere mention in a comment) to the
     // shared executability check in this file -- A6(d) reuses it, A8
     // forbids a second one.
     expect(scriptText.split('assert_unified_bun_executable "/usr/local/bin/bun"').length - 1).toBe(1);
+  });
+
+  it('--upgrade-bun requires curl and unzip, checked right after the DEPLOY_SHA pre-check and before the build directory is created (Architect ruling)', () => {
+    const precheckEnd = idxOf('sudo -u "${SERVICE_USER}" -- git -C "${SRC}" log --oneline -1 "${DEPLOY_SHA}"');
+    const buildDirIdx = idxOf('BUILD_DIR="$(sudo -u "${SERVICE_USER}" mktemp -d');
+    const precheckIdx = idxOf('if [ "${UPGRADE_BUN}" -eq 1 ]; then');
+    const errIdx = idxOf(
+      "echo \"Error: --upgrade-bun requires curl and unzip (docker/fetch-bun.sh needs both) -- run 'apt-get install -y curl unzip' and re-run this script\" >&2",
+    );
+    expect(precheckIdx).toBeGreaterThan(precheckEnd);
+    expect(precheckIdx).toBeLessThan(buildDirIdx);
+    expect(errIdx).toBeGreaterThan(precheckIdx);
+    expect(errIdx).toBeLessThan(buildDirIdx);
+    expect(scriptText).toContain('if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then');
+    // Not added to the setup script's apt list (Architect ruling).
+    const setupScript = readFileSync(resolve(__dirname, '..', 'setup-multiuser-for-ubuntu.sh'), 'utf-8');
+    expect(setupScript).not.toMatch(/unzip/);
   });
 
   it('the bun scratch dir cleanup mirrors BUILD_DIR\'s own guarded-trap pattern (guarded on non-empty, cleared after removal)', () => {
@@ -640,6 +673,16 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
     git('add', '.');
     git('commit', '-q', '-m', 'second');
     const headSha = git('rev-parse', 'HEAD');
+    // A third commit with the registry file removed entirely (Issue #2322
+    // polarity fixture): git has no mode bit for "unreadable", so a chmod
+    // on the working tree would not survive `git archive`'s tar stream --
+    // the file's ABSENCE from a committed tree is what this harness can
+    // actually simulate, and it exercises the exact same code path (the
+    // elevated awk read fails, captured via `2>&1`) as a real permission
+    // failure does.
+    git('rm', '-q', 'docker/bun-sha256.txt');
+    git('commit', '-q', '-m', 'third');
+    const noPinSha = git('rev-parse', 'HEAD');
     writeFileSync(join(src, 'dirty.txt'), 'untracked working-tree file\n');
 
     writeFileSync(
@@ -687,7 +730,7 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
         buildDirs: readdirSync(dataRoot).filter((n) => n.startsWith('build.')),
       };
     };
-    return { run, src, dst, firstSha, headSha };
+    return { run, src, dst, firstSha, headSha, noPinSha };
   }
 
   const GUARD_ERROR = 'Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ';
@@ -740,6 +783,20 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
     expect(r.buildDirs).toEqual([]);
   });
 
+  // Architect ruling polarity (Issue #2322): when the deployed tree's
+  // docker/bun-sha256.txt cannot be read, the "==> Bun version" section
+  // must print a WARN and the script must still reach its usual stopping
+  // point -- never abort early under `set -e`. Deploys the noPinSha commit
+  // (the registry file removed entirely), which exercises the same failed
+  // elevated-read code path a real permission failure would.
+  it('a deployed tree with no docker/bun-sha256.txt prints a WARN and does not abort the deploy (Architect ruling)', () => {
+    const h = makeHarness();
+    const r = h.run({ AGENT_CONSOLE_DEPLOY_SHA: h.noPinSha });
+    expect(r.status).toBe(99);
+    expect(r.stderr).toContain('WARN: could not determine the live or pinned bun version');
+    expect(r.log).toContain('ROOT-LEVEL: install');
+  });
+
   it('a branch name or short SHA override is recorded as the full 40-char SHA', () => {
     const h = makeHarness();
     for (const override of ['main', h.firstSha.slice(0, 8)]) {
@@ -747,7 +804,7 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
       expect(r.status).toBe(99);
       const line1 = readFileSync(join(h.dst, '.deploy-sha'), 'utf8').split('\n')[0];
       expect(line1).toMatch(/^[0-9a-f]{40}$/);
-      expect(line1).toBe(override === 'main' ? h.headSha : h.firstSha);
+      expect(line1).toBe(override === 'main' ? h.noPinSha : h.firstSha);
       expect(r.stdout).toContain(`DEPLOY_SHA: ${line1}`);
     }
   });

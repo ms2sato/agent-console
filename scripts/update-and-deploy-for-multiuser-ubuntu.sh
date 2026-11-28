@@ -345,6 +345,19 @@ DEPLOY_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse "${DEPLOY_S
 echo "    DEPLOY_SHA: ${DEPLOY_SHA}"
 sudo -u "${SERVICE_USER}" -- git -C "${SRC}" log --oneline -1 "${DEPLOY_SHA}"
 
+# --upgrade-bun needs curl and unzip (docker/fetch-bun.sh uses both) -- fail
+# here, before any build/rsync time is spent, not at the point fetch-bun.sh
+# itself would fail partway through. Not added to
+# scripts/setup-multiuser-for-ubuntu.sh's apt list (Architect ruling,
+# Issue #2322): this repo's existing convention is a manual prerequisite
+# (rsync is the precedent), not an automatic apt install.
+if [ "${UPGRADE_BUN}" -eq 1 ]; then
+  if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+    echo "Error: --upgrade-bun requires curl and unzip (docker/fetch-bun.sh needs both) -- run 'apt-get install -y curl unzip' and re-run this script" >&2
+    exit 1
+  fi
+fi
+
 # Per-deploy build directory under the data root, owned by the service user
 # (mktemp -d makes it 0700). Removed on every exit path by the EXIT trap, and
 # explicitly right after the rsync below so V0 (which scans the data root)
@@ -407,32 +420,51 @@ echo "==> Bun version"
 # fail-closed gate like V0/V1 (Architect decision; see
 # docs/design/elevation-verification-tiers.md's "Post-deploy verification --
 # checks enumerated" table, which this section deliberately stays out of so
-# V2-V6 never need renumbering). Reads the pinned version from the DEPLOY
-# TARGET's own docker/bun-sha256.txt -- the file rsync just copied from the
-# exact DEPLOY_SHA tree -- never a second independent read from ${SRC}.
+# V2-V6 never need renumbering).
 #
-# The awk extraction below is copied verbatim from docker/fetch-bun.sh's own
+# The pinned-version read is from the DEPLOY TARGET's own docker/bun-sha256.txt
+# -- the file rsync just copied from the exact DEPLOY_SHA tree, never a
+# second independent read from ${SRC} -- but DST is owned by ${SERVICE_USER},
+# not by the operator running this script, so the read elevates as
+# ${SERVICE_USER} (Architect ruling: an earlier revision read it unelevated
+# and failed closed with "Permission denied" on every real multi-user host).
+# The awk extraction itself is copied verbatim from docker/fetch-bun.sh's own
 # matching line rather than shared: that script is POSIX `sh` for a minimal
 # Docker build stage, this one is bash.
-PINNED_BUN_VERSION="$(awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "${DST}/docker/bun-sha256.txt")"
+#
+# BOTH reads below (the live version, the pinned version) are the CONDITION
+# of an `if`, never a bare assignment -- under `set -e` a bare assignment
+# whose command substitution fails would abort the whole deploy (Architect
+# ruling: this is exactly what the unelevated read's "Permission denied" did
+# before this fix). `2>&1` folds stderr into the captured value so a failure
+# is visibly distinct from a successful empty read; `[ -n ... ]` on the
+# pinned side additionally guards against a successful-but-empty extraction
+# (a syntactically valid but data-free registry file).
+if LIVE_BUN="$(/usr/local/bin/bun --version 2>&1)"; then
+  LIVE_BUN_OK=1
+else
+  LIVE_BUN_OK=0
+fi
+if PINNED_BUN="$(sudo -u "${SERVICE_USER}" awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "${DST}/docker/bun-sha256.txt" 2>&1)" && [ -n "${PINNED_BUN}" ]; then
+  PINNED_BUN_OK=1
+else
+  PINNED_BUN_OK=0
+fi
 
 if [ "${UPGRADE_BUN}" -eq 0 ]; then
-  # No elevation needed: /usr/local/bin/bun is mode 0755 (world-executable).
   # Every outcome here is non-blocking -- this section never changes the
   # script's exit code.
-  LIVE_BUN_ERR="$(mktemp)"
-  if LIVE_BUN_VERSION="$(/usr/local/bin/bun --version 2>"${LIVE_BUN_ERR}")"; then
-    if [ "${LIVE_BUN_VERSION}" = "${PINNED_BUN_VERSION}" ]; then
-      echo "    /usr/local/bin/bun is already at the pinned version (${PINNED_BUN_VERSION})"
-    else
-      echo "WARN: /usr/local/bin/bun is ${LIVE_BUN_VERSION}, the deployed tree pins ${PINNED_BUN_VERSION} -- re-run with --upgrade-bun to install the pinned version" >&2
-    fi
-  else
-    echo "WARN: could not read /usr/local/bin/bun --version ($(tr '\n' ' ' <"${LIVE_BUN_ERR}")) -- see scripts/setup-multiuser-for-ubuntu.sh Step 6b to provision it" >&2
+  if [ "${LIVE_BUN_OK}" -eq 0 ] || [ "${PINNED_BUN_OK}" -eq 0 ]; then
+    echo "    WARN: could not determine the live or pinned bun version (live: ${LIVE_BUN:-<unavailable>}; pinned: ${PINNED_BUN:-<unavailable>}) -- see scripts/setup-multiuser-for-ubuntu.sh Step 6b and docker/bun-sha256.txt" >&2
+  elif [ "${LIVE_BUN}" != "${PINNED_BUN}" ]; then
+    echo "    WARN: live bun (${LIVE_BUN}) differs from the deployed .bun-version (${PINNED_BUN}) -- re-run with --upgrade-bun to update /usr/local/bin/bun, or see docs/multi-user-setup-guide.md" >&2
   fi
-  rm -f "${LIVE_BUN_ERR}"
 else
-  echo "    --upgrade-bun: fetching bun ${PINNED_BUN_VERSION} via docker/fetch-bun.sh"
+  if [ "${PINNED_BUN_OK}" -eq 1 ]; then
+    echo "    --upgrade-bun: fetching bun ${PINNED_BUN} via docker/fetch-bun.sh"
+  else
+    echo "    --upgrade-bun: fetching the pinned bun via docker/fetch-bun.sh (could not read the pinned version up front: ${PINNED_BUN:-<unavailable>})"
+  fi
   # Mirrors BUILD_DIR's own guarded-trap pattern above: create, define a
   # removal function guarded on non-empty, register the EXIT trap, use. This
   # REPLACES the earlier `trap remove_build_dir EXIT` -- harmless, since
@@ -450,14 +482,16 @@ else
   # a sudoers env_keep change, per the Issue's "Do not" list): fetch-bun.sh's
   # own `${VAR:-default}` already falls through to its real default when the
   # forwarded value is empty, so the ordinary (no override) path is
-  # unaffected.
+  # unaffected. fetch-bun.sh reads the registry FILE itself, as root (via
+  # `sudo env ... sh fetch-bun.sh`), so it is unaffected by the permission
+  # constraint the front-end read above exists to work around.
   sudo env BUN_DOWNLOAD_BASE_URL="${BUN_DOWNLOAD_BASE_URL:-}" BUN_FETCH_ARCH="${BUN_FETCH_ARCH:-}" \
     sh "${DST}/docker/fetch-bun.sh" "${DST}/docker/bun-sha256.txt" "${BUN_SCRATCH_DIR}"
   sudo install -m0755 "${BUN_SCRATCH_DIR}/bun" /usr/local/bin/bun
   assert_unified_bun_executable "/usr/local/bin/bun" || exit 1
   INSTALLED_BUN_VERSION="$(/usr/local/bin/bun --version)"
-  if [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN_VERSION}" ]; then
-    echo "Error: installed /usr/local/bin/bun reports ${INSTALLED_BUN_VERSION}, expected ${PINNED_BUN_VERSION} -- refusing to restart" >&2
+  if [ "${PINNED_BUN_OK}" -eq 1 ] && [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then
+    echo "Error: installed /usr/local/bin/bun reports ${INSTALLED_BUN_VERSION}, expected ${PINNED_BUN} -- refusing to restart" >&2
     exit 1
   fi
   echo "    /usr/local/bin/bun is now ${INSTALLED_BUN_VERSION}"

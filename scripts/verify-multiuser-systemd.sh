@@ -75,6 +75,13 @@
 #      (read from the source tree's docker/bun-sha256.txt), V3/V4/V5 all
 #      PASS (one real, correctly-identified binary throughout), and
 #      /usr/local/bin/bun still 1.4.4 afterward.
+# 6c2. the #2322 prerequisite polarity (Architect addition): `unzip` is
+#      briefly renamed away, then the deploy runs WITH --upgrade-bun --
+#      expect exit 1 at the curl/unzip precheck (named at the very top of
+#      the script, right after the DEPLOY_SHA pre-check), before any
+#      `git archive` or `==> systemctl restart` line. `unzip` is restored
+#      unconditionally and its resolvability is re-asserted. Reports rather
+#      than forcing the check if `unzip`'s path cannot be resolved at all.
 #  6d. the #2322 upgrade arm, immediately after: the same deploy WITH
 #      --upgrade-bun -- expect exit 0, no WARN this time, /usr/local/bin/bun
 #      now at the pinned version (1.4.4 replaced by the fetched binary),
@@ -588,6 +595,42 @@ bun_drift_warn_arm() {
     test "$live" = "1.4.4"
   rm -f "$out"
   step_end bun_drift_warn
+}
+
+# --- 6c2. the #2322 prerequisite polarity: --upgrade-bun refuses before any build when unzip is absent -------
+
+bun_prereq_polarity_arm() {
+  step_start "6c2. #2322 prerequisite polarity: --upgrade-bun refuses before any build/restart when unzip is absent"
+  local unzip_path want_sha out rc=0
+  unzip_path="$(cexec --user root "$SERVICE" sh -c 'command -v unzip')" || {
+    echo "  SKIPPED: could not resolve unzip's path in the image -- reporting rather than forcing this polarity check" >&2
+    step_end bun_prereq_polarity
+    return 0
+  }
+  unzip_path="$(printf '%s' "$unzip_path" | tr -d '\r')"
+  # Sequential driver, one step at a time: briefly renaming the real binary
+  # away (never apt-installing or removing it) is safe here and restored
+  # unconditionally, whether the deploy call below succeeds or fails.
+  cexec --user root "$SERVICE" mv "$unzip_path" "${unzip_path}.disabled-for-test"
+  want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun >"$out" 2>&1 || rc=$?
+  cexec --user root "$SERVICE" mv "${unzip_path}.disabled-for-test" "$unzip_path"
+  sed 's/^/  /' "$out"
+  expect "6c2: --upgrade-bun exits 1 when unzip is absent" test "$rc" -eq 1
+  expect "6c2: the precheck error names curl and unzip" grep -qF 'requires curl and unzip' "$out"
+  rc=0
+  grep -q 'git archive' "$out" || rc=$?
+  expect "6c2: no git-archive line -- the refusal happened before any build" test "$rc" -eq 1
+  rc=0
+  grep -q '==> systemctl restart' "$out" || rc=$?
+  expect "6c2: no '==> systemctl restart' line -- the unit was never restarted" test "$rc" -eq 1
+  local unzip_restored=0
+  cexec --user root "$SERVICE" sh -c 'command -v unzip' >/dev/null 2>&1 && unzip_restored=1
+  check "6c2: unzip is resolvable again after the arm (restored unconditionally)" "$unzip_restored"
+  rm -f "$out"
+  step_end bun_prereq_polarity
 }
 
 bun_upgrade_arm() {
@@ -1508,6 +1551,7 @@ main() {
   run_deploy
   unknown_sha_arm
   bun_drift_warn_arm
+  bun_prereq_polarity_arm
   bun_upgrade_arm
   post_deploy_checks
   drift_arm
