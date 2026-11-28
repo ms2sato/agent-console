@@ -394,6 +394,36 @@ describe('pause_session / resume_session (MCP tools)', () => {
       const data = parseToolResult(response) as { error: string };
       expect(data.error).toContain('requires fromSessionId');
     });
+
+    it('post-pause re-read has no pausedAt: error, not an invented timestamp (N1)', async () => {
+      const parent = await createWorktreeSession(9115, 'parent-pauser-8', 'main');
+      const child = await createWorktreeSession(9116, 'child-pausee-8', 'feature', { parentSessionId: parent.sessionId });
+
+      // The target is still LIVE at authorization time, so
+      // `resolvePauseResumeTarget` never reaches this mock -- only the
+      // handler's own post-pause re-read does.
+      const spy = spyOn(sessionManager, 'resolvePausedMessageTarget').mockImplementation(async () => null);
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'pause_session',
+          { sessionId: child.sessionId, fromSessionId: parent.sessionId },
+          nextId++,
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('Failed to read the paused timestamp');
+        expect(data.error).toContain(child.sessionId);
+      } finally {
+        spy.mockRestore();
+      }
+
+      // The pause itself still happened -- only the read used for the
+      // result's `pausedAt` failed.
+      expect(sessionManager.getSession(child.sessionId)).toBeUndefined();
+    });
   });
 
   // ---------- resume_session ----------
@@ -618,6 +648,67 @@ describe('pause_session / resume_session (MCP tools)', () => {
     });
   });
 
+  // ---------- M6/M7 mutation-coverage tests: isPausing refusal for resume_session, and its ordering ----------
+  //
+  // R2 (Issue #2315 follow-up): resume_session must refuse a target that
+  // `sessionManager.isPausing` reports true for, with SessionPausingError's
+  // message, and must check this AFTER authorization (ownership +
+  // caller-exists + relationship) -- not before it. `isPausing` is mocked
+  // directly (via spyOn) rather than driven through a real concurrent
+  // pause, since the real pausing window is a momentary in-flight state
+  // with no stable point to assert against.
+
+  describe('R2: resume_session refuses an isPausing target, checked after authorization', () => {
+    it('the parent is refused with the SessionPausingError message, and resumeSession is NOT called (M6)', async () => {
+      const parent = await createWorktreeSession(9307, 'parent-resumer-r2', 'main');
+      const child = await createWorktreeSession(9308, 'child-resumee-r2', 'feature', { parentSessionId: parent.sessionId });
+
+      const pausingSpy = spyOn(sessionManager, 'isPausing').mockReturnValue(true);
+      const resumeSpy = spyOn(sessionManager, 'resumeSession');
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'resume_session',
+          { sessionId: child.sessionId, fromSessionId: parent.sessionId },
+          nextId++,
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('is pausing');
+        expect(resumeSpy).not.toHaveBeenCalled();
+      } finally {
+        pausingSpy.mockRestore();
+        resumeSpy.mockRestore();
+      }
+    });
+
+    it('an UNRELATED caller against the SAME isPausing target gets the relationship error, not the pausing error (M7: ordering)', async () => {
+      const parent = await createWorktreeSession(9309, 'parent-resumer-r2b', 'main');
+      const child = await createWorktreeSession(9310, 'child-resumee-r2b', 'feature', { parentSessionId: parent.sessionId });
+      const unrelated = await createWorktreeSession(9311, 'unrelated-caller-r2b', 'other');
+
+      const pausingSpy = spyOn(sessionManager, 'isPausing').mockReturnValue(true);
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'resume_session',
+          { sessionId: child.sessionId, fromSessionId: unrelated.sessionId },
+          nextId++,
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('may not pause or resume');
+        expect(data.error).not.toContain('is pausing');
+      } finally {
+        pausingSpy.mockRestore();
+      }
+    });
+  });
+
   // ---------- list_sessions: includePaused ----------
 
   describe('list_sessions includePaused', () => {
@@ -630,10 +721,15 @@ describe('pause_session / resume_session (MCP tools)', () => {
       const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
-      const data = parseToolResult(response) as { sessions: Array<{ id: string }> };
+      const data = parseToolResult(response) as { sessions: Array<{ id: string; paused?: boolean }> };
       expect(data.sessions.map((s) => s.id)).not.toContain(child.sessionId);
       expect(spy).not.toHaveBeenCalled();
       spy.mockRestore();
+
+      // R1 (Issue #2315 follow-up): a default call (no includePaused) must
+      // carry no `paused` key on any item -- byte-identical to the
+      // pre-R1 shape.
+      expect(data.sessions.every((s) => s.paused === undefined)).toBe(true);
     });
 
     it('includePaused:true with zero paused sessions: unaffected', async () => {
@@ -646,7 +742,7 @@ describe('pause_session / resume_session (MCP tools)', () => {
       expect(data.sessions.some((s) => s.paused)).toBe(false);
     });
 
-    it('includePaused:true with one paused session: paused:true, pausedAt present, activityState unknown', async () => {
+    it('includePaused:true with one paused session: paused:true, pausedAt present, activityState unknown; the live parent gets paused:false', async () => {
       const parent = await createWorktreeSession(9404, 'parent-list-3', 'main');
       const child = await createWorktreeSession(9405, 'child-list-3', 'feature', { parentSessionId: parent.sessionId });
       await sessionManager.pauseSession(child.sessionId);
@@ -661,7 +757,46 @@ describe('pause_session / resume_session (MCP tools)', () => {
       expect(pausedItem).toBeDefined();
       expect(pausedItem!.paused).toBe(true);
       expect(pausedItem!.pausedAt).toBeTruthy();
+      // N4 (Issue #2315 follow-up): guard the `.every(...)` call against a
+      // vacuously-true empty array -- an empty `workers` would pass
+      // `.every(...)` without actually checking anything.
+      expect(pausedItem!.workers.length).toBeGreaterThan(0);
       expect(pausedItem!.workers.every((w) => w.activityState === 'unknown')).toBe(true);
+
+      // R1 (Issue #2315 follow-up): the live parent must explicitly carry
+      // `paused: false` -- a caller filtering on `paused === false` must
+      // see it, not get zero live items back.
+      const liveItem = data.sessions.find((s) => s.id === parent.sessionId);
+      expect(liveItem).toBeDefined();
+      expect(liveItem!.paused).toBe(false);
+    });
+
+    it('a session that pauses during the includePaused await is deduped: the paused entry wins, no stale live duplicate (CodeRabbit mcp-server.ts:931)', async () => {
+      const parent = await createWorktreeSession(9407, 'parent-list-5', 'main');
+      const child = await createWorktreeSession(9408, 'child-list-5', 'feature', { parentSessionId: parent.sessionId });
+
+      const realGetAllPausedSessions = sessionManager.getAllPausedSessions.bind(sessionManager);
+      const spy = spyOn(sessionManager, 'getAllPausedSessions').mockImplementation(async () => {
+        // Simulate the race this test targets: `getAllSessions()` (the live
+        // snapshot) already ran, synchronously, before the `await` that
+        // reaches this mock -- so `child` is captured as live in `result`
+        // below -- and only now does it pause, before the real paused list
+        // is read.
+        await sessionManager.pauseSession(child.sessionId);
+        return realGetAllPausedSessions();
+      });
+
+      try {
+        const response = await callTool(app, mcpSessionId, 'list_sessions', { includePaused: true }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as { sessions: Array<{ id: string; paused?: boolean }> };
+        const matches = data.sessions.filter((s) => s.id === child.sessionId);
+        expect(matches).toHaveLength(1);
+        expect(matches[0]!.paused).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('getAllPausedSessions throwing: the whole tool call errors (no silent live-only fallback)', async () => {

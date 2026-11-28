@@ -122,7 +122,9 @@ PRs touching the `pause_session` / `resume_session` MCP tools in `packages/serve
 
 It boots a disposable server instance as a REAL CHILD PROCESS, drives real `/mcp` JSON-RPC calls (`pause_session`, `resume_session`, `send_session_message`, `list_sessions`, `get_session_status`) against a real disposable git repository with three real `git worktree add` worktrees: a parent worktree session P, a child C (`parentSessionId = P`), and an unrelated worktree session U. All three PTYs are real, interactive `claude-code-builtin` shells with no prompt ever sent (the same trust-dialog-bypass `CLAUDE_CONFIG_DIR` seeding as the webhook smoke).
 
-**FREE AND DETERMINISTIC** -- no `claude` CLI turn, no provider key, no LLM call anywhere in this path.
+**FREE AND DETERMINISTIC** -- no `claude` CLI turn, no provider key, no LLM call anywhere in this path. The fixture still needs `git` and a `claude` binary resolvable on `PATH` to spawn the three PTYs (see the Prerequisites note below); "free" describes cost, not absence of these binaries.
+
+**Fails closed against real billing.** Before spawning the disposable server, the script seeds the isolated `CLAUDE_CONFIG_DIR` through the shared `scripts/smoke/isolated-claude-config.ts` library, strips every Claude Code auth-related environment variable from the child's spawn env, and then asserts (`assertNoClaudeAuth`) that neither the seeded config directory nor the child's environment carries any credential -- the run exits 2 before the server ever boots if it does.
 
 One run asserts, in order: (1) `pause_session` from U on C is refused, with a positive control that C stayed live (`get_session_status` still reports a worker); (2) `pause_session` from P on C returns `changed: true`, C's `sessions` row (direct read-only SQLite read) has `paused_at` set and `server_pid` NULL, `list_sessions` without `includePaused` no longer lists C, and `list_sessions` with `includePaused: true` lists C with `pausedAt` present; (3) `send_session_message` from P to the paused C succeeds and exactly one new `deferred_worker_notifications` row exists for C (baseline-relative, scoped by session and worker id); (4) `resume_session` from U on C is refused, and C's row is still paused; (5) `resume_session` from P on C returns `changed: true`, C's row has `paused_at` NULL, and C's worker output file gains the `[internal:paused-digest]` notification text, matched on that tag specifically rather than on "the file grew"; (6) a second `resume_session` from P returns `changed: false`.
 
@@ -130,7 +132,9 @@ One run asserts, in order: (1) `pause_session` from U on C is refused, with a po
 
 This is not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns in `test-trigger.md`. It is a manual gate, never a CI job (same as this file's other real-child-process smokes).
 
-**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — free and deterministic, no `claude` CLI, no provider key.
+**Prerequisites:** `git`, and a `claude` binary resolvable on `PATH` (the fixture spawns three real interactive `claude-code-builtin` PTYs, even though -- per the fail-closed check above -- the run never authenticates or bills).
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with `bun`, `git`, and a `claude` binary on `PATH`) — free and deterministic, no `claude` CLI turn, no provider key.
 
 ## Backfilled sections (Issue #1637)
 

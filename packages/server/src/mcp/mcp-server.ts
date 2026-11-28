@@ -165,10 +165,12 @@ interface SessionListItem {
     activityState: AgentActivityState;
   }>;
   /**
-   * Set only when `list_sessions` was called with `includePaused: true`.
-   * `true` for a session appended from `getAllPausedSessions()`; omitted
-   * entirely for a live session (byte-identical to the pre-#2315 shape
-   * when the caller never passes `includePaused`).
+   * Set on EVERY item when `list_sessions` was called with
+   * `includePaused: true` -- `false` for a live item, `true` for a
+   * session appended from `getAllPausedSessions()` -- not just on the
+   * paused ones, so a caller filtering on `paused === false` sees every
+   * live item rather than zero. Omitted entirely when `includePaused` is
+   * not passed (byte-identical to the pre-#2315 shape).
    */
   paused?: boolean;
   /** Present only on a paused item (`paused: true`). */
@@ -589,6 +591,34 @@ export function createMcpApp(deps: McpDependencies): Hono {
     }));
   }
 
+  /**
+   * Build one `list_sessions` item from a public Session. `pausedFields` is
+   * passed only for an item appended from `getAllPausedSessions()`; a plain
+   * live item gets no `paused`/`pausedAt` key here -- the caller
+   * (`list_sessions`'s handler) sets `paused: false` on every surviving live
+   * item itself, only when `includePaused` was requested.
+   */
+  function buildSessionListItem(s: Session, pausedFields?: { pausedAt: string | undefined }): SessionListItem {
+    const base: SessionListItem = {
+      id: s.id,
+      type: s.type,
+      title: s.title,
+      status: s.status,
+      workers: mapWorkers(s),
+      parentSessionId: s.parentSessionId,
+      parentWorkerId: s.parentWorkerId,
+      createdBy: s.createdBy,
+      createdByUsername: s.createdByUsername ?? null,
+      ...(pausedFields ? { paused: true, pausedAt: pausedFields.pausedAt } : {}),
+    };
+    if (s.type === 'worktree') {
+      base.worktreeId = s.worktreeId;
+      base.repositoryId = s.repositoryId;
+      base.repositoryName = s.repositoryName;
+    }
+    return base;
+  }
+
   /** Project a public Session down to the shape `checkPauseResumeRelationship` needs. */
   function toPauseResumeTarget(session: Session): PauseResumeTarget {
     return {
@@ -635,6 +665,66 @@ export function createMcpApp(deps: McpDependencies): Hono {
     }
 
     return null;
+  }
+
+  /**
+   * Run the full `pause_session` / `resume_session` authorization sequence
+   * (rules 1-4 of the MCP Surface subsection in
+   * docs/design/session-pause-resume.md): resolve the target, ownership, the
+   * caller session exists, then the parent-or-designated-Orchestrator
+   * relationship. Shared by both tools so the sequence and its ordering
+   * live in exactly one place.
+   *
+   * Returns either an error result the caller should return immediately, or
+   * the validated target info (`targetInfo`, `isLive`, `pausedAt`) each
+   * tool's own operation branch needs. Does not change any state and does
+   * not check `sessionManager.isPausing` -- that check is `resume_session`
+   * only (R2) and runs in its handler, after this function returns `ok`.
+   */
+  async function authorizePauseResumeCall(
+    sessionId: string,
+    callerSessionId: string,
+    toolName: 'pause_session' | 'resume_session',
+    opts: { allowOrphanedFallback: boolean },
+  ): Promise<
+    | { ok: true; targetInfo: PauseResumeTarget; isLive: boolean; pausedAt?: string }
+    | { ok: false; error: ReturnType<typeof errorResult> }
+  > {
+    const target = await resolvePauseResumeTarget(sessionId, opts);
+    if (!target) {
+      return { ok: false, error: errorResult(`Session not found: ${sessionId}`) };
+    }
+    const { targetInfo, isLive, pausedAt } = target;
+
+    const ownAuthError = checkCallerOwnsSession(
+      getMcpCallerIdentity(),
+      { sessionId: targetInfo.id, createdBy: targetInfo.createdBy },
+      mcpAuthMode,
+      { toolName },
+    );
+    if (ownAuthError) return { ok: false, error: errorResult(ownAuthError.error) };
+
+    const callerSession = sessionManager.getSession(callerSessionId);
+    if (!callerSession) {
+      return {
+        ok: false,
+        error: errorResult(
+          `Sender session ${callerSessionId} not found. ` +
+            `fromSessionId must reference an existing session — ` +
+            `agents should source it from your session id (AGENT_CONSOLE_SESSION_ID in your environment); ` +
+            `embedded agents may omit it (the bearer token identifies you).`,
+        ),
+      };
+    }
+
+    const orchestratorSessionIds =
+      targetInfo.type === 'worktree' && targetInfo.repositoryId
+        ? repositoryManager.getRepository(targetInfo.repositoryId)?.orchestratorSessionIds ?? []
+        : [];
+    const relError = checkPauseResumeRelationship(targetInfo, callerSessionId, orchestratorSessionIds);
+    if (relError) return { ok: false, error: errorResult(relError) };
+
+    return { ok: true, targetInfo, isLive, pausedAt };
   }
 
   // ---------- MCP Server setup ----------
@@ -906,49 +996,24 @@ export function createMcpApp(deps: McpDependencies): Hono {
     async ({ includePaused }) => {
       try {
         const sessions = sessionManager.getAllSessions();
-
-        const result: SessionListItem[] = sessions.map((s) => {
-          const base: SessionListItem = {
-            id: s.id,
-            type: s.type,
-            title: s.title,
-            status: s.status,
-            workers: mapWorkers(s),
-            parentSessionId: s.parentSessionId,
-            parentWorkerId: s.parentWorkerId,
-            createdBy: s.createdBy,
-            createdByUsername: s.createdByUsername ?? null,
-          };
-          if (s.type === 'worktree') {
-            base.worktreeId = s.worktreeId;
-            base.repositoryId = s.repositoryId;
-            base.repositoryName = s.repositoryName;
-          }
-          return base;
-        });
+        let result: SessionListItem[] = sessions.map((s) => buildSessionListItem(s));
 
         if (includePaused) {
           const pausedSessions = await sessionManager.getAllPausedSessions();
+          const pausedIds = new Set(pausedSessions.map((s) => s.id));
+
+          // A session can pause during the `await` above -- the live
+          // snapshot was taken before it, so its (now stale) entry is still
+          // in `result`. Drop that entry (the paused entry appended below
+          // reflects the more current state; CodeRabbit mcp-server.ts:931)
+          // and mark every SURVIVING live entry `paused: false`, so a caller
+          // filtering on `paused === false` sees every live item rather than
+          // zero (R1). The default (no `includePaused`) response above is
+          // untouched by any of this.
+          result = result.filter((item) => !pausedIds.has(item.id)).map((item) => ({ ...item, paused: false }));
+
           for (const s of pausedSessions) {
-            const base: SessionListItem = {
-              id: s.id,
-              type: s.type,
-              title: s.title,
-              status: s.status,
-              workers: mapWorkers(s),
-              parentSessionId: s.parentSessionId,
-              parentWorkerId: s.parentWorkerId,
-              createdBy: s.createdBy,
-              createdByUsername: s.createdByUsername ?? null,
-              paused: true,
-              pausedAt: s.pausedAt,
-            };
-            if (s.type === 'worktree') {
-              base.worktreeId = s.worktreeId;
-              base.repositoryId = s.repositoryId;
-              base.repositoryName = s.repositoryName;
-            }
-            result.push(base);
+            result.push(buildSessionListItem(s, { pausedAt: s.pausedAt }));
           }
         }
 
@@ -1757,36 +1822,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
       const callerSessionId = self.sessionId;
 
       try {
-        const target = await resolvePauseResumeTarget(sessionId, { allowOrphanedFallback: false });
-        if (!target) {
-          return errorResult(`Session not found: ${sessionId}`);
-        }
-        const { targetInfo, isLive, pausedAt: pausedAtExisting } = target;
-
-        const ownAuthError = checkCallerOwnsSession(
-          getMcpCallerIdentity(),
-          { sessionId: targetInfo.id, createdBy: targetInfo.createdBy },
-          mcpAuthMode,
-          { toolName: 'pause_session' },
-        );
-        if (ownAuthError) return errorResult(ownAuthError.error);
-
-        const callerSession = sessionManager.getSession(callerSessionId);
-        if (!callerSession) {
-          return errorResult(
-            `Sender session ${callerSessionId} not found. ` +
-              `fromSessionId must reference an existing session — ` +
-              `agents should source it from your session id (AGENT_CONSOLE_SESSION_ID in your environment); ` +
-              `embedded agents may omit it (the bearer token identifies you).`,
-          );
-        }
-
-        const orchestratorSessionIds =
-          targetInfo.type === 'worktree' && targetInfo.repositoryId
-            ? repositoryManager.getRepository(targetInfo.repositoryId)?.orchestratorSessionIds ?? []
-            : [];
-        const relError = checkPauseResumeRelationship(targetInfo, callerSessionId, orchestratorSessionIds);
-        if (relError) return errorResult(relError);
+        const auth = await authorizePauseResumeCall(sessionId, callerSessionId, 'pause_session', {
+          allowOrphanedFallback: false,
+        });
+        if (!auth.ok) return auth.error;
+        const { targetInfo, isLive, pausedAt: pausedAtExisting } = auth;
 
         if (!isLive) {
           const result: PauseSessionResult = {
@@ -1807,13 +1847,20 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(`Failed to pause session: ${sessionId}`);
         }
 
+        // Re-read the just-paused row for its authoritative `pausedAt`
+        // rather than inventing one: a missing `pausedAt` here means the
+        // pause and this read disagree about whether the session is
+        // actually paused, which is worth surfacing as an error rather
+        // than papering over with `new Date().toISOString()`.
         const after = await sessionManager.resolvePausedMessageTarget(sessionId);
-        const pausedAt = after?.session.pausedAt ?? new Date().toISOString();
+        if (!after?.session.pausedAt) {
+          return errorResult(`Failed to read the paused timestamp for session ${sessionId} after pausing`);
+        }
         const result: PauseSessionResult = {
           sessionId,
           state: 'paused',
           changed: true,
-          pausedAt,
+          pausedAt: after.session.pausedAt,
           ...(outcome.pauseCommandResult ? { pauseCommandResult: outcome.pauseCommandResult } : {}),
         };
         return textResult(result);
@@ -1836,7 +1883,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Messages, webhook events, and process notices that arrived while the session was paused are delivered ' +
       'as ONE digest once the session is ready; nothing resumes a session automatically, so you must call ' +
       'this yourself. To hand a paused session new work: call send_session_message first, THEN ' +
-      'resume_session -- the message arrives in the resume digest, which waits for the agent to be ready.',
+      'resume_session -- the message arrives in the resume digest, which waits for the agent to be ready. ' +
+      'If the session is still being paused, this returns an error; call it again.',
     {
       sessionId: z.string().describe('The target session to resume'),
       fromSessionId: z.string().optional().describe(
@@ -1857,36 +1905,25 @@ export function createMcpApp(deps: McpDependencies): Hono {
       const callerSessionId = self.sessionId;
 
       try {
-        const target = await resolvePauseResumeTarget(sessionId, { allowOrphanedFallback: true });
-        if (!target) {
-          return errorResult(`Session not found: ${sessionId}`);
+        const auth = await authorizePauseResumeCall(sessionId, callerSessionId, 'resume_session', {
+          allowOrphanedFallback: true,
+        });
+        if (!auth.ok) return auth.error;
+        const { isLive } = auth;
+
+        // A target that is still being paused is live (the session leaves
+        // memory only once the pause settles,
+        // per the `pausing` state in docs/design/session-pause-resume.md's
+        // "Pausing is a state" section), so without this check the branch
+        // below would answer the idempotent `changed: false` / `state:
+        // 'active'` -- which is wrong, since the agent that will actually
+        // be live once the pause completes is not the one this call would
+        // report on. Checked AFTER authorization (ownership + caller-exists
+        // + relationship) and BEFORE the idempotent isLive answer; changes
+        // no state and never calls `sessionManager.resumeSession`.
+        if (sessionManager.isPausing(sessionId)) {
+          return errorResult(new SessionPausingError(sessionId).message);
         }
-        const { targetInfo, isLive } = target;
-
-        const ownAuthError = checkCallerOwnsSession(
-          getMcpCallerIdentity(),
-          { sessionId: targetInfo.id, createdBy: targetInfo.createdBy },
-          mcpAuthMode,
-          { toolName: 'resume_session' },
-        );
-        if (ownAuthError) return errorResult(ownAuthError.error);
-
-        const callerSession = sessionManager.getSession(callerSessionId);
-        if (!callerSession) {
-          return errorResult(
-            `Sender session ${callerSessionId} not found. ` +
-              `fromSessionId must reference an existing session — ` +
-              `agents should source it from your session id (AGENT_CONSOLE_SESSION_ID in your environment); ` +
-              `embedded agents may omit it (the bearer token identifies you).`,
-          );
-        }
-
-        const orchestratorSessionIds =
-          targetInfo.type === 'worktree' && targetInfo.repositoryId
-            ? repositoryManager.getRepository(targetInfo.repositoryId)?.orchestratorSessionIds ?? []
-            : [];
-        const relError = checkPauseResumeRelationship(targetInfo, callerSessionId, orchestratorSessionIds);
-        if (relError) return errorResult(relError);
 
         if (isLive) {
           const liveSession = sessionManager.getSession(sessionId);

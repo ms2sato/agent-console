@@ -80,12 +80,18 @@
  *   2  bad usage / the smoke could not run (server failed to boot, git
  *      commands failed, etc.)
  */
-import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createScratchGitRepo, type ScratchGitRepo } from '../../packages/server/src/__tests__/utils/scratch-git.js';
+import { seedIsolatedClaudeConfig, assertNoClaudeAuth, CLAUDE_AUTH_ENV_VARS } from './isolated-claude-config.js';
 
-const REPO_ROOT = new URL('../..', import.meta.url).pathname;
+// CodeRabbit (check-mcp-pause-resume.ts:88): `.pathname` keeps `%20`
+// encoding on a checkout path containing a space, which breaks any
+// `process.chdir` / fs call that uses it literally. `fileURLToPath` decodes
+// it.
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Mini assertion harness -- same shape as this repo's other server-story
@@ -299,29 +305,13 @@ async function main(): Promise<void> {
     // Real interactive `claude` CLI trust-dialog bypass (see
     // `check-webhook-issue-label-routing.ts`'s header comment for the full
     // rationale -- a from-scratch config triggers the onboarding wizard
-    // instead of the trust prompt, an equally-blocking dead end).
+    // instead of the trust prompt, an equally-blocking dead end), via the
+    // shared `isolated-claude-config.ts` library (R3, Issue #2315
+    // follow-up).
     // -----------------------------------------------------------------
     console.log('==> seeding an isolated CLAUDE_CONFIG_DIR with pre-trusted worktree paths');
     const claudeConfigDir = path.join(scratchRoot, 'claude-config');
-    const claudeConfigPath = path.join(claudeConfigDir, '.claude.json');
-    mkdirSync(claudeConfigDir, { recursive: true, mode: 0o700 });
-    const realClaudeConfigPath = path.join(os.homedir(), '.claude.json');
-    let baseClaudeConfig: Record<string, unknown> = {};
-    try {
-      baseClaudeConfig = JSON.parse(readFileSync(realClaudeConfigPath, 'utf-8')) as Record<string, unknown>;
-    } catch {
-      // No real ~/.claude.json -- proceed with an empty base.
-    }
-    const isolatedClaudeConfig: Record<string, unknown> = {
-      ...baseClaudeConfig,
-      projects: {
-        ...(baseClaudeConfig.projects as Record<string, unknown> | undefined),
-        [worktreePDir]: { hasTrustDialogAccepted: true },
-        [worktreeCDir]: { hasTrustDialogAccepted: true },
-        [worktreeUDir]: { hasTrustDialogAccepted: true },
-      },
-    };
-    writeFileSync(claudeConfigPath, JSON.stringify(isolatedClaudeConfig), { mode: 0o600 });
+    seedIsolatedClaudeConfig(claudeConfigDir, [worktreePDir, worktreeCDir, worktreeUDir]);
 
     // -----------------------------------------------------------------
     // Server bring-up: real child process.
@@ -329,17 +319,46 @@ async function main(): Promise<void> {
     console.log(`==> disposable AGENT_CONSOLE_HOME: ${disposableHome}`);
     console.log(`==> disposable server target: ${baseUrl}`);
 
+    // Build the child's env by stripping every Claude Code auth-related
+    // variable (R3): a leaked ANTHROPIC_API_KEY or similar in the invoking
+    // shell must not let this "FREE AND DETERMINISTIC" smoke silently
+    // become a real, billed run.
+    const childEnv: Record<string, string | undefined> = { ...process.env };
+    for (const name of CLAUDE_AUTH_ENV_VARS) delete childEnv[name];
+    childEnv.AGENT_CONSOLE_HOME = disposableHome;
+    childEnv.AUTH_MODE = 'none';
+    // Issue #2315 follow-up (CodeRabbit check-mcp-pause-resume.ts:338): an
+    // inherited AGENT_CONSOLE_MCP_AUTH=enforce from the invoking shell must
+    // not make the child refuse to boot or reject this smoke's tokenless
+    // calls.
+    childEnv.AGENT_CONSOLE_MCP_AUTH = 'warn';
+    childEnv.PORT = String(port);
+    childEnv.HOST = '127.0.0.1';
+    childEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
+    // Issue #2315 follow-up (CodeRabbit check-mcp-pause-resume.ts:634): pin
+    // a LOG_LEVEL that includes INFO/WARN so the SCENARIO 5 diagnostic
+    // dump's marker search is never silently defeated by an inherited
+    // LOG_LEVEL=error from the invoking shell (NODE_ENV=test would disable
+    // the logger entirely; this smoke does not set NODE_ENV=test, so only
+    // the inherited-LOG_LEVEL case applies here).
+    childEnv.LOG_LEVEL = 'info';
+
+    // Fail closed, BEFORE the server is ever spawned: a thrown error here
+    // is a harness failure (BailError, mapped to exit 2 by main()'s
+    // top-level catch), never an assertion failure -- this smoke is
+    // "FREE AND DETERMINISTIC" by construction, and this check is what
+    // makes that provable rather than incidental.
+    try {
+      assertNoClaudeAuth(claudeConfigDir, childEnv);
+    } catch (err) {
+      bail(err instanceof Error ? err.message : String(err));
+    }
+    console.log('==> confirmed: no Claude Code auth reachable from the isolated config dir or the child env');
+
     proc = Bun.spawn({
       cmd: ['bun', 'packages/server/src/index.ts'],
       cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        AGENT_CONSOLE_HOME: disposableHome,
-        AUTH_MODE: 'none',
-        PORT: String(port),
-        HOST: '127.0.0.1',
-        CLAUDE_CONFIG_DIR: claudeConfigDir,
-      },
+      env: childEnv,
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -528,6 +547,22 @@ async function main(): Promise<void> {
       'SCENARIO 2: list_sessions with includePaused:true lists C with paused:true and pausedAt present',
       JSON.stringify(cInPausedList));
 
+    // CodeRabbit (check-mcp-pause-resume.ts:524-529): also check
+    // get_session_status directly on the now-paused C, in addition to (not
+    // instead of) the list_sessions checks above.
+    const statusAfterPause = await callMcpTool(baseUrl, mcpSessionId, 'get_session_status', { sessionId: sessionC.id });
+    const statusAfterPauseData = statusAfterPause.data as { paused?: boolean; pausedAt?: string };
+    expect(
+      !statusAfterPause.isError && statusAfterPauseData.paused === true && !!statusAfterPauseData.pausedAt,
+      'SCENARIO 2: get_session_status on C directly reports paused:true with pausedAt present',
+      JSON.stringify(statusAfterPauseData),
+    );
+    expect(
+      statusAfterPauseData.pausedAt === rowAfterPause.paused_at,
+      "SCENARIO 2: get_session_status's pausedAt matches the persisted row",
+      `status=${statusAfterPauseData.pausedAt} row=${rowAfterPause.paused_at}`,
+    );
+
     // ===================================================================
     // SCENARIO 3: send_session_message from P to the paused C succeeds
     // and defers exactly one new row.
@@ -542,6 +577,12 @@ async function main(): Promise<void> {
     expect(!sendRes.isError, 'SCENARIO 3: send_session_message to paused C succeeds', JSON.stringify(sendRes.data));
     const deferredAfter = countDeferredRows(sessionC.id, agentWorkerC.id);
     expect(deferredAfter === deferredBefore + 1, 'SCENARIO 3: exactly one new deferred_worker_notifications row for C', `before=${deferredBefore} after=${deferredAfter}`);
+    // Captured for SCENARIO 5's digest check (CodeRabbit check-mcp-pause-
+    // resume.ts:607a): the digest must carry a reference to THIS message,
+    // not merely the `[internal:paused-digest]` header tag with an empty
+    // body.
+    const sentMessagePath = (sendRes.data as { path?: string }).path;
+    if (!sentMessagePath) bail('SCENARIO 3: send_session_message succeeded but returned no path');
 
     // ===================================================================
     // SCENARIO 4: resume_session from U (unrelated) on C is refused; C's
@@ -601,15 +642,66 @@ async function main(): Promise<void> {
     // `WORKER_READY_CAP_MS` (60s) if the agent-agnostic output-quiet
     // heuristic never settles (e.g. `claude --resume` against a
     // conversation id with no actual local history, in this environment).
-    // Wait comfortably past that cap rather than guessing a shorter bound.
+    // Wait comfortably past that cap (plus PTY write time and the output
+    // flush interval) rather than guessing a shorter bound (N3, Issue
+    // #2315 follow-up: raised from 75s to 150s -- the readiness gate will
+    // very likely always hit its full 60s cap for this fixture, since no
+    // real agent TUI frame ever arrives to satisfy the byte-floor+settle-
+    // window path; that is expected, not a bug, and is exactly why the
+    // margin matters).
+    //
+    // CodeRabbit (check-mcp-pause-resume.ts:607b): search the FULL output
+    // after resume here, not a `baselineOutputC.length`-sliced region -- if
+    // the worker's output file is ever rotated mid-wait
+    // (WORKER_OUTPUT_FILE_MAX_SIZE), text written before the cut shifts to
+    // a LOWER byte offset, and a pre-resume-length slice can miss or
+    // misread it. This is safe here specifically because nothing earlier
+    // in this run could have produced the exact `[internal:paused-digest]`
+    // tag (it is written only by the resume flush, and this is the run's
+    // first and only resume).
     const digestFound = await waitFor(() => {
       const content = readOutputFileSafe(outputPathC);
-      return content.slice(baselineOutputC.length).includes('[internal:paused-digest]');
-    }, 75_000, "C's output file gaining the [internal:paused-digest] tag");
+      return content.includes('[internal:paused-digest]');
+    }, 150_000, "C's output file gaining the [internal:paused-digest] tag");
     const afterDigest = readOutputFileSafe(outputPathC);
     expect(digestFound, 'SCENARIO 5: C\'s worker output file gains the [internal:paused-digest] notification text', afterDigest.slice(baselineOutputC.length).slice(0, 500));
 
-    if (!digestFound) {
+    // CodeRabbit (check-mcp-pause-resume.ts:607a): the header tag alone
+    // would also pass if the digest's BODY were empty (the queued
+    // send_session_message entry missing entirely). Require the sent
+    // message's own file reference to appear within an `[internal:message]`
+    // entry, not merely the header.
+    //
+    // This reads the read-more file (`composeDeferredReadMore`'s output,
+    // same renderEntry format as the digest body -- docs/design/session-
+    // pause-resume.md's "Notifications ... are deferred, not dropped"
+    // section), whose path this run's own header carries (`path=...`),
+    // rather than searching C's PTY output for the digest's BODY text.
+    // Measured on this fixture: `claude --resume` finds no local
+    // conversation history (expected here -- SCENARIO 5's own comment
+    // above), so the agent-worker PTY falls back to a bare login shell,
+    // and that shell's canonical-mode line discipline consumes the
+    // digest's internal soft-newlines (LF, meant for a real TUI's
+    // multi-line input box) as line-submits before the delayed CR ever
+    // arrives -- the body text never reaches the output file at all, even
+    // though the real production flush composed and delivered it
+    // correctly (confirmed directly against the read-more file below).
+    // The header tag's own `path=` field is produced by the SAME
+    // composePausedDigest call as the body this is standing in for, so an
+    // empty-entries bug would still show up here (as `count: 0` with no
+    // entries), just not through the PTY echo.
+    const readMorePathMatch = /\[internal:paused-digest\][^\n]*\bpath=(\S+)/.exec(afterDigest);
+    const readMorePath = readMorePathMatch?.[1];
+    const readMoreContent = readMorePath ? readOutputFileSafe(readMorePath) : '';
+    const digestCarriesTheMessage =
+      digestFound && !!readMorePath && readMoreContent.includes('[internal:message]') && readMoreContent.includes(sentMessagePath);
+    expect(
+      digestCarriesTheMessage,
+      "SCENARIO 5: the digest's read-more file contains an [internal:message] entry referencing SCENARIO 3's own message, not just the header tag",
+      `readMorePath=${readMorePath} sentMessagePath=${sentMessagePath}`,
+    );
+
+    if (!digestFound || !digestCarriesTheMessage) {
       // Diagnostic-only output -- not a new assertion, does not affect
       // pass/fail or the exit code. Distinguishes three failure shapes: the
       // flush never ran, the readiness gate capped out but the flush still
@@ -623,7 +715,19 @@ async function main(): Promise<void> {
         { name: 'read-more file write failed (flush aborted)', text: 'Failed to write the deferred read-more file' },
       ];
       console.log('\n==> SCENARIO 5 DIAGNOSTIC DUMP (digest never appeared within the wait window)');
+      // CodeRabbit (check-mcp-pause-resume.ts:634): under NODE_ENV=test the
+      // production logger is disabled entirely (Issue #1289), so an absent
+      // marker line would misreport "NO" for a marker that may well have
+      // fired. This smoke pins its own LOG_LEVEL (above) but NODE_ENV is
+      // whatever the invoker set, and NODE_ENV=test is a documented way to
+      // run it (see node-env-discipline.test.ts); report "unavailable"
+      // rather than a bare "NO" in that one, structurally-detectable case.
+      const loggingStructurallyUnavailable = childEnv.NODE_ENV === 'test';
       for (const marker of markers) {
+        if (loggingStructurallyUnavailable) {
+          console.log(`  [${marker.name}] UNAVAILABLE (server logger is disabled under NODE_ENV=test)`);
+          continue;
+        }
         const matchingLines = stdoutSinceScenario5
           .split('\n')
           .filter((line) => line.includes(marker.text));
@@ -634,8 +738,16 @@ async function main(): Promise<void> {
           console.log(`  [${marker.name}] NO (not found in server stdout since the resume call)`);
         }
       }
-      const remainingDeferredRows = countDeferredRows(sessionC.id, agentWorkerC.id);
-      console.log(`  [deferred_worker_notifications rows remaining for C] ${remainingDeferredRows}`);
+      // CodeRabbit (check-mcp-pause-resume.ts:637): this diagnostic read is
+      // allowed to fail on its own (e.g. a concurrent writer locking the
+      // SQLite file) without changing the smoke's exit code -- it is
+      // diagnostic-only, same as the rest of this block.
+      try {
+        const remainingDeferredRows = countDeferredRows(sessionC.id, agentWorkerC.id);
+        console.log(`  [deferred_worker_notifications rows remaining for C] ${remainingDeferredRows}`);
+      } catch (err) {
+        console.log(`  [deferred_worker_notifications rows remaining for C] row count unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      }
       console.log(`  [C's worker output file, last 1000 chars]\n${afterDigest.slice(-1000)}`);
       if (stderrBuf.length > 0) {
         console.log(`  [server stderr, last 1000 chars]\n${stderrBuf.slice(-1000)}`);

@@ -42,7 +42,36 @@ function parseToolBlocks(source: string): ToolBlock[] {
 }
 
 const blocks = parseToolBlocks(SOURCE);
-const claiming = blocks.filter((b) => b.body.includes('checkCallerOwnsSession('));
+
+// `pause_session` / `resume_session` no longer call `checkCallerOwnsSession(`
+// directly in their own block's body: N2 (Issue #2315 follow-up) extracted
+// the whole authorization sequence (ownership + caller-exists + relationship)
+// into a single shared `authorizePauseResumeCall(sessionId, callerSessionId,
+// '<toolName>', ...)` helper, called once per tool, which calls
+// `checkCallerOwnsSession(` internally. Both parsing helpers below treat that
+// call -- keyed off its own third argument, the tool-name literal -- as
+// equivalent to a direct `checkCallerOwnsSession(..., { toolName: '<name>' })`
+// call, so this file's invariants (gated, and gated under the tool's own
+// name) still hold for the two tools that route through it.
+const AUTHORIZE_PAUSE_RESUME_CALL_RE = /authorizePauseResumeCall\(\s*sessionId,\s*callerSessionId,\s*'([a-z_]+)'/;
+
+const claiming = blocks.filter(
+  (b) => b.body.includes('checkCallerOwnsSession(') || AUTHORIZE_PAUSE_RESUME_CALL_RE.test(b.body),
+);
+
+/**
+ * The tool-name literal at this block's gate call, whichever shape it is:
+ * `checkCallerOwnsSession(..., { toolName: '<name>' })` directly, or
+ * `authorizePauseResumeCall(sessionId, callerSessionId, '<name>', ...)`.
+ * `undefined` when the block has neither (not a claiming block).
+ */
+function gateToolNameLiteral(b: ToolBlock): string | undefined {
+  const directIndex = b.body.indexOf('checkCallerOwnsSession(');
+  if (directIndex !== -1) {
+    return /toolName:\s*'([a-z_]+)'/.exec(b.body.slice(directIndex))?.[1];
+  }
+  return AUTHORIZE_PAUSE_RESUME_CALL_RE.exec(b.body)?.[1];
+}
 
 describe('SESSION_CLAIMING_TOOLS registry', () => {
   it('lists the to-do tools: both take a caller-claimed sessionId and are gated', () => {
@@ -100,15 +129,15 @@ describe('SESSION_CLAIMING_TOOLS registry', () => {
     expect(block!.body).toContain("{ toolName: 'reply_to_inbound_webhook' }");
   });
 
-  it('lists pause_session and resume_session, and each registration calls the gate under its own name (Issue #2315)', () => {
+  it('lists pause_session and resume_session, and each registration calls the gate (via the shared authorizePauseResumeCall helper) under its own name (Issue #2315)', () => {
     expect(SESSION_CLAIMING_TOOLS).toContain('pause_session');
     expect(SESSION_CLAIMING_TOOLS).toContain('resume_session');
     const pauseBlock = claiming.find((b) => b.name === 'pause_session');
     const resumeBlock = claiming.find((b) => b.name === 'resume_session');
     expect(pauseBlock).toBeDefined();
     expect(resumeBlock).toBeDefined();
-    expect(pauseBlock!.body).toContain("{ toolName: 'pause_session' }");
-    expect(resumeBlock!.body).toContain("{ toolName: 'resume_session' }");
+    expect(gateToolNameLiteral(pauseBlock!)).toBe('pause_session');
+    expect(gateToolNameLiteral(resumeBlock!)).toBe('resume_session');
   });
 
   it('has no duplicate names', () => {
@@ -118,8 +147,7 @@ describe('SESSION_CLAIMING_TOOLS registry', () => {
   it("each claiming block's toolName literal at the gate equals its own registered name", () => {
     const mismatches: string[] = [];
     for (const b of claiming) {
-      const gateCall = b.body.slice(b.body.indexOf('checkCallerOwnsSession('));
-      const literal = /toolName:\s*'([a-z_]+)'/.exec(gateCall)?.[1];
+      const literal = gateToolNameLiteral(b);
       if (literal !== b.name) mismatches.push(`${b.name} -> ${literal}`);
     }
     expect(mismatches).toEqual([]);
