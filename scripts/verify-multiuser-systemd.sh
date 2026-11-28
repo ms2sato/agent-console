@@ -61,6 +61,18 @@
 #      requested SHA (never the marker the deploy itself wrote)
 #  6b. polarity: AGENT_CONSOLE_DEPLOY_SHA=0000... must exit 1 at the guard,
 #      leave .deploy-sha byte-identical, and print no `==> systemctl restart`
+#  6c. the #2322 drift arm: /usr/local/bin/bun is overwritten with a fake
+#      binary reporting 0.0.0-test, then the deploy runs WITHOUT
+#      --upgrade-bun -- expect exit 0 (never blocking), a WARN naming both
+#      the fake live version and the real pinned version (read from the
+#      source tree's docker/bun-sha256.txt), and the fake binary left in
+#      place afterward.
+#  6d. the #2322 upgrade arm, immediately after: the same deploy WITH
+#      --upgrade-bun -- expect exit 0, no WARN this time, /usr/local/bin/bun
+#      now at the pinned version, and the restart + /api/config check still
+#      succeed. Needs real network to the real oven-sh/bun GitHub release
+#      (no BUN_DOWNLOAD_BASE_URL fixture here, same as the image's own
+#      build-time fetch).
 #   7. the deploy script's OWN post-deploy verification screen (Issue #1717:
 #      V0 data-root-ownership, V1 unit-env-drift, V2 entry-path-readable, V3
 #      mainpid-identity, V4 unit-active, V5 health, V6 journal-digest; V0
@@ -511,6 +523,63 @@ unknown_sha_arm() {
   sed 's/^/  /' "$out"
   rm -f "$out"
   step_end unknown_sha
+}
+
+# --- 6c/6d. the #2322 bun-version arms: WARN without --upgrade-bun, fetch+install with it -------
+
+bun_drift_warn_arm() {
+  step_start "6c. #2322 drift arm: a stale /usr/local/bin/bun -> deploy WITHOUT --upgrade-bun WARNs, never fails, never touches the binary"
+  local pinned want_sha out rc=0 planted live
+  pinned="$(cexec --user agentconsole "$SERVICE" awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "${SRC}/docker/bun-sha256.txt" | tr -d '\r')"
+  echo "  pinned version (source tree's docker/bun-sha256.txt): ${pinned}"
+
+  echo "  --- plant a fake /usr/local/bin/bun reporting an obviously-fake version ---"
+  printf '%s\n' '#!/bin/sh' "echo 'bun 0.0.0-test'" \
+    | cexec --user root "$SERVICE" sh -c "cat > '${UNIFIED_BUN}' && chmod 0755 '${UNIFIED_BUN}'"
+  planted="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
+  expect "6c: the planted fake bun reports 0.0.0-test before the deploy runs" test "$planted" = "0.0.0-test"
+
+  want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^WARN: |^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  expect "6c: deploy exits 0 (the drift WARN never changes the exit code)" test "$rc" -eq 0
+  expect "6c: output contains a WARN naming both the fake live version and the real pinned version" \
+    grep -qF "WARN: /usr/local/bin/bun is 0.0.0-test, the deployed tree pins ${pinned}" "$out"
+  live="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
+  expect "6c: /usr/local/bin/bun --version still reports 0.0.0-test (--upgrade-bun was not passed, nothing was installed)" \
+    test "$live" = "0.0.0-test"
+  rm -f "$out"
+  step_end bun_drift_warn
+}
+
+bun_upgrade_arm() {
+  step_start "6d. #2322 upgrade arm: the same deploy WITH --upgrade-bun fetches + installs the pinned release and restarts cleanly"
+  local pinned want_sha out rc=0 live cfg_now
+  pinned="$(cexec --user agentconsole "$SERVICE" awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "${SRC}/docker/bun-sha256.txt" | tr -d '\r')"
+  want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
+  out="$(mktemp)"
+  rc=0
+  # Real network to the real oven-sh/bun GitHub release (Issue #2322 AC
+  # A13): no BUN_DOWNLOAD_BASE_URL fixture here, matching the image's own
+  # build-time fetch (docker/Dockerfile.systemd already requires the same).
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun >"$out" 2>&1 || rc=$?
+  grep -E '^WARN: |fetching bun|is now |^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  expect "6d: deploy exits 0" test "$rc" -eq 0
+  rc=0
+  grep -q '^WARN: ' "$out" || rc=$?
+  expect "6d: no WARN: line this time (the binary is now at the pinned version)" test "$rc" -eq 1
+  live="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
+  expect "6d: /usr/local/bin/bun --version now equals the pinned version ${pinned} (no longer 0.0.0-test)" \
+    test "$live" = "$pinned"
+  expect "6d: the '==> systemctl restart' line is present -- the restart still ran" \
+    grep -q '==> systemctl restart' "$out"
+  cfg_now="$(cexec --user root "$SERVICE" curl -sS -m 5 http://localhost:8080/api/config || true)"
+  expect "6d: /api/config deployedSha still equals the requested SHA" \
+    grep -qF "\"deployedSha\":\"${want_sha}\"" <<<"$cfg_now"
+  rm -f "$out"
+  step_end bun_upgrade
 }
 
 # The seven checks of the deploy script's post-deploy verification (Issue
@@ -1394,6 +1463,8 @@ main() {
   copy_source
   run_deploy
   unknown_sha_arm
+  bun_drift_warn_arm
+  bun_upgrade_arm
   post_deploy_checks
   drift_arm
   ownership_polarity_arm
