@@ -64,12 +64,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #
 # The rest mirrors docker/Dockerfile's runtime deps plus what the setup and
 # deploy scripts need at runtime (rsync, git, util-linux for runuser) and
-# what the driver reads (procps, curl).
+# what the driver reads (procps, curl). curl + unzip are also what
+# docker/fetch-bun.sh needs when the deploy script's --upgrade-bun path
+# (Issue #2322) runs it for real inside this image, matching the production
+# host, which already has both installed.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ubuntu-minimal systemd systemd-sysv dbus \
       pamtester libpam-modules libpam-runtime login passwd \
-      git rsync curl ca-certificates procps util-linux \
+      git rsync curl unzip ca-certificates procps util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 # bun pinned at the UNIFIED path the setup script's step 7 asserts on and the

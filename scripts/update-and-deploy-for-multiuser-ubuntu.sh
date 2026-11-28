@@ -23,18 +23,29 @@
 #   4. rsync build dir -> deploy target (excludes node_modules + .git).
 #   5. Write the deployed-commit marker (.deploy-sha) into the deploy target,
 #      using the SHA resolved in step 1.
-#   6. Copy dist/embedded-agent.js (+ .map) from the deploy target -- the
+#   6. Bun version (Issue #2322): compare /usr/local/bin/bun --version
+#      against the pinned version in the deploy target's own
+#      docker/bun-sha256.txt (the tree rsync just produced from the pinned
+#      SHA). Without --upgrade-bun: a non-blocking WARN naming both versions
+#      (or the read failure) is printed; nothing is modified and the exit
+#      code never changes. With --upgrade-bun: fetches that exact release
+#      via docker/fetch-bun.sh (checksum-verified, no curl | sh) and
+#      installs it to /usr/local/bin/bun (mode 0755) before continuing, so
+#      the server and the embedded-agent subprocess keep running the
+#      identical file; a post-install version mismatch exits 1 here, before
+#      step 9's readability check and V0.
+#   7. Copy dist/embedded-agent.js (+ .map) from the deploy target -- the
 #      tree rsync just produced from the pinned SHA, not a second
 #      independent read from the source repo -- to a unified,
 #      world-traversable location every elevation-target OS user can reach
 #      (see the "embedded-agent entry path" comment at UNIFIED_ENTRY_PATH
 #      below). Unconditional on every deploy, no hash/mtime gate.
-#   7. bun install --production @ deploy target (runtime deps only).
-#   8. Fail-closed readability check on the unified entry path, immediately
+#   8. bun install --production @ deploy target (runtime deps only).
+#   9. Fail-closed readability check on the unified entry path, immediately
 #      before restarting the service -- refuses to restart into a unit whose
-#      EMBEDDED_AGENT_ENTRY_PATH would point at a file step 6 did not
+#      EMBEDDED_AGENT_ENTRY_PATH would point at a file step 7 did not
 #      actually provision.
-#   9. V0 data-root-ownership (Issue #1754) and V1 unit-env-drift (Issue
+#  10. V0 data-root-ownership (Issue #1754) and V1 unit-env-drift (Issue
 #      #1688), both still BEFORE the restart and fail-closed. V0 mechanizes
 #      the setup guide's "Data-root ownership pre-deploy check" -- a walked
 #      directory under the data root not owned by the service user fails the
@@ -46,7 +57,7 @@
 #      renders the unit -- scripts/setup-multiuser-for-ubuntu.sh is its
 #      single writer; V1 only detects that a re-render is due.
 #      Then systemctl restart <service> + status snapshot.
-#  10. Post-deploy verification V2-V6 (Issue #1717; the spec is the
+#  11. Post-deploy verification V2-V6 (Issue #1717; the spec is the
 #      "Post-deploy verification -- checks enumerated" table in
 #      docs/design/elevation-verification-tiers.md): entry-path readability,
 #      MainPID binary identity, unit active, /api/config health (V5, on the
@@ -74,8 +85,21 @@
 #
 # Usage:
 #   scripts/update-and-deploy-for-multiuser-ubuntu.sh
+#   scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun
 #
-# Env overrides (CLI flags not supported; override via env vars):
+# CLI flags:
+#   --upgrade-bun   Before continuing (step 6, before the restart), fetch
+#                   and install the exact Bun version pinned in the
+#                   deployed tree's docker/bun-sha256.txt to
+#                   /usr/local/bin/bun (checksum-verified via
+#                   docker/fetch-bun.sh; no curl | sh), so the server and
+#                   the embedded-agent subprocess keep running the
+#                   identical binary. Without this flag, the deploy only
+#                   reports drift (the "==> Bun version" section) and never
+#                   modifies /usr/local/bin/bun.
+#
+# Env overrides (override via env vars; --upgrade-bun above is the one CLI
+# flag):
 #   AGENT_CONSOLE_SERVICE_USER       Service user owning source + target.
 #                                    Default: agentconsole
 #   AGENT_CONSOLE_DATA_ROOT          Shared data root.
@@ -120,6 +144,25 @@
 # Documentation: docs/multi-user-setup-guide.md
 
 set -euo pipefail
+
+# --- CLI flags (Issue #2322) ------------------------------------------------
+#
+# One flag, opt-in: --upgrade-bun. Same `while ... case` shape as
+# setup-multiuser-for-ubuntu.sh's own flag loop. Any other argument is a
+# usage error -- this script accepted no CLI flags before this.
+UPGRADE_BUN=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --upgrade-bun)
+      UPGRADE_BUN=1
+      shift
+      ;;
+    *)
+      echo "Error: unknown argument '$1' (supported: --upgrade-bun)" >&2
+      exit 1
+      ;;
+  esac
+done
 
 SERVICE_USER="${AGENT_CONSOLE_SERVICE_USER:-agentconsole}"
 DATA_ROOT="${AGENT_CONSOLE_DATA_ROOT:-/var/lib/agent-console}"
@@ -302,6 +345,19 @@ DEPLOY_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse "${DEPLOY_S
 echo "    DEPLOY_SHA: ${DEPLOY_SHA}"
 sudo -u "${SERVICE_USER}" -- git -C "${SRC}" log --oneline -1 "${DEPLOY_SHA}"
 
+# --upgrade-bun needs curl and unzip (docker/fetch-bun.sh uses both) -- fail
+# here, before any build/rsync time is spent, not at the point fetch-bun.sh
+# itself would fail partway through. Not added to
+# scripts/setup-multiuser-for-ubuntu.sh's apt list (Architect ruling,
+# Issue #2322): this repo's existing convention is a manual prerequisite
+# (rsync is the precedent), not an automatic apt install.
+if [ "${UPGRADE_BUN}" -eq 1 ]; then
+  if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+    echo "Error: --upgrade-bun requires curl and unzip (docker/fetch-bun.sh needs both) -- run 'apt-get install -y curl unzip' and re-run this script" >&2
+    exit 1
+  fi
+fi
+
 # Per-deploy build directory under the data root, owned by the service user
 # (mktemp -d makes it 0700). Removed on every exit path by the EXIT trap, and
 # explicitly right after the rsync below so V0 (which scans the data root)
@@ -324,21 +380,21 @@ echo "==> git archive ${DEPLOY_SHA} -> build dir"
 sudo -u "${SERVICE_USER}" bash -c 'set -o pipefail; git -C "$1" archive "$2" | tar -x -C "$3"' _ "${SRC}" "${DEPLOY_SHA}" "${BUILD_DIR}"
 
 echo ""
-echo "==> 1/6 bun install --frozen-lockfile (all deps, build needs dev tooling) @ build dir"
+echo "==> 1/7 bun install --frozen-lockfile (all deps, build needs dev tooling) @ build dir"
 sudo -u "${SERVICE_USER}" bash -lc '
   export PATH=$HOME/.bun/bin:$PATH
   cd -- "$1" && bun install --frozen-lockfile
 ' _ "${BUILD_DIR}"
 
 echo ""
-echo "==> 2/6 NODE_ENV=production bun run build @ build dir"
+echo "==> 2/7 NODE_ENV=production bun run build @ build dir"
 sudo -u "${SERVICE_USER}" bash -lc '
   export PATH=$HOME/.bun/bin:$PATH
   cd -- "$1" && NODE_ENV=production bun run build
 ' _ "${BUILD_DIR}"
 
 echo ""
-echo "==> 3/6 rsync build dir -> deploy target (excludes node_modules, .git)"
+echo "==> 3/7 rsync build dir -> deploy target (excludes node_modules, .git)"
 sudo -u "${SERVICE_USER}" rsync -a --delete \
   --exclude=node_modules \
   --exclude='.git' \
@@ -349,7 +405,7 @@ sudo -u "${SERVICE_USER}" rsync -a --delete \
 remove_build_dir
 
 echo ""
-echo "==> 4/6 write deployed-commit marker (.deploy-sha)"
+echo "==> 4/7 write deployed-commit marker (.deploy-sha)"
 # Written into the deploy target (not the source) so it survives the next
 # rsync --delete; rewritten fresh every deploy. Uses the SHA resolved at the
 # top of this script (DEPLOY_SHA): the tree that was archived, built and
@@ -358,7 +414,102 @@ DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 sudo -u "${SERVICE_USER}" bash -lc 'printf "%s\n%s\n" "$1" "$2" > "$3/.deploy-sha"' _ "${DEPLOY_SHA}" "${DEPLOYED_AT}" "${DST}"
 
 echo ""
-echo "==> 5/6 copy dist/embedded-agent.js (+ .map) to unified entry path"
+echo "==> Bun version"
+# Issue #2322: a dedicated, non-numbered section -- neither a V-check (which
+# only runs after this point, post-restart for V2-V6) nor a pre-restart
+# fail-closed gate like V0/V1 (Architect decision; see
+# docs/design/elevation-verification-tiers.md's "Post-deploy verification --
+# checks enumerated" table, which this section deliberately stays out of so
+# V2-V6 never need renumbering).
+#
+# The pinned-version read is from the DEPLOY TARGET's own docker/bun-sha256.txt
+# -- the file rsync just copied from the exact DEPLOY_SHA tree, never a
+# second independent read from ${SRC} -- but DST is owned by ${SERVICE_USER},
+# not by the operator running this script, so the read elevates as
+# ${SERVICE_USER} (Architect ruling: an earlier revision read it unelevated
+# and failed closed with "Permission denied" on every real multi-user host).
+# The awk extraction itself is copied verbatim from docker/fetch-bun.sh's own
+# matching line rather than shared: that script is POSIX `sh` for a minimal
+# Docker build stage, this one is bash.
+#
+# BOTH reads below (the live version, the pinned version) are the CONDITION
+# of an `if`, never a bare assignment -- under `set -e` a bare assignment
+# whose command substitution fails would abort the whole deploy (Architect
+# ruling: this is exactly what the unelevated read's "Permission denied" did
+# before this fix). `2>&1` folds stderr into the captured value so a failure
+# is visibly distinct from a successful empty read; `[ -n ... ]` on the
+# pinned side additionally guards against a successful-but-empty extraction
+# (a syntactically valid but data-free registry file).
+if LIVE_BUN="$(/usr/local/bin/bun --version 2>&1)"; then
+  LIVE_BUN_OK=1
+else
+  LIVE_BUN_OK=0
+fi
+if PINNED_BUN="$(sudo -u "${SERVICE_USER}" awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "${DST}/docker/bun-sha256.txt" 2>&1)" && [ -n "${PINNED_BUN}" ]; then
+  PINNED_BUN_OK=1
+else
+  PINNED_BUN_OK=0
+fi
+
+if [ "${UPGRADE_BUN}" -eq 0 ]; then
+  # Every outcome here is non-blocking -- this section never changes the
+  # script's exit code.
+  if [ "${LIVE_BUN_OK}" -eq 0 ] || [ "${PINNED_BUN_OK}" -eq 0 ]; then
+    echo "    WARN: could not determine the live or pinned bun version (live: ${LIVE_BUN:-<unavailable>}; pinned: ${PINNED_BUN:-<unavailable>}) -- see scripts/setup-multiuser-for-ubuntu.sh Step 6b and docker/bun-sha256.txt" >&2
+  elif [ "${LIVE_BUN}" != "${PINNED_BUN}" ]; then
+    echo "    WARN: live bun (${LIVE_BUN}) differs from the deployed .bun-version (${PINNED_BUN}) -- re-run with --upgrade-bun to update /usr/local/bin/bun, or see docs/multi-user-setup-guide.md" >&2
+  fi
+else
+  if [ "${PINNED_BUN_OK}" -eq 1 ]; then
+    echo "    --upgrade-bun: fetching bun ${PINNED_BUN} via docker/fetch-bun.sh"
+  else
+    echo "    --upgrade-bun: fetching the pinned bun via docker/fetch-bun.sh (could not read the pinned version up front: ${PINNED_BUN:-<unavailable>})"
+  fi
+  # Mirrors BUILD_DIR's own guarded-trap pattern above: create, define a
+  # removal function guarded on non-empty, register the EXIT trap, use. This
+  # REPLACES the earlier `trap remove_build_dir EXIT` -- harmless, since
+  # BUILD_DIR was already removed explicitly (and BUILD_DIR="") right after
+  # the rsync above, well before this point; the earlier trap's job is done.
+  BUN_SCRATCH_DIR="$(sudo mktemp -d)"
+  remove_bun_scratch_dir() {
+    if [ -n "${BUN_SCRATCH_DIR:-}" ]; then
+      sudo rm -rf -- "${BUN_SCRATCH_DIR}" || echo "Warning: could not remove bun scratch directory ${BUN_SCRATCH_DIR}" >&2
+      BUN_SCRATCH_DIR=""
+    fi
+  }
+  trap remove_bun_scratch_dir EXIT
+  # BUN_DOWNLOAD_BASE_URL / BUN_FETCH_ARCH are forwarded explicitly (never via
+  # a sudoers env_keep change, per the Issue's "Do not" list): fetch-bun.sh's
+  # own `${VAR:-default}` already falls through to its real default when the
+  # forwarded value is empty, so the ordinary (no override) path is
+  # unaffected. fetch-bun.sh reads the registry FILE itself, as root (via
+  # `sudo env ... sh fetch-bun.sh`), so it is unaffected by the permission
+  # constraint the front-end read above exists to work around.
+  sudo env BUN_DOWNLOAD_BASE_URL="${BUN_DOWNLOAD_BASE_URL:-}" BUN_FETCH_ARCH="${BUN_FETCH_ARCH:-}" \
+    sh "${DST}/docker/fetch-bun.sh" "${DST}/docker/bun-sha256.txt" "${BUN_SCRATCH_DIR}"
+  sudo install -m0755 "${BUN_SCRATCH_DIR}/bun" /usr/local/bin/bun
+  assert_unified_bun_executable "/usr/local/bin/bun" || exit 1
+  INSTALLED_BUN_VERSION="$(/usr/local/bin/bun --version)"
+  # Fail closed on EITHER outcome (CodeRabbit finding): a mismatch against a
+  # readable pin, or no readable pin to verify against at all -- the latter
+  # must not silently let the restart through unverified. fetch-bun.sh's own
+  # root-level read of the same registry almost always succeeds whenever
+  # this elevated front-end read does too (the service user OWNS the file),
+  # so PINNED_BUN_OK=0 here means something is wrong with the deploy target
+  # itself, which is reason enough to stop before restarting into it.
+  if [ "${PINNED_BUN_OK}" -ne 1 ]; then
+    echo "Error: could not determine the pinned bun version to verify the install against (${PINNED_BUN:-<unavailable>}) -- refusing to restart" >&2
+    exit 1
+  fi
+  if [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then
+    echo "Error: installed /usr/local/bin/bun reports ${INSTALLED_BUN_VERSION}, expected ${PINNED_BUN} -- refusing to restart" >&2
+    exit 1
+  fi
+  echo "    /usr/local/bin/bun is now ${INSTALLED_BUN_VERSION}"
+fi
+
+echo ""
+echo "==> 6/7 copy dist/embedded-agent.js (+ .map) to unified entry path"
 # Source is the DEPLOY TARGET, post-rsync (the tree built from the pinned
 # SHA) -- not a second independent read from the source repo, folded in
 # immediately after the marker write above rather than opening a new
@@ -388,7 +539,7 @@ sudo install -Dm0644 "${DST}/dist/embedded-agent.js" "${UNIFIED_ENTRY_PATH}"
 sudo install -Dm0644 "${DST}/dist/embedded-agent.js.map" "${UNIFIED_ENTRY_MAP_PATH}"
 
 echo ""
-echo "==> 6/6 bun install --production @ deploy target (runtime deps only)"
+echo "==> 7/7 bun install --production @ deploy target (runtime deps only)"
 sudo -u "${SERVICE_USER}" bash -lc '
   export PATH=$HOME/.bun/bin:$PATH
   cd -- "$1" && bun install --production

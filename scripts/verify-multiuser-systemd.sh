@@ -61,6 +61,35 @@
 #      requested SHA (never the marker the deploy itself wrote)
 #  6b. polarity: AGENT_CONSOLE_DEPLOY_SHA=0000... must exit 1 at the guard,
 #      leave .deploy-sha byte-identical, and print no `==> systemctl restart`
+#  6c. the #2322 drift arm: /usr/local/bin/bun is installed as a REAL,
+#      OLDER bun release (1.4.4 -- exactly MIN_BUN_VERSION, so the server
+#      still runs on it), fetched via the real docker/fetch-bun.sh and a
+#      TEST-ONLY fixture registry (never docker/bun-sha256.txt). A fake
+#      binary was tried and rejected (Architect ruling, option (c)): even a
+#      wrapper that fakes only `--version` and execs a real copy for
+#      everything else makes `/proc/<MainPID>/exe` resolve to wherever it
+#      actually execs to, never literally "/usr/local/bin/bun", so V3
+#      mainpid-identity would FAIL for a reason unrelated to this arm. The
+#      deploy then runs WITHOUT --upgrade-bun -- expect exit 0 (never
+#      blocking), a WARN naming both 1.4.4 and the real pinned version
+#      (read from the source tree's docker/bun-sha256.txt), V3/V4/V5 all
+#      PASS (one real, correctly-identified binary throughout), and
+#      /usr/local/bin/bun still 1.4.4 afterward.
+# 6c2. the #2322 prerequisite polarity (Architect addition): `unzip` is
+#      briefly renamed away, then the deploy runs WITH --upgrade-bun --
+#      expect exit 1 at the curl/unzip precheck (named at the very top of
+#      the script, right after the DEPLOY_SHA pre-check), before any
+#      `git archive` or `==> systemctl restart` line. `unzip` is restored
+#      unconditionally and its resolvability is re-asserted. Reports rather
+#      than forcing the check if `unzip`'s path cannot be resolved at all.
+#  6d. the #2322 upgrade arm, immediately after: the same deploy WITH
+#      --upgrade-bun -- expect exit 0, no WARN this time, /usr/local/bin/bun
+#      now at the pinned version (1.4.4 replaced by the fetched binary),
+#      and the restart + /api/config check still succeed. Needs real
+#      network to the real oven-sh/bun GitHub release (no
+#      BUN_DOWNLOAD_BASE_URL fixture here, same as the image's own
+#      build-time fetch). 6c's 1.4.4 fetch scratch directory is removed by
+#      `cleanup()` at the end of the run regardless of 6c/6d's own outcome.
 #   7. the deploy script's OWN post-deploy verification screen (Issue #1717:
 #      V0 data-root-ownership, V1 unit-env-drift, V2 entry-path-readable, V3
 #      mainpid-identity, V4 unit-active, V5 health, V6 journal-digest; V0
@@ -226,6 +255,16 @@ PASS=0
 FAIL=0
 STEP_T0=0
 SUMMARY=""
+# The #2322 6c arm's fetch-bun.sh scratch directory, INSIDE the container
+# -- set by bun_drift_warn_arm, removed by cleanup() (via
+# remove_bun_144_scratch_dir) at the end of the run, whether 6c or 6d
+# fails (Architect ruling). Empty when not yet created.
+BUN_144_SCRATCH_DIR=""
+# The #2322 6c2 arm's real unzip path, set ONLY while it is renamed away
+# (CodeRabbit finding): if anything between the rename and the restore
+# exits the driver (e.g. a host-side `mktemp` failure), `cleanup()` still
+# restores it via restore_unzip_if_renamed, including under --keep.
+UNZIP_RENAMED_PATH=""
 
 usage() {
   sed -n '/^# Usage/,/^# Requires/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -511,6 +550,125 @@ unknown_sha_arm() {
   sed 's/^/  /' "$out"
   rm -f "$out"
   step_end unknown_sha
+}
+
+# --- 6c/6d. the #2322 bun-version arms: WARN without --upgrade-bun, fetch+install with it -------
+
+bun_drift_warn_arm() {
+  step_start "6c. #2322 drift arm: /usr/local/bin/bun is a REAL older release (1.4.4) -> deploy WITHOUT --upgrade-bun WARNs, never fails, restarts cleanly"
+  local pinned want_sha out rc=0 live
+  pinned="$(cexec --user agentconsole "$SERVICE" awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "${SRC}/docker/bun-sha256.txt" | tr -d '\r')"
+  echo "  pinned version (source tree's docker/bun-sha256.txt): ${pinned}"
+
+  # Architect ruling (Issue #2322, option (c)): a fake binary -- even a
+  # wrapper that execs a real copy for everything but `--version` -- makes
+  # `/proc/<MainPID>/exe` resolve to wherever it actually execs to, which is
+  # never literally "/usr/local/bin/bun" once an indirection is involved, so
+  # V3 mainpid-identity would FAIL for a reason unrelated to this arm
+  # (measured directly on this host with a throwaway wrapper+exec, outside
+  # any container, before this ruling: `exec`'d /proc/<pid>/exe resolves to
+  # the REAL target, not the wrapper's own path). Use a REAL, older bun
+  # release instead -- 1.4.4, exactly MIN_BUN_VERSION in
+  # scripts/check-bun-version.mjs, so the server still runs on it -- fetched
+  # via the real docker/fetch-bun.sh and a TEST-ONLY fixture registry
+  # (scripts/__tests__/fixtures/bun-1.4.4-sha256.txt; never
+  # docker/bun-sha256.txt, the production pin). Nothing is faked: V3/V4/V5
+  # all see a single, real, correctly-identified binary.
+  echo "  --- fetch the real bun 1.4.4 via docker/fetch-bun.sh + the test-only fixture registry, install it to /usr/local/bin/bun ---"
+  BUN_144_SCRATCH_DIR="$(cexec --user root "$SERVICE" mktemp -d)"
+  cexec --user root "$SERVICE" sh "${SRC}/docker/fetch-bun.sh" "${SRC}/scripts/__tests__/fixtures/bun-1.4.4-sha256.txt" "${BUN_144_SCRATCH_DIR}"
+  cexec --user root "$SERVICE" install -m0755 "${BUN_144_SCRATCH_DIR}/bun" "${UNIFIED_BUN}"
+  live="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
+  expect "6c: /usr/local/bin/bun is now the real 1.4.4 before the deploy runs" test "$live" = "1.4.4"
+
+  want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  # The deploy script's WARN lines are indented ("    WARN: ..."), never
+  # column-0 -- `^WARN:` alone would never match them (CodeRabbit finding).
+  grep -E '^[[:space:]]*WARN:|^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  expect "6c: deploy exits 0 (the drift WARN never changes the exit code)" test "$rc" -eq 0
+  expect "6c: output contains a WARN naming both the real 1.4.4 and the real pinned version" \
+    grep -qF "WARN: live bun (1.4.4) differs from the deployed .bun-version (${pinned})" "$out"
+  expect "6c: V3 mainpid-identity PASSes -- the real 1.4.4 binary IS the one both ExecStart and EMBEDDED_AGENT_BUN_PATH name" \
+    grep -q '^  PASS  V3 mainpid-identity$' "$out"
+  expect "6c: V4 unit-active PASSes -- the restart succeeded on the real (older) binary" \
+    grep -q '^  PASS  V4 unit-active$' "$out"
+  expect "6c: V5 health PASSes -- the restarted server actually answers /api/config" \
+    grep -q '^  PASS  V5 health$' "$out"
+  live="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
+  expect "6c: /usr/local/bin/bun --version still reports 1.4.4 (--upgrade-bun was not passed, nothing was installed)" \
+    test "$live" = "1.4.4"
+  rm -f "$out"
+  step_end bun_drift_warn
+}
+
+# --- 6c2. the #2322 prerequisite polarity: --upgrade-bun refuses before any build when unzip is absent -------
+
+bun_prereq_polarity_arm() {
+  step_start "6c2. #2322 prerequisite polarity: --upgrade-bun refuses before any build/restart when unzip is absent"
+  local unzip_path want_sha out rc=0
+  unzip_path="$(cexec --user root "$SERVICE" sh -c 'command -v unzip')" || {
+    echo "  SKIPPED: could not resolve unzip's path in the image -- reporting rather than forcing this polarity check" >&2
+    step_end bun_prereq_polarity
+    return 0
+  }
+  unzip_path="$(printf '%s' "$unzip_path" | tr -d '\r')"
+  # Sequential driver, one step at a time: briefly renaming the real binary
+  # away (never apt-installing or removing it) is safe here. Tracked in the
+  # driver-owned UNZIP_RENAMED_PATH so cleanup()'s restore_unzip_if_renamed
+  # restores it even if something below exits the driver before this
+  # function's own restore runs (CodeRabbit finding).
+  cexec --user root "$SERVICE" mv "$unzip_path" "${unzip_path}.disabled-for-test"
+  UNZIP_RENAMED_PATH="$unzip_path"
+  want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun >"$out" 2>&1 || rc=$?
+  restore_unzip_if_renamed
+  sed 's/^/  /' "$out"
+  expect "6c2: --upgrade-bun exits 1 when unzip is absent" test "$rc" -eq 1
+  expect "6c2: the precheck error names curl and unzip" grep -qF 'requires curl and unzip' "$out"
+  rc=0
+  grep -q 'git archive' "$out" || rc=$?
+  expect "6c2: no git-archive line -- the refusal happened before any build" test "$rc" -eq 1
+  rc=0
+  grep -q '==> systemctl restart' "$out" || rc=$?
+  expect "6c2: no '==> systemctl restart' line -- the unit was never restarted" test "$rc" -eq 1
+  expect "6c2: unzip is resolvable again after the arm (restored unconditionally)" \
+    cexec --user root "$SERVICE" sh -c 'command -v unzip'
+  rm -f "$out"
+  step_end bun_prereq_polarity
+}
+
+bun_upgrade_arm() {
+  step_start "6d. #2322 upgrade arm: the same deploy WITH --upgrade-bun fetches + installs the pinned release and restarts cleanly"
+  local pinned want_sha out rc=0 live cfg_now
+  pinned="$(cexec --user agentconsole "$SERVICE" awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "${SRC}/docker/bun-sha256.txt" | tr -d '\r')"
+  want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
+  out="$(mktemp)"
+  rc=0
+  # Real network to the real oven-sh/bun GitHub release (Issue #2322 AC
+  # A13): no BUN_DOWNLOAD_BASE_URL fixture here, matching the image's own
+  # build-time fetch (docker/Dockerfile.systemd already requires the same).
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun >"$out" 2>&1 || rc=$?
+  # WARN lines are indented, never column-0 (CodeRabbit finding, same as 6c above).
+  grep -E '^[[:space:]]*WARN:|fetching bun|is now |^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  expect "6d: deploy exits 0" test "$rc" -eq 0
+  rc=0
+  grep -q '^[[:space:]]*WARN:' "$out" || rc=$?
+  expect "6d: no WARN: line this time (the binary is now at the pinned version)" test "$rc" -eq 1
+  live="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
+  expect "6d: /usr/local/bin/bun --version now equals the pinned version ${pinned} (no longer 0.0.0-test)" \
+    test "$live" = "$pinned"
+  expect "6d: the '==> systemctl restart' line is present -- the restart still ran" \
+    grep -q '==> systemctl restart' "$out"
+  cfg_now="$(cexec --user root "$SERVICE" curl -sS -m 5 http://localhost:8080/api/config || true)"
+  expect "6d: /api/config deployedSha still equals the requested SHA" \
+    grep -qF "\"deployedSha\":\"${want_sha}\"" <<<"$cfg_now"
+  rm -f "$out"
+  step_end bun_upgrade
 }
 
 # The seven checks of the deploy script's post-deploy verification (Issue
@@ -1358,7 +1516,27 @@ footprint() {
   step_end footprint
 }
 
+remove_bun_144_scratch_dir() {
+  if [ -n "${BUN_144_SCRATCH_DIR:-}" ]; then
+    cexec --user root "$SERVICE" rm -rf -- "${BUN_144_SCRATCH_DIR}" >/dev/null 2>&1 || true
+    BUN_144_SCRATCH_DIR=""
+  fi
+}
+
+# CodeRabbit finding: restores unzip EVEN IF something between
+# bun_prereq_polarity_arm's rename and its own restore exits the driver
+# (e.g. a host-side `mktemp` failure) -- runs before the KEEP branch so a
+# kept container is never left with a disabled unzip either.
+restore_unzip_if_renamed() {
+  if [ -n "${UNZIP_RENAMED_PATH:-}" ]; then
+    cexec --user root "$SERVICE" mv "${UNZIP_RENAMED_PATH}.disabled-for-test" "${UNZIP_RENAMED_PATH}" >/dev/null 2>&1 || true
+    UNZIP_RENAMED_PATH=""
+  fi
+}
+
 cleanup() {
+  remove_bun_144_scratch_dir
+  restore_unzip_if_renamed
   if [ "$KEEP" -eq 1 ]; then
     echo "[info] --keep set; container agent-console-systemd-verify left running"
   else
@@ -1394,6 +1572,9 @@ main() {
   copy_source
   run_deploy
   unknown_sha_arm
+  bun_drift_warn_arm
+  bun_prereq_polarity_arm
+  bun_upgrade_arm
   post_deploy_checks
   drift_arm
   ownership_polarity_arm

@@ -564,6 +564,27 @@ a running executable). Follow the copy with `sudo systemctl restart
 agent-console` if you want the server itself, not just the next
 embedded-agent worker, to pick up the newer bun version.
 
+**Prefer `--upgrade-bun` for an ordinary version bump (Issue #2322).** The
+one-liner above is still the documented fallback (e.g. to install a bun build
+other than the one currently pinned), but for the common case —
+`.bun-version` / `docker/bun-sha256.txt` moved and production should follow —
+the deploy script fetches and installs that exact release itself,
+checksum-verified via `docker/fetch-bun.sh`, immediately before the restart
+that picks it up:
+
+```bash
+scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun
+```
+
+`--upgrade-bun` additionally needs `curl` and `unzip` on the host (same as
+`rsync`, this repo does not install them automatically -- `sudo apt-get
+install -y curl unzip` if missing); the script checks for both up front and
+exits before touching the build directory if either is absent.
+
+Without `--upgrade-bun`, every ordinary deploy still reports the drift: a
+`WARN` line naming both the live and the pinned version, printed in the
+script's `==> Bun version` section, never blocking the deploy.
+
 (Lesson: Sprint 2026-07-18b — a smoke-test procedure said to re-run the
 bootstrap script to provision `/usr/local/bin/bun`. Two things were wrong.
 The provisioning step existed only on the un-merged PR branch, so running the
@@ -584,10 +605,11 @@ depend on that; Issue #1690):
 # Default invocation (matches bootstrap defaults: agentconsole / port 8080).
 scripts/update-and-deploy-for-multiuser-ubuntu.sh
 
-# Overrides (env vars; CLI flags not supported). AGENT_CONSOLE_PORT here is
-# only a FALLBACK for V5's health check, used when the live unit's own PORT=
-# cannot be read (Issue #1761) -- when it can, the live unit's port always
-# wins, and a mismatched override is reported as a WARN, not silently used.
+# Overrides (env vars; the one CLI flag is --upgrade-bun, see above).
+# AGENT_CONSOLE_PORT here is only a FALLBACK for V5's health check, used when
+# the live unit's own PORT= cannot be read (Issue #1761) -- when it can, the
+# live unit's port always wins, and a mismatched override is reported as a
+# WARN, not silently used.
 AGENT_CONSOLE_PORT=9000 \
 AGENT_CONSOLE_SERVICE_USER=ac-svc \
   scripts/update-and-deploy-for-multiuser-ubuntu.sh
@@ -702,10 +724,11 @@ missing `Environment=` line(s) there, `systemctl daemon-reload`, and deploy
 again.
 
 **The script also copies `dist/embedded-agent.js` (+ `.map`) to the unified
-entry path on every invocation** (step 5/6, right after the deployed-commit
-marker write, from the deploy target -- not a second independent read from
-the source repo), and fails closed on that path's readability right before
-V1 (Issue #1668) -- the same shape as the bun-binary copy above, applied to
+entry path on every invocation** (step 6/7, right after the deployed-commit
+marker write and the Bun version drift report, from the deploy target -- not
+a second independent read from the source repo), and fails closed on that
+path's readability right before V1 (Issue #1668) -- the same shape as the
+bun-binary copy above, applied to
 the application bundle instead of the language-runtime binary. No separate
 operator action is needed for this; it happens automatically as part of the
 ordinary update cycle.

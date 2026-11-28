@@ -94,6 +94,173 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: unified entry path readabil
   });
 });
 
+// --upgrade-bun + the "==> Bun version" drift-report section (Issue #2322).
+// Static regression tests on this script's own source text, same style as
+// the other describe blocks in this file: the shared check function
+// (assert_unified_bun_executable) is fixture-tested directly in
+// scripts/__tests__/setup-multiuser-checks.test.mjs; what THIS file pins is
+// the arg parsing, the section's placement, and that both fail-closed calls
+// in the --upgrade-bun branch are present.
+describe('update-and-deploy-for-multiuser-ubuntu.sh: --upgrade-bun CLI flag and the Bun version section (Issue #2322)', () => {
+  const scriptText = readFileSync(SCRIPT, 'utf-8');
+  const idxOf = (needle) => {
+    const i = scriptText.indexOf(needle);
+    expect(i).toBeGreaterThan(-1);
+    return i;
+  };
+
+  it('the arg-parsing loop accepts --upgrade-bun (sets UPGRADE_BUN=1) and rejects any other argument', () => {
+    expect(scriptText).toContain('UPGRADE_BUN=0');
+    expect(scriptText).toContain('--upgrade-bun)\n      UPGRADE_BUN=1\n      shift\n      ;;');
+    expect(scriptText).toContain(
+      "*)\n      echo \"Error: unknown argument '$1' (supported: --upgrade-bun)\" >&2\n      exit 1\n      ;;",
+    );
+    // The arg loop runs before `set -euo pipefail` has any chance to see the
+    // rest of the script's variables -- i.e. before SERVICE_USER is derived.
+    expect(idxOf('while [ "$#" -gt 0 ]; do')).toBeLessThan(idxOf('SERVICE_USER="${AGENT_CONSOLE_SERVICE_USER:-agentconsole}"'));
+  });
+
+  it('the header documents --upgrade-bun in both Usage and a CLI flags section', () => {
+    const header = scriptText.split('\n').slice(0, 150).join('\n');
+    expect(header).toContain('scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun');
+    expect(header).toMatch(/^# CLI flags:$/m);
+  });
+
+  it('the "==> Bun version" section sits strictly between the marker-write line and the (renumbered) embedded-agent copy line', () => {
+    const markerWrite = idxOf(
+      'sudo -u "${SERVICE_USER}" bash -lc \'printf "%s\\n%s\\n" "$1" "$2" > "$3/.deploy-sha"\' _ "${DEPLOY_SHA}" "${DEPLOYED_AT}" "${DST}"',
+    );
+    const bunVersionHeading = idxOf('echo "==> Bun version"');
+    const copyHeading = idxOf('echo "==> 6/7 copy dist/embedded-agent.js (+ .map) to unified entry path"');
+    expect(bunVersionHeading).toBeGreaterThan(markerWrite);
+    expect(bunVersionHeading).toBeLessThan(copyHeading);
+  });
+
+  it('the pinned version is read from the DEPLOY TARGET\'s docker/bun-sha256.txt via the same awk extraction as docker/fetch-bun.sh, elevated as the service user (Architect ruling), never a second read from ${SRC}', () => {
+    expect(scriptText).toContain(
+      'if PINNED_BUN="$(sudo -u "${SERVICE_USER}" awk \'$1 !~ /^#/ && NF == 3 { print $1; exit }\' "${DST}/docker/bun-sha256.txt" 2>&1)" && [ -n "${PINNED_BUN}" ]; then',
+    );
+    expect(scriptText).not.toContain('${SRC}/docker/bun-sha256.txt');
+    // Never an UNELEVATED read of ${DST} -- that is exactly the shape that
+    // failed closed with "Permission denied" on a real multi-user host
+    // (the deploy target is owned by the service user, not the operator).
+    expect(scriptText).not.toMatch(/(?<!sudo -u "\$\{SERVICE_USER\}" )awk '\$1 !~ \/\^#\/ && NF == 3/);
+  });
+
+  it('both the live and pinned reads are the CONDITION of an `if`, never a bare assignment that could trip `set -e` on failure', () => {
+    expect(scriptText).toContain('if LIVE_BUN="$(/usr/local/bin/bun --version 2>&1)"; then');
+    expect(scriptText).toContain('  LIVE_BUN_OK=1');
+    expect(scriptText).toContain('  LIVE_BUN_OK=0');
+    expect(scriptText).toContain('  PINNED_BUN_OK=1');
+    expect(scriptText).toContain('  PINNED_BUN_OK=0');
+    // No elevation prefix on the live-version read itself (A5: no elevation
+    // needed -- /usr/local/bin/bun is mode 0755, world-executable).
+    expect(scriptText).not.toMatch(/sudo[^\n]*\/usr\/local\/bin\/bun --version 2>&1/);
+  });
+
+  it('without --upgrade-bun: every branch is non-blocking (no exit) and the WARN lines name both versions or the read failure', () => {
+    const noFlag = scriptText.slice(idxOf('if [ "${UPGRADE_BUN}" -eq 0 ]; then'), idxOf('else\n  if [ "${PINNED_BUN_OK}" -eq 1 ]; then'));
+    expect(noFlag).not.toContain('exit 1');
+    expect(noFlag).not.toContain('exit 0');
+    expect(scriptText).toContain(
+      'WARN: could not determine the live or pinned bun version (live: ${LIVE_BUN:-<unavailable>}; pinned: ${PINNED_BUN:-<unavailable>}) -- see scripts/setup-multiuser-for-ubuntu.sh Step 6b and docker/bun-sha256.txt',
+    );
+    expect(scriptText).toContain(
+      'WARN: live bun (${LIVE_BUN}) differs from the deployed .bun-version (${PINNED_BUN}) -- re-run with --upgrade-bun to update /usr/local/bin/bun, or see docs/multi-user-setup-guide.md',
+    );
+  });
+
+  it('with --upgrade-bun: fetch+verify goes through docker/fetch-bun.sh via bare sudo, never `sudo -u "${SERVICE_USER}"`, and BUN_DOWNLOAD_BASE_URL/BUN_FETCH_ARCH are forwarded explicitly (never a sudoers env_keep change)', () => {
+    const upgradeBranch = scriptText.slice(idxOf('BUN_SCRATCH_DIR="$(sudo mktemp -d)"'), idxOf('echo ""\necho "==> 6/7'));
+    expect(upgradeBranch).not.toMatch(/sudo -u "\$\{SERVICE_USER\}"/);
+    expect(upgradeBranch).not.toContain('sudo -u "${SERVICE_USER}" -i');
+    expect(scriptText).toContain(
+      'sudo env BUN_DOWNLOAD_BASE_URL="${BUN_DOWNLOAD_BASE_URL:-}" BUN_FETCH_ARCH="${BUN_FETCH_ARCH:-}" \\\n    sh "${DST}/docker/fetch-bun.sh" "${DST}/docker/bun-sha256.txt" "${BUN_SCRATCH_DIR}"',
+    );
+    expect(scriptText).toContain('sudo install -m0755 "${BUN_SCRATCH_DIR}/bun" /usr/local/bin/bun');
+  });
+
+  // No reach: this is a static ordering/text pin, not a behavioral test --
+  // removing either `exit 1` would still leave it green. A real harness
+  // case needs an asymmetry (root's fetch succeeds, the service-user
+  // front-end read fails) that the normal archive/rsync pipeline can't
+  // construct deliberately; deferred to Issue #2327.
+  it('with --upgrade-bun: reuses assert_unified_bun_executable (no second executability check) and fails closed on EITHER a post-install version mismatch OR an unreadable pin, before the restart (CodeRabbit finding)', () => {
+    const upgradeIdx = idxOf('BUN_SCRATCH_DIR="$(sudo mktemp -d)"');
+    const assertIdx = idxOf('assert_unified_bun_executable "/usr/local/bin/bun" || exit 1');
+    const unreadableIdx = idxOf(
+      'echo "Error: could not determine the pinned bun version to verify the install against (${PINNED_BUN:-<unavailable>}) -- refusing to restart" >&2',
+    );
+    const mismatchIdx = idxOf(
+      'echo "Error: installed /usr/local/bin/bun reports ${INSTALLED_BUN_VERSION}, expected ${PINNED_BUN} -- refusing to restart" >&2',
+    );
+    const restartIdx = idxOf('sudo systemctl restart "${SERVICE_NAME}"');
+    expect(assertIdx).toBeGreaterThan(upgradeIdx);
+    expect(assertIdx).toBeLessThan(unreadableIdx);
+    expect(unreadableIdx).toBeLessThan(mismatchIdx);
+    expect(mismatchIdx).toBeLessThan(restartIdx);
+    expect(scriptText).toContain('if [ "${PINNED_BUN_OK}" -ne 1 ]; then');
+    expect(scriptText).toContain('if [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then');
+    // The unreadable-pin branch is unconditional (no `&&`) -- it is checked
+    // BEFORE the mismatch comparison, not folded into its condition.
+    expect(scriptText).not.toContain('if [ "${PINNED_BUN_OK}" -eq 1 ] && [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then');
+    // Only ONE call (as opposed to a mere mention in a comment) to the
+    // shared executability check in this file -- A6(d) reuses it, A8
+    // forbids a second one.
+    expect(scriptText.split('assert_unified_bun_executable "/usr/local/bin/bun"').length - 1).toBe(1);
+  });
+
+  it('--upgrade-bun requires curl and unzip, checked right after the DEPLOY_SHA pre-check and before the build directory is created (Architect ruling)', () => {
+    const precheckEnd = idxOf('sudo -u "${SERVICE_USER}" -- git -C "${SRC}" log --oneline -1 "${DEPLOY_SHA}"');
+    const buildDirIdx = idxOf('BUILD_DIR="$(sudo -u "${SERVICE_USER}" mktemp -d');
+    const precheckIdx = idxOf('if [ "${UPGRADE_BUN}" -eq 1 ]; then');
+    const errIdx = idxOf(
+      "echo \"Error: --upgrade-bun requires curl and unzip (docker/fetch-bun.sh needs both) -- run 'apt-get install -y curl unzip' and re-run this script\" >&2",
+    );
+    expect(precheckIdx).toBeGreaterThan(precheckEnd);
+    expect(precheckIdx).toBeLessThan(buildDirIdx);
+    expect(errIdx).toBeGreaterThan(precheckIdx);
+    expect(errIdx).toBeLessThan(buildDirIdx);
+    expect(scriptText).toContain('if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then');
+    // Not added to the setup script's apt list (Architect ruling).
+    const setupScript = readFileSync(resolve(__dirname, '..', 'setup-multiuser-for-ubuntu.sh'), 'utf-8');
+    expect(setupScript).not.toMatch(/unzip/);
+  });
+
+  it('the bun scratch dir cleanup mirrors BUILD_DIR\'s own guarded-trap pattern (guarded on non-empty, cleared after removal)', () => {
+    expect(scriptText).toContain(
+      'remove_bun_scratch_dir() {\n    if [ -n "${BUN_SCRATCH_DIR:-}" ]; then\n      sudo rm -rf -- "${BUN_SCRATCH_DIR}" || echo "Warning: could not remove bun scratch directory ${BUN_SCRATCH_DIR}" >&2\n      BUN_SCRATCH_DIR=""\n    fi\n  }',
+    );
+    expect(scriptText).toContain('trap remove_bun_scratch_dir EXIT');
+  });
+
+  it('every inline progress label is N/7 -- no leftover N/6 anywhere, and the labels 1-4,6,7 plus the unlabeled "Bun version" section appear in order', () => {
+    expect(scriptText).not.toMatch(/==> \d\/6\b/);
+    const order = [
+      'echo "==> 1/7 bun install --frozen-lockfile',
+      'echo "==> 2/7 NODE_ENV=production bun run build',
+      'echo "==> 3/7 rsync build dir',
+      'echo "==> 4/7 write deployed-commit marker',
+      'echo "==> Bun version"',
+      'echo "==> 6/7 copy dist/embedded-agent.js',
+      'echo "==> 7/7 bun install --production',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = idxOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('the header\'s Steps list documents step 6 (Bun version) between steps 5 and 7, with no leftover reference to the old 6/7/8/9/10 numbering', () => {
+    const header = scriptText.split('\n').slice(0, 75).join('\n');
+    expect(header).toMatch(/^#   6\. Bun version \(Issue #2322\)/m);
+    expect(header).toMatch(/^#   7\. Copy dist\/embedded-agent\.js/m);
+    expect(header).toMatch(/^#  11\. Post-deploy verification V2-V6/m);
+  });
+});
+
 // Post-deploy verification V0-V6 (Issue #1717, absorbing #1688; V0 added by
 // Issue #1754). Same static-source-text discipline as above: the checks
 // themselves are fixture-tested in
@@ -501,6 +668,15 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
     };
     git('init', '-q');
     writeFileSync(join(src, 'tracked.txt'), 'tracked\n');
+    // The new "==> Bun version" section (Issue #2322) unconditionally reads
+    // ${DST}/docker/bun-sha256.txt regardless of --upgrade-bun; without a
+    // tracked fixture here, `set -e` would fail the whole script on awk's
+    // "no such file" before reaching any of this harness's own stopping
+    // points. Version/hash values are unused by these tests -- any
+    // well-formed line works, since none of these tests exercise
+    // --upgrade-bun (that path is covered by the static tests above).
+    mkdirSync(join(src, 'docker'), { recursive: true });
+    writeFileSync(join(src, 'docker', 'bun-sha256.txt'), `1.4.5 x64 ${'0'.repeat(64)}\n`);
     git('add', '.');
     git('commit', '-q', '-m', 'first');
     const firstSha = git('rev-parse', 'HEAD');
@@ -510,6 +686,16 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
     git('add', '.');
     git('commit', '-q', '-m', 'second');
     const headSha = git('rev-parse', 'HEAD');
+    // A third commit with the registry file removed entirely (Issue #2322
+    // polarity fixture): git has no mode bit for "unreadable", so a chmod
+    // on the working tree would not survive `git archive`'s tar stream --
+    // the file's ABSENCE from a committed tree is what this harness can
+    // actually simulate, and it exercises the exact same code path (the
+    // elevated awk read fails, captured via `2>&1`) as a real permission
+    // failure does.
+    git('rm', '-q', 'docker/bun-sha256.txt');
+    git('commit', '-q', '-m', 'third');
+    const noPinSha = git('rev-parse', 'HEAD');
     writeFileSync(join(src, 'dirty.txt'), 'untracked working-tree file\n');
 
     writeFileSync(
@@ -557,7 +743,7 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
         buildDirs: readdirSync(dataRoot).filter((n) => n.startsWith('build.')),
       };
     };
-    return { run, src, dst, firstSha, headSha };
+    return { run, src, dst, firstSha, headSha, noPinSha };
   }
 
   const GUARD_ERROR = 'Error: AGENT_CONSOLE_DEPLOY_SHA/origin/main does not resolve to a commit in ';
@@ -605,9 +791,23 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
     expect(r.stdout).toContain(`DEPLOY_SHA: ${h.firstSha}`);
     expect(r.log).toContain('ROOT-LEVEL: install');
     expect(r.log).not.toContain('BUILD_DIR_PRESENT');
-    expect(readdirSync(h.dst).sort()).toEqual(['.deploy-sha', 'tracked.txt']);
+    expect(readdirSync(h.dst).sort()).toEqual(['.deploy-sha', 'docker', 'tracked.txt']);
     expect(readFileSync(join(h.dst, '.deploy-sha'), 'utf8').split('\n')[0]).toBe(h.firstSha);
     expect(r.buildDirs).toEqual([]);
+  });
+
+  // Architect ruling polarity (Issue #2322): when the deployed tree's
+  // docker/bun-sha256.txt cannot be read, the "==> Bun version" section
+  // must print a WARN and the script must still reach its usual stopping
+  // point -- never abort early under `set -e`. Deploys the noPinSha commit
+  // (the registry file removed entirely), which exercises the same failed
+  // elevated-read code path a real permission failure would.
+  it('a deployed tree with no docker/bun-sha256.txt prints a WARN and does not abort the deploy (Architect ruling)', () => {
+    const h = makeHarness();
+    const r = h.run({ AGENT_CONSOLE_DEPLOY_SHA: h.noPinSha });
+    expect(r.status).toBe(99);
+    expect(r.stderr).toContain('WARN: could not determine the live or pinned bun version');
+    expect(r.log).toContain('ROOT-LEVEL: install');
   });
 
   it('a branch name or short SHA override is recorded as the full 40-char SHA', () => {
@@ -617,7 +817,7 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: pinned-SHA flow run against
       expect(r.status).toBe(99);
       const line1 = readFileSync(join(h.dst, '.deploy-sha'), 'utf8').split('\n')[0];
       expect(line1).toMatch(/^[0-9a-f]{40}$/);
-      expect(line1).toBe(override === 'main' ? h.headSha : h.firstSha);
+      expect(line1).toBe(override === 'main' ? h.noPinSha : h.firstSha);
       expect(r.stdout).toContain(`DEPLOY_SHA: ${line1}`);
     }
   });

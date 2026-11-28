@@ -323,14 +323,24 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
     return i;
   };
 
-  it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> restart_survival_arm -> path_first_bun_arm -> helper_cases -> run_smokes', () => {
+  it('main runs the sections in order: run_deploy -> unknown_sha_arm -> bun_drift_warn_arm -> bun_prereq_polarity_arm -> bun_upgrade_arm -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> restart_survival_arm -> path_first_bun_arm -> helper_cases -> run_smokes', () => {
     expect(driver).toContain(
-      '  run_deploy\n  unknown_sha_arm\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  path_first_bun_arm\n  helper_cases\n  install_source_deps\n  run_smokes\n',
+      '  run_deploy\n  unknown_sha_arm\n  bun_drift_warn_arm\n  bun_prereq_polarity_arm\n  bun_upgrade_arm\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  path_first_bun_arm\n  helper_cases\n  install_source_deps\n  run_smokes\n',
     );
+    expect(driver).toMatch(/^bun_drift_warn_arm\(\) \{/m);
+    expect(driver).toMatch(/^bun_prereq_polarity_arm\(\) \{/m);
+    expect(driver).toMatch(/^bun_upgrade_arm\(\) \{/m);
     expect(driver).toMatch(/^drift_arm\(\) \{/m);
     expect(driver).toMatch(/^ownership_polarity_arm\(\) \{/m);
     expect(driver).toMatch(/^restart_survival_arm\(\) \{/m);
     expect(driver).toMatch(/^path_first_bun_arm\(\) \{/m);
+    // bun_drift_warn_arm (6c), bun_prereq_polarity_arm (6c2) and
+    // bun_upgrade_arm (6d) sit between unknown_sha_arm (6b) and
+    // post_deploy_checks (7) in the file too (Issue #2322).
+    expect(idxOf('bun_drift_warn_arm() {')).toBeGreaterThan(idxOf('unknown_sha_arm() {'));
+    expect(idxOf('bun_prereq_polarity_arm() {')).toBeGreaterThan(idxOf('bun_drift_warn_arm() {'));
+    expect(idxOf('bun_upgrade_arm() {')).toBeGreaterThan(idxOf('bun_prereq_polarity_arm() {'));
+    expect(idxOf('post_deploy_checks() {')).toBeGreaterThan(idxOf('bun_upgrade_arm() {'));
     // Placed after section 7 in the file too (the AC's "new section, after 7"),
     // 7c after 7b, 7d after 7c, and 7e (#1776) after 7d.
     expect(idxOf('drift_arm() {')).toBeGreaterThan(idxOf('post_deploy_checks() {'));
@@ -424,8 +434,8 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
     // override that distinguishes "the live unit wins" from the pre-#1761
     // behaviour; the regex tolerates that one optional segment.
     const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" (?:-e AGENT_CONSOLE_(?:PORT=9999|DEPLOY_SHA=\S+) )?"\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
-    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5/#5b/#5c (ownership_polarity_arm) + #6 (restart_survival_arm) + #7/#8 (path_first_bun_arm, #1776) + the pinned-SHA polarity deploy (unknown_sha_arm).
-    expect(deployCalls).toHaveLength(11);
+    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5/#5b/#5c (ownership_polarity_arm) + #6 (restart_survival_arm) + #7/#8 (path_first_bun_arm, #1776) + the pinned-SHA polarity deploy (unknown_sha_arm) + the #2322 drift-warn, prerequisite-polarity and upgrade deploys (bun_drift_warn_arm, bun_prereq_polarity_arm, bun_upgrade_arm).
+    expect(deployCalls).toHaveLength(14);
     for (const c of deployCalls) expect(c).toContain('--user deployer ');
   });
 
