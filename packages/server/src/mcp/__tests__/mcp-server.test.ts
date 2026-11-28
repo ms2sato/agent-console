@@ -1508,6 +1508,20 @@ describe('MCP Server Tools', () => {
         spy.mockRestore();
       }
     });
+
+    it('omits the paused key entirely from a session item when includePaused is not passed (Issue #2315: byte-identical to the pre-change shape)', async () => {
+      await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const data = parseToolResult(response) as { sessions: Array<Record<string, unknown>> };
+
+      expect('paused' in data.sessions[0]).toBe(false);
+      expect('pausedAt' in data.sessions[0]).toBe(false);
+    });
   });
 
   // ===========================================================================
@@ -1661,6 +1675,7 @@ describe('MCP Server Tools', () => {
         sessionId: string;
         status: string;
         title: string;
+        paused: boolean;
         workers: Array<{ id: string; type: string; activityState: string }>;
       };
 
@@ -1668,6 +1683,8 @@ describe('MCP Server Tools', () => {
       expect(data.sessionId).toBe(session.id);
       expect(data.status).toBe('active');
       expect(data.title).toBe('Test Session');
+      // Issue #2315: a live session's answer gains paused:false.
+      expect(data.paused).toBe(false);
       expect(data.workers.length).toBeGreaterThan(0);
     });
 
