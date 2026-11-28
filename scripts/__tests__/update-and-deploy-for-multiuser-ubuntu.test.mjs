@@ -180,17 +180,25 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: --upgrade-bun CLI flag and 
     expect(scriptText).toContain('sudo install -m0755 "${BUN_SCRATCH_DIR}/bun" /usr/local/bin/bun');
   });
 
-  it('with --upgrade-bun: reuses assert_unified_bun_executable (no second executability check) and fails closed on a post-install version mismatch, before the restart, but only when the pinned value was itself readable', () => {
+  it('with --upgrade-bun: reuses assert_unified_bun_executable (no second executability check) and fails closed on EITHER a post-install version mismatch OR an unreadable pin, before the restart (CodeRabbit finding)', () => {
     const upgradeIdx = idxOf('BUN_SCRATCH_DIR="$(sudo mktemp -d)"');
     const assertIdx = idxOf('assert_unified_bun_executable "/usr/local/bin/bun" || exit 1');
+    const unreadableIdx = idxOf(
+      'echo "Error: could not determine the pinned bun version to verify the install against (${PINNED_BUN:-<unavailable>}) -- refusing to restart" >&2',
+    );
     const mismatchIdx = idxOf(
       'echo "Error: installed /usr/local/bin/bun reports ${INSTALLED_BUN_VERSION}, expected ${PINNED_BUN} -- refusing to restart" >&2',
     );
     const restartIdx = idxOf('sudo systemctl restart "${SERVICE_NAME}"');
     expect(assertIdx).toBeGreaterThan(upgradeIdx);
-    expect(assertIdx).toBeLessThan(mismatchIdx);
+    expect(assertIdx).toBeLessThan(unreadableIdx);
+    expect(unreadableIdx).toBeLessThan(mismatchIdx);
     expect(mismatchIdx).toBeLessThan(restartIdx);
-    expect(scriptText).toContain('if [ "${PINNED_BUN_OK}" -eq 1 ] && [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then');
+    expect(scriptText).toContain('if [ "${PINNED_BUN_OK}" -ne 1 ]; then');
+    expect(scriptText).toContain('if [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then');
+    // The unreadable-pin branch is unconditional (no `&&`) -- it is checked
+    // BEFORE the mismatch comparison, not folded into its condition.
+    expect(scriptText).not.toContain('if [ "${PINNED_BUN_OK}" -eq 1 ] && [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then');
     // Only ONE call (as opposed to a mere mention in a comment) to the
     // shared executability check in this file -- A6(d) reuses it, A8
     // forbids a second one.

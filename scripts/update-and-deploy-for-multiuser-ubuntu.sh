@@ -490,7 +490,18 @@ else
   sudo install -m0755 "${BUN_SCRATCH_DIR}/bun" /usr/local/bin/bun
   assert_unified_bun_executable "/usr/local/bin/bun" || exit 1
   INSTALLED_BUN_VERSION="$(/usr/local/bin/bun --version)"
-  if [ "${PINNED_BUN_OK}" -eq 1 ] && [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then
+  # Fail closed on EITHER outcome (CodeRabbit finding): a mismatch against a
+  # readable pin, or no readable pin to verify against at all -- the latter
+  # must not silently let the restart through unverified. fetch-bun.sh's own
+  # root-level read of the same registry almost always succeeds whenever
+  # this elevated front-end read does too (the service user OWNS the file),
+  # so PINNED_BUN_OK=0 here means something is wrong with the deploy target
+  # itself, which is reason enough to stop before restarting into it.
+  if [ "${PINNED_BUN_OK}" -ne 1 ]; then
+    echo "Error: could not determine the pinned bun version to verify the install against (${PINNED_BUN:-<unavailable>}) -- refusing to restart" >&2
+    exit 1
+  fi
+  if [ "${INSTALLED_BUN_VERSION}" != "${PINNED_BUN}" ]; then
     echo "Error: installed /usr/local/bin/bun reports ${INSTALLED_BUN_VERSION}, expected ${PINNED_BUN} -- refusing to restart" >&2
     exit 1
   fi

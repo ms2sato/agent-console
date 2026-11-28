@@ -260,6 +260,11 @@ SUMMARY=""
 # remove_bun_144_scratch_dir) at the end of the run, whether 6c or 6d
 # fails (Architect ruling). Empty when not yet created.
 BUN_144_SCRATCH_DIR=""
+# The #2322 6c2 arm's real unzip path, set ONLY while it is renamed away
+# (CodeRabbit finding): if anything between the rename and the restore
+# exits the driver (e.g. a host-side `mktemp` failure), `cleanup()` still
+# restores it via restore_unzip_if_renamed, including under --keep.
+UNZIP_RENAMED_PATH=""
 
 usage() {
   sed -n '/^# Usage/,/^# Requires/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -580,10 +585,12 @@ bun_drift_warn_arm() {
   out="$(mktemp)"
   rc=0
   cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
-  grep -E '^WARN: |^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  # The deploy script's WARN lines are indented ("    WARN: ..."), never
+  # column-0 -- `^WARN:` alone would never match them (CodeRabbit finding).
+  grep -E '^[[:space:]]*WARN:|^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
   expect "6c: deploy exits 0 (the drift WARN never changes the exit code)" test "$rc" -eq 0
   expect "6c: output contains a WARN naming both the real 1.4.4 and the real pinned version" \
-    grep -qF "WARN: /usr/local/bin/bun is 1.4.4, the deployed tree pins ${pinned}" "$out"
+    grep -qF "WARN: live bun (1.4.4) differs from the deployed .bun-version (${pinned})" "$out"
   expect "6c: V3 mainpid-identity PASSes -- the real 1.4.4 binary IS the one both ExecStart and EMBEDDED_AGENT_BUN_PATH name" \
     grep -q '^  PASS  V3 mainpid-identity$' "$out"
   expect "6c: V4 unit-active PASSes -- the restart succeeded on the real (older) binary" \
@@ -609,14 +616,17 @@ bun_prereq_polarity_arm() {
   }
   unzip_path="$(printf '%s' "$unzip_path" | tr -d '\r')"
   # Sequential driver, one step at a time: briefly renaming the real binary
-  # away (never apt-installing or removing it) is safe here and restored
-  # unconditionally, whether the deploy call below succeeds or fails.
+  # away (never apt-installing or removing it) is safe here. Tracked in the
+  # driver-owned UNZIP_RENAMED_PATH so cleanup()'s restore_unzip_if_renamed
+  # restores it even if something below exits the driver before this
+  # function's own restore runs (CodeRabbit finding).
   cexec --user root "$SERVICE" mv "$unzip_path" "${unzip_path}.disabled-for-test"
+  UNZIP_RENAMED_PATH="$unzip_path"
   want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
   out="$(mktemp)"
   rc=0
   cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun >"$out" 2>&1 || rc=$?
-  cexec --user root "$SERVICE" mv "${unzip_path}.disabled-for-test" "$unzip_path"
+  restore_unzip_if_renamed
   sed 's/^/  /' "$out"
   expect "6c2: --upgrade-bun exits 1 when unzip is absent" test "$rc" -eq 1
   expect "6c2: the precheck error names curl and unzip" grep -qF 'requires curl and unzip' "$out"
@@ -626,9 +636,8 @@ bun_prereq_polarity_arm() {
   rc=0
   grep -q '==> systemctl restart' "$out" || rc=$?
   expect "6c2: no '==> systemctl restart' line -- the unit was never restarted" test "$rc" -eq 1
-  local unzip_restored=0
-  cexec --user root "$SERVICE" sh -c 'command -v unzip' >/dev/null 2>&1 && unzip_restored=1
-  check "6c2: unzip is resolvable again after the arm (restored unconditionally)" "$unzip_restored"
+  expect "6c2: unzip is resolvable again after the arm (restored unconditionally)" \
+    cexec --user root "$SERVICE" sh -c 'command -v unzip'
   rm -f "$out"
   step_end bun_prereq_polarity
 }
@@ -644,10 +653,11 @@ bun_upgrade_arm() {
   # A13): no BUN_DOWNLOAD_BASE_URL fixture here, matching the image's own
   # build-time fetch (docker/Dockerfile.systemd already requires the same).
   cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh --upgrade-bun >"$out" 2>&1 || rc=$?
-  grep -E '^WARN: |fetching bun|is now |^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  # WARN lines are indented, never column-0 (CodeRabbit finding, same as 6c above).
+  grep -E '^[[:space:]]*WARN:|fetching bun|is now |^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
   expect "6d: deploy exits 0" test "$rc" -eq 0
   rc=0
-  grep -q '^WARN: ' "$out" || rc=$?
+  grep -q '^[[:space:]]*WARN:' "$out" || rc=$?
   expect "6d: no WARN: line this time (the binary is now at the pinned version)" test "$rc" -eq 1
   live="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
   expect "6d: /usr/local/bin/bun --version now equals the pinned version ${pinned} (no longer 0.0.0-test)" \
@@ -1513,8 +1523,20 @@ remove_bun_144_scratch_dir() {
   fi
 }
 
+# CodeRabbit finding: restores unzip EVEN IF something between
+# bun_prereq_polarity_arm's rename and its own restore exits the driver
+# (e.g. a host-side `mktemp` failure) -- runs before the KEEP branch so a
+# kept container is never left with a disabled unzip either.
+restore_unzip_if_renamed() {
+  if [ -n "${UNZIP_RENAMED_PATH:-}" ]; then
+    cexec --user root "$SERVICE" mv "${UNZIP_RENAMED_PATH}.disabled-for-test" "${UNZIP_RENAMED_PATH}" >/dev/null 2>&1 || true
+    UNZIP_RENAMED_PATH=""
+  fi
+}
+
 cleanup() {
   remove_bun_144_scratch_dir
+  restore_unzip_if_renamed
   if [ "$KEEP" -eq 1 ]; then
     echo "[info] --keep set; container agent-console-systemd-verify left running"
   else
