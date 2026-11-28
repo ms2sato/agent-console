@@ -180,6 +180,11 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: --upgrade-bun CLI flag and 
     expect(scriptText).toContain('sudo install -m0755 "${BUN_SCRATCH_DIR}/bun" /usr/local/bin/bun');
   });
 
+  // No reach: this is a static ordering/text pin, not a behavioral test --
+  // removing either `exit 1` would still leave it green. A real harness
+  // case needs an asymmetry (root's fetch succeeds, the service-user
+  // front-end read fails) that the normal archive/rsync pipeline can't
+  // construct deliberately; deferred to Issue #2327.
   it('with --upgrade-bun: reuses assert_unified_bun_executable (no second executability check) and fails closed on EITHER a post-install version mismatch OR an unreadable pin, before the restart (CodeRabbit finding)', () => {
     const upgradeIdx = idxOf('BUN_SCRATCH_DIR="$(sudo mktemp -d)"');
     const assertIdx = idxOf('assert_unified_bun_executable "/usr/local/bin/bun" || exit 1');
