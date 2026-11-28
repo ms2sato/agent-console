@@ -32,9 +32,15 @@ import * as path from 'node:path';
 /**
  * Every environment variable through which Claude Code can authenticate or
  * route to a billed provider, per
- * https://code.claude.com/docs/en/env-vars.md. Exported so a caller can
- * reuse the same list to strip these from a child's spawn `env` before
- * calling {@link assertNoClaudeAuth} to verify the strip worked.
+ * https://code.claude.com/docs/en/env-vars.md -- except
+ * `ANTHROPIC_IDENTITY_TOKEN_FILE` (CodeRabbit, PR #2320), which that page
+ * does not list; it is documented on the Workload Identity Federation
+ * reference instead (https://platform.claude.com/docs/en/manage-claude/wif-reference),
+ * alongside `ANTHROPIC_FEDERATION_RULE_ID` / `ANTHROPIC_ORGANIZATION_ID`
+ * (both of which ARE on env-vars.md) as the credential half of the same
+ * federation mechanism. Exported so a caller can reuse the same list to
+ * strip these from a child's spawn `env` before calling
+ * {@link assertNoClaudeAuth} to verify the strip worked.
  */
 export const CLAUDE_AUTH_ENV_VARS = [
   'ANTHROPIC_API_KEY',
@@ -47,6 +53,9 @@ export const CLAUDE_AUTH_ENV_VARS = [
   'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
   'CLAUDE_CODE_OAUTH_SCOPES',
   'ANTHROPIC_PROFILE',
+  'ANTHROPIC_FEDERATION_RULE_ID',
+  'ANTHROPIC_ORGANIZATION_ID',
+  'ANTHROPIC_IDENTITY_TOKEN_FILE',
   'ANTHROPIC_CUSTOM_HEADERS',
   'ANTHROPIC_BASE_URL',
   'CLAUDE_CODE_USE_BEDROCK',
@@ -150,6 +159,24 @@ export function assertNoClaudeAuth(claudeConfigDir: string, childEnv: Record<str
     }
     if ('apiKeyHelper' in settings) {
       throw new Error(`assertNoClaudeAuth: ${settingsPath} carries an apiKeyHelper key`);
+    }
+    // CodeRabbit (PR #2320, check-mcp-pause-resume.ts review round): Claude
+    // Code can load env values straight out of settings.json's own `env`
+    // object, so a credential planted there would bypass the childEnv-only
+    // check below. Reuse the same CLAUDE_AUTH_ENV_VARS list rather than
+    // hardcoding a single key -- this is the same guard as the env check,
+    // just reading from a different source.
+    const settingsEnv = settings.env;
+    if (settingsEnv && typeof settingsEnv === 'object') {
+      const leakedSettingsEnvVars = CLAUDE_AUTH_ENV_VARS.filter((name) => {
+        const value = (settingsEnv as Record<string, unknown>)[name];
+        return typeof value === 'string' && value.length > 0;
+      });
+      if (leakedSettingsEnvVars.length > 0) {
+        throw new Error(
+          `assertNoClaudeAuth: ${settingsPath}'s env object still carries: ${leakedSettingsEnvVars.join(', ')}`,
+        );
+      }
     }
   }
 

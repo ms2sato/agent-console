@@ -69,6 +69,41 @@ describe('assertNoClaudeAuth', () => {
     expect(() => assertNoClaudeAuth(dir, {})).toThrow(/apiKeyHelper/);
   });
 
+  // CodeRabbit (PR #2320, isolated-claude-config.ts:39): the federation
+  // credential variables (ANTHROPIC_FEDERATION_RULE_ID,
+  // ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_IDENTITY_TOKEN_FILE) must be
+  // stripped and caught the same way as any other entry in
+  // CLAUDE_AUTH_ENV_VARS.
+  it('throws when ANTHROPIC_FEDERATION_RULE_ID (a federation credential, not just an API key) is present', () => {
+    const dir = freshDir();
+    expect(CLAUDE_AUTH_ENV_VARS).toContain('ANTHROPIC_FEDERATION_RULE_ID');
+
+    expect(() => assertNoClaudeAuth(dir, { ANTHROPIC_FEDERATION_RULE_ID: 'rule-123' })).toThrow(
+      /ANTHROPIC_FEDERATION_RULE_ID/,
+    );
+  });
+
+  // CodeRabbit (PR #2320, isolated-claude-config.ts:153): settings.json can
+  // supply auth values via its own `env` object, not just `apiKeyHelper`;
+  // this must be caught using the SAME CLAUDE_AUTH_ENV_VARS list the
+  // childEnv check uses, not a hardcoded single key.
+  it("throws when settings.json's env object carries a leaked CLAUDE_AUTH_ENV_VARS entry", () => {
+    const dir = freshDir();
+    writeFileSync(
+      path.join(dir, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_API_KEY: 'sk-leaked-via-settings-env' } }),
+    );
+
+    expect(() => assertNoClaudeAuth(dir, {})).toThrow(/env object still carries.*ANTHROPIC_API_KEY/);
+  });
+
+  it("does not throw when settings.json's env object is absent or carries no auth key", () => {
+    const dir = freshDir();
+    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ env: { SOME_OTHER_VAR: 'fine' } }));
+
+    expect(() => assertNoClaudeAuth(dir, {})).not.toThrow();
+  });
+
   // M8 (reported in the final verification): removing the
   // `.credentials.json` existence check from `assertNoClaudeAuth` would
   // make test (a) above go red. Measured by temporarily commenting out that
