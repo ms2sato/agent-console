@@ -33,14 +33,20 @@ import * as path from 'node:path';
  * Every environment variable through which Claude Code can authenticate or
  * route to a billed provider, per
  * https://code.claude.com/docs/en/env-vars.md -- except
- * `ANTHROPIC_IDENTITY_TOKEN_FILE` (CodeRabbit, PR #2320), which that page
- * does not list; it is documented on the Workload Identity Federation
+ * `ANTHROPIC_IDENTITY_TOKEN_FILE`, `ANTHROPIC_IDENTITY_TOKEN`, and
+ * `ANTHROPIC_SERVICE_ACCOUNT_ID` (CodeRabbit, PR #2320), none of which that
+ * page lists; all three are documented on the Workload Identity Federation
  * reference instead (https://platform.claude.com/docs/en/manage-claude/wif-reference),
  * alongside `ANTHROPIC_FEDERATION_RULE_ID` / `ANTHROPIC_ORGANIZATION_ID`
- * (both of which ARE on env-vars.md) as the credential half of the same
- * federation mechanism. Exported so a caller can reuse the same list to
- * strip these from a child's spawn `env` before calling
- * {@link assertNoClaudeAuth} to verify the strip worked.
+ * (both of which ARE on env-vars.md) as the full credential set of the same
+ * federation mechanism: direct environment-variable federation activates
+ * only when `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
+ * `ANTHROPIC_SERVICE_ACCOUNT_ID`, and one of `ANTHROPIC_IDENTITY_TOKEN_FILE`
+ * / `ANTHROPIC_IDENTITY_TOKEN` are all set, so this list strips both the
+ * file-path and the literal-JWT-string forms of the identity token.
+ * Exported so a caller can reuse the same list to strip these from a
+ * child's spawn `env` before calling {@link assertNoClaudeAuth} to verify
+ * the strip worked.
  */
 export const CLAUDE_AUTH_ENV_VARS = [
   'ANTHROPIC_API_KEY',
@@ -55,7 +61,9 @@ export const CLAUDE_AUTH_ENV_VARS = [
   'ANTHROPIC_PROFILE',
   'ANTHROPIC_FEDERATION_RULE_ID',
   'ANTHROPIC_ORGANIZATION_ID',
+  'ANTHROPIC_SERVICE_ACCOUNT_ID',
   'ANTHROPIC_IDENTITY_TOKEN_FILE',
+  'ANTHROPIC_IDENTITY_TOKEN',
   'ANTHROPIC_CUSTOM_HEADERS',
   'ANTHROPIC_BASE_URL',
   'CLAUDE_CODE_USE_BEDROCK',

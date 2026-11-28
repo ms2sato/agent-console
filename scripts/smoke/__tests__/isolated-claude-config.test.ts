@@ -83,6 +83,21 @@ describe('assertNoClaudeAuth', () => {
     );
   });
 
+  // CodeRabbit follow-up (owner-approved, PR #2320): the same WIF credential
+  // set also includes ANTHROPIC_SERVICE_ACCOUNT_ID and the literal-JWT form
+  // ANTHROPIC_IDENTITY_TOKEN (sibling of ANTHROPIC_IDENTITY_TOKEN_FILE). The
+  // mechanism is already covered by the test above; one assertion that
+  // either new name is caught is enough.
+  it('throws when ANTHROPIC_SERVICE_ACCOUNT_ID (the remaining WIF credential name) is present', () => {
+    const dir = freshDir();
+    expect(CLAUDE_AUTH_ENV_VARS).toContain('ANTHROPIC_SERVICE_ACCOUNT_ID');
+    expect(CLAUDE_AUTH_ENV_VARS).toContain('ANTHROPIC_IDENTITY_TOKEN');
+
+    expect(() => assertNoClaudeAuth(dir, { ANTHROPIC_SERVICE_ACCOUNT_ID: 'sa-123' })).toThrow(
+      /ANTHROPIC_SERVICE_ACCOUNT_ID/,
+    );
+  });
+
   // CodeRabbit (PR #2320, isolated-claude-config.ts:153): settings.json can
   // supply auth values via its own `env` object, not just `apiKeyHelper`;
   // this must be caught using the SAME CLAUDE_AUTH_ENV_VARS list the
