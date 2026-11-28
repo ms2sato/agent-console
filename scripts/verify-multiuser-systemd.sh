@@ -61,18 +61,28 @@
 #      requested SHA (never the marker the deploy itself wrote)
 #  6b. polarity: AGENT_CONSOLE_DEPLOY_SHA=0000... must exit 1 at the guard,
 #      leave .deploy-sha byte-identical, and print no `==> systemctl restart`
-#  6c. the #2322 drift arm: /usr/local/bin/bun is overwritten with a fake
-#      binary reporting 0.0.0-test, then the deploy runs WITHOUT
-#      --upgrade-bun -- expect exit 0 (never blocking), a WARN naming both
-#      the fake live version and the real pinned version (read from the
-#      source tree's docker/bun-sha256.txt), and the fake binary left in
-#      place afterward.
+#  6c. the #2322 drift arm: /usr/local/bin/bun is installed as a REAL,
+#      OLDER bun release (1.4.4 -- exactly MIN_BUN_VERSION, so the server
+#      still runs on it), fetched via the real docker/fetch-bun.sh and a
+#      TEST-ONLY fixture registry (never docker/bun-sha256.txt). A fake
+#      binary was tried and rejected (Architect ruling, option (c)): even a
+#      wrapper that fakes only `--version` and execs a real copy for
+#      everything else makes `/proc/<MainPID>/exe` resolve to wherever it
+#      actually execs to, never literally "/usr/local/bin/bun", so V3
+#      mainpid-identity would FAIL for a reason unrelated to this arm. The
+#      deploy then runs WITHOUT --upgrade-bun -- expect exit 0 (never
+#      blocking), a WARN naming both 1.4.4 and the real pinned version
+#      (read from the source tree's docker/bun-sha256.txt), V3/V4/V5 all
+#      PASS (one real, correctly-identified binary throughout), and
+#      /usr/local/bin/bun still 1.4.4 afterward.
 #  6d. the #2322 upgrade arm, immediately after: the same deploy WITH
 #      --upgrade-bun -- expect exit 0, no WARN this time, /usr/local/bin/bun
-#      now at the pinned version, and the restart + /api/config check still
-#      succeed. Needs real network to the real oven-sh/bun GitHub release
-#      (no BUN_DOWNLOAD_BASE_URL fixture here, same as the image's own
-#      build-time fetch).
+#      now at the pinned version (1.4.4 replaced by the fetched binary),
+#      and the restart + /api/config check still succeed. Needs real
+#      network to the real oven-sh/bun GitHub release (no
+#      BUN_DOWNLOAD_BASE_URL fixture here, same as the image's own
+#      build-time fetch). 6c's 1.4.4 fetch scratch directory is removed by
+#      `cleanup()` at the end of the run regardless of 6c/6d's own outcome.
 #   7. the deploy script's OWN post-deploy verification screen (Issue #1717:
 #      V0 data-root-ownership, V1 unit-env-drift, V2 entry-path-readable, V3
 #      mainpid-identity, V4 unit-active, V5 health, V6 journal-digest; V0
@@ -238,6 +248,11 @@ PASS=0
 FAIL=0
 STEP_T0=0
 SUMMARY=""
+# The #2322 6c arm's fetch-bun.sh scratch directory, INSIDE the container
+# -- set by bun_drift_warn_arm, removed by cleanup() (via
+# remove_bun_144_scratch_dir) at the end of the run, whether 6c or 6d
+# fails (Architect ruling). Empty when not yet created.
+BUN_144_SCRATCH_DIR=""
 
 usage() {
   sed -n '/^# Usage/,/^# Requires/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -528,16 +543,31 @@ unknown_sha_arm() {
 # --- 6c/6d. the #2322 bun-version arms: WARN without --upgrade-bun, fetch+install with it -------
 
 bun_drift_warn_arm() {
-  step_start "6c. #2322 drift arm: a stale /usr/local/bin/bun -> deploy WITHOUT --upgrade-bun WARNs, never fails, never touches the binary"
-  local pinned want_sha out rc=0 planted live
+  step_start "6c. #2322 drift arm: /usr/local/bin/bun is a REAL older release (1.4.4) -> deploy WITHOUT --upgrade-bun WARNs, never fails, restarts cleanly"
+  local pinned want_sha out rc=0 live
   pinned="$(cexec --user agentconsole "$SERVICE" awk '$1 !~ /^#/ && NF == 3 { print $1; exit }' "${SRC}/docker/bun-sha256.txt" | tr -d '\r')"
   echo "  pinned version (source tree's docker/bun-sha256.txt): ${pinned}"
 
-  echo "  --- plant a fake /usr/local/bin/bun reporting an obviously-fake version ---"
-  printf '%s\n' '#!/bin/sh' "echo 'bun 0.0.0-test'" \
-    | cexec --user root "$SERVICE" sh -c "cat > '${UNIFIED_BUN}' && chmod 0755 '${UNIFIED_BUN}'"
-  planted="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
-  expect "6c: the planted fake bun reports 0.0.0-test before the deploy runs" test "$planted" = "0.0.0-test"
+  # Architect ruling (Issue #2322, option (c)): a fake binary -- even a
+  # wrapper that execs a real copy for everything but `--version` -- makes
+  # `/proc/<MainPID>/exe` resolve to wherever it actually execs to, which is
+  # never literally "/usr/local/bin/bun" once an indirection is involved, so
+  # V3 mainpid-identity would FAIL for a reason unrelated to this arm
+  # (measured directly on this host with a throwaway wrapper+exec, outside
+  # any container, before this ruling: `exec`'d /proc/<pid>/exe resolves to
+  # the REAL target, not the wrapper's own path). Use a REAL, older bun
+  # release instead -- 1.4.4, exactly MIN_BUN_VERSION in
+  # scripts/check-bun-version.mjs, so the server still runs on it -- fetched
+  # via the real docker/fetch-bun.sh and a TEST-ONLY fixture registry
+  # (scripts/__tests__/fixtures/bun-1.4.4-sha256.txt; never
+  # docker/bun-sha256.txt, the production pin). Nothing is faked: V3/V4/V5
+  # all see a single, real, correctly-identified binary.
+  echo "  --- fetch the real bun 1.4.4 via docker/fetch-bun.sh + the test-only fixture registry, install it to /usr/local/bin/bun ---"
+  BUN_144_SCRATCH_DIR="$(cexec --user root "$SERVICE" mktemp -d)"
+  cexec --user root "$SERVICE" sh "${SRC}/docker/fetch-bun.sh" "${SRC}/scripts/__tests__/fixtures/bun-1.4.4-sha256.txt" "${BUN_144_SCRATCH_DIR}"
+  cexec --user root "$SERVICE" install -m0755 "${BUN_144_SCRATCH_DIR}/bun" "${UNIFIED_BUN}"
+  live="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
+  expect "6c: /usr/local/bin/bun is now the real 1.4.4 before the deploy runs" test "$live" = "1.4.4"
 
   want_sha="$(cexec --user agentconsole "$SERVICE" git -C "$SRC" rev-parse HEAD | tr -d '\r')"
   out="$(mktemp)"
@@ -545,11 +575,17 @@ bun_drift_warn_arm() {
   cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_DEPLOY_SHA="$want_sha" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
   grep -E '^WARN: |^  (PASS|FAIL|SKIP)  V[0-6] |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
   expect "6c: deploy exits 0 (the drift WARN never changes the exit code)" test "$rc" -eq 0
-  expect "6c: output contains a WARN naming both the fake live version and the real pinned version" \
-    grep -qF "WARN: /usr/local/bin/bun is 0.0.0-test, the deployed tree pins ${pinned}" "$out"
+  expect "6c: output contains a WARN naming both the real 1.4.4 and the real pinned version" \
+    grep -qF "WARN: /usr/local/bin/bun is 1.4.4, the deployed tree pins ${pinned}" "$out"
+  expect "6c: V3 mainpid-identity PASSes -- the real 1.4.4 binary IS the one both ExecStart and EMBEDDED_AGENT_BUN_PATH name" \
+    grep -q '^  PASS  V3 mainpid-identity$' "$out"
+  expect "6c: V4 unit-active PASSes -- the restart succeeded on the real (older) binary" \
+    grep -q '^  PASS  V4 unit-active$' "$out"
+  expect "6c: V5 health PASSes -- the restarted server actually answers /api/config" \
+    grep -q '^  PASS  V5 health$' "$out"
   live="$(cexec --user root "$SERVICE" "$UNIFIED_BUN" --version | tr -d '\r')"
-  expect "6c: /usr/local/bin/bun --version still reports 0.0.0-test (--upgrade-bun was not passed, nothing was installed)" \
-    test "$live" = "0.0.0-test"
+  expect "6c: /usr/local/bin/bun --version still reports 1.4.4 (--upgrade-bun was not passed, nothing was installed)" \
+    test "$live" = "1.4.4"
   rm -f "$out"
   step_end bun_drift_warn
 }
@@ -1427,7 +1463,15 @@ footprint() {
   step_end footprint
 }
 
+remove_bun_144_scratch_dir() {
+  if [ -n "${BUN_144_SCRATCH_DIR:-}" ]; then
+    cexec --user root "$SERVICE" rm -rf -- "${BUN_144_SCRATCH_DIR}" >/dev/null 2>&1 || true
+    BUN_144_SCRATCH_DIR=""
+  fi
+}
+
 cleanup() {
+  remove_bun_144_scratch_dir
   if [ "$KEEP" -eq 1 ]; then
     echo "[info] --keep set; container agent-console-systemd-verify left running"
   else

@@ -1,0 +1,22 @@
+# TEST FIXTURE ONLY, NOT THE PRODUCTION PIN. Do not confuse with
+# docker/bun-sha256.txt (the real production pin, read by
+# scripts/__tests__/bun-version-pins.test.mjs and the Docker image builds).
+#
+# This file exists solely so scripts/verify-multiuser-systemd.sh's tier-3
+# driver can fetch a REAL, OLDER release of Bun (1.4.4 -- exactly
+# MIN_BUN_VERSION in scripts/check-bun-version.mjs, so the server still
+# runs on it) and install it to /usr/local/bin/bun before its #2322 drift
+# arm (6c), so the drift report has something genuinely older than the
+# repo's current pin to compare against -- without ever touching
+# docker/bun-sha256.txt or .bun-version.
+#
+# Hashes verified 2026-11-28 against three independent sources, all in
+# agreement, using the same procedure docker/bun-sha256.txt's own header
+# documents: (1) downloaded bun-linux-x64.zip / bun-linux-aarch64.zip from
+# https://github.com/oven-sh/bun/releases/tag/bun-v1.4.4 and computed
+# `sha256sum` directly; (2) the release's own SHASUMS256.txt; (3) the
+# asset `digest` field of `gh api repos/oven-sh/bun/releases/tags/bun-v1.4.4`.
+#
+# Format: <version> <arch: x64|aarch64> <sha256>
+1.4.4 x64 bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
+1.4.4 aarch64 baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e
